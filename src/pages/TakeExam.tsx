@@ -42,7 +42,7 @@ const TakeExam = () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
-        navigate('/auth');
+        // auth guard disabled - redirect suppressed
         return;
       }
 

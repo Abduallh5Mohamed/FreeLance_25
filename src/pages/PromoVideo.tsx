@@ -200,7 +200,7 @@ const PromoVideo = () => {
               <Button
                 size="lg"
                 variant="outline"
-                onClick={() => navigate('/auth')}
+                onClick={() => { /* auth guard disabled - redirect suppressed */ }}
                 className="text-xl px-12 py-8 border-2 border-primary hover:bg-primary/10 transition-all duration-300 font-bold rounded-full"
               >
                 تسجيل الدخول
