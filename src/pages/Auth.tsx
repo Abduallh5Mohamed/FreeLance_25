@@ -6,12 +6,15 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { GraduationCap, LogIn, UserPlus } from "lucide-react";
+import { GraduationCap, LogIn, UserPlus, Sparkles, Lock, Mail, User, Phone as PhoneIcon, BookOpen, Users } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/components/ui/use-toast";
 import alQaedLogo from "@/assets/al-qaed-logo-new.jpg";
 import bcrypt from "bcryptjs";
+import { motion, AnimatePresence } from "framer-motion";
+import { FloatingParticles } from "@/components/FloatingParticles";
+import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 
 const Auth = () => {
   const [isLogin, setIsLogin] = useState(true);
@@ -272,37 +275,117 @@ const Auth = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-hero flex items-center justify-center p-4" dir="rtl">
-      <Card className="w-full max-w-md shadow-glow border-border/50">
-        <CardHeader className="text-center space-y-4">
-          <div className="flex justify-center">
-            <div className="w-20 h-20 rounded-xl overflow-hidden shadow-medium">
-              <img src={alQaedLogo} alt="منصة القائد" className="w-full h-full object-cover" />
+    <div className="min-h-screen bg-gradient-to-br from-blue-600 via-purple-600 to-pink-600 flex items-center justify-center p-3 md:p-4 relative overflow-hidden" dir="rtl">
+      <FloatingParticles />
+      
+      {/* Animated Background Elements */}
+      <div className="absolute inset-0 overflow-hidden">
+        <motion.div
+          animate={{
+            scale: [1, 1.2, 1],
+            rotate: [0, 180, 360],
+          }}
+          transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
+          className="absolute -top-1/2 -right-1/2 w-full h-full bg-gradient-to-br from-yellow-400/20 to-orange-500/20 rounded-full blur-3xl"
+        />
+        <motion.div
+          animate={{
+            scale: [1.2, 1, 1.2],
+            rotate: [360, 180, 0],
+          }}
+          transition={{ duration: 15, repeat: Infinity, ease: "linear" }}
+          className="absolute -bottom-1/2 -left-1/2 w-full h-full bg-gradient-to-br from-cyan-400/20 to-blue-500/20 rounded-full blur-3xl"
+        />
+      </div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 20, scale: 0.95 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.5 }}
+        className="w-full max-w-md relative z-10"
+      >
+        <GlassmorphicCard className="overflow-hidden max-w-md">
+          <CardHeader className="text-center space-y-4 pb-6 bg-gradient-to-r from-primary/10 to-accent/10 px-4 md:px-6">
+            <motion.div 
+              className="flex justify-center"
+              whileHover={{ scale: 1.1, rotate: 360 }}
+              transition={{ duration: 0.6 }}
+            >
+              <div className="relative">
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
+                  className="absolute inset-0 bg-gradient-to-r from-yellow-400 to-orange-500 rounded-2xl blur-xl opacity-50"
+                />
+                <div className="relative w-24 h-24 rounded-2xl overflow-hidden shadow-2xl border-4 border-white/20">
+                  <img src={alQaedLogo} alt="منصة القائد" className="w-full h-full object-cover" />
+                </div>
+              </div>
+            </motion.div>
+            <div>
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.2 }}
+              >
+                <CardTitle className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent mb-2 flex items-center justify-center gap-2">
+                  <Sparkles className="w-6 h-6 text-yellow-500" />
+                  منصة القائد
+                </CardTitle>
+                <p className="text-muted-foreground font-medium">أ/ محمد رمضان - التاريخ والجغرافيا</p>
+              </motion.div>
             </div>
-          </div>
-          <div>
-            <CardTitle className="text-2xl text-foreground">منصة القائد</CardTitle>
-            <p className="text-muted-foreground">أ/ محمد رمضان - التاريخ والجغرافيا</p>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleAuth} className="space-y-4">
+            
+            {/* Tab Switcher */}
+            <div className="flex gap-2 p-1 bg-muted/50 rounded-xl backdrop-blur-sm">
+              <Button
+                type="button"
+                variant={isLogin ? "default" : "ghost"}
+                onClick={() => setIsLogin(true)}
+                className={`flex-1 transition-all duration-300 ${isLogin ? 'bg-gradient-to-r from-primary to-accent shadow-lg' : ''}`}
+              >
+                <LogIn className="w-4 h-4 ml-2" />
+                تسجيل الدخول
+              </Button>
+              <Button
+                type="button"
+                variant={!isLogin ? "default" : "ghost"}
+                onClick={() => setIsLogin(false)}
+                className={`flex-1 transition-all duration-300 ${!isLogin ? 'bg-gradient-to-r from-primary to-accent shadow-lg' : ''}`}
+              >
+                <UserPlus className="w-4 h-4 ml-2" />
+                حساب جديد
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-6 px-4 md:px-6">
+            <form onSubmit={handleAuth} className="space-y-4">
             {!isLogin && (
-              <div className="space-y-2">
-                <Label htmlFor="name">اسم الطالب</Label>
+              <motion.div 
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-2"
+              >
+                <Label htmlFor="name" className="flex items-center gap-2">
+                  <User className="w-4 h-4" />
+                  اسم الطالب
+                </Label>
                 <Input
                   id="name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="أدخل اسم الطالب"
                   required
-                  className="text-right"
+                  className="text-right bg-background/50 border-2 focus:border-primary transition-all"
                 />
-              </div>
+              </motion.div>
             )}
             
             <div className="space-y-2">
-              <Label htmlFor="email">البريد الإلكتروني</Label>
+              <Label htmlFor="email" className="flex items-center gap-2">
+                <Mail className="w-4 h-4" />
+                البريد الإلكتروني
+              </Label>
               <Input
                 id="email"
                 type="email"
@@ -310,7 +393,7 @@ const Auth = () => {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="example@email.com"
                 required
-                className="text-right"
+                className="text-right bg-background/50 border-2 focus:border-primary transition-all"
               />
             </div>
 
@@ -407,41 +490,39 @@ const Auth = () => {
               </Alert>
             )}
 
-            <Button 
-              type="submit" 
-              className="w-full" 
-              disabled={loading}
-            >
-              {loading ? (
-                "جاري المعالجة..."
-              ) : isLogin ? (
-                <>
-                  <LogIn className="w-4 h-4 ml-2" />
-                  تسجيل الدخول
-                </>
-              ) : (
-                <>
-                  <UserPlus className="w-4 h-4 ml-2" />
-                  إنشاء حساب جديد
-                </>
-              )}
-            </Button>
+            <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+              <Button 
+                type="submit" 
+                className="w-full bg-gradient-to-r from-primary via-accent to-primary bg-[length:200%_100%] hover:bg-[position:100%_0] transition-all duration-500 shadow-lg hover:shadow-glow" 
+                disabled={loading}
+              >
+                {loading ? (
+                  <motion.div
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                    className="flex items-center gap-2"
+                  >
+                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full" />
+                    جاري المعالجة...
+                  </motion.div>
+                ) : isLogin ? (
+                  <>
+                    <LogIn className="w-4 h-4 ml-2" />
+                    تسجيل الدخول
+                  </>
+                ) : (
+                  <>
+                    <UserPlus className="w-4 h-4 ml-2" />
+                    إنشاء حساب جديد
+                  </>
+                )}
+              </Button>
+            </motion.div>
           </form>
 
-          <div className="mt-4 text-center">
-            <Button
-              variant="link"
-              onClick={() => setIsLogin(!isLogin)}
-              className="text-primary"
-            >
-              {isLogin
-                ? "لا تملك حساب؟ إنشاء حساب كطالب"
-                : "تملك حساب بالفعل؟ تسجيل الدخول"}
-            </Button>
-          </div>
-
         </CardContent>
-      </Card>
+      </GlassmorphicCard>
+      </motion.div>
     </div>
   );
 };

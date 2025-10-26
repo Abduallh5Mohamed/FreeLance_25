@@ -16,6 +16,10 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import Header from "@/components/Header";
+import { motion } from "framer-motion";
+import { FloatingParticles } from "@/components/FloatingParticles";
+import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 
 interface RegistrationRequest {
   id: string;
@@ -393,19 +397,55 @@ export default function StudentRegistrationRequests() {
   const rejectedRequests = requests.filter(r => r.status === 'rejected');
 
   if (loading) {
-    return <div className="p-8 text-center">جاري التحميل...</div>;
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden">
+        <FloatingParticles />
+        <Header />
+        <div className="flex items-center justify-center min-h-[80vh] relative z-10">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="text-center"
+          >
+            <motion.div
+              animate={{ rotate: 360 }}
+              transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+              className="w-16 h-16 border-4 border-primary border-t-transparent rounded-full mx-auto mb-4"
+            />
+            <p className="text-lg font-medium text-primary">جاري تحميل الطلبات...</p>
+          </motion.div>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <div className="container mx-auto p-6" dir="rtl">
-      <Card>
-        <CardHeader>
-          <CardTitle>طلبات التسجيل للطلاب</CardTitle>
-          <CardDescription>
-            إدارة طلبات التسجيل الجديدة من الطلاب الأونلاين
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
+      <FloatingParticles />
+      <Header />
+      
+      <div className="container mx-auto p-6 relative z-10">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+        >
+          <GlassmorphicCard>
+            <CardHeader className="bg-gradient-to-r from-primary/10 via-accent/10 to-primary/10">
+              <CardTitle className="text-2xl flex items-center gap-3">
+                <motion.div
+                  animate={{ rotate: [0, 10, -10, 0] }}
+                  transition={{ duration: 2, repeat: Infinity }}
+                >
+                  <GraduationCap className="h-7 w-7 text-primary" />
+                </motion.div>
+                طلبات التسجيل للطلاب
+              </CardTitle>
+              <CardDescription className="text-base">
+                إدارة طلبات التسجيل الجديدة من الطلاب الأونلاين
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="pt-6">
           <Tabs defaultValue="pending" className="w-full">
             <TabsList className="grid w-full grid-cols-3">
               <TabsTrigger value="pending" className="flex items-center gap-2">
@@ -453,12 +493,13 @@ export default function StudentRegistrationRequests() {
             </TabsContent>
           </Tabs>
         </CardContent>
-      </Card>
+      </GlassmorphicCard>
+      </motion.div>
 
       <Dialog open={showRejectionDialog} onOpenChange={setShowRejectionDialog}>
-        <DialogContent>
+        <DialogContent className="bg-card/95 backdrop-blur-xl border-primary/20">
           <DialogHeader>
-            <DialogTitle>رفض طلب التسجيل</DialogTitle>
+            <DialogTitle className="text-xl">رفض طلب التسجيل</DialogTitle>
             <DialogDescription>
               يرجى إدخال سبب رفض طلب التسجيل لـ {selectedRequest?.name}
             </DialogDescription>
@@ -472,6 +513,7 @@ export default function StudentRegistrationRequests() {
                 onChange={(e) => setRejectionReason(e.target.value)}
                 placeholder="اكتب سبب الرفض هنا..."
                 rows={4}
+                className="bg-background/50 border-2 focus:border-primary"
               />
             </div>
           </div>
@@ -483,12 +525,17 @@ export default function StudentRegistrationRequests() {
             }}>
               إلغاء
             </Button>
-            <Button variant="destructive" onClick={handleReject}>
+            <Button 
+              variant="destructive" 
+              onClick={handleReject}
+              className="bg-gradient-to-r from-red-500 to-red-600 hover:shadow-lg"
+            >
               تأكيد الرفض
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      </div>
     </div>
   );
 }

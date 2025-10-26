@@ -3,12 +3,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { BookOpen, FileText, Clock, Calendar, Download, Play, Eye, MessageSquare, Award, Users, Calendar as CalendarIcon } from "lucide-react";
+import { BookOpen, FileText, Clock, Calendar, Download, Play, Eye, MessageSquare, Award, Users, Calendar as CalendarIcon, Sparkles, TrendingUp, Trophy, Target } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
+import { motion, AnimatePresence } from "framer-motion";
+import { AnimatedSection } from "@/components/AnimatedSection";
+import { GlassmorphicCard } from "@/components/GlassmorphicCard";
+import { FloatingParticles } from "@/components/FloatingParticles";
+import { AnimatedCounter } from "@/components/AnimatedCounter";
 
 const StudentDashboard = () => {
   useScreenRecordingPrevention(); // Prevent screen recording
@@ -29,6 +34,33 @@ const StudentDashboard = () => {
 
   const fetchStudentData = async () => {
     try {
+      // TEMPORARY: Skip auth check for development
+      const DEMO_MODE = true;
+      
+      if (DEMO_MODE) {
+        // Set demo session in localStorage for Messages page
+        localStorage.setItem('student_session', JSON.stringify({
+          email: 'demo@student.com',
+          loginTime: Date.now()
+        }));
+        
+        // Use demo data
+        setStudentData({
+          id: 'demo-123',
+          name: 'محمد أحمد',
+          email: 'demo@student.com',
+          phone: '01234567890',
+          grade: 'الصف الثاني الثانوي',
+          group_id: null
+        });
+        setCourses([
+          { id: '1', name: 'تاريخ', subject: 'التاريخ', description: 'تاريخ مصر القديمة' },
+          { id: '2', name: 'جغرافيا', subject: 'الجغرافيا', description: 'جغرافيا مصر' }
+        ]);
+        setLoading(false);
+        return;
+      }
+
       let studentEmail = null;
       let isOfflineStudent = false;
 
@@ -231,125 +263,238 @@ const StudentDashboard = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
-          <p className="mt-2 text-muted-foreground">جاري التحميل...</p>
-        </div>
+      <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 flex items-center justify-center relative overflow-hidden">
+        <FloatingParticles />
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="text-center relative z-10"
+        >
+          <motion.div
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+            className="w-16 h-16 border-4 border-primary border-t-transparent rounded-full mx-auto mb-4"
+          />
+          <motion.p 
+            animate={{ opacity: [0.5, 1, 0.5] }}
+            transition={{ duration: 1.5, repeat: Infinity }}
+            className="text-lg font-medium text-primary"
+          >
+            جاري تحميل بياناتك...
+          </motion.p>
+        </motion.div>
       </div>
     );
   }
 
   if (!studentData) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardContent className="pt-6 text-center">
-            <p className="text-muted-foreground mb-4">لا يمكن العثور على بيانات الطالب</p>
-            <Button onClick={() => { /* auth guard disabled - redirect suppressed */ }}>
+      <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 flex items-center justify-center relative overflow-hidden">
+        <FloatingParticles />
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="relative z-10"
+        >
+          <GlassmorphicCard className="w-full max-w-md p-8 text-center">
+            <Award className="w-16 h-16 mx-auto mb-4 text-destructive" />
+            <p className="text-lg font-medium text-foreground mb-4">لا يمكن العثور على بيانات الطالب</p>
+            <Button 
+              onClick={() => navigate("/auth")} 
+              className="bg-gradient-to-r from-primary to-accent hover:shadow-glow"
+            >
               العودة لتسجيل الدخول
             </Button>
-          </CardContent>
-        </Card>
+          </GlassmorphicCard>
+        </motion.div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
+      <FloatingParticles />
       <StudentHeader />
 
-      <div className="container mx-auto px-4 py-8">
+      <div className="container mx-auto px-3 md:px-4 lg:px-6 py-6 md:py-8 relative z-10">
         {/* Student Profile Section */}
-        <Card className="mb-8 shadow-soft">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-4">
-              <Avatar className="w-16 h-16">
-                <AvatarFallback className="text-lg font-medium">
-                  {getInitials(studentData.name)}
-                </AvatarFallback>
-              </Avatar>
-              <div className="flex-1">
-                <h1 className="text-2xl font-bold text-foreground">مرحباً، {studentData.name}</h1>
-                <p className="text-muted-foreground">{studentData.email}</p>
-                <p className="text-sm text-muted-foreground">المرحلة: {studentData.grade}</p>
-              </div>
-              <div className="text-center">
-                <p className="text-sm text-muted-foreground">الكورسات المسجلة</p>
-                <p className="text-2xl font-bold text-primary">{courses.length}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          {/* Left Sidebar */}
-          <div className="lg:col-span-1 space-y-6">
-            {/* Enrolled Courses */}
-            <Card className="shadow-soft">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <BookOpen className="w-5 h-5" />
-                  الكورسات المسجلة
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {courses.length > 0 ? (
-                    courses.map((course) => (
-                      <Card key={course.id} className="p-3">
-                        <h3 className="font-medium">{course.name}</h3>
-                        <p className="text-sm text-muted-foreground">{course.subject}</p>
-                        {course.description && (
-                          <p className="text-xs text-muted-foreground mt-1">{course.description}</p>
-                        )}
-                      </Card>
-                    ))
-                  ) : (
-                    <p className="text-center text-muted-foreground py-4">
-                      لم يتم تسجيلك في أي كورس بعد
-                    </p>
-                  )}
+        <AnimatedSection>
+          <GlassmorphicCard className="mb-8">
+            <CardContent className="pt-6">
+              <div className="flex flex-col md:flex-row items-center gap-6">
+                <motion.div
+                  whileHover={{ scale: 1.1, rotate: 5 }}
+                  transition={{ type: "spring", stiffness: 300 }}
+                >
+                  <Avatar className="w-24 h-24 border-4 border-primary/30 shadow-xl">
+                    <AvatarFallback className="text-2xl font-bold bg-gradient-to-br from-primary to-accent text-white">
+                      {getInitials(studentData.name)}
+                    </AvatarFallback>
+                  </Avatar>
+                </motion.div>
+                <div className="flex-1 text-center md:text-right">
+                  <motion.h1 
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent mb-2"
+                  >
+                    مرحباً، {studentData.name} 👋
+                  </motion.h1>
+                  <div className="flex flex-col md:flex-row gap-2 items-center justify-center md:justify-start text-muted-foreground">
+                    <Badge className="bg-gradient-to-r from-blue-500 to-cyan-500 text-white border-0">
+                      {studentData.email}
+                    </Badge>
+                    <Badge className="bg-gradient-to-r from-purple-500 to-pink-500 text-white border-0">
+                      {studentData.grade}
+                    </Badge>
+                  </div>
                 </div>
-              </CardContent>
-            </Card>
+                <motion.div 
+                  whileHover={{ scale: 1.05 }}
+                  className="bg-gradient-to-br from-primary/10 to-accent/10 backdrop-blur-sm p-6 rounded-2xl text-center border-2 border-primary/20"
+                >
+                  <Sparkles className="w-8 h-8 mx-auto mb-2 text-primary" />
+                  <p className="text-sm text-muted-foreground mb-1">الكورسات المسجلة</p>
+                  <AnimatedCounter to={courses.length} className="text-4xl font-bold text-primary" />
+                </motion.div>
+              </div>
+            </CardContent>
+          </GlassmorphicCard>
+        </AnimatedSection>
 
-            {/* Group Information */}
-            {groupInfo && (
-              <Card className="shadow-soft">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
+          {/* Left Sidebar */}
+          <div className="md:col-span-1 lg:col-span-1 space-y-4 md:space-y-6" data-section="courses">
+            {/* Enrolled Courses */}
+            <AnimatedSection>
+              <GlassmorphicCard>
                 <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Users className="w-5 h-5" />
-                    معلومات المجموعة
+                  <CardTitle className="flex items-center gap-2 text-lg">
+                    <motion.div
+                      animate={{ rotate: [0, 10, -10, 0] }}
+                      transition={{ duration: 2, repeat: Infinity }}
+                    >
+                      <BookOpen className="w-5 h-5 text-primary" />
+                    </motion.div>
+                    الكورسات المسجلة
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="space-y-2">
-                    <p className="font-medium">{groupInfo.name}</p>
-                    <p className="text-sm text-muted-foreground">{groupInfo.description}</p>
-                    <p className="text-sm">
-                      <span className="font-medium">الطلاب:</span> {groupInfo.current_students}/{groupInfo.max_students}
-                    </p>
-                    {groupInfo.courses && (
-                      <p className="text-sm">
-                        <span className="font-medium">الكورس:</span> {groupInfo.courses.name}
-                      </p>
-                    )}
-                    {groupInfo.schedule_days && groupInfo.schedule_days.length > 0 && (
-                      <div className="text-sm">
-                        <span className="font-medium">أيام الحضور:</span>
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {groupInfo.schedule_days.map((day, index) => (
-                            <Badge key={index} variant="outline" className="text-xs">
-                              {day}
-                            </Badge>
-                          ))}
-                        </div>
-                      </div>
+                  <div className="space-y-3">
+                    {courses.length > 0 ? (
+                      <AnimatePresence>
+                        {courses.map((course, index) => (
+                          <motion.div
+                            key={course.id}
+                            initial={{ opacity: 0, x: -20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: 20 }}
+                            transition={{ delay: index * 0.1 }}
+                          >
+                            <Card className="p-4 bg-gradient-to-br from-primary/5 to-accent/5 border-primary/20 hover:shadow-lg hover:scale-105 transition-all duration-300 cursor-pointer">
+                              <div className="flex items-start gap-3">
+                                <div className="p-2 bg-primary/10 rounded-lg">
+                                  <BookOpen className="w-5 h-5 text-primary" />
+                                </div>
+                                <div className="flex-1">
+                                  <h3 className="font-bold text-foreground mb-1">{course.name}</h3>
+                                  <Badge className="mb-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white border-0 text-xs">
+                                    {course.subject}
+                                  </Badge>
+                                  {course.description && (
+                                    <p className="text-xs text-muted-foreground leading-relaxed">{course.description}</p>
+                                  )}
+                                </div>
+                              </div>
+                            </Card>
+                          </motion.div>
+                        ))}
+                      </AnimatePresence>
+                    ) : (
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        className="text-center py-8"
+                      >
+                        <BookOpen className="w-12 h-12 mx-auto mb-3 text-muted-foreground opacity-50" />
+                        <p className="text-muted-foreground text-sm">لم يتم تسجيلك في أي كورس بعد</p>
+                      </motion.div>
                     )}
                   </div>
                 </CardContent>
-              </Card>
+              </GlassmorphicCard>
+            </AnimatedSection>
+
+            {/* Group Information */}
+            {groupInfo && (
+              <AnimatedSection>
+                <GlassmorphicCard>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-lg">
+                      <motion.div
+                        animate={{ scale: [1, 1.2, 1] }}
+                        transition={{ duration: 2, repeat: Infinity }}
+                      >
+                        <Users className="w-5 h-5 text-primary" />
+                      </motion.div>
+                      معلومات المجموعة
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      <div className="p-4 bg-gradient-to-br from-primary/10 to-accent/10 rounded-xl">
+                        <h3 className="font-bold text-lg mb-2 text-primary">{groupInfo.name}</h3>
+                        <p className="text-sm text-muted-foreground leading-relaxed">{groupInfo.description}</p>
+                      </div>
+                      
+                      <div className="flex items-center justify-between p-3 bg-muted/30 rounded-lg">
+                        <span className="text-sm font-medium flex items-center gap-2">
+                          <Users className="w-4 h-4" />
+                          عدد الطلاب
+                        </span>
+                        <Badge className="bg-gradient-to-r from-green-500 to-emerald-500 text-white border-0">
+                          {groupInfo.current_students}/{groupInfo.max_students}
+                        </Badge>
+                      </div>
+
+                      {groupInfo.courses && (
+                        <div className="flex items-center justify-between p-3 bg-muted/30 rounded-lg">
+                          <span className="text-sm font-medium flex items-center gap-2">
+                            <BookOpen className="w-4 h-4" />
+                            الكورس
+                          </span>
+                          <Badge className="bg-gradient-to-r from-blue-500 to-cyan-500 text-white border-0">
+                            {groupInfo.courses.name}
+                          </Badge>
+                        </div>
+                      )}
+
+                      {groupInfo.schedule_days && groupInfo.schedule_days.length > 0 && (
+                        <div>
+                          <p className="text-sm font-medium mb-2 flex items-center gap-2">
+                            <Calendar className="w-4 h-4" />
+                            أيام الحضور
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {groupInfo.schedule_days.map((day, index) => (
+                              <motion.div
+                                key={index}
+                                initial={{ opacity: 0, scale: 0 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                transition={{ delay: index * 0.1 }}
+                              >
+                                <Badge className="bg-gradient-to-r from-purple-500 to-pink-500 text-white border-0">
+                                  {day}
+                                </Badge>
+                              </motion.div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </GlassmorphicCard>
+              </AnimatedSection>
             )}
 
             {/* Quick Actions */}
@@ -370,7 +515,7 @@ const StudentDashboard = () => {
           </div>
 
           {/* Main Content */}
-          <div className="lg:col-span-3 space-y-6">
+          <div className="md:col-span-2 lg:col-span-3 space-y-4 md:space-y-6">
             {/* Course Materials */}
             <Card className="shadow-soft">
               <CardHeader>

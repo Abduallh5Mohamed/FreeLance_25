@@ -1,15 +1,17 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { MessageCircle, Send, User, Bot, Sparkles } from "lucide-react";
+import { MessageCircle, Send, User, Bot, Sparkles, Zap, Star, MessageSquare } from "lucide-react";
 import Header from "@/components/Header";
 import StudentHeader from "@/components/StudentHeader";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import { motion, AnimatePresence } from "framer-motion";
+import { FloatingParticles } from "@/components/FloatingParticles";
 
 const Messages = () => {
   const [messages, setMessages] = useState([]);
@@ -20,8 +22,15 @@ const Messages = () => {
   const [isStudent, setIsStudent] = useState(false);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [showAiHelper, setShowAiHelper] = useState(false);
+  const [isAiMode, setIsAiMode] = useState(false); // New state for AI mode toggle
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   
   const { toast } = useToast();
+
+  // Auto scroll to bottom when new messages arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   useEffect(() => {
     checkUserRole();
@@ -418,189 +427,474 @@ const Messages = () => {
     }
   };
 
+  // Toggle between AI and Teacher mode
+  const toggleAiMode = () => {
+    setIsAiMode(!isAiMode);
+    toast({
+      title: isAiMode ? "تم التحويل للمدرس" : "تم التحويل للمساعد الذكي",
+      description: isAiMode ? "يمكنك الآن التحدث مع الأستاذ محمد رمضان" : "يمكنك الآن التحدث مع المساعد الذكي",
+    });
+  };
+
+  // Modified sendMessage to handle AI mode
+  const handleSendMessage = async () => {
+    if (isStudent && isAiMode) {
+      // Send to AI if in AI mode
+      await askAiAssistant();
+    } else {
+      // Send to teacher
+      await sendMessage();
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-background" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-secondary/20 relative overflow-hidden" dir="rtl">
+      {/* Floating Particles Background */}
+      <FloatingParticles />
+      
       {isStudent ? <StudentHeader /> : <Header />}
       
-      <div className="container mx-auto px-4 py-8">
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
-              <MessageCircle className="w-6 h-6 text-primary" />
+      <div className="container mx-auto px-4 py-8 relative z-10">
+        {/* Header with Animation */}
+        <motion.div 
+          initial={{ opacity: 0, y: -30 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+          className="mb-8"
+        >
+          <div className="relative overflow-hidden rounded-3xl bg-primary p-8 shadow-2xl">
+            {/* Animated Background Pattern */}
+            <div className="absolute inset-0 opacity-10">
+              <div className="absolute inset-0" style={{
+                backgroundImage: `radial-gradient(circle at 20px 20px, white 2px, transparent 0)`,
+                backgroundSize: '40px 40px'
+              }} />
             </div>
-            <div>
-              <h1 className="text-2xl font-bold text-foreground">الرسائل</h1>
-              <p className="text-muted-foreground">التواصل مع الطلاب</p>
+
+            <div className="relative z-10 flex items-center justify-between flex-wrap gap-4">
+              <div className="flex items-center gap-4">
+                <motion.div
+                  initial={{ scale: 0, rotate: -180 }}
+                  animate={{ scale: 1, rotate: 0 }}
+                  transition={{ type: "spring", stiffness: 200, delay: 0.2 }}
+                  className="p-4 bg-white/20 backdrop-blur-sm rounded-2xl"
+                >
+                  <MessageSquare className="w-12 h-12 text-white" />
+                </motion.div>
+                <div>
+                  <motion.h1 
+                    className="text-3xl md:text-4xl lg:text-5xl font-extrabold text-white mb-2"
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ duration: 0.5, delay: 0.3 }}
+                  >
+                    الرسائل
+                  </motion.h1>
+                  <motion.p 
+                    className="text-white/90 text-lg flex items-center gap-2"
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ duration: 0.5, delay: 0.4 }}
+                  >
+                    <Sparkles className="h-5 w-5" />
+                    التواصل المباشر مع {isStudent ? 'الأستاذ' : 'الطلاب'}
+                  </motion.p>
+                </div>
+              </div>
+              
+              {isStudent && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ duration: 0.5, delay: 0.5 }}
+                  className="flex items-center gap-2 bg-white/20 backdrop-blur-sm px-4 py-2 rounded-full"
+                >
+                  <Bot className="h-5 w-5 text-white" />
+                  <span className="text-white font-semibold">المساعد الذكي متاح</span>
+                  <Badge className="bg-green-500 text-white">جديد</Badge>
+                </motion.div>
+              )}
             </div>
           </div>
-        </div>
+        </motion.div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Conversations List */}
-          <Card className="shadow-soft">
-            <CardHeader>
-              <CardTitle>المحادثات</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {conversations.length > 0 ? (
-                <div className="space-y-2">
-                  {conversations.map((conversation) => (
-                    <div
-                      key={conversation.id}
-                      className={`p-3 rounded-lg hover:bg-muted/50 cursor-pointer transition-colors ${
-                        selectedConversation?.id === conversation.id ? 'bg-muted' : ''
-                      }`}
-                      onClick={() => {
-                        setSelectedConversation(conversation);
-                        loadMessagesForConversation(conversation.id);
-                      }}
-                    >
-                      <div className="flex items-center gap-3">
-                        <Avatar>
-                          <AvatarFallback>
-                            <User className="w-4 h-4" />
-                          </AvatarFallback>
-                        </Avatar>
-                        <div className="flex-1">
-                          <p className="font-medium">{conversation.studentName}</p>
-                          <p className="text-sm text-muted-foreground truncate">
-                            {conversation.lastMessage}
-                          </p>
-                        </div>
+        <div className={`grid grid-cols-1 ${isStudent ? '' : 'md:grid-cols-3 lg:grid-cols-3'} gap-4 md:gap-6`}>
+          {/* Conversations List - Only for Admin */}
+          {!isStudent && (
+            <motion.div
+              initial={{ opacity: 0, x: -50 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.5 }}
+              className="md:col-span-1"
+            >
+              <Card className="shadow-2xl border-primary/20 bg-gradient-to-br from-card/95 to-card backdrop-blur-xl hover:shadow-glow transition-all duration-500">
+                <CardHeader className="bg-gradient-to-r from-primary/10 to-accent/10 border-b border-primary/20">
+                  <CardTitle className="flex items-center gap-2">
+                    <MessageCircle className="h-5 w-5 text-primary" />
+                    المحادثات
+                    <Badge className="mr-auto bg-primary">{conversations.length}</Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-4">
+                  <AnimatePresence mode="popLayout">
+                    {conversations.length > 0 ? (
+                      <div className="space-y-2">
+                        {conversations.map((conversation, index) => (
+                          <motion.div
+                            key={conversation.id}
+                            initial={{ opacity: 0, x: -20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: 20 }}
+                            transition={{ duration: 0.3, delay: index * 0.05 }}
+                            whileHover={{ scale: 1.02, x: 5 }}
+                            className={`p-4 rounded-xl hover:bg-gradient-to-r hover:from-primary/10 hover:to-accent/10 cursor-pointer transition-all duration-300 border-2 ${
+                              selectedConversation?.id === conversation.id 
+                                ? 'bg-gradient-to-r from-primary/20 to-accent/20 border-primary shadow-lg' 
+                                : 'border-transparent hover:border-primary/30'
+                            }`}
+                            onClick={() => {
+                              setSelectedConversation(conversation);
+                              loadMessagesForConversation(conversation.id);
+                            }}
+                          >
+                            <div className="flex items-center gap-3">
+                              <motion.div
+                                whileHover={{ rotate: 360 }}
+                                transition={{ duration: 0.5 }}
+                              >
+                                <Avatar className="border-2 border-primary/30">
+                                  <AvatarFallback className="bg-gradient-to-br from-primary to-accent text-white">
+                                    <User className="w-5 h-5" />
+                                  </AvatarFallback>
+                                </Avatar>
+                              </motion.div>
+                              <div className="flex-1">
+                                <p className="font-bold text-foreground">{conversation.studentName}</p>
+                                <p className="text-sm text-muted-foreground truncate">
+                                  {conversation.lastMessage}
+                                </p>
+                              </div>
+                              <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
+                            </div>
+                          </motion.div>
+                        ))}
                       </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center py-8 text-muted-foreground">
-                  <MessageCircle className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                  <p>لا توجد محادثات</p>
-                  <p className="text-sm">انتظر رسائل من الطلاب</p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                    ) : (
+                      <motion.div 
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="text-center py-12 text-muted-foreground"
+                      >
+                        <motion.div
+                          animate={{ y: [0, -10, 0] }}
+                          transition={{ duration: 2, repeat: Infinity }}
+                        >
+                          <MessageCircle className="w-16 h-16 mx-auto mb-4 opacity-30" />
+                        </motion.div>
+                        <p className="text-lg font-semibold">لا توجد محادثات</p>
+                        <p className="text-sm">انتظر رسائل من الطلاب</p>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </CardContent>
+              </Card>
+            </motion.div>
+          )}
 
           {/* Chat Area */}
-          <Card className="lg:col-span-2 shadow-soft">
-            <CardHeader>
-              <CardTitle>
-                {selectedConversation ? `محادثة مع ${selectedConversation.studentName}` : "اختر محادثة"}
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.2 }}
+            className={`${isStudent ? '' : 'md:col-span-2 lg:col-span-2'}`}
+          >
+            <Card className={`shadow-2xl border-primary/20 bg-gradient-to-br from-card/95 to-card backdrop-blur-xl h-[calc(100vh-250px)] md:h-[calc(100vh-300px)] flex flex-col`}>
+            <CardHeader className="bg-gradient-to-r from-primary/10 via-accent/10 to-primary/10 border-b border-primary/20">
+              <CardTitle className="flex items-center gap-2">
+                <MessageCircle className="h-6 w-6 text-primary" />
+                {isStudent 
+                  ? 'المحادثة' 
+                  : selectedConversation 
+                    ? `محادثة مع ${selectedConversation.studentName}` 
+                    : "اختر محادثة"
+                }
+                {isStudent && (
+                  <Badge className="mr-auto bg-gradient-to-r from-green-500 to-emerald-500 text-white">
+                    <Zap className="h-3 w-3 ml-1" />
+                    متصل
+                  </Badge>
+                )}
               </CardTitle>
             </CardHeader>
-            <CardContent>
-              {selectedConversation ? (
-                <div className="space-y-4">
-                  {/* AI Helper Badge */}
+            <CardContent className="flex-1 overflow-hidden flex flex-col p-0">
+              {(selectedConversation || isStudent) ? (
+                <div className="flex flex-col h-full">
+                  {/* AI/Teacher Toggle Button */}
                   {isStudent && (
-                    <div className="mb-3 flex items-center justify-between bg-gradient-to-r from-purple-50 to-blue-50 dark:from-purple-950/20 dark:to-blue-950/20 p-3 rounded-lg border border-purple-200 dark:border-purple-800">
-                      <div className="flex items-center gap-2">
-                        <Bot className="w-5 h-5 text-purple-600 dark:text-purple-400" />
-                        <div>
-                          <p className="text-sm font-medium text-purple-900 dark:text-purple-100">المساعد الذكي متاح</p>
-                          <p className="text-xs text-purple-600 dark:text-purple-400">اسأل AI عن التاريخ والجغرافيا</p>
-                        </div>
+                    <motion.div 
+                      initial={{ opacity: 0, y: -20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="mx-4 mt-4 mb-2"
+                    >
+                      {/* Display current mode */}
+                      <div className="text-center mb-3">
+                        <p className={`text-lg font-bold ${
+                          isAiMode 
+                            ? 'text-purple-900 dark:text-purple-100' 
+                            : 'text-primary'
+                        } flex items-center justify-center gap-2`}>
+                          {isAiMode ? (
+                            <>
+                              <Bot className="w-5 h-5" />
+                              المساعد الذكي
+                              <Sparkles className="w-4 h-4" />
+                            </>
+                          ) : (
+                            <>
+                              <User className="w-5 h-5" />
+                              الأستاذ محمد رمضان
+                            </>
+                          )}
+                        </p>
+                        <p className={`text-xs ${
+                          isAiMode 
+                            ? 'text-purple-600 dark:text-purple-400' 
+                            : 'text-muted-foreground'
+                        }`}>
+                          {isAiMode ? 'الوضع الحالي: محادثة مع AI' : 'الوضع الحالي: محادثة مع الأستاذ'}
+                        </p>
                       </div>
-                      <Badge variant="secondary" className="bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300">
-                        <Sparkles className="w-3 h-3 mr-1" />
-                        جديد
-                      </Badge>
-                    </div>
+
+                      {/* Toggle button showing NEXT mode */}
+                      <motion.button
+                        onClick={toggleAiMode}
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                        className={`w-full p-4 rounded-2xl border-2 transition-all duration-300 ${
+                          !isAiMode 
+                            ? 'bg-gradient-to-r from-purple-500/20 via-pink-500/20 to-blue-500/20 border-purple-300 dark:border-purple-700' 
+                            : 'bg-gradient-to-r from-primary/10 to-accent/10 border-primary/30'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <motion.div
+                              animate={!isAiMode ? { rotate: [0, 360] } : {}}
+                              transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
+                              className={`p-2 rounded-xl ${
+                                !isAiMode 
+                                  ? 'bg-purple-500/20' 
+                                  : 'bg-primary/20'
+                              }`}
+                            >
+                              {!isAiMode ? (
+                                <Bot className="w-6 h-6 text-purple-600 dark:text-purple-400" />
+                              ) : (
+                                <User className="w-6 h-6 text-primary" />
+                              )}
+                            </motion.div>
+                            <div className="text-right">
+                              <p className={`text-sm font-bold ${
+                                !isAiMode 
+                                  ? 'text-purple-900 dark:text-purple-100' 
+                                  : 'text-primary'
+                              } flex items-center gap-2`}>
+                                {!isAiMode ? 'المساعد الذكي' : 'الأستاذ محمد رمضان'}
+                                {!isAiMode && <Sparkles className="h-4 w-4" />}
+                              </p>
+                              <p className={`text-xs ${
+                                !isAiMode 
+                                  ? 'text-purple-600 dark:text-purple-400' 
+                                  : 'text-muted-foreground'
+                              }`}>
+                                {!isAiMode ? 'اضغط للتحويل للمساعد الذكي' : 'اضغط للتحويل للأستاذ محمد'}
+                              </p>
+                            </div>
+                          </div>
+                          <Badge className={`${
+                            !isAiMode 
+                              ? 'bg-gradient-to-r from-purple-500 to-pink-500' 
+                              : 'bg-gradient-to-r from-primary to-accent'
+                          } text-white border-0`}>
+                            {!isAiMode ? (
+                              <>
+                                <Sparkles className="w-3 h-3 ml-1" />
+                                متاح
+                              </>
+                            ) : (
+                              <>
+                                <Zap className="w-3 h-3 ml-1" />
+                                متصل
+                              </>
+                            )}
+                          </Badge>
+                        </div>
+                      </motion.button>
+                    </motion.div>
                   )}
 
                   {/* Messages Area */}
-                  <div className="h-96 overflow-y-auto border rounded-lg p-4 space-y-3">
-                    {messages.map((message) => (
-                      <div
-                        key={message.id}
-                        className={`flex ${
-                          message.isAi ? 'justify-center' : 
-                          message.isFromTeacher ? 'justify-end' : 'justify-start'
-                        }`}
-                      >
-                        {message.isAi ? (
-                          <div className="max-w-[85%] p-4 rounded-lg bg-gradient-to-br from-purple-50 to-blue-50 dark:from-purple-950/30 dark:to-blue-950/30 border border-purple-200 dark:border-purple-800">
-                            <div className="flex items-start gap-2 mb-2">
-                              <Bot className="w-5 h-5 text-purple-600 dark:text-purple-400 mt-1 flex-shrink-0" />
-                              <div className="flex-1">
-                                <p className="text-sm font-medium text-purple-900 dark:text-purple-100 mb-1">المساعد الذكي</p>
-                                <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{message.message_text}</p>
+                  <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-gradient-to-b from-muted/20 to-transparent">
+                    <AnimatePresence mode="popLayout">
+                      {messages.map((message, index) => (
+                        <motion.div
+                          key={message.id}
+                          initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          transition={{ duration: 0.3, delay: index * 0.02 }}
+                          className={`flex ${
+                            message.isAi ? 'justify-center' : 
+                            message.isFromTeacher ? 'justify-end' : 'justify-start'
+                          }`}
+                        >
+                          {message.isAi ? (
+                            <motion.div 
+                              whileHover={{ scale: 1.02 }}
+                              className="max-w-[85%] p-5 rounded-2xl bg-gradient-to-br from-purple-500/20 via-pink-500/20 to-blue-500/20 backdrop-blur-sm border-2 border-purple-300/30 dark:border-purple-700/30 shadow-lg"
+                            >
+                              <div className="flex items-start gap-3 mb-3">
+                                <motion.div
+                                  animate={{ rotate: [0, 360] }}
+                                  transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                                >
+                                  <Bot className="w-6 h-6 text-purple-600 dark:text-purple-400 flex-shrink-0" />
+                                </motion.div>
+                                <div className="flex-1">
+                                  <p className="text-sm font-bold text-purple-900 dark:text-purple-100 mb-2 flex items-center gap-2">
+                                    المساعد الذكي
+                                    <Sparkles className="h-4 w-4" />
+                                  </p>
+                                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">{message.message_text}</p>
+                                </div>
                               </div>
-                            </div>
-                            <p className="text-xs text-purple-600 dark:text-purple-400 mt-2">{message.time}</p>
-                          </div>
-                        ) : (
-                          <div className={`max-w-[70%] p-3 rounded-lg ${
-                            message.isFromTeacher 
-                              ? 'bg-primary text-primary-foreground' 
-                              : 'bg-muted'
-                          }`}>
-                            <p>{message.message_text}</p>
-                            <p className="text-xs opacity-75 mt-1">{message.time}</p>
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                              <p className="text-xs text-purple-600 dark:text-purple-400 flex items-center gap-1">
+                                <Zap className="h-3 w-3" />
+                                {message.time}
+                              </p>
+                            </motion.div>
+                          ) : (
+                            <motion.div
+                              whileHover={{ scale: 1.02, y: -2 }}
+                              className={`max-w-[70%] p-4 rounded-2xl shadow-lg ${
+                                message.isFromTeacher 
+                                  ? 'bg-gradient-to-br from-primary to-accent text-white' 
+                                  : 'bg-gradient-to-br from-card to-muted border-2 border-primary/20'
+                              }`}
+                            >
+                              <p className="mb-2 leading-relaxed">{message.message_text}</p>
+                              <p className={`text-xs flex items-center gap-1 ${message.isFromTeacher ? 'opacity-90' : 'text-muted-foreground'}`}>
+                                <MessageCircle className="h-3 w-3" />
+                                {message.time}
+                              </p>
+                            </motion.div>
+                          )}
+                        </motion.div>
+                      ))}
+                    </AnimatePresence>
+                    
                     {isAiLoading && (
-                      <div className="flex justify-center">
-                        <div className="bg-purple-50 dark:bg-purple-950/30 p-4 rounded-lg border border-purple-200 dark:border-purple-800">
-                          <div className="flex items-center gap-2">
-                            <Bot className="w-5 h-5 text-purple-600 dark:text-purple-400 animate-pulse" />
-                            <p className="text-sm text-purple-700 dark:text-purple-300">المساعد الذكي يفكر...</p>
+                      <motion.div 
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="flex justify-center"
+                      >
+                        <div className="bg-gradient-to-r from-purple-500/20 to-pink-500/20 backdrop-blur-sm p-5 rounded-2xl border-2 border-purple-300/30 dark:border-purple-700/30">
+                          <div className="flex items-center gap-3">
+                            <motion.div
+                              animate={{ rotate: 360 }}
+                              transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                            >
+                              <Bot className="w-6 h-6 text-purple-600 dark:text-purple-400" />
+                            </motion.div>
+                            <div className="flex gap-1">
+                              {[0, 1, 2].map((i) => (
+                                <motion.div
+                                  key={i}
+                                  className="w-2 h-2 bg-purple-600 dark:bg-purple-400 rounded-full"
+                                  animate={{ y: [0, -10, 0] }}
+                                  transition={{ duration: 0.6, repeat: Infinity, delay: i * 0.15 }}
+                                />
+                              ))}
+                            </div>
+                            <p className="text-sm text-purple-700 dark:text-purple-300 font-semibold">المساعد الذكي يفكر...</p>
                           </div>
                         </div>
-                      </div>
+                      </motion.div>
                     )}
+                    <div ref={messagesEndRef} />
                   </div>
 
                   {/* Message Input */}
-                  <div className="space-y-2">
-                    <div className="flex gap-2">
+                  <div className="p-4 border-t border-primary/20 bg-gradient-to-r from-card/50 to-muted/50 backdrop-blur-sm">
+                    <div className="flex gap-3">
                       <Textarea
                         value={newMessage}
                         onChange={(e) => setNewMessage(e.target.value)}
-                        placeholder="اكتب رسالتك..."
-                        className="resize-none"
+                        placeholder={isStudent && isAiMode ? "اسأل المساعد الذكي..." : "اكتب رسالتك..."}
+                        className="resize-none border-2 border-primary/30 focus:border-primary transition-all duration-300 rounded-xl"
                         rows={2}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' && !e.shiftKey) {
                             e.preventDefault();
-                            sendMessage();
+                            handleSendMessage();
                           }
                         }}
                       />
-                      <div className="flex flex-col gap-2">
-                        <Button onClick={sendMessage} className="px-6" disabled={isAiLoading}>
-                          <Send className="w-4 h-4" />
+                      <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                        <Button 
+                          onClick={handleSendMessage} 
+                          className={`px-6 transition-all duration-300 h-full ${
+                            isStudent && isAiMode
+                              ? 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600'
+                              : 'bg-gradient-to-r from-primary to-accent hover:shadow-glow'
+                          }`}
+                          disabled={isAiLoading || !newMessage.trim()}
+                        >
+                          {isStudent && isAiMode ? (
+                            <Bot className="w-5 h-5" />
+                          ) : (
+                            <Send className="w-5 h-5" />
+                          )}
                         </Button>
-                        {isStudent && (
-                          <Button 
-                            onClick={askAiAssistant} 
-                            variant="outline"
-                            className="px-6 bg-gradient-to-r from-purple-50 to-blue-50 dark:from-purple-950/20 dark:to-blue-950/20 border-purple-300 dark:border-purple-700 hover:from-purple-100 hover:to-blue-100"
-                            disabled={isAiLoading || !newMessage.trim()}
-                          >
-                            <Bot className="w-4 h-4 text-purple-600 dark:text-purple-400" />
-                          </Button>
-                        )}
-                      </div>
+                      </motion.div>
                     </div>
                     {isStudent && (
-                      <p className="text-xs text-muted-foreground text-center">
-                        اضغط زر <Bot className="w-3 h-3 inline" /> للسؤال عن التاريخ والجغرافيا
-                      </p>
+                      <motion.p 
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        className="text-xs text-center text-muted-foreground mt-2 flex items-center justify-center gap-1"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        اضغط زر <Bot className="w-3 h-3 inline mx-1" /> للسؤال عن التاريخ والجغرافيا
+                      </motion.p>
                     )}
                   </div>
                 </div>
               ) : (
-                <div className="text-center py-16 text-muted-foreground">
-                  <MessageCircle className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                  <p className="text-lg">اختر محادثة لبدء التواصل</p>
-                  <p className="text-sm">ستظهر الرسائل هنا</p>
-                </div>
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="flex items-center justify-center h-full text-muted-foreground"
+                >
+                  <div className="text-center">
+                    <motion.div
+                      animate={{ 
+                        y: [0, -20, 0],
+                        rotate: [0, 5, -5, 0]
+                      }}
+                      transition={{ duration: 3, repeat: Infinity }}
+                    >
+                      <MessageCircle className="w-24 h-24 mx-auto mb-6 opacity-30" />
+                    </motion.div>
+                    <p className="text-2xl font-bold mb-2">اختر محادثة لبدء التواصل</p>
+                    <p className="text-sm">ستظهر الرسائل هنا</p>
+                  </div>
+                </motion.div>
               )}
             </CardContent>
           </Card>
+          </motion.div>
         </div>
       </div>
     </div>
