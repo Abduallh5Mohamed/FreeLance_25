@@ -1,0 +1,180 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Educational Platform Design System - Arabic Support
+All colors MUST be HSL for consistency and theme support.
+*/
+
+@layer base {
+  :root {
+    /* Light Mode - Golden & White Theme */
+    --background: 0 0% 100%;
+    --foreground: 20 14.3% 4.1%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 20 14.3% 4.1%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 20 14.3% 4.1%;
+
+    /* Golden primary colors */
+    --primary: 38 92% 50%;
+    --primary-foreground: 26 83.3% 14.1%;
+    --primary-glow: 43 100% 70%;
+
+    /* Dark accent */
+    --accent: 43 100% 70%;
+    --accent-foreground: 26 83.3% 14.1%;
+    --accent-glow: 45 95% 65%;
+
+    /* Success green */
+    --success: 142 70% 45%;
+    --success-foreground: 0 0% 100%;
+    --success-glow: 142 70% 55%;
+
+    /* Warning golden */
+    --warning: 45 95% 55%;
+    --warning-foreground: 0 0% 0%;
+
+    --secondary: 40 20% 96%;
+    --secondary-foreground: 20 14.3% 4.1%;
+
+    --muted: 40 20% 96%;
+    --muted-foreground: 25 5.3% 44.7%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 40 20% 90%;
+    --input: 40 20% 90%;
+    --ring: 38 92% 50%;
+
+    /* Luxurious gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(38 92% 50%) 0%, hsl(43 100% 70%) 100%);
+    --gradient-dark: linear-gradient(180deg, hsl(26 83.3% 14.1%) 0%, hsl(20 14.3% 4.1%) 100%);
+    --gradient-hero: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.8) 100%);
+    --gradient-gold-shine: linear-gradient(90deg, hsl(38 92% 50%), hsl(43 100% 70%), hsl(38 92% 50%));
+    --gradient-card: linear-gradient(145deg, hsl(0 0% 100%) 0%, hsl(40 20% 98%) 100%);
+
+    /* Elegant shadows */
+    --shadow-soft: 0 2px 8px -2px hsl(20 14.3% 4.1% / 0.1);
+    --shadow-medium: 0 8px 25px -5px hsl(20 14.3% 4.1% / 0.15);
+    --shadow-glow: 0 0 40px hsl(38 92% 50% / 0.4);
+    --shadow-success: 0 0 20px hsl(142 70% 45% / 0.3);
+    --shadow-golden: 0 0 30px hsl(43 100% 70% / 0.5);
+
+    /* Smooth transitions */
+    --transition-smooth: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-bounce: all 0.5s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+
+    --radius: 0.75rem;
+
+    /* Arabic font families */
+    --font-arabic: "Cairo", "Tajawal", system-ui, sans-serif;
+
+    --sidebar-background: 0 0% 98%;
+
+    --sidebar-foreground: 240 5.3% 26.1%;
+
+    --sidebar-primary: 240 5.9% 10%;
+
+    --sidebar-primary-foreground: 0 0% 98%;
+
+    --sidebar-accent: 240 4.8% 95.9%;
+
+    --sidebar-accent-foreground: 240 5.9% 10%;
+
+    --sidebar-border: 220 13% 91%;
+
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    /* Dark Mode - Black & Gold Luxury Theme */
+    --background: 20 14.3% 4.1%;
+    --foreground: 43 100% 70%;
+
+    --card: 26 83.3% 14.1%;
+    --card-foreground: 43 100% 70%;
+
+    --popover: 26 83.3% 14.1%;
+    --popover-foreground: 43 100% 70%;
+
+    /* Golden primary in dark mode */
+    --primary: 38 92% 50%;
+    --primary-foreground: 26 83.3% 14.1%;
+    --primary-glow: 43 100% 70%;
+
+    --secondary: 40 20% 15%;
+    --secondary-foreground: 43 100% 70%;
+
+    --muted: 40 20% 20%;
+    --muted-foreground: 40 20% 70%;
+
+    --accent: 43 100% 70%;
+    --accent-foreground: 26 83.3% 14.1%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 40 20% 20%;
+    --input: 40 20% 20%;
+    --ring: 38 92% 50%;
+
+    /* Dark mode luxurious gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(38 92% 50%) 0%, hsl(43 100% 70%) 100%);
+    --gradient-dark: linear-gradient(180deg, hsl(20 14.3% 4.1%) 0%, hsl(26 83.3% 14.1%) 100%);
+    --gradient-hero: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.95) 100%);
+    --gradient-gold-shine: linear-gradient(90deg, hsl(38 92% 50%), hsl(43 100% 70%), hsl(38 92% 50%));
+    --gradient-card: linear-gradient(145deg, hsl(26 83.3% 14.1%) 0%, hsl(20 14.3% 4.1%) 100%);
+
+    /* Dark mode glowing shadows */
+    --shadow-soft: 0 4px 12px -3px hsl(20 14.3% 4.1% / 0.6);
+    --shadow-medium: 0 12px 40px -8px hsl(20 14.3% 4.1% / 0.8);
+    --shadow-glow: 0 0 60px hsl(38 92% 50% / 0.6);
+    --shadow-golden: 0 0 50px hsl(43 100% 70% / 0.7);
+
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 38 92% 50%;
+    --sidebar-primary-foreground: 26 83.3% 14.1%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 40 20% 20%;
+    --sidebar-ring: 38 92% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-arabic);
+    direction: rtl;
+  }
+  
+  html {
+    direction: rtl;
+  }
+}
+
+/* 3D Card Utilities */
+.perspective-1000 {
+  perspective: 1000px;
+}
+
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+.text-shadow {
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+}
+
+.delay-1000 {
+  animation-delay: 1s;
+}
