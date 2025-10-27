@@ -5,7 +5,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { DollarSign, TrendingUp } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
 
 const AccountStatement = () => {
   const [statements, setStatements] = useState([]);
@@ -14,24 +13,19 @@ const AccountStatement = () => {
 
   useEffect(() => {
     fetchAccountStatements();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchAccountStatements = async () => {
     try {
-      const { data, error } = await supabase
-        .from('account_statement')
-        .select(`
-          *,
-          students (name),
-          subscriptions (name, price)
-        `)
-        .order('payment_date', { ascending: false });
+      // TODO: Add account_statement API endpoint
+      setStatements([]);
+      setTotalIncome(0);
 
-      if (error) throw error;
-
-      setStatements(data || []);
-      const total = data?.reduce((sum, item) => sum + Number(item.amount), 0) || 0;
-      setTotalIncome(total);
+      toast({
+        title: "قريباً",
+        description: "سيتم إضافة كشف الحساب قريباً",
+      });
     } catch (error) {
       console.error('Error fetching statements:', error);
       toast({
@@ -45,7 +39,7 @@ const AccountStatement = () => {
   return (
     <div className="min-h-screen bg-background" dir="rtl">
       <Header />
-      
+
       <div className="container mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">

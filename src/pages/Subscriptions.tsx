@@ -9,7 +9,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { CreditCard, Plus, Edit2, Trash2, Calendar, DollarSign } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-import { supabase } from "@/integrations/supabase/client";
 
 const Subscriptions = () => {
   const [subscriptions, setSubscriptions] = useState([]);
@@ -22,64 +21,38 @@ const Subscriptions = () => {
     price: "",
     description: ""
   });
-  
+
   const { toast } = useToast();
 
   useEffect(() => {
     fetchSubscriptions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchSubscriptions = async () => {
     try {
-      const { data, error } = await supabase
-        .from('subscriptions')
-        .select('*')
-        .order('created_at', { ascending: false });
-      
-      if (error) throw error;
-      setSubscriptions(data || []);
+      // TODO: Add subscriptions API endpoint
+      setSubscriptions([]);
+      toast({
+        title: "قريباً",
+        description: "سيتم إضافة الاشتراكات قريباً",
+      });
     } catch (error) {
       console.error('Error fetching subscriptions:', error);
     }
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    
-    try {
-      const subscriptionData = {
-        name: formData.name,
-        duration_months: parseInt(formData.duration_months),
-        price: parseFloat(formData.price),
-        description: formData.description
-      };
 
-      if (editingSubscription) {
-        const { error } = await supabase
-          .from('subscriptions')
-          .update(subscriptionData)
-          .eq('id', editingSubscription.id);
-        
-        if (error) throw error;
-        
-        toast({
-          title: "تم التحديث بنجاح",
-          description: "تم تحديث بيانات الاشتراك",
-        });
-      } else {
-        const { error } = await supabase
-          .from('subscriptions')
-          .insert(subscriptionData);
-        
-        if (error) throw error;
-        
-        toast({
-          title: "تم الإضافة بنجاح",
-          description: "تم إضافة اشتراك جديد",
-        });
-      }
-      
+    try {
+      // TODO: Add subscriptions API endpoint
+      toast({
+        title: "قريباً",
+        description: "سيتم إضافة هذه الميزة قريباً",
+      });
+
       fetchSubscriptions();
       setIsOpen(false);
       setEditingSubscription(null);
@@ -113,9 +86,9 @@ const Subscriptions = () => {
         .from('subscriptions')
         .delete()
         .eq('id', id);
-      
+
       if (error) throw error;
-      
+
       fetchSubscriptions();
       toast({
         title: "تم الحذف بنجاح",
@@ -136,9 +109,9 @@ const Subscriptions = () => {
         .from('subscriptions')
         .update({ is_active: !currentStatus })
         .eq('id', id);
-      
+
       if (error) throw error;
-      
+
       fetchSubscriptions();
       toast({
         title: "تم التحديث",
@@ -156,7 +129,7 @@ const Subscriptions = () => {
   return (
     <div className="min-h-screen bg-background" dir="rtl">
       <Header />
-      
+
       <div className="container mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
@@ -168,7 +141,7 @@ const Subscriptions = () => {
               <p className="text-muted-foreground">إضافة وإدارة خطط الاشتراك للطلاب</p>
             </div>
           </div>
-          
+
           <Dialog open={isOpen} onOpenChange={setIsOpen}>
             <DialogTrigger asChild>
               <Button className="shadow-medium">
@@ -285,11 +258,10 @@ const Subscriptions = () => {
                         variant="ghost"
                         size="sm"
                         onClick={() => toggleActive(subscription.id, subscription.is_active)}
-                        className={`px-2 py-1 rounded-full text-xs ${
-                          subscription.is_active 
-                            ? 'bg-green-100 text-green-800 hover:bg-green-200' 
+                        className={`px-2 py-1 rounded-full text-xs ${subscription.is_active
+                            ? 'bg-green-100 text-green-800 hover:bg-green-200'
                             : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'
-                        }`}
+                          }`}
                       >
                         {subscription.is_active ? 'نشط' : 'غير نشط'}
                       </Button>

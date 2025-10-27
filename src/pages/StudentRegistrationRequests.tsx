@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,6 +19,7 @@ import Header from "@/components/Header";
 import { motion } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
+import { getStudents, updateStudent, getGrades, getGroups, getCourses } from "@/lib/api";
 
 interface RegistrationRequest {
   id: string;
@@ -62,21 +62,35 @@ export default function StudentRegistrationRequests() {
 
   useEffect(() => {
     fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchData = async () => {
     try {
-      const [requestsRes, gradesRes, groupsRes, coursesRes] = await Promise.all([
-        supabase.from('student_registration_requests').select('*').order('created_at', { ascending: false }),
-        supabase.from('grades').select('id, name').eq('is_active', true),
-        supabase.from('groups').select('id, name').eq('is_active', true),
-        supabase.from('courses').select('id, name').eq('is_active', true)
+      const [studentsData, gradesData, groupsData, coursesData] = await Promise.all([
+        getStudents(),
+        getGrades(),
+        getGroups(),
+        getCourses()
       ]);
 
-      if (requestsRes.data) setRequests(requestsRes.data as RegistrationRequest[]);
-      if (gradesRes.data) setGrades(gradesRes.data);
-      if (groupsRes.data) setGroups(groupsRes.data);
-      if (coursesRes.data) setCourses(coursesRes.data);
+      // Filter students with pending approval status
+      const pendingRequests = studentsData.filter(s => s.approval_status === 'pending');
+      setRequests(pendingRequests.map(s => ({
+        id: s.id,
+        name: s.name,
+        email: s.email || '',
+        phone: s.phone || '',
+        grade_id: s.grade_id || '',
+        group_id: s.group_id || '',
+        requested_courses: [], // TODO: Add courses field to students
+        status: s.approval_status as 'pending' | 'approved' | 'rejected',
+        created_at: new Date().toISOString()
+      })));
+
+      setGrades(gradesData);
+      setGroups(groupsData);
+      setCourses(coursesData);
     } catch (error) {
       console.error('Error fetching data:', error);
       toast({
@@ -91,170 +105,27 @@ export default function StudentRegistrationRequests() {
 
   const handleApprove = async (request: RegistrationRequest) => {
     try {
-      // Get current user
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error("User not authenticated");
-
-      // Check if student already exists in students table
-      const { data: existingStudent } = await supabase
-        .from('students')
-        .select('*')
-        .eq('email', request.email)
-        .single();
-
-      let studentId: string;
-      let tempPassword = '';
-
-      // Calculate total subscription price from requested courses
-      let totalSubscriptionPrice = 0;
-      if (request.requested_courses && request.requested_courses.length > 0) {
-        const { data: coursesData, error: coursesError } = await supabase
-          .from('courses')
-          .select(`
-            subscription_id,
-            subscriptions (
-              price
-            )
-          `)
-          .in('id', request.requested_courses);
-
-        if (!coursesError && coursesData) {
-          totalSubscriptionPrice = coursesData.reduce((sum, course: any) => {
-            return sum + (course.subscriptions?.price || 0);
-          }, 0);
-        }
-      }
-
-      if (existingStudent) {
-        // Update existing student to approved status
-        const { data: updatedStudent, error: updateError } = await supabase
-          .from('students')
-          .update({
-            grade_id: request.grade_id,
-            group_id: request.group_id,
-            approval_status: 'approved',
-            approved_by: user.id,
-            approved_at: new Date().toISOString()
-          })
-          .eq('id', existingStudent.id)
-          .select()
-          .single();
-
-        if (updateError) throw updateError;
-        studentId = existingStudent.id;
-      } else {
-        // Create Supabase Auth account
-        tempPassword = `${request.email.split('@')[0]}_${Math.random().toString(36).slice(2, 10)}`;
-        
-        // Try to create auth account, but if it exists, continue anyway
-        const { data: authData, error: authError } = await supabase.auth.signUp({
-          email: request.email,
-          password: tempPassword,
-          options: {
-            emailRedirectTo: `${window.location.origin}/`,
-            data: {
-              name: request.name,
-              phone: request.phone
-            }
-          }
-        });
-
-        // Only throw error if it's not "User already registered"
-        if (authError && !authError.message.includes('already registered')) {
-          throw authError;
-        }
-
-        // Create student record
-        const { data: student, error: studentError } = await supabase
-          .from('students')
-          .insert({
-            name: request.name,
-            email: request.email,
-            phone: request.phone,
-            grade_id: request.grade_id,
-            group_id: request.group_id,
-            is_offline: false,
-            approval_status: 'approved',
-            approved_by: user.id,
-            approved_at: new Date().toISOString()
-          })
-          .select()
-          .single();
-
-        if (studentError) throw studentError;
-        studentId = student.id;
-      }
-
-      // Enroll in requested courses
-      if (request.requested_courses && request.requested_courses.length > 0) {
-        // First, delete existing enrollments to avoid duplicates
-        await supabase
-          .from('student_courses')
-          .delete()
-          .eq('student_id', studentId);
-
-        const courseEnrollments = request.requested_courses.map(courseId => ({
-          student_id: studentId,
-          course_id: courseId
-        }));
-
-        await supabase.from('student_courses').insert(courseEnrollments);
-      }
-
-      // Add to account statement if there's a subscription fee
-      if (totalSubscriptionPrice > 0) {
-        const { error: accountError } = await supabase
-          .from('account_statement')
-          .insert({
-            student_id: studentId,
-            amount: totalSubscriptionPrice,
-            payment_date: new Date().toISOString().split('T')[0],
-            description: 'رسوم اشتراك الكورسات'
-          });
-
-        if (accountError) {
-          console.error('Account statement error:', accountError);
-        }
-
-        // Add to profits
-        const { error: profitError } = await supabase
-          .from('profits')
-          .insert({
-            type: 'subscription',
-            amount: totalSubscriptionPrice,
-            description: `اشتراك الطالب ${request.name}`,
-            date: new Date().toISOString().split('T')[0],
-            time: new Date().toTimeString().split(' ')[0]
-          });
-
-        if (profitError) {
-          console.error('Profit record error:', profitError);
-        }
-      }
-
-      // Update request status
-      await supabase
-        .from('student_registration_requests')
-        .update({
-          status: 'approved',
-          reviewed_by: user.id,
-          reviewed_at: new Date().toISOString()
-        })
-        .eq('id', request.id);
-
-      toast({
-        title: "تم قبول الطالب",
-        description: existingStudent 
-          ? `تم تحديث بيانات الطالب ${request.name} ونقله للمقبولين. مبلغ الاشتراك: ${totalSubscriptionPrice} جنيه`
-          : `تم قبول طلب التسجيل لـ ${request.name}. كلمة المرور المؤقتة: ${tempPassword}. مبلغ الاشتراك: ${totalSubscriptionPrice} جنيه`,
+      // Update student approval status
+      const success = await updateStudent(request.id, {
+        approval_status: 'approved'
       });
 
+      if (!success) {
+        throw new Error('Failed to update student');
+      }
+
+      toast({
+        title: "تم قبول الطلب",
+        description: `تم قبول طلب الطالب ${request.name} بنجاح`,
+      });
+
+      // Refresh data
       fetchData();
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error approving request:', error);
       toast({
         title: "خطأ",
-        description: error.message || "حدث خطأ أثناء قبول الطلب",
+        description: "حدث خطأ أثناء قبول الطلب",
         variant: "destructive"
       });
     }
@@ -271,33 +142,29 @@ export default function StudentRegistrationRequests() {
     }
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error("User not authenticated");
+      // Update student approval status to rejected
+      const success = await updateStudent(selectedRequest.id, {
+        approval_status: 'rejected'
+      });
 
-      await supabase
-        .from('student_registration_requests')
-        .update({
-          status: 'rejected',
-          rejection_reason: rejectionReason,
-          reviewed_by: user.id,
-          reviewed_at: new Date().toISOString()
-        })
-        .eq('id', selectedRequest.id);
+      if (!success) {
+        throw new Error('Failed to update student');
+      }
 
       toast({
         title: "تم رفض الطلب",
-        description: `تم رفض طلب التسجيل لـ ${selectedRequest.name}`,
+        description: `تم رفض طلب الطالب ${selectedRequest.name}`,
       });
 
       setShowRejectionDialog(false);
       setRejectionReason("");
       setSelectedRequest(null);
       fetchData();
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error rejecting request:', error);
       toast({
         title: "خطأ",
-        description: error.message || "حدث خطأ أثناء رفض الطلب",
+        description: "حدث خطأ أثناء رفض الطلب",
         variant: "destructive"
       });
     }
@@ -325,10 +192,10 @@ export default function StudentRegistrationRequests() {
           </div>
           <Badge variant={
             request.status === 'pending' ? 'secondary' :
-            request.status === 'approved' ? 'default' : 'destructive'
+              request.status === 'approved' ? 'default' : 'destructive'
           }>
             {request.status === 'pending' ? 'قيد الانتظار' :
-             request.status === 'approved' ? 'مقبول' : 'مرفوض'}
+              request.status === 'approved' ? 'مقبول' : 'مرفوض'}
           </Badge>
         </div>
         <CardDescription>
@@ -364,7 +231,7 @@ export default function StudentRegistrationRequests() {
             </div>
           )}
         </div>
-        
+
         {request.status === 'pending' && (
           <div className="flex gap-2 mt-4">
             <Button
@@ -423,7 +290,7 @@ export default function StudentRegistrationRequests() {
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
       <FloatingParticles />
       <Header />
-      
+
       <div className="container mx-auto p-6 relative z-10">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -446,95 +313,95 @@ export default function StudentRegistrationRequests() {
               </CardDescription>
             </CardHeader>
             <CardContent className="pt-6">
-          <Tabs defaultValue="pending" className="w-full">
-            <TabsList className="grid w-full grid-cols-3">
-              <TabsTrigger value="pending" className="flex items-center gap-2">
-                <Clock className="h-4 w-4" />
-                قيد الانتظار ({pendingRequests.length})
-              </TabsTrigger>
-              <TabsTrigger value="approved" className="flex items-center gap-2">
-                <Check className="h-4 w-4" />
-                مقبول ({approvedRequests.length})
-              </TabsTrigger>
-              <TabsTrigger value="rejected" className="flex items-center gap-2">
-                <X className="h-4 w-4" />
-                مرفوض ({rejectedRequests.length})
-              </TabsTrigger>
-            </TabsList>
+              <Tabs defaultValue="pending" className="w-full">
+                <TabsList className="grid w-full grid-cols-3">
+                  <TabsTrigger value="pending" className="flex items-center gap-2">
+                    <Clock className="h-4 w-4" />
+                    قيد الانتظار ({pendingRequests.length})
+                  </TabsTrigger>
+                  <TabsTrigger value="approved" className="flex items-center gap-2">
+                    <Check className="h-4 w-4" />
+                    مقبول ({approvedRequests.length})
+                  </TabsTrigger>
+                  <TabsTrigger value="rejected" className="flex items-center gap-2">
+                    <X className="h-4 w-4" />
+                    مرفوض ({rejectedRequests.length})
+                  </TabsTrigger>
+                </TabsList>
 
-            <TabsContent value="pending" className="mt-4">
-              {pendingRequests.length === 0 ? (
-                <p className="text-center text-muted-foreground py-8">
-                  لا توجد طلبات قيد الانتظار
-                </p>
-              ) : (
-                pendingRequests.map(renderRequestCard)
-              )}
-            </TabsContent>
+                <TabsContent value="pending" className="mt-4">
+                  {pendingRequests.length === 0 ? (
+                    <p className="text-center text-muted-foreground py-8">
+                      لا توجد طلبات قيد الانتظار
+                    </p>
+                  ) : (
+                    pendingRequests.map(renderRequestCard)
+                  )}
+                </TabsContent>
 
-            <TabsContent value="approved" className="mt-4">
-              {approvedRequests.length === 0 ? (
-                <p className="text-center text-muted-foreground py-8">
-                  لا توجد طلبات مقبولة
-                </p>
-              ) : (
-                approvedRequests.map(renderRequestCard)
-              )}
-            </TabsContent>
+                <TabsContent value="approved" className="mt-4">
+                  {approvedRequests.length === 0 ? (
+                    <p className="text-center text-muted-foreground py-8">
+                      لا توجد طلبات مقبولة
+                    </p>
+                  ) : (
+                    approvedRequests.map(renderRequestCard)
+                  )}
+                </TabsContent>
 
-            <TabsContent value="rejected" className="mt-4">
-              {rejectedRequests.length === 0 ? (
-                <p className="text-center text-muted-foreground py-8">
-                  لا توجد طلبات مرفوضة
-                </p>
-              ) : (
-                rejectedRequests.map(renderRequestCard)
-              )}
-            </TabsContent>
-          </Tabs>
-        </CardContent>
-      </GlassmorphicCard>
-      </motion.div>
+                <TabsContent value="rejected" className="mt-4">
+                  {rejectedRequests.length === 0 ? (
+                    <p className="text-center text-muted-foreground py-8">
+                      لا توجد طلبات مرفوضة
+                    </p>
+                  ) : (
+                    rejectedRequests.map(renderRequestCard)
+                  )}
+                </TabsContent>
+              </Tabs>
+            </CardContent>
+          </GlassmorphicCard>
+        </motion.div>
 
-      <Dialog open={showRejectionDialog} onOpenChange={setShowRejectionDialog}>
-        <DialogContent className="bg-card/95 backdrop-blur-xl border-primary/20">
-          <DialogHeader>
-            <DialogTitle className="text-xl">رفض طلب التسجيل</DialogTitle>
-            <DialogDescription>
-              يرجى إدخال سبب رفض طلب التسجيل لـ {selectedRequest?.name}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <Label htmlFor="rejection-reason">سبب الرفض</Label>
-              <Textarea
-                id="rejection-reason"
-                value={rejectionReason}
-                onChange={(e) => setRejectionReason(e.target.value)}
-                placeholder="اكتب سبب الرفض هنا..."
-                rows={4}
-                className="bg-background/50 border-2 focus:border-primary"
-              />
+        <Dialog open={showRejectionDialog} onOpenChange={setShowRejectionDialog}>
+          <DialogContent className="bg-card/95 backdrop-blur-xl border-primary/20">
+            <DialogHeader>
+              <DialogTitle className="text-xl">رفض طلب التسجيل</DialogTitle>
+              <DialogDescription>
+                يرجى إدخال سبب رفض طلب التسجيل لـ {selectedRequest?.name}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="rejection-reason">سبب الرفض</Label>
+                <Textarea
+                  id="rejection-reason"
+                  value={rejectionReason}
+                  onChange={(e) => setRejectionReason(e.target.value)}
+                  placeholder="اكتب سبب الرفض هنا..."
+                  rows={4}
+                  className="bg-background/50 border-2 focus:border-primary"
+                />
+              </div>
             </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => {
-              setShowRejectionDialog(false);
-              setRejectionReason("");
-              setSelectedRequest(null);
-            }}>
-              إلغاء
-            </Button>
-            <Button 
-              variant="destructive" 
-              onClick={handleReject}
-              className="bg-gradient-to-r from-red-500 to-red-600 hover:shadow-lg"
-            >
-              تأكيد الرفض
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => {
+                setShowRejectionDialog(false);
+                setRejectionReason("");
+                setSelectedRequest(null);
+              }}>
+                إلغاء
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={handleReject}
+                className="bg-gradient-to-r from-red-500 to-red-600 hover:shadow-lg"
+              >
+                تأكيد الرفض
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );

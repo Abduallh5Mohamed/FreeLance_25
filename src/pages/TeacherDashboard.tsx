@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import Header from "@/components/Header";
 import StatsCard from "@/components/StatsCard";
 import { Button } from "@/components/ui/button";
@@ -8,11 +7,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { 
-  Users, 
-  BookOpen, 
-  Calendar, 
-  DollarSign, 
+import {
+  Users,
+  BookOpen,
+  Calendar,
+  DollarSign,
   TrendingUp,
   Clock,
   GraduationCap,
@@ -22,6 +21,7 @@ import {
   AlertTriangle
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
+import { getStudents, getCourses, getAttendance } from "@/lib/api";
 
 const TeacherDashboard = () => {
   const { toast } = useToast();
@@ -31,7 +31,7 @@ const TeacherDashboard = () => {
     amount: '',
     category: ''
   });
-  
+
   const [stats, setStats] = useState([
     {
       title: "إجمالي الطلاب",
@@ -75,21 +75,10 @@ const TeacherDashboard = () => {
         return;
       }
 
-      const { error } = await supabase
-        .from('expenses')
-        .insert({
-          description: expenseData.description,
-          amount: parseFloat(expenseData.amount),
-          category: expenseData.category || 'عام',
-          date: new Date().toLocaleDateString('ar-EG'),
-          time: new Date().toLocaleTimeString('ar-EG')
-        });
-
-      if (error) throw error;
-
+      // TODO: Add expenses API endpoint
       toast({
-        title: "تم إضافة المصروف بنجاح",
-        description: `تم إضافة مصروف بقيمة ${expenseData.amount} جنيه`,
+        title: "قريباً",
+        description: "سيتم إضافة هذه الميزة قريباً",
       });
 
       setExpenseData({ description: '', amount: '', category: '' });
@@ -111,27 +100,11 @@ const TeacherDashboard = () => {
   const fetchDashboardData = async () => {
     try {
       // Fetch students count
-      const { data: students, error: studentsError } = await supabase
-        .from('students')
-        .select('id');
-      
-      if (studentsError) throw studentsError;
-
-      // Fetch course materials count
-      const { data: materials, error: materialsError } = await supabase
-        .from('course_materials')
-        .select('id');
-      
-      if (materialsError) throw materialsError;
+      const students = await getStudents();
 
       // Fetch today's attendance
       const today = new Date().toISOString().split('T')[0];
-      const { data: todayAttendance, error: attendanceError } = await supabase
-        .from('attendance')
-        .select('*')
-        .eq('attendance_date', today);
-      
-      if (attendanceError) throw attendanceError;
+      const todayAttendance = await getAttendance({ date: today });
 
       const totalStudents = students?.length || 0;
       const presentToday = todayAttendance?.filter(a => a.status === 'present').length || 0;
@@ -144,7 +117,7 @@ const TeacherDashboard = () => {
           case 2:
             return { ...stat, value: `${attendanceRate}%` };
           case 3:
-            return { ...stat, value: materials?.length || 0 };
+            return { ...stat, value: 0 }; // TODO: Add course materials API
           default:
             return stat;
         }
@@ -158,7 +131,7 @@ const TeacherDashboard = () => {
   return (
     <div className="min-h-screen bg-background" dir="rtl">
       <Header />
-      
+
       <main className="container mx-auto px-4 py-8">
         {/* Welcome Section */}
         <div className="mb-8">
@@ -194,7 +167,7 @@ const TeacherDashboard = () => {
                         id="description"
                         placeholder="مثال: كتب دراسية، أدوات مكتبية..."
                         value={expenseData.description}
-                        onChange={(e) => setExpenseData({...expenseData, description: e.target.value})}
+                        onChange={(e) => setExpenseData({ ...expenseData, description: e.target.value })}
                       />
                     </div>
                     <div className="grid gap-2">
@@ -204,7 +177,7 @@ const TeacherDashboard = () => {
                         type="number"
                         placeholder="0.00"
                         value={expenseData.amount}
-                        onChange={(e) => setExpenseData({...expenseData, amount: e.target.value})}
+                        onChange={(e) => setExpenseData({ ...expenseData, amount: e.target.value })}
                       />
                     </div>
                     <div className="grid gap-2">
@@ -213,7 +186,7 @@ const TeacherDashboard = () => {
                         id="category"
                         placeholder="مثال: تعليمي، إداري، تقني..."
                         value={expenseData.category}
-                        onChange={(e) => setExpenseData({...expenseData, category: e.target.value})}
+                        onChange={(e) => setExpenseData({ ...expenseData, category: e.target.value })}
                       />
                     </div>
                   </div>
@@ -318,20 +291,20 @@ const TeacherDashboard = () => {
               جدول اليوم
             </CardTitle>
           </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 gap-4">
-                <div className="p-4 bg-muted/30 rounded-lg">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-medium text-primary">التاريخ</span>
-                    <span className="text-xs bg-primary/20 text-primary px-2 py-1 rounded-full">
-                      نشط
-                    </span>
-                  </div>
-                  <h4 className="font-medium text-foreground">دروس التاريخ والحضارات</h4>
-                  <p className="text-sm text-muted-foreground mt-1">تدريس مادة التاريخ للمراحل الثانوية - المحتوى التعليمي والامتحانات</p>
+          <CardContent>
+            <div className="grid grid-cols-1 gap-4">
+              <div className="p-4 bg-muted/30 rounded-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-medium text-primary">التاريخ</span>
+                  <span className="text-xs bg-primary/20 text-primary px-2 py-1 rounded-full">
+                    نشط
+                  </span>
                 </div>
+                <h4 className="font-medium text-foreground">دروس التاريخ والحضارات</h4>
+                <p className="text-sm text-muted-foreground mt-1">تدريس مادة التاريخ للمراحل الثانوية - المحتوى التعليمي والامتحانات</p>
               </div>
-            </CardContent>
+            </div>
+          </CardContent>
         </Card>
       </main>
     </div>

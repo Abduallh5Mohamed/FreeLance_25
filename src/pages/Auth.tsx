@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox";
 import { GraduationCap, LogIn, UserPlus, Sparkles, Lock, Mail, User, Phone as PhoneIcon, BookOpen, Users } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import { signIn, signUp, getStudentByEmail, getCourses, getGrades, getGroups } from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast";
 import alQaedLogo from "@/assets/al-qaed-logo-new.jpg";
 import bcrypt from "bcryptjs";
@@ -28,9 +28,9 @@ const Auth = () => {
   const [selectedGroup, setSelectedGroup] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [courses, setCourses] = useState<any[]>([]);
-  const [grades, setGrades] = useState<any[]>([]);
-  const [groups, setGroups] = useState<any[]>([]);
+  const [courses, setCourses] = useState<Array<{ id: string; name: string }>>([]);
+  const [grades, setGrades] = useState<Array<{ id: string; name: string }>>([]);
+  const [groups, setGroups] = useState<Array<{ id: string; name: string }>>([]);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -42,12 +42,7 @@ const Auth = () => {
 
   const fetchGroups = async () => {
     try {
-      const { data, error } = await supabase
-        .from('groups')
-        .select('*')
-        .eq('is_active', true);
-      
-      if (error) throw error;
+      const data = await getGroups();
       setGroups(data || []);
     } catch (error) {
       console.error('Error fetching groups:', error);
@@ -56,12 +51,7 @@ const Auth = () => {
 
   const fetchGrades = async () => {
     try {
-      const { data, error } = await supabase
-        .from('grades')
-        .select('*')
-        .eq('is_active', true);
-      
-      if (error) throw error;
+      const data = await getGrades();
       setGrades(data || []);
     } catch (error) {
       console.error('Error fetching grades:', error);
@@ -70,12 +60,7 @@ const Auth = () => {
 
   const fetchCourses = async () => {
     try {
-      const { data, error } = await supabase
-        .from('courses')
-        .select('*')
-        .eq('is_active', true);
-      
-      if (error) throw error;
+      const data = await getCourses();
       setCourses(data || []);
     } catch (error) {
       console.error('Error fetching courses:', error);
@@ -90,127 +75,46 @@ const Auth = () => {
     try {
       if (isLogin) {
         console.log('🚀 Login attempt started with email:', email.toLowerCase().trim());
-        
-        // First, check if this is an offline student trying to login
-        const { data: offlineStudent, error: offlineError } = await supabase
-          .from('students')
-          .select('*')
-          .eq('email', email.toLowerCase().trim())
-          .eq('is_offline', true)
-          .eq('approval_status', 'approved')
-          .maybeSingle();
 
-        console.log('🔍 Offline student check:', { 
-          found: !!offlineStudent, 
-          error: offlineError, 
-          email: email.toLowerCase().trim(),
-          studentData: offlineStudent,
-          hasPasswordHash: !!offlineStudent?.password_hash
-        });
+        // Try MySQL API signIn
+        const result = await signIn(email.toLowerCase().trim(), password);
 
-        if (!offlineError && offlineStudent) {
-          console.log('🔍 Found offline student:', { 
-            name: offlineStudent.name, 
-            email: offlineStudent.email,
-            hasPasswordHash: !!offlineStudent.password_hash 
-          });
-          
-          // Check if password_hash exists
-          if (!offlineStudent.password_hash) {
-            throw new Error("لم يتم تعيين كلمة مرور لهذا الحساب. يرجى الاتصال بالإدارة لإعادة تعيين كلمة المرور.");
-          }
-          
-          console.log('🔐 Starting password verification...');
-          
-          // Use bcrypt.compare (async) instead of compareSync
-          const isPasswordValid = await bcrypt.compare(password, offlineStudent.password_hash);
-          console.log('✅ Password verification result:', isPasswordValid);
-          
-          if (isPasswordValid) {
-            // Store offline student session in localStorage
-            const offlineSession = {
-              student: {
-                id: offlineStudent.id,
-                name: offlineStudent.name,
-                email: offlineStudent.email,
-                grade_id: offlineStudent.grade_id,
-                group_id: offlineStudent.group_id,
-                phone: offlineStudent.phone,
-                grade: offlineStudent.grade,
-                is_offline: true
-              },
-              timestamp: new Date().getTime()
-            };
-            localStorage.setItem('offlineStudentSession', JSON.stringify(offlineSession));
-            
-            navigate("/student");
-            toast({
-              title: "تم تسجيل الدخول بنجاح",
-              description: `مرحباً بك ${offlineStudent.name}`,
-            });
-            return;
-          } else {
-            throw new Error("كلمة المرور غير صحيحة");
-          }
+        if (result.error) {
+          throw new Error(result.error);
         }
 
-        // Try Supabase Auth login for online students and admins
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
-        
-        if (!error && data.user) {
-          // Check user role to determine where to redirect
-          const { data: userRoles } = await supabase
-            .from('user_roles')
-            .select('role')
-            .eq('user_id', data.user.id);
-          
-          // Check if user is admin
-          const isAdmin = userRoles?.some(r => r.role === 'admin');
-          
-          if (isAdmin) {
-            // Admin login
-            const { data: profile } = await supabase
-              .from('profiles')
-              .select('name')
-              .eq('user_id', data.user.id)
-              .maybeSingle();
-            
+        if (result.user) {
+          // Store user session in localStorage
+          localStorage.setItem('currentUser', JSON.stringify(result.user));
+
+          // Redirect based on role
+          if (result.user.role === 'admin' || result.user.role === 'teacher') {
             navigate("/teacher");
             toast({
               title: "تم تسجيل الدخول بنجاح",
-              description: `مرحباً بك ${profile?.name || 'الأستاذ'}`,
+              description: `مرحباً بك ${result.user.name}`,
             });
-            return;
-          }
-          
-          // Online student login - get student data
-          const { data: student } = await supabase
-            .from('students')
-            .select('*')
-            .eq('email', email)
-            .eq('is_offline', false)
-            .eq('approval_status', 'approved')
-            .maybeSingle();
-          
-          if (student) {
-            navigate("/student");
-            toast({
-              title: "تم تسجيل الدخول بنجاح",
-              description: `مرحباً بك ${student.name}`,
-            });
-            return;
           } else {
-            throw new Error("حسابك في انتظار الموافقة من الإدارة");
+            // Student login - check if student exists
+            const student = await getStudentByEmail(email.toLowerCase().trim());
+
+            if (student && student.approval_status === 'approved') {
+              localStorage.setItem('currentStudent', JSON.stringify(student));
+              navigate("/student");
+              toast({
+                title: "تم تسجيل الدخول بنجاح",
+                description: `مرحباً بك ${student.name}`,
+              });
+            } else {
+              throw new Error("حسابك في انتظار الموافقة من الإدارة");
+            }
           }
+          return;
         }
 
-        // If all fails, show error
         throw new Error("البريد الإلكتروني أو كلمة المرور غير صحيحة");
       } else {
-        // Sign up - Create registration request instead of direct account
+        // Sign up - Create new user
         if (!name.trim()) {
           throw new Error("يجب إدخال اسم الطالب");
         }
@@ -221,28 +125,10 @@ const Auth = () => {
           throw new Error("يجب اختيار الصف الدراسي");
         }
 
-        // Hash password for storage
-        const passwordHash = await bcrypt.hash(password, 10);
+        const result = await signUp(email.toLowerCase().trim(), password, name.trim(), 'student');
 
-        // Create registration request
-        const { error: requestError } = await supabase
-          .from("student_registration_requests")
-          .insert({
-            name: name.trim(),
-            email: email.toLowerCase().trim(),
-            phone: phone.trim(),
-            grade_id: gradeId || null,
-            group_id: selectedGroup || null,
-            password_hash: passwordHash,
-            requested_courses: selectedCourses,
-            status: 'pending'
-          });
-
-        if (requestError) {
-          if (requestError.code === '23505') {
-            throw new Error("البريد الإلكتروني مستخدم بالفعل");
-          }
-          throw requestError;
+        if (result.error) {
+          throw new Error(result.error);
         }
 
         // Clear form
@@ -253,21 +139,22 @@ const Auth = () => {
         setGrade("");
         setGradeId("");
         setSelectedCourses([]);
-        
+
         toast({
-          title: "تم إرسال طلب التسجيل",
-          description: "تم إرسال طلبك بنجاح. سيتم مراجعته والموافقة عليه من قبل الإدارة قريباً. ستتمكن من تسجيل الدخول بعد الموافقة.",
+          title: "تم إنشاء الحساب بنجاح",
+          description: "يمكنك الآن تسجيل الدخول باستخدام بياناتك",
         });
-        
+
         setIsLogin(true); // Switch back to login view
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Auth error:', error);
-      setError(error.message || "حدث خطأ غير متوقع");
+      const errorMessage = error instanceof Error ? error.message : "حدث خطأ غير متوقع";
+      setError(errorMessage);
       toast({
         variant: "destructive",
         title: "خطأ",
-        description: error.message || "حدث خطأ أثناء المعالجة",
+        description: errorMessage,
       });
     } finally {
       setLoading(false);
@@ -277,7 +164,7 @@ const Auth = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-600 via-purple-600 to-pink-600 flex items-center justify-center p-3 md:p-4 relative overflow-hidden" dir="rtl">
       <FloatingParticles />
-      
+
       {/* Animated Background Elements */}
       <div className="absolute inset-0 overflow-hidden">
         <motion.div
@@ -306,7 +193,7 @@ const Auth = () => {
       >
         <GlassmorphicCard className="overflow-hidden max-w-md">
           <CardHeader className="text-center space-y-4 pb-6 bg-gradient-to-r from-primary/10 to-accent/10 px-4 md:px-6">
-            <motion.div 
+            <motion.div
               className="flex justify-center"
               whileHover={{ scale: 1.1, rotate: 360 }}
               transition={{ duration: 0.6 }}
@@ -335,7 +222,7 @@ const Auth = () => {
                 <p className="text-muted-foreground font-medium">أ/ محمد رمضان - التاريخ والجغرافيا</p>
               </motion.div>
             </div>
-            
+
             {/* Tab Switcher */}
             <div className="flex gap-2 p-1 bg-muted/50 rounded-xl backdrop-blur-sm">
               <Button
@@ -360,168 +247,168 @@ const Auth = () => {
           </CardHeader>
           <CardContent className="pt-6 px-4 md:px-6">
             <form onSubmit={handleAuth} className="space-y-4">
-            {!isLogin && (
-              <motion.div 
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="space-y-2"
-              >
-                <Label htmlFor="name" className="flex items-center gap-2">
-                  <User className="w-4 h-4" />
-                  اسم الطالب
+              {!isLogin && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="space-y-2"
+                >
+                  <Label htmlFor="name" className="flex items-center gap-2">
+                    <User className="w-4 h-4" />
+                    اسم الطالب
+                  </Label>
+                  <Input
+                    id="name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="أدخل اسم الطالب"
+                    required
+                    className="text-right bg-background/50 border-2 focus:border-primary transition-all"
+                  />
+                </motion.div>
+              )}
+
+              <div className="space-y-2">
+                <Label htmlFor="email" className="flex items-center gap-2">
+                  <Mail className="w-4 h-4" />
+                  البريد الإلكتروني
                 </Label>
                 <Input
-                  id="name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="أدخل اسم الطالب"
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="example@email.com"
                   required
                   className="text-right bg-background/50 border-2 focus:border-primary transition-all"
                 />
-              </motion.div>
-            )}
-            
-            <div className="space-y-2">
-              <Label htmlFor="email" className="flex items-center gap-2">
-                <Mail className="w-4 h-4" />
-                البريد الإلكتروني
-              </Label>
-              <Input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="example@email.com"
-                required
-                className="text-right bg-background/50 border-2 focus:border-primary transition-all"
-              />
-            </div>
+              </div>
 
-            {!isLogin && (
+              {!isLogin && (
+                <div className="space-y-2">
+                  <Label htmlFor="phone">رقم الهاتف</Label>
+                  <Input
+                    id="phone"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="01234567890"
+                    required
+                    className="text-right"
+                  />
+                </div>
+              )}
+
               <div className="space-y-2">
-                <Label htmlFor="phone">رقم الهاتف</Label>
+                <Label htmlFor="password">كلمة المرور</Label>
                 <Input
-                  id="phone"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="01234567890"
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
                   required
                   className="text-right"
                 />
               </div>
-            )}
-            
-            <div className="space-y-2">
-              <Label htmlFor="password">كلمة المرور</Label>
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                required
-                className="text-right"
-              />
-            </div>
 
-            {!isLogin && (
-              <>
-                 <div className="space-y-2">
-                  <Label htmlFor="grade">الصف الدراسي</Label>
-                  <Select value={gradeId} onValueChange={setGradeId} required>
-                    <SelectTrigger>
-                      <SelectValue placeholder="اختر الصف الدراسي" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {grades.map((gradeItem) => (
-                        <SelectItem key={gradeItem.id} value={gradeItem.id}>
-                          {gradeItem.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="group">المجموعة (اختياري)</Label>
-                  <Select value={selectedGroup} onValueChange={setSelectedGroup}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="اختر المجموعة" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {groups.map((group) => (
-                        <SelectItem key={group.id} value={group.id}>
-                          {group.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="courses">اختر الكورسات المسجلة</Label>
-                  <div className="space-y-2 max-h-32 overflow-y-auto">
-                    {courses.map((course) => (
-                      <div key={course.id} className="flex items-center space-x-2 space-x-reverse">
-                        <Checkbox
-                          id={course.id}
-                          checked={selectedCourses.includes(course.id)}
-                          onCheckedChange={(checked) => {
-                            if (checked) {
-                              setSelectedCourses([...selectedCourses, course.id]);
-                            } else {
-                              setSelectedCourses(selectedCourses.filter(id => id !== course.id));
-                            }
-                          }}
-                        />
-                        <Label htmlFor={course.id} className="text-sm font-normal">
-                          {course.name}
-                        </Label>
-                      </div>
-                    ))}
+              {!isLogin && (
+                <>
+                  <div className="space-y-2">
+                    <Label htmlFor="grade">الصف الدراسي</Label>
+                    <Select value={gradeId} onValueChange={setGradeId} required>
+                      <SelectTrigger>
+                        <SelectValue placeholder="اختر الصف الدراسي" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {grades.map((gradeItem) => (
+                          <SelectItem key={gradeItem.id} value={gradeItem.id}>
+                            {gradeItem.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
-                </div>
-              </>
-            )}
-            
-            {error && (
-              <Alert variant="destructive">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
 
-            <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-              <Button 
-                type="submit" 
-                className="w-full bg-gradient-to-r from-primary via-accent to-primary bg-[length:200%_100%] hover:bg-[position:100%_0] transition-all duration-500 shadow-lg hover:shadow-glow" 
-                disabled={loading}
-              >
-                {loading ? (
-                  <motion.div
-                    animate={{ rotate: 360 }}
-                    transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                    className="flex items-center gap-2"
-                  >
-                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full" />
-                    جاري المعالجة...
-                  </motion.div>
-                ) : isLogin ? (
-                  <>
-                    <LogIn className="w-4 h-4 ml-2" />
-                    تسجيل الدخول
-                  </>
-                ) : (
-                  <>
-                    <UserPlus className="w-4 h-4 ml-2" />
-                    إنشاء حساب جديد
-                  </>
-                )}
-              </Button>
-            </motion.div>
-          </form>
+                  <div className="space-y-2">
+                    <Label htmlFor="group">المجموعة (اختياري)</Label>
+                    <Select value={selectedGroup} onValueChange={setSelectedGroup}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="اختر المجموعة" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {groups.map((group) => (
+                          <SelectItem key={group.id} value={group.id}>
+                            {group.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
 
-        </CardContent>
-      </GlassmorphicCard>
+                  <div className="space-y-2">
+                    <Label htmlFor="courses">اختر الكورسات المسجلة</Label>
+                    <div className="space-y-2 max-h-32 overflow-y-auto">
+                      {courses.map((course) => (
+                        <div key={course.id} className="flex items-center space-x-2 space-x-reverse">
+                          <Checkbox
+                            id={course.id}
+                            checked={selectedCourses.includes(course.id)}
+                            onCheckedChange={(checked) => {
+                              if (checked) {
+                                setSelectedCourses([...selectedCourses, course.id]);
+                              } else {
+                                setSelectedCourses(selectedCourses.filter(id => id !== course.id));
+                              }
+                            }}
+                          />
+                          <Label htmlFor={course.id} className="text-sm font-normal">
+                            {course.name}
+                          </Label>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {error && (
+                <Alert variant="destructive">
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+
+              <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                <Button
+                  type="submit"
+                  className="w-full bg-gradient-to-r from-primary via-accent to-primary bg-[length:200%_100%] hover:bg-[position:100%_0] transition-all duration-500 shadow-lg hover:shadow-glow"
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <motion.div
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                      className="flex items-center gap-2"
+                    >
+                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full" />
+                      جاري المعالجة...
+                    </motion.div>
+                  ) : isLogin ? (
+                    <>
+                      <LogIn className="w-4 h-4 ml-2" />
+                      تسجيل الدخول
+                    </>
+                  ) : (
+                    <>
+                      <UserPlus className="w-4 h-4 ml-2" />
+                      إنشاء حساب جديد
+                    </>
+                  )}
+                </Button>
+              </motion.div>
+            </form>
+
+          </CardContent>
+        </GlassmorphicCard>
       </motion.div>
     </div>
   );
