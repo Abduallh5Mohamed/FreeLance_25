@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { BookOpen, Plus, Edit2, Trash2, Users, Calendar } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import { getCourses, createCourse, updateCourse, deleteCourse, getGrades, getSubscriptions } from "@/lib/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,12 +30,15 @@ const Courses = () => {
   const [loading, setLoading] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [courseToDelete, setCourseToDelete] = useState(null);
+  const [detailsDialogOpen, setDetailsDialogOpen] = useState(false);
+  const [selectedCourse, setSelectedCourse] = useState(null);
   const [formData, setFormData] = useState({
     name: "",
     description: "",
     subject: "التاريخ",
     grade_id: "",
-    subscription_id: ""
+    subscription_id: "",
+    price: ""
   });
   
   const { toast } = useToast();
@@ -48,14 +51,8 @@ const Courses = () => {
 
   const fetchGrades = async () => {
     try {
-      const { data, error } = await supabase
-        .from('grades')
-        .select('*')
-        .eq('is_active', true)
-        .order('name', { ascending: true });
-      
-      if (error) throw error;
-      setGrades(data || []);
+      const data = await getGrades();
+      setGrades(data.filter(g => g.is_active));
     } catch (error) {
       console.error('Error fetching grades:', error);
     }
@@ -63,14 +60,8 @@ const Courses = () => {
 
   const fetchSubscriptions = async () => {
     try {
-      const { data, error } = await supabase
-        .from('subscriptions')
-        .select('*')
-        .eq('is_active', true)
-        .order('name', { ascending: true });
-      
-      if (error) throw error;
-      setSubscriptions(data || []);
+      const data = await getSubscriptions();
+      setSubscriptions(data.filter(s => s.is_active));
     } catch (error) {
       console.error('Error fetching subscriptions:', error);
     }
@@ -79,22 +70,8 @@ const Courses = () => {
 
   const fetchCourses = async () => {
     try {
-      const { data, error } = await supabase
-        .from('courses')
-        .select(`
-          *,
-          subscriptions (
-            id,
-            name,
-            price,
-            duration_months
-          )
-        `)
-        .eq('is_active', true)
-        .order('created_at', { ascending: false });
-      
-      if (error) throw error;
-      setCourses(data || []);
+      const data = await getCourses();
+      setCourses(data.filter(c => c.is_active) || []);
     } catch (error) {
       console.error('Error fetching courses:', error);
       toast({
@@ -110,39 +87,32 @@ const Courses = () => {
     setLoading(true);
     
     try {
+      // Get the selected grade name
+      const selectedGrade = grades.find(g => g.id === formData.grade_id);
+      const gradeName = selectedGrade ? selectedGrade.name : null;
+      
       if (editingCourse) {
-        const { error: courseError } = await supabase
-          .from('courses')
-          .update({
-            name: formData.name,
-            description: formData.description,
-            subject: formData.subject,
-            grade_id: formData.grade_id || null,
-            subscription_id: formData.subscription_id || null
-          })
-          .eq('id', editingCourse.id);
-        
-        if (courseError) throw courseError;
+        await updateCourse(editingCourse.id, {
+          name: formData.name,
+          description: formData.description,
+          subject: formData.subject,
+          grade: gradeName,
+          price: parseFloat(formData.price) || 0
+        });
         
         toast({
           title: "تم التحديث بنجاح",
           description: "تم تحديث بيانات الكورس",
         });
       } else {
-        const { data: newCourse, error: courseError } = await supabase
-          .from('courses')
-          .insert({
-            name: formData.name,
-            description: formData.description,
-            subject: formData.subject,
-            grade_id: formData.grade_id || null,
-            subscription_id: formData.subscription_id || null,
-            is_active: true
-          })
-          .select()
-          .single();
-        
-        if (courseError) throw courseError;
+        await createCourse({
+          name: formData.name,
+          description: formData.description,
+          subject: formData.subject,
+          grade: gradeName,
+          price: parseFloat(formData.price) || 0,
+          is_active: true
+        });
         
         toast({
           title: "تم الإضافة بنجاح",
@@ -153,7 +123,7 @@ const Courses = () => {
       fetchCourses();
       setIsOpen(false);
       setEditingCourse(null);
-      setFormData({ name: "", description: "", subject: "التاريخ", grade_id: "", subscription_id: "" });
+      setFormData({ name: "", description: "", subject: "التاريخ", grade_id: "", subscription_id: "", price: "" });
     } catch (error: any) {
       console.error('Error:', error);
       toast({
@@ -173,8 +143,9 @@ const Courses = () => {
       name: course.name,
       description: course.description,
       subject: course.subject || "التاريخ",
-      grade_id: course.grade_id || "",
-      subscription_id: course.subscription_id || ""
+      grade_id: course.grade || "",
+      subscription_id: course.subscription_id || "",
+      price: course.price || ""
     });
     setIsOpen(true);
   };
@@ -183,23 +154,18 @@ const Courses = () => {
     if (!courseToDelete) return;
     
     try {
-      const { error } = await supabase
-        .from('courses')
-        .delete()
-        .eq('id', courseToDelete.id);
-      
-      if (error) throw error;
+      await deleteCourse(courseToDelete.id);
       
       fetchCourses();
       toast({
         title: "تم الحذف بنجاح",
         description: "تم حذف الكورس",
       });
-    } catch (error: any) {
+    } catch (error) {
       console.error('Delete error:', error);
       toast({
         title: "خطأ",
-        description: error.message || "حدث خطأ في الحذف",
+        description: "حدث خطأ في الحذف",
         variant: "destructive",
       });
     } finally {
@@ -211,6 +177,11 @@ const Courses = () => {
   const handleDelete = (course: any) => {
     setCourseToDelete(course);
     setDeleteDialogOpen(true);
+  };
+
+  const handleViewDetails = (course: any) => {
+    setSelectedCourse(course);
+    setDetailsDialogOpen(true);
   };
 
   return (
@@ -296,7 +267,6 @@ const Courses = () => {
                   <Select
                     value={formData.subscription_id}
                     onValueChange={(value) => setFormData(prev => ({ ...prev, subscription_id: value }))}
-                    required
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="اختر خطة الاشتراك" />
@@ -304,11 +274,23 @@ const Courses = () => {
                     <SelectContent>
                       {subscriptions.map((sub) => (
                         <SelectItem key={sub.id} value={sub.id}>
-                          {sub.name} - {sub.price} جنيه / {sub.duration_months} شهر
+                          {sub.name} - {sub.price} جنيه
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="price">السعر (جنيه)</Label>
+                  <Input
+                    id="price"
+                    type="number"
+                    value={formData.price || ""}
+                    onChange={(e) => setFormData(prev => ({ ...prev, price: e.target.value }))}
+                    placeholder="0"
+                    min="0"
+                    step="0.01"
+                  />
                 </div>
                 <Button type="submit" className="w-full" disabled={loading}>
                   {loading ? "جاري المعالجة..." : (editingCourse ? "تحديث الكورس" : "إضافة الكورس")}
@@ -356,16 +338,23 @@ const Courses = () => {
                     <p className="text-muted-foreground text-sm">{course.description}</p>
                   )}
                   
-                  {course.subscriptions && (
-                    <div className="bg-primary/5 p-3 rounded-lg">
-                      <p className="text-sm font-medium">خطة الاشتراك:</p>
-                      <p className="text-sm text-muted-foreground">
-                        {course.subscriptions.name} - {course.subscriptions.price} جنيه / {course.subscriptions.duration_months} شهر
-                      </p>
-                    </div>
-                  )}
+                  <div className="space-y-2">
+                    {course.grade && (
+                      <div className="flex items-center gap-2 text-sm">
+                        <span className="font-medium">الصف:</span>
+                        <span className="text-muted-foreground">{course.grade}</span>
+                      </div>
+                    )}
+                    
+                    {course.price !== undefined && course.price !== null && (
+                      <div className="flex items-center gap-2 text-sm">
+                        <span className="font-medium">السعر:</span>
+                        <span className="text-primary font-semibold">{course.price} جنيه</span>
+                      </div>
+                    )}
+                  </div>
                   
-                  <Button variant="outline" className="w-full">
+                  <Button variant="outline" className="w-full" onClick={() => handleViewDetails(course)}>
                     عرض التفاصيل
                   </Button>
                 </CardContent>
@@ -373,6 +362,61 @@ const Courses = () => {
             ))
           )}
         </div>
+
+        {/* Dialog for Course Details */}
+        <Dialog open={detailsDialogOpen} onOpenChange={setDetailsDialogOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>تفاصيل الكورس</DialogTitle>
+            </DialogHeader>
+            {selectedCourse && (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-primary">اسم الكورس:</span>
+                    <span>{selectedCourse.name}</span>
+                  </div>
+                  
+                  {selectedCourse.subject && (
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-primary">المادة:</span>
+                      <span>{selectedCourse.subject}</span>
+                    </div>
+                  )}
+                  
+                  {selectedCourse.description && (
+                    <div className="space-y-1">
+                      <span className="font-semibold text-primary">الوصف:</span>
+                      <p className="text-muted-foreground text-sm">{selectedCourse.description}</p>
+                    </div>
+                  )}
+                  
+                  {selectedCourse.grade && (
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-primary">الصف الدراسي:</span>
+                      <span>{selectedCourse.grade}</span>
+                    </div>
+                  )}
+                  
+                  {selectedCourse.price !== undefined && selectedCourse.price !== null && (
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-primary">السعر:</span>
+                      <span className="text-lg font-bold text-primary">{selectedCourse.price} جنيه</span>
+                    </div>
+                  )}
+                </div>
+                
+                <Button 
+                  variant="outline" 
+                  className="w-full" 
+                  onClick={() => setDetailsDialogOpen(false)}
+                >
+                  إغلاق
+                </Button>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
 
         <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
           <AlertDialogContent>

@@ -54,9 +54,11 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Group name is required' });
         }
 
+        // Set course_id to NULL to avoid foreign key constraint errors
+        // Groups will be linked to grades instead of courses
         const result = await execute(
-            'INSERT INTO `groups` (name, description, course_id, max_students, is_active) VALUES (?, ?, ?, ?, ?)',
-            [name, description || null, course_id || null, max_students || 30, is_active]
+            'INSERT INTO `groups` (name, description, course_id, max_students, is_active) VALUES (?, ?, NULL, ?, ?)',
+            [name, description || null, max_students || 30, is_active]
         );
 
         const newGroup = await queryOne<Group>(

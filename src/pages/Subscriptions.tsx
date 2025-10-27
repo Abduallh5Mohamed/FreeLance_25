@@ -9,11 +9,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { CreditCard, Plus, Edit2, Trash2, Calendar, DollarSign } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
+import { getSubscriptions, createSubscription, updateSubscription, deleteSubscription, type Subscription } from "@/lib/api";
 
 const Subscriptions = () => {
-  const [subscriptions, setSubscriptions] = useState([]);
+  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [isOpen, setIsOpen] = useState(false);
-  const [editingSubscription, setEditingSubscription] = useState(null);
+  const [editingSubscription, setEditingSubscription] = useState<Subscription | null>(null);
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
     name: "",
@@ -31,14 +32,15 @@ const Subscriptions = () => {
 
   const fetchSubscriptions = async () => {
     try {
-      // TODO: Add subscriptions API endpoint
-      setSubscriptions([]);
-      toast({
-        title: "قريباً",
-        description: "سيتم إضافة الاشتراكات قريباً",
-      });
+      const data = await getSubscriptions();
+      setSubscriptions(data || []);
     } catch (error) {
       console.error('Error fetching subscriptions:', error);
+      toast({
+        title: "خطأ",
+        description: "فشل في تحميل الاشتراكات",
+        variant: "destructive",
+      });
     }
   };
 
@@ -47,11 +49,29 @@ const Subscriptions = () => {
     setLoading(true);
 
     try {
-      // TODO: Add subscriptions API endpoint
-      toast({
-        title: "قريباً",
-        description: "سيتم إضافة هذه الميزة قريباً",
-      });
+      if (editingSubscription) {
+        await updateSubscription(editingSubscription.id, {
+          name: formData.name,
+          duration_months: parseInt(formData.duration_months),
+          price: parseFloat(formData.price),
+          description: formData.description
+        });
+        toast({
+          title: "تم التحديث بنجاح",
+          description: "تم تحديث الاشتراك بنجاح",
+        });
+      } else {
+        await createSubscription({
+          name: formData.name,
+          duration_months: parseInt(formData.duration_months),
+          price: parseFloat(formData.price),
+          description: formData.description
+        });
+        toast({
+          title: "تم الإضافة بنجاح",
+          description: "تم إضافة الاشتراك الجديد بنجاح",
+        });
+      }
 
       fetchSubscriptions();
       setIsOpen(false);
@@ -61,7 +81,7 @@ const Subscriptions = () => {
       console.error('Error:', error);
       toast({
         title: "خطأ",
-        description: error.message || "حدث خطأ، حاول مرة أخرى",
+        description: "حدث خطأ، حاول مرة أخرى",
         variant: "destructive",
       });
     } finally {
@@ -69,7 +89,7 @@ const Subscriptions = () => {
     }
   };
 
-  const handleEdit = (subscription) => {
+  const handleEdit = (subscription: Subscription) => {
     setEditingSubscription(subscription);
     setFormData({
       name: subscription.name,
@@ -80,14 +100,11 @@ const Subscriptions = () => {
     setIsOpen(true);
   };
 
-  const handleDelete = async (id) => {
-    try {
-      const { error } = await supabase
-        .from('subscriptions')
-        .delete()
-        .eq('id', id);
+  const handleDelete = async (id: string) => {
+    if (!confirm("هل أنت متأكد من حذف هذا الاشتراك؟")) return;
 
-      if (error) throw error;
+    try {
+      await deleteSubscription(id);
 
       fetchSubscriptions();
       toast({
@@ -103,14 +120,9 @@ const Subscriptions = () => {
     }
   };
 
-  const toggleActive = async (id, currentStatus) => {
+  const toggleActive = async (id: string, currentStatus: boolean) => {
     try {
-      const { error } = await supabase
-        .from('subscriptions')
-        .update({ is_active: !currentStatus })
-        .eq('id', id);
-
-      if (error) throw error;
+      await updateSubscription(id, { is_active: !currentStatus });
 
       fetchSubscriptions();
       toast({

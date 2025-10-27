@@ -234,6 +234,19 @@ export const createCourse = async (course: Partial<Course>): Promise<string> => 
     return created.id;
 };
 
+export const updateCourse = async (id: string, course: Partial<Course>): Promise<void> => {
+    await request<Course>(`/courses/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(course),
+    });
+};
+
+export const deleteCourse = async (id: string): Promise<void> => {
+    await request(`/courses/${id}`, {
+        method: 'DELETE',
+    });
+};
+
 // ====================================
 // Groups Functions
 // ====================================
@@ -332,6 +345,53 @@ export const updateGrade = async (id: string, grade: Partial<Grade>): Promise<Gr
 
 export const deleteGrade = async (id: string): Promise<void> => {
     await request<void>(`/grades/${id}`, {
+        method: 'DELETE',
+    });
+};
+
+// ====================================
+// Subscriptions Functions
+// ====================================
+
+export interface Subscription {
+    id: string;
+    name: string;
+    duration_months: number;
+    price: number;
+    description?: string;
+    is_active: boolean;
+    created_at?: Date;
+    updated_at?: Date;
+}
+
+export const getSubscriptions = async (): Promise<Subscription[]> => {
+    return request<Subscription[]>('/subscriptions');
+};
+
+export const getSubscriptionById = async (id: string): Promise<Subscription | null> => {
+    try {
+        return await request<Subscription>(`/subscriptions/${id}`);
+    } catch {
+        return null;
+    }
+};
+
+export const createSubscription = async (subscription: Partial<Subscription>): Promise<Subscription> => {
+    return request<Subscription>('/subscriptions', {
+        method: 'POST',
+        body: JSON.stringify(subscription),
+    });
+};
+
+export const updateSubscription = async (id: string, subscription: Partial<Subscription>): Promise<Subscription> => {
+    return request<Subscription>(`/subscriptions/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(subscription),
+    });
+};
+
+export const deleteSubscription = async (id: string): Promise<void> => {
+    await request<void>(`/subscriptions/${id}`, {
         method: 'DELETE',
     });
 };

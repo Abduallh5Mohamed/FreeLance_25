@@ -61,4 +61,44 @@ router.post('/', async (req: Request, res: Response) => {
     }
 });
 
+// Update course
+router.put('/:id', async (req: Request, res: Response) => {
+    try {
+        const { name, subject, description, grade, price } = req.body;
+        const { id } = req.params;
+
+        await execute(
+            'UPDATE courses SET name = ?, subject = ?, description = ?, grade = ?, price = ? WHERE id = ?',
+            [name, subject || null, description || null, grade || null, price || 0, id]
+        );
+
+        const updatedCourse = await queryOne(
+            'SELECT * FROM courses WHERE id = ?',
+            [id]
+        );
+
+        res.json(updatedCourse);
+    } catch (error) {
+        console.error('Update course error:', error);
+        res.status(500).json({ error: 'Failed to update course' });
+    }
+});
+
+// Delete course
+router.delete('/:id', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        
+        await execute(
+            'UPDATE courses SET is_active = FALSE WHERE id = ?',
+            [id]
+        );
+
+        res.json({ message: 'Course deleted successfully' });
+    } catch (error) {
+        console.error('Delete course error:', error);
+        res.status(500).json({ error: 'Failed to delete course' });
+    }
+});
+
 export default router;
