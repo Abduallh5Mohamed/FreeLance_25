@@ -9,7 +9,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Users, Plus, Edit2, Trash2 } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
 
 const AVAILABLE_PAGES = [
   { id: "students", label: "إدارة الطلاب" },
@@ -38,17 +37,17 @@ const Staff = () => {
 
   useEffect(() => {
     fetchStaff();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchStaff = async () => {
     try {
-      const { data, error } = await supabase
-        .from('staff')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      setStaff(data || []);
+      // TODO: Add staff API endpoint
+      setStaff([]);
+      toast({
+        title: "قريباً",
+        description: "سيتم إضافة إدارة الموظفين قريباً",
+      });
     } catch (error) {
       console.error('Error fetching staff:', error);
     }
@@ -59,54 +58,20 @@ const Staff = () => {
     setLoading(true);
 
     try {
-      if (editingStaff) {
-        const updateData: any = {
-          name: formData.name,
-          email: formData.email,
-          phone: formData.phone,
-          accessible_pages: selectedPages,
-        };
-
-        if (formData.password.trim()) {
-          updateData.password = formData.password;
-        }
-
-        const { error } = await supabase
-          .from('staff')
-          .update(updateData)
-          .eq('id', editingStaff.id);
-
-        if (error) throw error;
-
-        toast({
-          title: "تم التحديث بنجاح",
-          description: "تم تحديث بيانات الموظف",
-        });
-      } else {
-        const { error } = await supabase
-          .from('staff')
-          .insert({
-            ...formData,
-            accessible_pages: selectedPages,
-          });
-
-        if (error) throw error;
-
-        toast({
-          title: "تم الإضافة بنجاح",
-          description: "تم إضافة موظف جديد",
-        });
-      }
+      toast({
+        title: "قريباً",
+        description: "سيتم إضافة هذه الميزة قريباً",
+      });
 
       fetchStaff();
       setIsOpen(false);
       setEditingStaff(null);
       setFormData({ name: "", email: "", phone: "", password: "" });
       setSelectedPages([]);
-    } catch (error: any) {
+    } catch (error) {
       toast({
         title: "خطأ",
-        description: error.message,
+        description: "حدث خطأ في العملية",
         variant: "destructive",
       });
     } finally {
@@ -114,7 +79,7 @@ const Staff = () => {
     }
   };
 
-  const handleEdit = (staffMember) => {
+  const handleEdit = (staffMember: { name: string; email: string; phone?: string; accessible_pages?: string[] }) => {
     setEditingStaff(staffMember);
     setFormData({
       name: staffMember.name,
@@ -128,17 +93,10 @@ const Staff = () => {
 
   const handleDelete = async (id: string) => {
     try {
-      const { error } = await supabase
-        .from('staff')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
-
-      fetchStaff();
+      // TODO: Add staff delete API endpoint
       toast({
-        title: "تم الحذف بنجاح",
-        description: "تم حذف الموظف",
+        title: "قريباً",
+        description: "سيتم إضافة هذه الميزة قريباً",
       });
     } catch (error) {
       toast({
@@ -152,7 +110,7 @@ const Staff = () => {
   return (
     <div className="min-h-screen bg-background" dir="rtl">
       <Header />
-      
+
       <div className="container mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">

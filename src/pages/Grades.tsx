@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,15 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { GraduationCap, Plus, Edit2, Trash2 } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-
-interface Grade {
-  id: string;
-  name: string;
-  description: string | null;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
-}
+import { getGrades, createGrade, updateGrade, deleteGrade, type Grade } from "@/lib/api";
 
 const Grades = () => {
   const [grades, setGrades] = useState<Grade[]>([]);
@@ -24,26 +15,22 @@ const Grades = () => {
   const [editingGrade, setEditingGrade] = useState<Grade | null>(null);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-  
+
   const [formData, setFormData] = useState({
     name: "",
     description: ""
   });
-  
+
   const { toast } = useToast();
 
   useEffect(() => {
     fetchGrades();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchGrades = async () => {
     try {
-      const { data, error } = await supabase
-        .from('grades')
-        .select('*')
-        .order('name', { ascending: true });
-      
-      if (error) throw error;
+      const data = await getGrades();
       setGrades(data || []);
     } catch (error) {
       console.error('Error fetching grades:', error);
@@ -61,46 +48,34 @@ const Grades = () => {
 
     try {
       if (editingGrade) {
-        const { error } = await supabase
-          .from('grades')
-          .update({
-            name: formData.name,
-            description: formData.description
-          })
-          .eq('id', editingGrade.id);
-        
-        if (error) throw error;
-        
+        await updateGrade(editingGrade.id, {
+          name: formData.name,
+          display_order: editingGrade.display_order
+        });
         toast({
-          title: "نجح",
+          title: "تم التحديث بنجاح",
           description: "تم تحديث الصف بنجاح",
         });
       } else {
-        const { error } = await supabase
-          .from('grades')
-          .insert({
-            name: formData.name,
-            description: formData.description,
-            is_active: true
-          });
-        
-        if (error) throw error;
-        
+        await createGrade({
+          name: formData.name,
+          display_order: 0
+        });
         toast({
-          title: "نجح",
-          description: "تم إضافة الصف بنجاح",
+          title: "تم الإضافة بنجاح",
+          description: "تم إضافة الصف الجديد بنجاح",
         });
       }
-      
+
       fetchGrades();
       setIsOpen(false);
       setEditingGrade(null);
       setFormData({ name: "", description: "" });
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error:', error);
       toast({
         title: "خطأ",
-        description: error.message || "حدث خطأ أثناء حفظ الصف",
+        description: "حدث خطأ أثناء حفظ الصف",
         variant: "destructive",
       });
     } finally {
@@ -121,23 +96,17 @@ const Grades = () => {
     if (!confirm("هل أنت متأكد من حذف هذا الصف؟")) return;
 
     try {
-      const { error } = await supabase
-        .from('grades')
-        .delete()
-        .eq('id', id);
-      
-      if (error) throw error;
-      
+      await deleteGrade(id);
       toast({
-        title: "نجح",
+        title: "تم الحذف بنجاح",
         description: "تم حذف الصف بنجاح",
       });
-      
+
       fetchGrades();
-    } catch (error: any) {
+    } catch (error) {
       toast({
         title: "خطأ",
-        description: error.message || "فشل حذف الصف",
+        description: "فشل حذف الصف",
         variant: "destructive",
       });
     }
@@ -151,7 +120,7 @@ const Grades = () => {
   return (
     <div className="min-h-screen bg-background" dir="rtl">
       <Header />
-      
+
       <main className="container mx-auto p-6 space-y-6">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -161,10 +130,10 @@ const Grades = () => {
               <p className="text-muted-foreground">إضافة وتعديل الصفوف الدراسية</p>
             </div>
           </div>
-          
+
           <Dialog open={isOpen} onOpenChange={setIsOpen}>
             <DialogTrigger asChild>
-              <Button 
+              <Button
                 onClick={() => {
                   setEditingGrade(null);
                   setFormData({ name: "", description: "" });

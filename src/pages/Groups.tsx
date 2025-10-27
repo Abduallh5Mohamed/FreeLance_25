@@ -10,25 +10,27 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { supabase } from '@/integrations/supabase/client';
+import { getGroups, getGrades, createGroup, updateGroup, deleteGroup, type Group as APIGroup, type Grade as APIGrade } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { Plus, Edit, Trash2, Users } from 'lucide-react';
 
 interface Group {
   id: string;
   name: string;
-  description: string;
-  max_students: number;
-  current_students: number;
+  description?: string;
+  max_students?: number;
+  current_students?: number;
   is_active: boolean;
-  type: 'offline' | 'online';
+  course_id?: string;
   grade_id?: string;
-  grades?: { name: string };
+  grade_name?: string;
 }
 
 interface Grade {
   id: string;
   name: string;
+  display_order: number;
+  is_active: boolean;
 }
 
 const Groups = () => {
@@ -43,7 +45,6 @@ const Groups = () => {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
-    type: 'offline' as 'offline' | 'online',
     grade_id: '',
     max_students: 50
   });
@@ -55,16 +56,14 @@ const Groups = () => {
 
   const fetchGroups = async () => {
     try {
-      const { data, error } = await supabase
-        .from('groups')
-        .select(`
-          *,
-          grades (name)
-        `)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      setGroups(data || []);
+      const data = await getGroups();
+      // Fetch grade names for each group
+      const gradesData = await getGrades();
+      const groupsWithGrades = data.map(group => ({
+        ...group,
+        grade_name: gradesData.find(g => g.id === group.course_id)?.name || '-'
+      }));
+      setGroups(groupsWithGrades);
     } catch (error) {
       console.error('Error fetching groups:', error);
       toast({
@@ -79,13 +78,8 @@ const Groups = () => {
 
   const fetchGrades = async () => {
     try {
-      const { data, error } = await supabase
-        .from('grades')
-        .select('id, name')
-        .eq('is_active', true);
-
-      if (error) throw error;
-      setGrades(data || []);
+      const data = await getGrades();
+      setGrades(data);
     } catch (error) {
       console.error('Error fetching grades:', error);
     }
@@ -99,27 +93,16 @@ const Groups = () => {
       const groupData = {
         name: formData.name,
         description: formData.description,
-        type: formData.type,
-        grade_id: formData.grade_id || null,
+        course_id: formData.grade_id || undefined,
         max_students: formData.max_students,
         is_active: true
       };
 
-      let error;
       if (isEditing && currentGroup) {
-        const { error: updateError } = await supabase
-          .from('groups')
-          .update(groupData)
-          .eq('id', currentGroup.id);
-        error = updateError;
+        await updateGroup(currentGroup.id, groupData);
       } else {
-        const { error: insertError } = await supabase
-          .from('groups')
-          .insert([groupData]);
-        error = insertError;
+        await createGroup(groupData);
       }
-
-      if (error) throw error;
 
       toast({
         title: "نجح",
@@ -146,9 +129,8 @@ const Groups = () => {
     setFormData({
       name: group.name,
       description: group.description || '',
-      type: group.type,
-      grade_id: group.grade_id || '',
-      max_students: group.max_students
+      grade_id: group.course_id || '',
+      max_students: group.max_students || 50
     });
     setIsEditing(true);
     setIsDialogOpen(true);
@@ -158,43 +140,7 @@ const Groups = () => {
     if (!window.confirm('هل أنت متأكد من حذف هذه المجموعة؟')) return;
 
     try {
-      // Step 1: Update students to remove group reference
-      await supabase
-        .from('students')
-        .update({ group_id: null })
-        .eq('group_id', id);
-
-      // Step 2: Delete related attendance QR codes
-      await supabase
-        .from('attendance_qr_codes')
-        .delete()
-        .eq('group_id', id);
-
-      // Step 3: Delete related material groups
-      await supabase
-        .from('material_groups')
-        .delete()
-        .eq('group_id', id);
-
-      // Step 4: Delete related group courses
-      await supabase
-        .from('group_courses')
-        .delete()
-        .eq('group_id', id);
-
-      // Step 5: Update exams to remove group reference
-      await supabase
-        .from('exams')
-        .update({ group_id: null })
-        .eq('group_id', id);
-
-      // Step 6: Finally delete the group
-      const { error } = await supabase
-        .from('groups')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
+      await deleteGroup(id);
 
       toast({
         title: "نجح",
@@ -202,11 +148,11 @@ const Groups = () => {
       });
 
       fetchGroups();
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error deleting group:', error);
       toast({
         title: "خطأ",
-        description: error.message || "فشل في حذف المجموعة",
+        description: "فشل في حذف المجموعة",
         variant: "destructive",
       });
     }
@@ -214,12 +160,7 @@ const Groups = () => {
 
   const toggleGroupStatus = async (group: Group) => {
     try {
-      const { error } = await supabase
-        .from('groups')
-        .update({ is_active: !group.is_active })
-        .eq('id', group.id);
-
-      if (error) throw error;
+      await updateGroup(group.id, { is_active: !group.is_active });
 
       toast({
         title: "نجح",
@@ -240,7 +181,6 @@ const Groups = () => {
     setFormData({
       name: '',
       description: '',
-      type: 'offline',
       grade_id: '',
       max_students: 50
     });
@@ -262,7 +202,7 @@ const Groups = () => {
   return (
     <div className="min-h-screen bg-background" dir="rtl">
       <Header />
-      
+
       <div className="container mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
@@ -306,14 +246,12 @@ const Groups = () => {
                   <TableRow key={group.id}>
                     <TableCell className="font-medium">{group.name}</TableCell>
                     <TableCell>{group.description}</TableCell>
-                    <TableCell>{group.grades?.name || '-'}</TableCell>
+                    <TableCell>{group.grade_name || '-'}</TableCell>
                     <TableCell>
-                      <Badge variant={group.type === 'online' ? 'default' : 'secondary'}>
-                        {group.type === 'online' ? 'أونلاين' : 'أوفلاين'}
-                      </Badge>
+                      <Badge variant="secondary">مجموعة دراسية</Badge>
                     </TableCell>
                     <TableCell>
-                      {group.current_students} / {group.max_students}
+                      {group.current_students || 0} / {group.max_students || 50}
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
@@ -402,22 +340,6 @@ const Groups = () => {
               </div>
 
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="type">نوع المجموعة</Label>
-                  <Select
-                    value={formData.type}
-                    onValueChange={(value: 'offline' | 'online') => setFormData(prev => ({ ...prev, type: value }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="offline">أوفلاين</SelectItem>
-                      <SelectItem value="online">أونلاين</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
                 <div className="space-y-2">
                   <Label htmlFor="max_students">الحد الأقصى للطلاب</Label>
                   <Input

@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Calendar, Check, X, Users, Search } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import { getStudents, getCourses, getAttendance, markAttendance } from "@/lib/api";
 
 const Attendance = () => {
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
@@ -23,25 +23,12 @@ const Attendance = () => {
     fetchStudents();
     fetchCourses();
     fetchAttendance();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate]);
 
   const fetchStudents = async () => {
     try {
-      const { data, error } = await supabase
-        .from('students')
-        .select(`
-          *,
-          student_courses (
-            courses (
-              id,
-              name,
-              subject
-            )
-          )
-        `)
-        .eq('is_active', true);
-      
-      if (error) throw error;
+      const data = await getStudents();
       setStudents(data || []);
     } catch (error) {
       console.error('Error fetching students:', error);
@@ -50,11 +37,7 @@ const Attendance = () => {
 
   const fetchCourses = async () => {
     try {
-      const { data, error } = await supabase
-        .from('courses')
-        .select('*');
-      
-      if (error) throw error;
+      const data = await getCourses();
       setCourses(data || []);
     } catch (error) {
       console.error('Error fetching courses:', error);
@@ -63,56 +46,20 @@ const Attendance = () => {
 
   const fetchAttendance = async () => {
     try {
-      const { data, error } = await supabase
-        .from('attendance')
-        .select(`
-          *,
-          students (name, email),
-          courses (name)
-        `)
-        .eq('attendance_date', selectedDate);
-      
-      if (error) throw error;
+      const data = await getAttendance({ date: selectedDate });
       setAttendance(data || []);
     } catch (error) {
       console.error('Error fetching attendance:', error);
     }
   };
 
-  const markAttendance = async (studentId: string, status: 'present' | 'absent') => {
+  const handleMarkAttendance = async (studentId: string, status: 'present' | 'absent') => {
     try {
-      // Check if attendance already exists for this student on this date
-      const { data: existingAttendance } = await supabase
-        .from('attendance')
-        .select('*')
-        .eq('student_id', studentId)
-        .eq('attendance_date', selectedDate)
-        .single();
-
-      if (existingAttendance) {
-        // Update existing attendance
-        const { error } = await supabase
-          .from('attendance')
-          .update({ status })
-          .eq('id', existingAttendance.id);
-        
-        if (error) throw error;
-      } else {
-        // Create new attendance record
-        const student = students.find(s => s.id === studentId);
-        if (student?.student_courses?.[0]) {
-          const { error } = await supabase
-            .from('attendance')
-            .insert({
-              student_id: studentId,
-              course_id: student.student_courses[0].courses.id,
-              attendance_date: selectedDate,
-              status
-            });
-          
-          if (error) throw error;
-        }
-      }
+      await markAttendance({
+        student_id: studentId,
+        attendance_date: new Date(selectedDate),
+        status
+      });
 
       fetchAttendance();
       toast({
@@ -129,8 +76,8 @@ const Attendance = () => {
   };
 
   const getStudentAttendance = (studentId: string) => {
-    return attendance.find(a => 
-      a.student_id === studentId && 
+    return attendance.find(a =>
+      a.student_id === studentId &&
       a.attendance_date === selectedDate
     );
   };
@@ -144,7 +91,7 @@ const Attendance = () => {
   return (
     <div className="min-h-screen bg-background" dir="rtl">
       <Header />
-      
+
       <div className="container mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
@@ -172,7 +119,7 @@ const Attendance = () => {
               </div>
             </CardContent>
           </Card>
-          
+
           <Card className="shadow-soft">
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
@@ -186,7 +133,7 @@ const Attendance = () => {
               </div>
             </CardContent>
           </Card>
-          
+
           <Card className="shadow-soft">
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
@@ -231,7 +178,7 @@ const Attendance = () => {
                         <Button
                           size="sm"
                           variant={studentAttendance?.status === 'present' ? "default" : "outline"}
-                          onClick={() => markAttendance(student.id, 'present')}
+                          onClick={() => handleMarkAttendance(student.id, 'present')}
                           className="text-xs"
                         >
                           <Check className="w-3 h-3 ml-1" />
@@ -240,7 +187,7 @@ const Attendance = () => {
                         <Button
                           size="sm"
                           variant={studentAttendance?.status === 'absent' ? "destructive" : "outline"}
-                          onClick={() => markAttendance(student.id, 'absent')}
+                          onClick={() => handleMarkAttendance(student.id, 'absent')}
                           className="text-xs"
                         >
                           <X className="w-3 h-3 ml-1" />
@@ -310,11 +257,10 @@ const Attendance = () => {
                           <TableCell>{record.courses?.name}</TableCell>
                           <TableCell>{record.attendance_date}</TableCell>
                           <TableCell>
-                            <span className={`px-2 py-1 rounded-full text-xs ${
-                              record.status === 'present' 
-                                ? 'bg-green-100 text-green-800' 
+                            <span className={`px-2 py-1 rounded-full text-xs ${record.status === 'present'
+                                ? 'bg-green-100 text-green-800'
                                 : 'bg-red-100 text-red-800'
-                            }`}>
+                              }`}>
                               {record.status === 'present' ? 'حاضر' : 'غائب'}
                             </span>
                           </TableCell>

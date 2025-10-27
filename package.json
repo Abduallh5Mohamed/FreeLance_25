@@ -8,7 +8,9 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "db:test": "tsx scripts/test-db.ts",
+    "db:setup": "mysql -u root -p < database/mysql-schema.sql"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -40,7 +42,6 @@
     "@radix-ui/react-toggle-group": "^1.1.10",
     "@radix-ui/react-tooltip": "^1.2.7",
     "@react-spring/web": "^10.0.3",
-    "@supabase/supabase-js": "^2.57.4",
     "@tanstack/react-query": "^5.83.0",
     "@types/bcryptjs": "^3.0.0",
     "@types/three": "^0.160.0",
@@ -49,11 +50,13 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "date-fns": "^3.6.0",
+    "dotenv": "^17.2.3",
     "embla-carousel-react": "^8.6.0",
     "framer-motion": "^12.23.24",
     "html5-qrcode": "^2.3.8",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.462.0",
+    "mysql2": "^3.11.5",
     "next-themes": "^0.3.0",
     "particles-bg": "^2.5.5",
     "react": "^18.3.1",
@@ -88,6 +91,7 @@
     "lovable-tagger": "^1.1.9",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.17",
+    "tsx": "^4.20.6",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.38.0",
     "vite": "^5.4.19"

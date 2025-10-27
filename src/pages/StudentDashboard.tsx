@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { BookOpen, FileText, Clock, Calendar, Download, Play, Eye, MessageSquare, Award, Users, Calendar as CalendarIcon, Sparkles, TrendingUp, Trophy, Target } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import { getStudents, getCourses, getGroups } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 import { motion, AnimatePresence } from "framer-motion";
@@ -34,182 +34,59 @@ const StudentDashboard = () => {
 
   const fetchStudentData = async () => {
     try {
-      // TEMPORARY: Skip auth check for development
+      // TEMPORARY: Demo mode for student dashboard
       const DEMO_MODE = true;
-      
+
       if (DEMO_MODE) {
         // Set demo session in localStorage for Messages page
         localStorage.setItem('student_session', JSON.stringify({
           email: 'demo@student.com',
           loginTime: Date.now()
         }));
-        
-        // Use demo data
-        setStudentData({
+
+        // Fetch real students from MySQL API
+        const allStudents = await getStudents();
+        const demoStudent = allStudents?.[0] || {
           id: 'demo-123',
           name: 'محمد أحمد',
           email: 'demo@student.com',
           phone: '01234567890',
           grade: 'الصف الثاني الثانوي',
           group_id: null
-        });
-        setCourses([
-          { id: '1', name: 'تاريخ', subject: 'التاريخ', description: 'تاريخ مصر القديمة' },
-          { id: '2', name: 'جغرافيا', subject: 'الجغرافيا', description: 'جغرافيا مصر' }
-        ]);
+        };
+
+        setStudentData(demoStudent);
+
+        // Fetch real courses from MySQL API
+        const allCourses = await getCourses();
+        setCourses(allCourses || []);
+
+        // Fetch group info if student has a group
+        if (demoStudent.group_id) {
+          const allGroups = await getGroups();
+          const studentGroup = allGroups?.find(g => g.id === demoStudent.group_id);
+          if (studentGroup) {
+            setGroupInfo(studentGroup);
+          }
+        }
+
+        // TODO: Add API routes for materials, exams, messages
+        setMaterials([]);
+        setExams([]);
+        setMessages([]);
+
         setLoading(false);
         return;
       }
 
-      let studentEmail = null;
-      let isOfflineStudent = false;
-
-      // First, check if this is an offline student
-      const offlineSession = localStorage.getItem('offlineStudentSession');
-      if (offlineSession) {
-        const session = JSON.parse(offlineSession);
-        // Check if session is still valid (24 hours)
-        const isSessionValid = new Date().getTime() - session.timestamp < 24 * 60 * 60 * 1000;
-
-        if (isSessionValid && session.student) {
-          studentEmail = session.student.email;
-          isOfflineStudent = true;
-        } else {
-          localStorage.removeItem('offlineStudentSession');
-          // auth guard disabled - redirect suppressed
-          return;
-        }
-      } else {
-        // Check if student is logged in via Supabase auth
-        const { data: { user } } = await supabase.auth.getUser();
-
-        if (!user) {
-          // auth guard disabled - redirect suppressed
-          return;
-        }
-        studentEmail = user.email;
-      }
-
-      // Get student data using email
-      const { data: student, error: studentError } = await supabase
-        .from('students')
-        .select(`
-          *,
-          student_courses (
-            courses (
-              id,
-              name,
-              subject,
-              description
-            )
-          )
-        `)
-        .eq('email', studentEmail)
-        .single();
-
-      if (studentError || !student) {
-        toast({
-          title: "خطأ",
-          description: "لا يمكن العثور على بيانات الطالب",
-          variant: "destructive",
-        });
-        // auth guard disabled - redirect suppressed
-        return;
-      }
-
-      setStudentData(student);
-
-      // Extract enrolled courses
-      const enrolledCourses = student.student_courses?.map(sc => sc.courses) || [];
-      setCourses(enrolledCourses);
-
-      // Fetch course materials for student's group and enrolled courses only
-      if (student.group_id) {
-        const enrolledCourseIds = enrolledCourses.map(c => c.id);
-
-        const { data: materialsData, error: materialsError } = await supabase
-          .from('material_groups')
-          .select(`
-            material_id,
-            course_materials (
-              *,
-              courses (
-                name,
-                subject
-              )
-            )
-          `)
-          .eq('group_id', student.group_id);
-
-        if (!materialsError && materialsData) {
-          // Filter materials to only show those for enrolled courses
-          const materials = materialsData
-            .filter(mg =>
-              mg.course_materials &&
-              enrolledCourseIds.includes(mg.course_materials.course_id)
-            )
-            .map(mg => mg.course_materials);
-          setMaterials(materials);
-        }
-
-        // Fetch exams for student's group and enrolled courses only
-        const { data: examsData, error: examsError } = await supabase
-          .from('exam_groups')
-          .select(`
-            exam_id,
-            exams (
-              *,
-              courses (
-                name,
-                subject
-              )
-            )
-          `)
-          .eq('group_id', student.group_id);
-
-        if (!examsError && examsData) {
-          // Filter exams to only show those for enrolled courses and active exams
-          const exams = examsData
-            .filter(eg =>
-              eg.exams &&
-              eg.exams.is_active &&
-              enrolledCourseIds.includes(eg.exams.course_id)
-            )
-            .map(eg => eg.exams);
-          setExams(exams);
-        }
-      }
-
-      // Fetch group information if student has a group
-      if (student.group_id) {
-        const { data: groupData, error: groupError } = await supabase
-          .from('groups')
-          .select(`
-            *,
-            courses (
-              name,
-              subject
-            )
-          `)
-          .eq('id', student.group_id)
-          .single();
-
-        if (!groupError && groupData) {
-          setGroupInfo(groupData);
-        }
-      }
-
-      // Fetch recent messages between student and admin
-      const { data: messagesData, error: messagesError } = await supabase
-        .from('teacher_messages')
-        .select('*')
-        .or(`sender_id.eq.${student.id},recipient_id.eq.${student.id}`)
-        .order('sent_at', { ascending: false })
-        .limit(5);
-
-      if (!messagesError) {
-        setMessages(messagesData || []);
-      }
+      // Production mode would require proper authentication
+      // For now, redirect to auth
+      toast({
+        title: "تسجيل الدخول مطلوب",
+        description: "يرجى تسجيل الدخول للوصول إلى لوحة التحكم",
+        variant: "destructive",
+      });
+      navigate('/auth');
     } catch (error) {
       console.error('Error fetching student data:', error);
       toast({
@@ -265,7 +142,7 @@ const StudentDashboard = () => {
     return (
       <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 flex items-center justify-center relative overflow-hidden">
         <FloatingParticles />
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
           className="text-center relative z-10"
@@ -275,7 +152,7 @@ const StudentDashboard = () => {
             transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
             className="w-16 h-16 border-4 border-primary border-t-transparent rounded-full mx-auto mb-4"
           />
-          <motion.p 
+          <motion.p
             animate={{ opacity: [0.5, 1, 0.5] }}
             transition={{ duration: 1.5, repeat: Infinity }}
             className="text-lg font-medium text-primary"
@@ -299,8 +176,8 @@ const StudentDashboard = () => {
           <GlassmorphicCard className="w-full max-w-md p-8 text-center">
             <Award className="w-16 h-16 mx-auto mb-4 text-destructive" />
             <p className="text-lg font-medium text-foreground mb-4">لا يمكن العثور على بيانات الطالب</p>
-            <Button 
-              onClick={() => navigate("/auth")} 
+            <Button
+              onClick={() => navigate("/auth")}
               className="bg-gradient-to-r from-primary to-accent hover:shadow-glow"
             >
               العودة لتسجيل الدخول
@@ -335,9 +212,7 @@ const StudentDashboard = () => {
                     </AvatarFallback>
                   </Avatar>
                 </motion.div>
-
-                {/* Name and Info - Centered on mobile */}
-                <div className="w-full text-center space-y-2 md:space-y-3">
+                <div className="flex-1 text-center md:text-right">
                   <motion.h1 
                     initial={{ opacity: 0, x: -20 }}
                     animate={{ opacity: 1, x: 0 }}
@@ -356,8 +231,6 @@ const StudentDashboard = () => {
                     </Badge>
                   </div>
                 </div>
-
-                {/* Stats Card - Full width on mobile */}
                 <motion.div 
                   whileHover={{ scale: 1.05 }}
                   className="bg-gradient-to-br from-primary/10 to-accent/10 backdrop-blur-sm p-4 md:p-5 lg:p-6 rounded-xl md:rounded-2xl text-center border-2 border-primary/20 w-full sm:w-auto min-w-[200px]"
@@ -456,9 +329,9 @@ const StudentDashboard = () => {
                         <p className="text-xs md:text-sm text-muted-foreground leading-relaxed">{groupInfo.description}</p>
                       </div>
                       
-                      <div className="flex items-center justify-between p-2.5 md:p-3 bg-muted/30 rounded-lg">
-                        <span className="text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2">
-                          <Users className="w-3.5 h-3.5 md:w-4 md:h-4" />
+                      <div className="flex items-center justify-between p-3 bg-muted/30 rounded-lg">
+                        <span className="text-sm font-medium flex items-center gap-2">
+                          <Users className="w-4 h-4" />
                           عدد الطلاب
                         </span>
                         <Badge className="bg-gradient-to-r from-green-500 to-emerald-500 text-white border-0 text-xs">
