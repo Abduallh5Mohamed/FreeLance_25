@@ -437,88 +437,89 @@ const Students = () => {
         </div>
 
         <Card className="shadow-soft">
-          <CardHeader>
-            <CardTitle>قائمة الطلاب</CardTitle>
+          <CardHeader className="space-y-3">
+            <CardTitle className="text-lg md:text-xl">قائمة الطلاب</CardTitle>
             <div className="flex items-center gap-2">
-              <Search className="w-4 h-4 text-muted-foreground" />
+              <Search className="w-4 h-4 text-muted-foreground flex-shrink-0" />
               <Input
                 placeholder="البحث عن طالب..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="max-w-sm"
+                className="w-full"
               />
             </div>
           </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>الطالب</TableHead>
-                  <TableHead>المرحلة</TableHead>
-                  <TableHead>الاشتراك</TableHead>
-                  <TableHead>الكورسات</TableHead>
-                  <TableHead>تاريخ الانضمام</TableHead>
-                  <TableHead>الحالة</TableHead>
-                  <TableHead>الإجراءات</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+          <CardContent className="overflow-x-auto">
+            <div className="min-w-[800px]">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-xs md:text-sm">الطالب</TableHead>
+                    <TableHead className="text-xs md:text-sm">المرحلة</TableHead>
+                    <TableHead className="text-xs md:text-sm">الاشتراك</TableHead>
+                    <TableHead className="text-xs md:text-sm">الكورسات</TableHead>
+                    <TableHead className="text-xs md:text-sm">تاريخ الانضمام</TableHead>
+                    <TableHead className="text-xs md:text-sm">الحالة</TableHead>
+                    <TableHead className="text-xs md:text-sm">الإجراءات</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                 {filteredStudents.map((student) => (
                   <TableRow key={student.id}>
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        <Avatar>
-                          <AvatarFallback>{getInitials(student.name)}</AvatarFallback>
+                    <TableCell className="min-w-[200px]">
+                      <div className="flex items-center gap-2">
+                        <Avatar className="h-8 w-8">
+                          <AvatarFallback className="text-xs">{getInitials(student.name)}</AvatarFallback>
                         </Avatar>
-                        <div>
-                          <p className="font-medium">{student.name}</p>
-                          <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                            <div className="flex items-center gap-1">
-                              <Mail className="w-3 h-3" />
-                              {student.email}
+                        <div className="min-w-0">
+                          <p className="font-medium text-sm truncate">{student.name}</p>
+                          <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+                            <div className="flex items-center gap-1 truncate">
+                              <Mail className="w-3 h-3 flex-shrink-0" />
+                              <span className="truncate">{student.email}</span>
                             </div>
                             {student.phone && (
                               <div className="flex items-center gap-1">
-                                <Phone className="w-3 h-3" />
-                                {student.phone}
+                                <Phone className="w-3 h-3 flex-shrink-0" />
+                                <span>{student.phone}</span>
                               </div>
                             )}
                           </div>
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell>{student.grade}</TableCell>
-                    <TableCell>
+                    <TableCell className="text-xs md:text-sm">{student.grade}</TableCell>
+                    <TableCell className="min-w-[150px]">
                       {student.subscriptions ? (
                         <div className="space-y-1">
-                          <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
+                          <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-[10px] md:text-xs whitespace-nowrap">
                             {student.subscriptions.name}
                           </span>
-                          <div className="text-xs text-muted-foreground">
+                          <div className="text-[10px] md:text-xs text-muted-foreground">
                             {student.subscription_price} جنيه
                           </div>
                           {student.subscription_end_date && (
-                            <div className="text-xs text-muted-foreground">
+                            <div className="text-[10px] md:text-xs text-muted-foreground">
                               ينتهي: {new Date(student.subscription_end_date).toLocaleDateString('ar-SA')}
                             </div>
                           )}
                         </div>
                       ) : (
-                        <span className="text-xs text-muted-foreground">لا يوجد اشتراك</span>
+                        <span className="text-[10px] md:text-xs text-muted-foreground">لا يوجد اشتراك</span>
                       )}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="min-w-[120px]">
                       <div className="flex flex-wrap gap-1">
                         {student.student_courses?.map((enrollment) => (
-                          <span key={enrollment.courses.id} className="px-2 py-1 bg-primary/10 text-primary rounded text-xs">
+                          <span key={enrollment.courses.id} className="px-1.5 py-0.5 bg-primary/10 text-primary rounded text-[10px] md:text-xs whitespace-nowrap">
                             {enrollment.courses.name}
                           </span>
                         ))}
                       </div>
                     </TableCell>
-                    <TableCell>{new Date(student.enrollment_date).toLocaleDateString('ar-SA')}</TableCell>
+                    <TableCell className="text-xs md:text-sm whitespace-nowrap">{new Date(student.enrollment_date).toLocaleDateString('ar-SA')}</TableCell>
                     <TableCell>
-                      <span className={`px-2 py-1 rounded-full text-xs ${
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] md:text-xs whitespace-nowrap ${
                         student.is_active ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
                       }`}>
                         {student.is_active ? 'نشط' : 'غير نشط'}
@@ -530,16 +531,17 @@ const Students = () => {
                           variant="ghost"
                           size="sm"
                           onClick={() => handleEdit(student)}
+                          className="h-7 w-7 p-0"
                         >
-                          <Edit2 className="w-4 h-4" />
+                          <Edit2 className="w-3 h-3 md:w-4 md:h-4" />
                         </Button>
                         <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => handleDelete(student.id)}
-                          className="text-destructive hover:text-destructive"
+                          className="text-destructive hover:text-destructive h-7 w-7 p-0"
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <Trash2 className="w-3 h-3 md:w-4 md:h-4" />
                         </Button>
                       </div>
                     </TableCell>
@@ -547,6 +549,7 @@ const Students = () => {
                 ))}
               </TableBody>
             </Table>
+            </div>
           </CardContent>
         </Card>
       </div>
