@@ -162,23 +162,23 @@ const TeacherDashboard = () => {
       <main className="container mx-auto px-4 py-8">
         {/* Welcome Section */}
         <div className="mb-8">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-foreground mb-2">
+          <div className="flex flex-col gap-4">
+            <div className="text-center md:text-right">
+              <h1 className="text-2xl md:text-3xl lg:text-4xl font-bold text-foreground mb-2">
                 مرحباً، الأستاذ محمد رمضان 👋
               </h1>
-              <p className="text-muted-foreground">
+              <p className="text-sm md:text-base text-muted-foreground">
                 إليك ملخص سريع عن أنشطتك اليوم - منصة القائد
               </p>
             </div>
-            <div className="flex gap-2">
-              <Button className="bg-gradient-primary shadow-glow hover:shadow-glow/70">
+            <div className="flex flex-col sm:flex-row gap-3 justify-center md:justify-start">
+              <Button className="bg-gradient-primary shadow-glow hover:shadow-glow/70 w-full sm:w-auto">
                 <Plus className="w-4 h-4 ml-2" />
                 إضافة محتوى جديد
               </Button>
               <Dialog open={isExpenseDialogOpen} onOpenChange={setIsExpenseDialogOpen}>
                 <DialogTrigger asChild>
-                  <Button variant="outline" className="shadow-medium">
+                  <Button variant="outline" className="shadow-medium w-full sm:w-auto">
                     <DollarSign className="w-4 h-4 ml-2" />
                     إضافة مصروف
                   </Button>
