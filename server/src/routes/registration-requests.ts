@@ -157,7 +157,7 @@ router.get('/', authenticateToken, requireAdmin, async (req: AuthRequest, res: R
 
 router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthRequest, res: Response) => {
     const connection = await pool.getConnection();
-    
+
     try {
         const { id } = req.params;
 
@@ -184,8 +184,8 @@ router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthReq
 
         if (existingUser.length > 0) {
             await connection.rollback();
-            return res.status(400).json({ 
-                error: 'مستخدم بهذا الهاتف موجود بالفعل' 
+            return res.status(400).json({
+                error: 'مستخدم بهذا الهاتف موجود بالفعل'
             });
         }
 
@@ -211,7 +211,7 @@ router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthReq
                 let courseIds;
                 console.log('Raw requested_courses:', request.requested_courses);
                 console.log('Type:', typeof request.requested_courses);
-                
+
                 // Handle both JSON string and array
                 if (typeof request.requested_courses === 'string') {
                     // Try to parse JSON string
@@ -227,9 +227,9 @@ router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthReq
                     console.warn('Unexpected requested_courses type, skipping');
                     courseIds = [];
                 }
-                
+
                 console.log('Parsed courseIds:', courseIds);
-                
+
                 if (Array.isArray(courseIds) && courseIds.length > 0) {
                     for (const courseId of courseIds) {
                         console.log('Inserting course:', courseId);
@@ -282,7 +282,7 @@ router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthReq
             console.error('Error message:', error.message);
             console.error('Error stack:', error.stack);
         }
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Failed to approve registration request',
             details: error instanceof Error ? error.message : 'Unknown error'
         });
