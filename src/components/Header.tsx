@@ -102,16 +102,8 @@ const Header = () => {
     <header className="bg-primary shadow-2xl border-b-2 border-white/10 sticky top-0 z-50 backdrop-blur-sm" dir="rtl">
       <div className="container mx-auto px-4 py-3">
         <div className="flex items-center justify-between gap-4">
-          {/* Logo and Brand */}
+          {/* Brand Text Only */}
           <div className="flex items-center gap-3 min-w-fit">
-            <div className="relative">
-              <div className="absolute inset-0 bg-gradient-to-r from-yellow-400 to-orange-500 rounded-full blur-lg opacity-50 animate-pulse"></div>
-              <img 
-                src={alQaedLogo} 
-                alt="منصة القائد" 
-                className="relative w-14 h-14 rounded-full object-cover border-3 border-white shadow-xl hover:scale-110 transition-transform duration-300"
-              />
-            </div>
             <div className="hidden md:block">
               <h1 className="text-xl font-bold text-white drop-shadow-lg">منصة القائد</h1>
               <p className="text-blue-100 text-xs font-medium">الأستاذ محمد رمضان - التاريخ</p>
