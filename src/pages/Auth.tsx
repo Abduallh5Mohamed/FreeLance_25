@@ -7,7 +7,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { GraduationCap, LogIn, UserPlus, Sparkles, Lock, Mail, User, Phone as PhoneIcon, BookOpen, Users } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { signIn, signUp, getStudentByPhone, getCourses, getGrades, getGroups, createRegistrationRequest } from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast";
 import alQaedLogo from "@/assets/Qaad_Logo.png";
@@ -182,7 +182,7 @@ const Auth = () => {
       <nav className="absolute -top-4 left-0 right-0 z-50 px-8 py-0">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           {/* Toggle button */}
-          <Button 
+          <Button
             onClick={() => setIsLogin(!isLogin)}
             className="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white px-8 py-2 rounded-lg font-semibold shadow-lg"
           >
