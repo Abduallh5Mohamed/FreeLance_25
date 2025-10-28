@@ -1,4 +1,4 @@
-﻿import { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -50,22 +50,22 @@ export default function CourseContentManager() {
   };
 
   const handleDelete = async (id: string) => { if (!confirm('هل أنت متأكد من حذف هذا المحتوى؟')) return; try { await deleteMaterial(id); toast({ title: 'نجح', description: 'تم حذف المحتوى' }); loadMaterials(selectedCourse); } catch { toast({ title: 'خطأ', description: 'فشل حذف المحتوى', variant: 'destructive' }); } };
-  const getMaterialIcon = (type: CourseMaterial['material_type']) => { switch (type) { case 'video': return <Video className="h-5 w-5 text-blue-500" />; case 'pdf': return <FileText className="h-5 w-5 text-red-500" />; case 'presentation': return <Presentation className="h-5 w-5 text-orange-500" />; default: return <Upload className="h-5 w-5 text-gray-500" />; } };
+  const getMaterialIcon = (type: CourseMaterial['material_type']) => { switch (type) { case 'video': return <Video className="h-5 w-5 text-cyan-500" />; case 'pdf': return <FileText className="h-5 w-5 text-red-500" />; case 'presentation': return <Presentation className="h-5 w-5 text-cyan-500" />; default: return <Upload className="h-5 w-5 text-gray-500" />; } };
 
   const selectedCourseData = courses.find(c => c.id === selectedCourse);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950">
       <Header />
 
       <div className="container mx-auto px-4 py-8 space-y-6" dir="rtl">
         {/* Page Header */}
         <div className="flex items-center gap-3 mb-8">
-          <div className="p-3 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl shadow-lg">
+          <div className="p-3 bg-gradient-to-br from-cyan-500 to-teal-600 rounded-xl shadow-lg">
             <BookOpen className="h-8 w-8 text-white" />
           </div>
           <div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-cyan-600 to-teal-600 bg-clip-text text-transparent">
               إدارة محتوى الدورات
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
@@ -75,10 +75,10 @@ export default function CourseContentManager() {
         </div>
 
         {/* Course Selector */}
-        <Card className="shadow-lg border-t-4 border-t-blue-500">
-          <CardHeader className="bg-gradient-to-r from-blue-50 to-purple-50 dark:from-gray-800 dark:to-gray-700">
+        <Card className="shadow-lg border-t-4 border-t-cyan-500">
+          <CardHeader className="bg-gradient-to-r from-cyan-50 to-teal-50 dark:from-gray-800 dark:to-gray-700">
             <CardTitle className="flex items-center gap-2">
-              <BookOpen className="h-5 w-5 text-blue-600" />
+              <BookOpen className="h-5 w-5 text-cyan-600" />
               اختر الدورة
             </CardTitle>
           </CardHeader>
@@ -91,7 +91,7 @@ export default function CourseContentManager() {
                 {courses.map(c => (
                   <SelectItem key={c.id} value={c.id} className="text-lg py-3">
                     <div className="flex items-center gap-2">
-                      <BookOpen className="h-4 w-4 text-blue-500" />
+                      <BookOpen className="h-4 w-4 text-cyan-500" />
                       <span className="font-semibold">{c.name}</span>
                       <Badge variant="secondary" className="mr-auto">{c.subject}</Badge>
                     </div>
@@ -101,8 +101,8 @@ export default function CourseContentManager() {
             </Select>
 
             {selectedCourseData && (
-              <div className="mt-4 p-4 bg-blue-50 dark:bg-gray-800 rounded-lg border border-blue-200 dark:border-gray-700">
-                <p className="text-sm font-semibold text-blue-900 dark:text-blue-100">
+              <div className="mt-4 p-4 bg-cyan-50 dark:bg-gray-800 rounded-lg border border-cyan-200 dark:border-gray-700">
+                <p className="text-sm font-semibold text-cyan-900 dark:text-cyan-100">
                   الدورة المختارة: {selectedCourseData.name}
                 </p>
                 {selectedCourseData.description && (
@@ -139,7 +139,7 @@ export default function CourseContentManager() {
                       <SelectContent>
                         <SelectItem value="video">
                           <div className="flex items-center gap-2">
-                            <Video className="h-4 w-4 text-blue-500" />
+                            <Video className="h-4 w-4 text-cyan-500" />
                             فيديو
                           </div>
                         </SelectItem>
@@ -151,7 +151,7 @@ export default function CourseContentManager() {
                         </SelectItem>
                         <SelectItem value="presentation">
                           <div className="flex items-center gap-2">
-                            <Presentation className="h-4 w-4 text-orange-500" />
+                            <Presentation className="h-4 w-4 text-cyan-500" />
                             عرض تقديمي
                           </div>
                         </SelectItem>
@@ -240,11 +240,11 @@ export default function CourseContentManager() {
             </Card>
 
             {/* Materials List */}
-            <Card className="lg:col-span-2 shadow-lg border-t-4 border-t-purple-500">
-              <CardHeader className="bg-gradient-to-r from-purple-50 to-pink-50 dark:from-gray-800 dark:to-gray-700">
+            <Card className="lg:col-span-2 shadow-lg border-t-4 border-t-cyan-500">
+              <CardHeader className="bg-gradient-to-r from-cyan-50 to-teal-50 dark:from-gray-800 dark:to-gray-700">
                 <CardTitle className="flex items-center justify-between">
                   <span className="flex items-center gap-2">
-                    <Video className="h-5 w-5 text-purple-600" />
+                    <Video className="h-5 w-5 text-cyan-600" />
                     محتوى الدورة
                   </span>
                   <Badge variant="secondary" className="text-lg px-3 py-1">
@@ -255,7 +255,7 @@ export default function CourseContentManager() {
               <CardContent className="pt-6">
                 {loading ? (
                   <div className="flex flex-col items-center justify-center py-16">
-                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mb-4"></div>
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-cyan-600 mb-4"></div>
                     <p className="text-muted-foreground">جاري التحميل...</p>
                   </div>
                 ) : materials.length === 0 ? (
@@ -273,10 +273,10 @@ export default function CourseContentManager() {
                     {materials.map(m => (
                       <div
                         key={m.id}
-                        className="group flex items-center justify-between p-5 border rounded-xl hover:shadow-md hover:border-purple-300 dark:hover:border-purple-700 transition-all duration-200 bg-white dark:bg-gray-800"
+                        className="group flex items-center justify-between p-5 border rounded-xl hover:shadow-md hover:border-cyan-300 dark:hover:border-cyan-700 transition-all duration-200 bg-white dark:bg-gray-800"
                       >
                         <div className="flex items-start gap-4 flex-1">
-                          <div className="p-3 bg-gradient-to-br from-purple-100 to-pink-100 dark:from-purple-900 dark:to-pink-900 rounded-lg">
+                          <div className="p-3 bg-gradient-to-br from-cyan-100 to-teal-100 dark:from-cyan-900 dark:to-teal-900 rounded-lg">
                             {getMaterialIcon(m.material_type)}
                           </div>
                           <div className="flex-1 min-w-0">
@@ -316,7 +316,7 @@ export default function CourseContentManager() {
                               variant="default"
                               size="sm"
                               onClick={() => setPlayingVideo({ url: m.file_url!, title: m.title })}
-                              className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700"
+                              className="bg-gradient-to-r from-cyan-500 to-teal-600 hover:from-cyan-600 hover:to-teal-700"
                             >
                               <Play className="h-4 w-4 ml-1" />
                               تشغيل

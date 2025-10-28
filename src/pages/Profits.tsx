@@ -51,7 +51,7 @@ const Profits = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
       <Header />
       
       <div className="container mx-auto px-4 py-8">
@@ -99,12 +99,12 @@ const Profits = () => {
           <Card className="shadow-soft">
             <CardContent className="p-6">
               <div className="flex items-center gap-3">
-                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${netProfit >= 0 ? 'bg-blue-100' : 'bg-orange-100'}`}>
-                  <TrendingUp className={`w-6 h-6 ${netProfit >= 0 ? 'text-blue-600' : 'text-orange-600'}`} />
+                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${netProfit >= 0 ? 'bg-cyan-100' : 'bg-cyan-100'}`}>
+                  <TrendingUp className={`w-6 h-6 ${netProfit >= 0 ? 'text-cyan-600' : 'text-cyan-600'}`} />
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">صافي الربح</p>
-                  <p className={`text-2xl font-bold ${netProfit >= 0 ? 'text-blue-600' : 'text-orange-600'}`}>
+                  <p className={`text-2xl font-bold ${netProfit >= 0 ? 'text-cyan-600' : 'text-cyan-600'}`}>
                     {netProfit.toFixed(2)} ج.م
                   </p>
                 </div>

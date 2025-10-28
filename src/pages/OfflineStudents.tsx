@@ -541,7 +541,7 @@ const OfflineStudents = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950">
       <Header />
       
       <div className="container mx-auto p-6 space-y-6">
@@ -895,7 +895,7 @@ const OfflineStudents = () => {
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">إجمالي المستحقات</p>
-                    <p className="font-bold text-lg text-orange-600">
+                    <p className="font-bold text-lg text-cyan-600">
                       {calculateTotalDue(selectedStudent)} ج.م
                     </p>
                   </div>

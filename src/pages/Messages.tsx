@@ -449,7 +449,7 @@ const Messages = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background via-background to-secondary/20 relative overflow-hidden" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950 relative overflow-hidden" dir="rtl">
       {/* Floating Particles Background */}
       <FloatingParticles />
       
@@ -463,7 +463,7 @@ const Messages = () => {
           transition={{ duration: 0.6 }}
           className="mb-4 md:mb-6 lg:mb-8"
         >
-          <div className="relative overflow-hidden rounded-2xl md:rounded-3xl bg-primary p-4 md:p-6 lg:p-8 shadow-2xl">
+          <div className="relative overflow-hidden rounded-2xl md:rounded-3xl bg-gradient-to-r from-cyan-600 to-teal-600 p-4 md:p-6 lg:p-8 shadow-2xl">
             {/* Animated Background Pattern */}
             <div className="absolute inset-0 opacity-10">
               <div className="absolute inset-0" style={{
@@ -529,12 +529,12 @@ const Messages = () => {
               transition={{ duration: 0.5 }}
               className="md:col-span-1"
             >
-              <Card className="shadow-2xl border-primary/20 bg-gradient-to-br from-card/95 to-card backdrop-blur-xl hover:shadow-glow transition-all duration-500">
-                <CardHeader className="bg-gradient-to-r from-primary/10 to-accent/10 border-b border-primary/20">
+              <Card className="shadow-2xl border-cyan-500/20 bg-gradient-to-br from-card/95 to-card backdrop-blur-xl hover:shadow-glow transition-all duration-500">
+                <CardHeader className="bg-gradient-to-r from-cyan-500/10 to-teal-500/10 border-b border-cyan-500/20">
                   <CardTitle className="flex items-center gap-2">
-                    <MessageCircle className="h-5 w-5 text-primary" />
+                    <MessageCircle className="h-5 w-5 text-cyan-600" />
                     المحادثات
-                    <Badge className="mr-auto bg-primary">{conversations.length}</Badge>
+                    <Badge className="mr-auto bg-cyan-600">{conversations.length}</Badge>
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="p-4">
@@ -549,10 +549,10 @@ const Messages = () => {
                             exit={{ opacity: 0, x: 20 }}
                             transition={{ duration: 0.3, delay: index * 0.05 }}
                             whileHover={{ scale: 1.02, x: 5 }}
-                            className={`p-4 rounded-xl hover:bg-gradient-to-r hover:from-primary/10 hover:to-accent/10 cursor-pointer transition-all duration-300 border-2 ${
+                            className={`p-4 rounded-xl hover:bg-gradient-to-r hover:from-cyan-500/10 hover:to-teal-500/10 cursor-pointer transition-all duration-300 border-2 ${
                               selectedConversation?.id === conversation.id 
-                                ? 'bg-gradient-to-r from-primary/20 to-accent/20 border-primary shadow-lg' 
-                                : 'border-transparent hover:border-primary/30'
+                                ? 'bg-gradient-to-r from-cyan-500/20 to-teal-500/20 border-cyan-600 shadow-lg' 
+                                : 'border-transparent hover:border-cyan-500/30'
                             }`}
                             onClick={() => {
                               setSelectedConversation(conversation);
@@ -564,8 +564,8 @@ const Messages = () => {
                                 whileHover={{ rotate: 360 }}
                                 transition={{ duration: 0.5 }}
                               >
-                                <Avatar className="border-2 border-primary/30">
-                                  <AvatarFallback className="bg-gradient-to-br from-primary to-accent text-white">
+                                <Avatar className="border-2 border-cyan-500/30">
+                                  <AvatarFallback className="bg-gradient-to-br from-cyan-600 to-teal-600 text-white">
                                     <User className="w-5 h-5" />
                                   </AvatarFallback>
                                 </Avatar>
@@ -576,7 +576,7 @@ const Messages = () => {
                                   {conversation.lastMessage}
                                 </p>
                               </div>
-                              <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
+                              <Star className="h-4 w-4 text-cyan-500 fill-cyan-500" />
                             </div>
                           </motion.div>
                         ))}
@@ -610,10 +610,10 @@ const Messages = () => {
             transition={{ duration: 0.5, delay: 0.2 }}
             className={`${isStudent ? 'w-full' : 'md:col-span-2 lg:col-span-2'}`}
           >
-            <Card className={`shadow-2xl border-primary/20 bg-gradient-to-br from-card/95 to-card backdrop-blur-xl h-[calc(100vh-200px)] sm:h-[calc(100vh-220px)] md:h-[calc(100vh-280px)] flex flex-col`}>
-            <CardHeader className="bg-gradient-to-r from-primary/10 via-accent/10 to-primary/10 border-b border-primary/20 p-3 md:p-6">
+            <Card className={`shadow-2xl border-cyan-500/20 bg-gradient-to-br from-card/95 to-card backdrop-blur-xl h-[calc(100vh-200px)] sm:h-[calc(100vh-220px)] md:h-[calc(100vh-280px)] flex flex-col`}>
+            <CardHeader className="bg-gradient-to-r from-cyan-500/10 via-teal-500/10 to-cyan-500/10 border-b border-cyan-500/20 p-3 md:p-6">
               <CardTitle className="flex items-center gap-2 text-base md:text-lg">
-                <MessageCircle className="h-5 w-5 md:h-6 md:w-6 text-primary" />
+                <MessageCircle className="h-5 w-5 md:h-6 md:w-6 text-cyan-600" />
                 <span className="truncate">
                   {isStudent 
                     ? 'المحادثة' 
@@ -677,7 +677,7 @@ const Messages = () => {
                         className={`w-full p-3 md:p-4 rounded-xl md:rounded-2xl border-2 transition-all duration-300 ${
                           !isAiMode 
                             ? 'bg-gradient-to-r from-purple-500/20 via-pink-500/20 to-blue-500/20 border-purple-300 dark:border-purple-700' 
-                            : 'bg-gradient-to-r from-primary/10 to-accent/10 border-primary/30'
+                            : 'bg-gradient-to-r from-cyan-500/10 to-teal-500/10 border-cyan-500/30'
                         }`}
                       >
                         <div className="flex items-center justify-between gap-2">
@@ -693,16 +693,16 @@ const Messages = () => {
                             >
                               {!isAiMode ? (
                                 <Bot className="w-5 h-5 md:w-6 md:h-6 text-purple-600 dark:text-purple-400" />
-                              ) : (
-                                <User className="w-5 h-5 md:w-6 md:h-6 text-primary" />
-                              )}
-                            </motion.div>
-                            <div className="text-right flex-1 min-w-0">
-                              <p className={`text-xs md:text-sm font-bold truncate ${
-                                !isAiMode 
-                                  ? 'text-purple-900 dark:text-purple-100' 
-                                  : 'text-primary'
-                              } flex items-center gap-1 md:gap-2`}>
+                            ) : (
+                              <User className="w-5 h-5 md:w-6 md:h-6 text-cyan-600" />
+                            )}
+                          </motion.div>
+                          <div className="text-right flex-1 min-w-0">
+                            <p className={`text-xs md:text-sm font-bold truncate ${
+                              !isAiMode 
+                                ? 'text-purple-900 dark:text-purple-100' 
+                                : 'text-cyan-600'
+                            } flex items-center gap-1 md:gap-2`}>
                                 <span className="truncate">{!isAiMode ? 'المساعد الذكي' : 'الأستاذ محمد رمضان'}</span>
                                 {!isAiMode && <Sparkles className="h-3 w-3 md:h-4 md:w-4 flex-shrink-0" />}
                               </p>
@@ -718,7 +718,7 @@ const Messages = () => {
                           <Badge className={`${
                             !isAiMode 
                               ? 'bg-gradient-to-r from-purple-500 to-pink-500' 
-                              : 'bg-gradient-to-r from-primary to-accent'
+                              : 'bg-gradient-to-r from-cyan-600 to-teal-600'
                           } text-white border-0 text-xs flex-shrink-0`}>
                             {!isAiMode ? (
                               <>
@@ -779,11 +779,11 @@ const Messages = () => {
                             </motion.div>
                           ) : (
                             <motion.div
-                              whileHover={{ scale: 1.02, y: -2 }}
+                              whileHover={{ scale: 1.02 }}
                               className={`max-w-[85%] sm:max-w-[75%] md:max-w-[70%] p-3 md:p-4 rounded-xl md:rounded-2xl shadow-lg ${
                                 message.isFromTeacher 
-                                  ? 'bg-gradient-to-br from-primary to-accent text-white' 
-                                  : 'bg-gradient-to-br from-card to-muted border-2 border-primary/20'
+                                  ? 'bg-gradient-to-br from-cyan-600 to-teal-600 text-white' 
+                                  : 'bg-gradient-to-br from-card to-muted border-2 border-cyan-500/20'
                               }`}
                             >
                               <p className="mb-1 md:mb-2 leading-relaxed text-xs md:text-sm break-words">{message.message_text}</p>
@@ -830,13 +830,13 @@ const Messages = () => {
                   </div>
 
                   {/* Message Input */}
-                  <div className="p-2 md:p-3 lg:p-4 border-t border-primary/20 bg-gradient-to-r from-card/50 to-muted/50 backdrop-blur-sm">
+                  <div className="p-2 md:p-3 lg:p-4 border-t border-cyan-500/20 bg-gradient-to-r from-card/50 to-muted/50 backdrop-blur-sm">
                     <div className="flex gap-2 md:gap-3">
                       <Textarea
                         value={newMessage}
                         onChange={(e) => setNewMessage(e.target.value)}
                         placeholder={isStudent && isAiMode ? "اسأل المساعد الذكي..." : "اكتب رسالتك..."}
-                        className="resize-none border-2 border-primary/30 focus:border-primary transition-all duration-300 rounded-lg md:rounded-xl text-sm md:text-base"
+                        className="resize-none border-2 border-cyan-500/30 focus:border-cyan-600 transition-all duration-300 rounded-lg md:rounded-xl text-sm md:text-base"
                         rows={2}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' && !e.shiftKey) {
@@ -851,7 +851,7 @@ const Messages = () => {
                           className={`px-3 md:px-4 lg:px-6 transition-all duration-300 h-full ${
                             isStudent && isAiMode
                               ? 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600'
-                              : 'bg-gradient-to-r from-primary to-accent hover:shadow-glow'
+                              : 'bg-gradient-to-r from-cyan-600 to-teal-600 hover:shadow-glow'
                           }`}
                           disabled={isAiLoading || !newMessage.trim()}
                         >

@@ -231,7 +231,7 @@ const Imports = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
       <Header />
       
       <div className="container mx-auto px-4 py-8">
@@ -396,7 +396,7 @@ const Imports = () => {
                 <div className="grid grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg">
                   <div>
                     <Label className="text-sm text-muted-foreground">الإجمالي</Label>
-                    <p className="text-2xl font-bold text-orange-600">{calculateTotal().toFixed(2)} ج.م</p>
+                    <p className="text-2xl font-bold text-cyan-600">{calculateTotal().toFixed(2)} ج.م</p>
                   </div>
                   
                   <div className="space-y-2">
@@ -456,12 +456,12 @@ const Imports = () => {
         <Card className="shadow-soft mb-6">
           <CardContent className="p-6">
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
-                <TrendingDown className="w-6 h-6 text-orange-600" />
+              <div className="w-12 h-12 bg-cyan-100 rounded-lg flex items-center justify-center">
+                <TrendingDown className="w-6 h-6 text-cyan-600" />
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">إجمالي المستوردات</p>
-                <p className="text-3xl font-bold text-orange-600">{totalImports.toFixed(2)} ج.م</p>
+                <p className="text-3xl font-bold text-cyan-600">{totalImports.toFixed(2)} ج.م</p>
               </div>
             </div>
           </CardContent>
@@ -495,7 +495,7 @@ const Imports = () => {
                       <TableCell className="font-medium">{importRecord.supplier_name}</TableCell>
                       <TableCell>{importRecord.supplier_phone || "-"}</TableCell>
                       <TableCell>{importRecord.items?.length || 0}</TableCell>
-                      <TableCell className="text-orange-600 font-medium">
+                      <TableCell className="text-cyan-600 font-medium">
                         {Number(importRecord.total_amount).toFixed(2)} ج.م
                       </TableCell>
                       <TableCell className="text-green-600">
