@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
 import Header from "@/components/Header";
 import StatsCard from "@/components/StatsCard";
 import { Button } from "@/components/ui/button";
@@ -7,31 +9,37 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Users,
-  BookOpen,
-  Calendar,
-  DollarSign,
+import { 
+  Users, 
+  BookOpen, 
+  Calendar, 
+  DollarSign, 
   TrendingUp,
   Clock,
   GraduationCap,
   Plus,
   FileVideo,
   UserCheck,
-  AlertTriangle
+  AlertTriangle,
+  Video,
+  FileText,
+  Upload,
+  Sparkles
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
-import { getStudents, getCourses, getAttendance } from "@/lib/api";
+import { FloatingParticles } from "@/components/FloatingParticles";
+import { motion } from "framer-motion";
 
 const TeacherDashboard = () => {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [isExpenseDialogOpen, setIsExpenseDialogOpen] = useState(false);
   const [expenseData, setExpenseData] = useState({
     description: '',
     amount: '',
     category: ''
   });
-
+  
   const [stats, setStats] = useState([
     {
       title: "إجمالي الطلاب",
@@ -75,10 +83,21 @@ const TeacherDashboard = () => {
         return;
       }
 
-      // TODO: Add expenses API endpoint
+      const { error } = await supabase
+        .from('expenses')
+        .insert({
+          description: expenseData.description,
+          amount: parseFloat(expenseData.amount),
+          category: expenseData.category || 'عام',
+          date: new Date().toLocaleDateString('ar-EG'),
+          time: new Date().toLocaleTimeString('ar-EG')
+        });
+
+      if (error) throw error;
+
       toast({
-        title: "قريباً",
-        description: "سيتم إضافة هذه الميزة قريباً",
+        title: "تم إضافة المصروف بنجاح",
+        description: `تم إضافة مصروف بقيمة ${expenseData.amount} جنيه`,
       });
 
       setExpenseData({ description: '', amount: '', category: '' });
@@ -100,11 +119,27 @@ const TeacherDashboard = () => {
   const fetchDashboardData = async () => {
     try {
       // Fetch students count
-      const students = await getStudents();
+      const { data: students, error: studentsError } = await supabase
+        .from('students')
+        .select('id');
+      
+      if (studentsError) throw studentsError;
+
+      // Fetch course materials count
+      const { data: materials, error: materialsError } = await supabase
+        .from('course_materials')
+        .select('id');
+      
+      if (materialsError) throw materialsError;
 
       // Fetch today's attendance
       const today = new Date().toISOString().split('T')[0];
-      const todayAttendance = await getAttendance({ date: today });
+      const { data: todayAttendance, error: attendanceError } = await supabase
+        .from('attendance')
+        .select('*')
+        .eq('attendance_date', today);
+      
+      if (attendanceError) throw attendanceError;
 
       const totalStudents = students?.length || 0;
       const presentToday = todayAttendance?.filter(a => a.status === 'present').length || 0;
@@ -117,7 +152,7 @@ const TeacherDashboard = () => {
           case 2:
             return { ...stat, value: `${attendanceRate}%` };
           case 3:
-            return { ...stat, value: 0 }; // TODO: Add course materials API
+            return { ...stat, value: materials?.length || 0 };
           default:
             return stat;
         }
@@ -129,29 +164,37 @@ const TeacherDashboard = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
+      <FloatingParticles />
       <Header />
-
-      <main className="container mx-auto px-4 py-8">
+      
+      <main className="container mx-auto px-4 py-8 relative z-10">
         {/* Welcome Section */}
-        <div className="mb-8">
-          <div className="flex flex-col gap-4">
-            <div className="text-center md:text-right">
-              <h1 className="text-2xl md:text-3xl lg:text-4xl font-bold text-foreground mb-2">
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-8"
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-4xl font-bold bg-gradient-to-r from-cyan-600 to-teal-600 bg-clip-text text-transparent mb-2">
                 مرحباً، الأستاذ محمد رمضان 👋
               </h1>
-              <p className="text-sm md:text-base text-muted-foreground">
+              <p className="text-slate-600 dark:text-slate-400">
                 إليك ملخص سريع عن أنشطتك اليوم - منصة القائد
               </p>
             </div>
-            <div className="flex flex-col sm:flex-row gap-3 justify-center md:justify-start">
-              <Button className="bg-gradient-primary shadow-glow hover:shadow-glow/70 w-full sm:w-auto">
-                <Plus className="w-4 h-4 ml-2" />
-                إضافة محتوى جديد
+            <div className="flex gap-2">
+              <Button 
+                className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-700 hover:to-teal-700 shadow-lg hover:shadow-xl transition-all"
+                onClick={() => navigate('/teacher-content-manager')}
+              >
+                <Upload className="w-5 h-5 ml-2" />
+                إدارة المحتوى التعليمي
               </Button>
               <Dialog open={isExpenseDialogOpen} onOpenChange={setIsExpenseDialogOpen}>
                 <DialogTrigger asChild>
-                  <Button variant="outline" className="shadow-medium w-full sm:w-auto">
+                  <Button variant="outline" className="shadow-md border-cyan-600 text-cyan-600 hover:bg-cyan-50">
                     <DollarSign className="w-4 h-4 ml-2" />
                     إضافة مصروف
                   </Button>
@@ -167,7 +210,7 @@ const TeacherDashboard = () => {
                         id="description"
                         placeholder="مثال: كتب دراسية، أدوات مكتبية..."
                         value={expenseData.description}
-                        onChange={(e) => setExpenseData({ ...expenseData, description: e.target.value })}
+                        onChange={(e) => setExpenseData({...expenseData, description: e.target.value})}
                       />
                     </div>
                     <div className="grid gap-2">
@@ -177,7 +220,7 @@ const TeacherDashboard = () => {
                         type="number"
                         placeholder="0.00"
                         value={expenseData.amount}
-                        onChange={(e) => setExpenseData({ ...expenseData, amount: e.target.value })}
+                        onChange={(e) => setExpenseData({...expenseData, amount: e.target.value})}
                       />
                     </div>
                     <div className="grid gap-2">
@@ -186,7 +229,7 @@ const TeacherDashboard = () => {
                         id="category"
                         placeholder="مثال: تعليمي، إداري، تقني..."
                         value={expenseData.category}
-                        onChange={(e) => setExpenseData({ ...expenseData, category: e.target.value })}
+                        onChange={(e) => setExpenseData({...expenseData, category: e.target.value})}
                       />
                     </div>
                   </div>
@@ -202,7 +245,7 @@ const TeacherDashboard = () => {
               </Dialog>
             </div>
           </div>
-        </div>
+        </motion.div>
 
         {/* Stats Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -221,38 +264,54 @@ const TeacherDashboard = () => {
         {/* Main Content Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Quick Actions */}
-          <Card className="bg-gradient-card shadow-soft border-border/50">
+          <Card className="bg-white dark:bg-slate-800 shadow-lg border-0">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <TrendingUp className="w-5 h-5 text-primary" />
+              <CardTitle className="flex items-center gap-2 text-cyan-700 dark:text-cyan-400">
+                <Sparkles className="w-5 h-5" />
                 الإجراءات السريعة
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Button variant="outline" className="w-full justify-start">
+              <Button 
+                variant="outline" 
+                className="w-full justify-start border-cyan-600 text-cyan-600 hover:bg-cyan-50"
+                onClick={() => navigate('/students')}
+              >
                 <Users className="w-4 h-4 ml-2" />
                 إضافة طالب جديد
               </Button>
-              <Button variant="outline" className="w-full justify-start">
+              <Button 
+                variant="outline" 
+                className="w-full justify-start border-teal-600 text-teal-600 hover:bg-teal-50"
+                onClick={() => navigate('/courses')}
+              >
                 <BookOpen className="w-4 h-4 ml-2" />
                 إنشاء كورس جديد
               </Button>
-              <Button variant="outline" className="w-full justify-start">
+              <Button 
+                variant="outline" 
+                className="w-full justify-start border-cyan-600 text-cyan-600 hover:bg-cyan-50"
+                onClick={() => navigate('/qr-attendance')}
+              >
                 <Calendar className="w-4 h-4 ml-2" />
                 تسجيل الحضور
               </Button>
-              <Button variant="outline" className="w-full justify-start">
+              <Button 
+                variant="outline" 
+                className="w-full justify-start border-teal-600 text-teal-600 hover:bg-teal-50"
+                onClick={() => navigate('/teacher-content-manager')}
+              >
                 <FileVideo className="w-4 h-4 ml-2" />
-                رفع فيديو تعليمي
+                رفع محتوى تعليمي
               </Button>
             </CardContent>
           </Card>
 
           {/* Recent Activities */}
-          <Card className="lg:col-span-2 bg-gradient-card shadow-soft border-border/50">
+          <Card className="lg:col-span-2 bg-white dark:bg-slate-800 shadow-lg border-0">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Clock className="w-5 h-5 text-primary" />
+              <CardTitle className="flex items-center gap-2 text-cyan-700 dark:text-cyan-400">
+                <Clock className="w-5 h-5" />
                 الأنشطة الأخيرة
               </CardTitle>
             </CardHeader>
@@ -272,9 +331,9 @@ const TeacherDashboard = () => {
                     </div>
                   ))
                 ) : (
-                  <div className="text-center py-8 text-muted-foreground">
-                    <Clock className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                    <p>لا توجد أنشطة حديثة</p>
+                  <div className="text-center py-8 text-slate-500 dark:text-slate-400">
+                    <Clock className="w-12 h-12 mx-auto mb-4 opacity-30" />
+                    <p className="font-medium">لا توجد أنشطة حديثة</p>
                     <p className="text-sm">ابدأ بإضافة محتوى تعليمي للطلاب</p>
                   </div>
                 )}
@@ -284,27 +343,27 @@ const TeacherDashboard = () => {
         </div>
 
         {/* Today's Schedule */}
-        <Card className="mt-6 bg-gradient-card shadow-soft border-border/50">
+        <Card className="mt-6 bg-white dark:bg-slate-800 shadow-lg border-0">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <GraduationCap className="w-5 h-5 text-primary" />
+            <CardTitle className="flex items-center gap-2 text-cyan-700 dark:text-cyan-400">
+              <GraduationCap className="w-5 h-5" />
               جدول اليوم
             </CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 gap-4">
-              <div className="p-4 bg-muted/30 rounded-lg">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-medium text-primary">التاريخ</span>
-                  <span className="text-xs bg-primary/20 text-primary px-2 py-1 rounded-full">
-                    نشط
-                  </span>
+            <CardContent>
+              <div className="grid grid-cols-1 gap-4">
+                <div className="p-4 bg-gradient-to-r from-cyan-50 to-teal-50 dark:from-cyan-950/30 dark:to-teal-950/30 rounded-lg border border-cyan-200 dark:border-cyan-800">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-medium text-cyan-700 dark:text-cyan-400">التاريخ</span>
+                    <span className="text-xs bg-cyan-600 text-white px-3 py-1 rounded-full">
+                      نشط
+                    </span>
+                  </div>
+                  <h4 className="font-bold text-slate-800 dark:text-slate-200">دروس التاريخ والحضارات</h4>
+                  <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">تدريس مادة التاريخ للمراحل الثانوية - المحتوى التعليمي والامتحانات</p>
                 </div>
-                <h4 className="font-medium text-foreground">دروس التاريخ والحضارات</h4>
-                <p className="text-sm text-muted-foreground mt-1">تدريس مادة التاريخ للمراحل الثانوية - المحتوى التعليمي والامتحانات</p>
               </div>
-            </div>
-          </CardContent>
+            </CardContent>
         </Card>
       </main>
     </div>

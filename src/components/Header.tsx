@@ -16,7 +16,10 @@ import {
   ChevronDown,
   LayoutDashboard,
   Wallet,
-  ClipboardList
+  ClipboardList,
+  Video,
+  Upload,
+  ClipboardCheck
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import alQaedLogo from "@/assets/Qaad_Logo.png";
@@ -38,6 +41,12 @@ const Header = () => {
     { name: "الرسائل", href: "/messages", icon: MessageCircle },
   ];
 
+  const teacherMenu = [
+    { name: "رفع المحاضرات", href: "/teacher-lectures", icon: Video },
+    { name: "رفع المواد", href: "/teacher-materials", icon: Upload },
+    { name: "إنشاء امتحانات", href: "/teacher-exams", icon: ClipboardCheck },
+  ];
+
   const studentsMenu = [
     { name: "طلبات التسجيل", href: "/registration-requests", icon: ClipboardList },
     { name: "الطلاب الأونلاين", href: "/students", icon: Users },
@@ -53,7 +62,7 @@ const Header = () => {
   ];
 
   const attendanceMenu = [
-    { name: "الحضور", href: "/qr-attendance", icon: Calendar },
+    { name: "إدارة الباركود", href: "/student-barcodes", icon: Calendar },
     { name: "تسجيل الحضور", href: "/barcode-attendance", icon: Calendar },
     { name: "الاجتماعات", href: "/online-meeting", icon: Calendar },
   ];
@@ -99,19 +108,19 @@ const Header = () => {
   };
 
   return (
-    <header className="bg-primary shadow-2xl border-b-2 border-white/10 sticky top-0 z-50 backdrop-blur-sm" dir="rtl">
-      <div className="container mx-auto px-4 py-3">
-        <div className="flex items-center justify-between gap-4">
+    <header className="bg-gradient-to-r from-cyan-600 to-teal-600 shadow-lg border-b border-white/10 sticky top-0 z-50" dir="rtl">
+      <div className="max-w-[1800px] mx-auto px-4 lg:px-6">
+        <div className="flex items-center justify-between py-2.5 gap-3">
           {/* Brand Text Only */}
-          <div className="flex items-center gap-3 min-w-fit">
-            <div className="hidden md:block">
-              <h1 className="text-xl font-bold text-white drop-shadow-lg">منصة القائد</h1>
-              <p className="text-blue-100 text-xs font-medium">الأستاذ محمد رمضان - التاريخ</p>
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="text-white">
+              <h1 className="text-base lg:text-xl font-bold drop-shadow-lg whitespace-nowrap">منصة القائد</h1>
+              <p className="text-cyan-100 text-[10px] lg:text-xs font-medium whitespace-nowrap hidden sm:block">الأستاذ محمد رمضان - التاريخ</p>
             </div>
           </div>
 
           {/* Desktop Navigation */}
-          <nav className="hidden xl:flex items-center gap-2">
+          <nav className="hidden xl:flex items-center gap-1.5 flex-1 justify-center">
             {/* Main Links */}
             {mainNavigation.map((item) => {
               const Icon = item.icon;
@@ -119,30 +128,54 @@ const Header = () => {
                 <Link
                   key={item.name}
                   to={item.href}
-                  className="flex items-center gap-2 px-4 py-2 text-white hover:bg-white/20 rounded-xl transition-all duration-300 font-medium"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-white/90 hover:text-white hover:bg-white/15 rounded-lg transition-all text-sm whitespace-nowrap"
                 >
                   <Icon className="w-4 h-4" />
-                  {item.name}
+                  <span className="hidden 2xl:inline">{item.name}</span>
                 </Link>
               );
             })}
 
+            {/* Teacher Dropdown */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" className="text-white/90 hover:text-white hover:bg-white/15 rounded-lg text-sm px-3 py-1.5 h-auto gap-1">
+                  <Video className="w-4 h-4" />
+                  <span className="hidden 2xl:inline">المعلم</span>
+                  <ChevronDown className="w-3 h-3" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52 bg-white dark:bg-gray-800">
+                {teacherMenu.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <DropdownMenuItem key={item.name} asChild>
+                      <Link to={item.href} className="flex items-center gap-2 cursor-pointer">
+                        <Icon className="w-4 h-4 text-cyan-600" />
+                        {item.name}
+                      </Link>
+                    </DropdownMenuItem>
+                  );
+                })}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
             {/* Students Dropdown */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="text-white hover:bg-white/20 rounded-xl font-medium">
-                  <Users className="w-4 h-4 ml-2" />
-                  الطلاب
-                  <ChevronDown className="w-4 h-4 mr-2" />
+                <Button variant="ghost" className="text-white/90 hover:text-white hover:bg-white/15 rounded-lg text-sm px-3 py-1.5 h-auto gap-1">
+                  <Users className="w-4 h-4" />
+                  <span className="hidden 2xl:inline">الطلاب</span>
+                  <ChevronDown className="w-3 h-3" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56 bg-white dark:bg-gray-800">
+              <DropdownMenuContent align="end" className="w-52 bg-white dark:bg-gray-800">
                 {studentsMenu.map((item) => {
                   const Icon = item.icon;
                   return (
                     <DropdownMenuItem key={item.name} asChild>
                       <Link to={item.href} className="flex items-center gap-2 cursor-pointer">
-                        <Icon className="w-4 h-4" />
+                        <Icon className="w-4 h-4 text-cyan-600" />
                         {item.name}
                       </Link>
                     </DropdownMenuItem>
@@ -154,13 +187,13 @@ const Header = () => {
             {/* Courses Dropdown */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="text-white hover:bg-white/20 rounded-xl font-medium">
-                  <BookOpen className="w-4 h-4 ml-2" />
-                  الكورسات
-                  <ChevronDown className="w-4 h-4 mr-2" />
+                <Button variant="ghost" className="text-white/90 hover:text-white hover:bg-white/15 rounded-lg text-sm px-3 py-1.5 h-auto gap-1">
+                  <BookOpen className="w-4 h-4" />
+                  <span className="hidden 2xl:inline">الكورسات</span>
+                  <ChevronDown className="w-3 h-3" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56 bg-white dark:bg-gray-800">
+              <DropdownMenuContent align="end" className="w-52 bg-white dark:bg-gray-800">
                 {coursesMenu.map((item) => {
                   const Icon = item.icon;
                   return (
@@ -178,13 +211,13 @@ const Header = () => {
             {/* Attendance Dropdown */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="text-white hover:bg-white/20 rounded-xl font-medium">
-                  <Calendar className="w-4 h-4 ml-2" />
+                <Button variant="ghost" className="text-white/90 hover:text-white hover:bg-white/15 rounded-lg text-sm px-3 py-1.5 h-auto gap-1">
+                  <Calendar className="w-4 h-4" />
                   الحضور
-                  <ChevronDown className="w-4 h-4 mr-2" />
+                  <ChevronDown className="w-3 h-3" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56 bg-white dark:bg-gray-800">
+              <DropdownMenuContent align="end" className="w-52 bg-white dark:bg-gray-800">
                 {attendanceMenu.map((item) => {
                   const Icon = item.icon;
                   return (
@@ -202,13 +235,13 @@ const Header = () => {
             {/* Finance Dropdown */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="text-white hover:bg-white/20 rounded-xl font-medium">
-                  <DollarSign className="w-4 h-4 ml-2" />
+                <Button variant="ghost" className="text-white/90 hover:text-white hover:bg-white/15 rounded-lg text-sm px-3 py-1.5 h-auto gap-1">
+                  <DollarSign className="w-4 h-4" />
                   المالية
-                  <ChevronDown className="w-4 h-4 mr-2" />
+                  <ChevronDown className="w-3 h-3" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56 bg-white dark:bg-gray-800">
+              <DropdownMenuContent align="end" className="w-52 bg-white dark:bg-gray-800">
                 {financeMenu.map((item) => {
                   const Icon = item.icon;
                   return (
@@ -226,13 +259,13 @@ const Header = () => {
             {/* Management Dropdown */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="text-white hover:bg-white/20 rounded-xl font-medium">
-                  <FileText className="w-4 h-4 ml-2" />
+                <Button variant="ghost" className="text-white/90 hover:text-white hover:bg-white/15 rounded-lg text-sm px-3 py-1.5 h-auto gap-1">
+                  <FileText className="w-4 h-4" />
                   الإدارة
-                  <ChevronDown className="w-4 h-4 mr-2" />
+                  <ChevronDown className="w-3 h-3" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56 bg-white dark:bg-gray-800">
+              <DropdownMenuContent align="end" className="w-52 bg-white dark:bg-gray-800">
                 {managementMenu.map((item) => {
                   const Icon = item.icon;
                   return (
@@ -255,7 +288,7 @@ const Header = () => {
               variant="ghost"
               className="text-white hover:bg-red-500/20 hover:text-white rounded-xl font-medium transition-all duration-300 border border-white/20"
             >
-              <LogOut className="w-4 h-4 ml-2" />
+              <LogOut className="w-4 h-4" />
               تسجيل الخروج
             </Button>
           </div>
@@ -290,6 +323,25 @@ const Header = () => {
                         key={item.name}
                         to={item.href}
                         className="flex items-center gap-3 px-4 py-3 text-white hover:bg-white/20 rounded-xl transition-all duration-300 font-medium"
+                        onClick={() => setIsMenuOpen(false)}
+                      >
+                        <Icon className="w-5 h-5" />
+                        {item.name}
+                      </Link>
+                    );
+                  })}
+                </div>
+
+                {/* Teacher Menu */}
+                <div className="mb-4">
+                  <p className="text-xs font-bold text-white/60 px-3 mb-2">المعلم</p>
+                  {teacherMenu.map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <Link
+                        key={item.name}
+                        to={item.href}
+                        className="flex items-center gap-3 px-4 py-3 text-white hover:bg-white/20 rounded-xl transition-all duration-300"
                         onClick={() => setIsMenuOpen(false)}
                       >
                         <Icon className="w-5 h-5" />
@@ -415,3 +467,4 @@ const Header = () => {
 };
 
 export default Header;
+

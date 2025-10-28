@@ -37,6 +37,10 @@ import PromoVideo from "./pages/PromoVideo";
 import StudentLectures from "./pages/StudentLectures";
 import Grades from "./pages/Grades";
 import StudentRegistrationRequests from "./pages/StudentRegistrationRequests";
+import TeacherContentManager from "./pages/TeacherContentManager";
+import TeacherLectures from "./pages/TeacherLectures";
+import TeacherMaterials from "./pages/TeacherMaterials";
+import TeacherExams from "./pages/TeacherExams";
 
 const queryClient = new QueryClient();
 
@@ -64,7 +68,7 @@ const App = () => (
           <Route path="/groups" element={<Groups />} />
           <Route path="/grades" element={<Grades />} />
           <Route path="/attendance" element={<Attendance />} />
-          <Route path="/qr-attendance" element={<QRAttendance />} />
+          <Route path="/barcode-attendance" element={<QRAttendance />} />
           <Route path="/fees" element={<Fees />} />
           <Route path="/messages" element={<Messages />} />
           <Route path="/reports" element={<Reports />} />
@@ -77,6 +81,10 @@ const App = () => (
           <Route path="/staff" element={<Staff />} />
           <Route path="/online-meeting" element={<OnlineMeeting />} />
           <Route path="/course-content" element={<CourseContentManager />} />
+          <Route path="/teacher-content-manager" element={<TeacherContentManager />} />
+          <Route path="/teacher-lectures" element={<TeacherLectures />} />
+          <Route path="/teacher-materials" element={<TeacherMaterials />} />
+          <Route path="/teacher-exams" element={<TeacherExams />} />
           <Route path="/exam-manager" element={<ExamManager />} />
           <Route path="/exam-access" element={<ExamAccess />} />
           <Route path="/take-exam/:examId" element={<TakeExam />} />

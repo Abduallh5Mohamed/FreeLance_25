@@ -283,7 +283,7 @@ export default function StudentRegistrationRequests() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden">
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950 relative overflow-hidden">
         <FloatingParticles />
         <Header />
         <div className="flex items-center justify-center min-h-[80vh] relative z-10">

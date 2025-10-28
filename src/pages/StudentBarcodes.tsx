@@ -1,218 +1,239 @@
-import { useState, useEffect, useRef } from "react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { QrCode, Download, Printer, Search } from "lucide-react";
-import Header from "@/components/Header";
-import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
-import Barcode from "react-barcode";
+﻿import { useState, useEffect } from 'react';
+import { getStudents, updateStudent } from '@/lib/api-http';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Barcode, Plus, Trash2, CheckCircle, Zap } from 'lucide-react';
+import Header from '@/components/Header';
+import { motion } from 'framer-motion';
 
-const StudentBarcodes = () => {
+export default function StudentBarcodes() {
   const [students, setStudents] = useState([]);
-  const [filteredStudents, setFilteredStudents] = useState([]);
-  const [searchTerm, setSearchTerm] = useState("");
-  const { toast } = useToast();
-  const printRef = useRef(null);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState(null);
 
   useEffect(() => {
-    fetchStudents();
+    loadData();
+    const interval = setInterval(loadData, 2000);
+    return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    if (searchTerm) {
-      setFilteredStudents(
-        students.filter((student: any) =>
-          student.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          student.barcode_id?.toLowerCase().includes(searchTerm.toLowerCase())
-        )
-      );
-    } else {
-      setFilteredStudents(students);
-    }
-  }, [searchTerm, students]);
-
-  const fetchStudents = async () => {
+  const loadData = async () => {
     try {
-      const { data, error } = await supabase
-        .from('students')
-        .select('*')
-        .eq('is_active', true)
-        .order('name');
-
-      if (error) throw error;
-      setStudents(data || []);
-      setFilteredStudents(data || []);
+      const studentsData = await getStudents();
+      
+      setStudents(studentsData || []);
+      
+      console.log('Students loaded:', studentsData?.length);
     } catch (error) {
-      console.error('Error fetching students:', error);
-      toast({
-        title: "خطأ",
-        description: "حدث خطأ في تحميل البيانات",
-        variant: "destructive",
-      });
+      console.error('Error loading data:', error);
+      setMessage({ type: 'error', text: `خطأ في تحميل البيانات: ${error?.message}` });
     }
   };
 
-  const handlePrint = () => {
-    const printContent = printRef.current;
-    if (!printContent) return;
+  const generateBarcode = async (studentId) => {
+    setLoading(true);
+    try {
+      const barcode = `STU${Date.now()}${Math.random().toString(36).substr(2, 9)}`.toUpperCase();
+      const student = students.find(s => s.id === studentId);
+      
+      if (!student) throw new Error('الطالب غير موجود');
+      
+      const success = await updateStudent(studentId, { barcode });
+      
+      if (!success) throw new Error('فشل تحديث الباركود');
+      
+      setMessage({ type: 'success', text: student.barcode ? 'تم تحديث الباركود' : 'تم إنشاء الباركود' });
+      
+      await loadData();
+      setTimeout(() => setMessage(null), 2000);
+    } catch (error) {
+      console.error('Error creating barcode:', error);
+      setMessage({ type: 'error', text: `خطأ: ${error?.message || 'خطأ في إنشاء الباركود'}` });
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    const printWindow = window.open('', '', 'width=800,height=600');
-    printWindow?.document.write(`
-      <html>
-        <head>
-          <title>بطاقات الطلاب</title>
-          <style>
-            @media print {
-              @page { margin: 1cm; }
-              body { font-family: Arial, sans-serif; }
-            }
-            body { 
-              font-family: Arial, sans-serif; 
-              direction: rtl;
-              padding: 20px;
-            }
-            .card-grid {
-              display: grid;
-              grid-template-columns: repeat(2, 1fr);
-              gap: 20px;
-              page-break-inside: avoid;
-            }
-            .student-card {
-              border: 2px solid #333;
-              border-radius: 10px;
-              padding: 20px;
-              text-align: center;
-              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-              color: white;
-              page-break-inside: avoid;
-              height: 280px;
-              display: flex;
-              flex-direction: column;
-              justify-content: space-between;
-            }
-            .student-name {
-              font-size: 22px;
-              font-weight: bold;
-              margin-bottom: 10px;
-            }
-            .student-info {
-              font-size: 14px;
-              margin: 5px 0;
-            }
-            .barcode-container {
-              background: white;
-              padding: 10px;
-              border-radius: 8px;
-              margin: 10px 0;
-            }
-            .barcode-id {
-              font-size: 12px;
-              font-weight: bold;
-              color: #333;
-              margin-top: 5px;
-            }
-          </style>
-        </head>
-        <body>
-          ${printContent.innerHTML}
-        </body>
-      </html>
-    `);
-    printWindow?.document.close();
-    printWindow?.focus();
-    setTimeout(() => {
-      printWindow?.print();
-      printWindow?.close();
-    }, 250);
+  const deleteBarcode = async (studentId) => {
+    try {
+      const success = await updateStudent(studentId, { barcode: null });
+      if (!success) throw new Error('فشل حذف الباركود');
+      
+      setMessage({ type: 'success', text: 'تم حذف الباركود' });
+      await loadData();
+      setTimeout(() => setMessage(null), 2000);
+    } catch (error) {
+      console.error('Error:', error);
+      setMessage({ type: 'error', text: 'خطأ' });
+    }
+  };
+
+  const generateAllBarcodes = async () => {
+    setLoading(true);
+    try {
+      let count = 0;
+      for (const student of students) {
+        if (!student.barcode) {
+          const barcode = `STU${Date.now()}${Math.random().toString(36).substr(2, 9)}${count}`.toUpperCase();
+          const success = await updateStudent(student.id, { barcode });
+          
+          if (success) {
+            count++;
+          }
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+      setMessage({ type: 'success', text: `تم إنشاء ${count} باركود جديد` });
+      await loadData();
+      setTimeout(() => setMessage(null), 2000);
+    } catch (error) {
+      console.error('Error creating barcodes:', error);
+      setMessage({ type: 'error', text: `خطأ: ${error?.message || 'خطأ في إنشاء الباركود'}` });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getStudentBarcode = (studentId) => {
+    return students.find(s => s.id === studentId)?.barcode;
   };
 
   return (
-    <div className="min-h-screen bg-background" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
       <Header />
-      
-      <div className="container mx-auto px-4 py-8">
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
-              <QrCode className="w-6 h-6 text-primary" />
+      <div className="max-w-7xl mx-auto px-4 py-8">
+        <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 bg-primary/10 rounded-lg flex items-center justify-center">
+                <Barcode className="w-6 h-6 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-3xl font-bold text-foreground">إدارة الباركود</h1>
+                <p className="text-muted-foreground">إنشاء وإدارة رموز الباركود الفريدة</p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-2xl font-bold text-foreground">بطاقات الطلاب بالباركود</h1>
-              <p className="text-muted-foreground">عرض وطباعة بطاقات الطلاب مع الباركود</p>
-            </div>
+            <Button 
+              onClick={generateAllBarcodes} 
+              disabled={loading || students.filter(s => !s.barcode).length === 0}
+              className="bg-primary hover:bg-primary/90 text-white gap-2"
+            >
+              <Zap className="w-4 h-4" />
+              إنشاء الكل
+            </Button>
           </div>
+        </motion.div>
 
-          <Button onClick={handlePrint} className="bg-primary hover:bg-primary/90">
-            <Printer className="ml-2 h-4 w-4" />
-            طباعة جميع البطاقات
-          </Button>
-        </div>
+        {message && (
+          <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
+            className={`mb-6 p-4 rounded-lg flex items-center gap-3 ${
+              message.type === 'success' ? 'bg-green-100 border border-green-300 text-green-800' : 'bg-red-100 border border-red-300 text-red-800'
+            }`}>
+            <CheckCircle className="w-5 h-5" />
+            <span>{message.text}</span>
+          </motion.div>
+        )}
 
-        <Card className="shadow-soft mb-6">
-          <CardHeader>
-            <CardTitle>بحث عن طالب</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="relative">
-              <Search className="absolute right-3 top-3 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="ابحث بالاسم أو رقم الباركود..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pr-10"
-              />
-            </div>
-          </CardContent>
-        </Card>
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
+          className="bg-white dark:bg-slate-800 rounded-lg border border-primary/20 shadow-soft overflow-hidden mb-6">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-primary/5 border-b border-primary/20">
+                <tr>
+                  <th className="px-6 py-4 text-right text-primary font-semibold">الطالب</th>
+                  <th className="px-6 py-4 text-right text-primary font-semibold">الباركود</th>
+                  <th className="px-6 py-4 text-right text-primary font-semibold">الحالة</th>
+                  <th className="px-6 py-4 text-right text-primary font-semibold">الإجراءات</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-primary/10">
+                {students.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-6 py-8 text-center text-muted-foreground">
+                      لا توجد طلاب
+                    </td>
+                  </tr>
+                ) : (
+                  students.map((student, index) => {
+                    const barcode = student.barcode;
+                    return (
+                      <motion.tr key={student.id} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: index * 0.05 }}
+                        className="hover:bg-primary/5 transition dark:hover:bg-primary/10">
+                        <td className="px-6 py-4 text-foreground font-medium">{student.name}</td>
+                        <td className="px-6 py-4">
+                          {barcode ? (
+                            <span className="font-mono text-sm text-primary bg-primary/10 px-3 py-1 rounded dark:bg-primary/20">
+                              {barcode}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">---</span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4">
+                          {barcode ? (
+                            <span className="inline-flex items-center gap-2 text-green-700 dark:text-green-400 text-sm bg-green-100 dark:bg-green-500/20 px-3 py-1 rounded">
+                              <CheckCircle className="w-4 h-4" />
+                              مسجل
+                            </span>
+                          ) : (
+                            <span className="text-amber-700 dark:text-amber-400 text-sm bg-amber-100 dark:bg-amber-500/20 px-3 py-1 rounded">
+                              معلق
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2">
+                            <Button size="sm" onClick={() => generateBarcode(student.id)} disabled={loading}
+                              className="bg-primary hover:bg-primary/90 text-white text-xs gap-1">
+                              <Plus className="w-3 h-3" />
+                              {barcode ? 'تحديث' : 'إنشاء'}
+                            </Button>
+                            {barcode && (
+                              <Button size="sm" variant="destructive" onClick={() => deleteBarcode(student.id)}
+                                className="bg-red-600 hover:bg-red-700 text-white text-xs">
+                                <Trash2 className="w-3 h-3" />
+                              </Button>
+                            )}
+                          </div>
+                        </td>
+                      </motion.tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </motion.div>
 
-        <div ref={printRef} className="card-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredStudents.map((student: any) => (
-            <Card key={student.id} className="student-card shadow-lg overflow-hidden">
-              <CardContent className="p-6">
-                <div className="bg-gradient-primary rounded-t-lg p-4 -mx-6 -mt-6 mb-4">
-                  <h2 className="text-xl font-bold text-white text-center">{student.name}</h2>
-                </div>
-                
-                <div className="space-y-2 text-sm mb-4">
-                  <p><span className="font-medium">الصف:</span> {student.grade || "غير محدد"}</p>
-                  <p><span className="font-medium">الهاتف:</span> {student.phone || "غير محدد"}</p>
-                </div>
-
-                <div className="barcode-container bg-white p-3 rounded-lg border-2 border-primary/20">
-                  {student.barcode_id && (
-                    <div className="flex flex-col items-center">
-                      <Barcode 
-                        value={student.barcode_id} 
-                        height={60}
-                        width={2}
-                        displayValue={true}
-                        fontSize={12}
-                        margin={5}
-                      />
-                    </div>
-                  )}
-                </div>
-
-                <p className="text-xs text-center mt-2 text-muted-foreground">
-                  امسح الباركود لتسجيل الحضور
-                </p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-
-        {filteredStudents.length === 0 && (
-          <Card>
-            <CardContent className="p-12 text-center">
-              <QrCode className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
-              <p className="text-muted-foreground">لا توجد بطاقات لعرضها</p>
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Card className="shadow-soft border-primary/20">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-primary text-sm">إجمالي الطلاب</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-primary">{students.length}</div>
             </CardContent>
           </Card>
-        )}
+
+          <Card className="shadow-soft border-primary/20">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-primary text-sm">مع باركود</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-green-600 dark:text-green-400">{students.filter(s => s.barcode).length}</div>
+            </CardContent>
+          </Card>
+
+          <Card className="shadow-soft border-primary/20">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-primary text-sm">بدون باركود</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-amber-600 dark:text-amber-400">{students.filter(s => !s.barcode).length}</div>
+            </CardContent>
+          </Card>
+        </motion.div>
       </div>
     </div>
   );
-};
-
-export default StudentBarcodes;
+}
