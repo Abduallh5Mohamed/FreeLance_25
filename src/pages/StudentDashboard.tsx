@@ -25,6 +25,7 @@ const StudentDashboard = () => {
   const [groupInfo, setGroupInfo] = useState(null);
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
+  
   const navigate = useNavigate();
   const { toast } = useToast();
 

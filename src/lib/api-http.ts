@@ -5,6 +5,46 @@
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
 
+// DEV: quick toggle to disable authentication / backend strictness while
+// developing locally. When true this will populate a demo user/student in
+// localStorage and make some functions return safe defaults instead of
+// throwing. Set to `false` for production or when your backend is running.
+const DISABLE_AUTH_DEV = true;
+
+if (DISABLE_AUTH_DEV && typeof localStorage !== 'undefined') {
+    try {
+        const devUser = {
+            id: 'dev-user',
+            email: 'demo@student.com',
+            name: 'طالب تجريبي',
+            role: 'student',
+            is_active: true,
+        };
+
+        const devStudent = {
+            id: 'demo-123',
+            name: 'محمد أحمد',
+            email: 'demo@student.com',
+            phone: '01234567890',
+            grade: 'صف تجريبي',
+            grade_id: null,
+            group_id: null,
+            barcode: null,
+            is_offline: true,
+            approval_status: 'approved',
+        };
+
+        // Populate localStorage so supabase shim and other pages pick it up
+        localStorage.setItem('authToken', 'dev-token');
+        localStorage.setItem('currentUser', JSON.stringify(devUser));
+        localStorage.setItem('currentStudent', JSON.stringify(devStudent));
+        // supabase shim reads `supabaseUser`
+        localStorage.setItem('supabaseUser', JSON.stringify(devUser));
+    } catch (e) {
+        // ignore storage errors in some environments
+    }
+}
+
 // Helper to get auth token from localStorage
 const getAuthToken = (): string | null => {
     return localStorage.getItem('authToken');
@@ -135,6 +175,11 @@ export const getStudentByPhone = async (phone: string): Promise<Student | null> 
 
 export const getCurrentUser = async (): Promise<User | null> => {
     try {
+        if (DISABLE_AUTH_DEV) {
+            const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('currentUser') : null;
+            return raw ? JSON.parse(raw) as User : null;
+        }
+
         const response = await request<{ user: User }>('/auth/me');
         return response.user;
     } catch (error) {
@@ -160,13 +205,23 @@ export interface Student {
 }
 
 export const getStudents = async (): Promise<Student[]> => {
-    return request<Student[]>('/students');
+    try {
+        return await request<Student[]>('/students');
+    } catch (err) {
+        // When backend is unavailable return empty list (safe fallback)
+        if (DISABLE_AUTH_DEV) return [];
+        throw err;
+    }
 };
 
 export const getStudentById = async (id: string): Promise<Student | null> => {
     try {
         return await request<Student>(`/students/${id}`);
-    } catch {
+    } catch (e) {
+        if (DISABLE_AUTH_DEV) {
+            const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('currentStudent') : null;
+            return raw ? JSON.parse(raw) as Student : null;
+        }
         return null;
     }
 };
@@ -174,7 +229,13 @@ export const getStudentById = async (id: string): Promise<Student | null> => {
 export const getStudentByEmail = async (email: string): Promise<Student | null> => {
     try {
         return await request<Student>(`/students/email/${email}`);
-    } catch {
+    } catch (e) {
+        if (DISABLE_AUTH_DEV) {
+            const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('currentStudent') : null;
+            const student = raw ? JSON.parse(raw) as Student : null;
+            if (student && student.email === email) return student;
+            return null;
+        }
         return null;
     }
 };

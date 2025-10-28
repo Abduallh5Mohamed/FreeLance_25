@@ -19,7 +19,7 @@ import {
   Zap
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import alQaedLogo from "@/assets/al-qaed-logo-new.jpg";
+import alQaedLogo from "@/assets/Qaad_Logo.png";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Hero3DCard } from "@/components/Hero3DCard";
 import { Interactive3DScene } from "@/components/Interactive3DScene";

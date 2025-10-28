@@ -19,7 +19,7 @@ import {
   ClipboardList
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
-import alQaedLogo from "@/assets/al-qaed-logo-new.jpg";
+import alQaedLogo from "@/assets/Qaad_Logo.png";
 import {
   DropdownMenu,
   DropdownMenuContent,
