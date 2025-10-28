@@ -14,7 +14,8 @@ import { mockQuery, mockQueryOne, mockInsert, mockUpdate, mockDelete } from './m
 
 export interface User {
     id: string;
-    email: string;
+    email?: string | null;
+    phone?: string | null;
     name: string;
     role: 'admin' | 'teacher' | 'student';
     is_active: boolean;
@@ -26,23 +27,23 @@ export interface AuthResponse {
 }
 
 export const signIn = async (
-    email: string,
+    phoneOrEmail: string,
     password: string
 ): Promise<AuthResponse> => {
     try {
         const user = mockQueryOne<User & { password_hash: string }>(
             'USERS',
-            (u: any) => u.email === email && u.is_active
+            (u: any) => (u.phone === phoneOrEmail || u.email === phoneOrEmail) && u.is_active
         );
 
         if (!user) {
-            return { user: null, error: 'Invalid email or password' };
+            return { user: null, error: 'Invalid credentials' };
         }
 
         const isValidPassword = await bcrypt.compare(password, user.password_hash);
 
         if (!isValidPassword) {
-            return { user: null, error: 'Invalid email or password' };
+            return { user: null, error: 'Invalid credentials' };
         }
 
         const { password_hash, ...userWithoutPassword } = user;
@@ -54,13 +55,13 @@ export const signIn = async (
 };
 
 export const signUp = async (
-    email: string,
+    phoneOrEmail: string,
     password: string,
     name: string,
     role: 'student' | 'teacher' = 'student'
 ): Promise<AuthResponse> => {
     try {
-        const existingUser = mockQueryOne('USERS', (u: any) => u.email === email);
+        const existingUser = mockQueryOne('USERS', (u: any) => u.email === phoneOrEmail || u.phone === phoneOrEmail);
 
         if (existingUser) {
             return { user: null, error: 'User already exists' };
@@ -68,7 +69,8 @@ export const signUp = async (
 
         const passwordHash = await bcrypt.hash(password, 10);
         const userId = mockInsert('USERS', {
-            email,
+            email: phoneOrEmail.includes('@') ? phoneOrEmail : null,
+            phone: !phoneOrEmail.includes('@') ? phoneOrEmail : null,
             password_hash: passwordHash,
             name,
             role,
@@ -77,7 +79,8 @@ export const signUp = async (
 
         const user: User = {
             id: userId,
-            email,
+            email: phoneOrEmail.includes('@') ? phoneOrEmail : null,
+            phone: !phoneOrEmail.includes('@') ? phoneOrEmail : null,
             name,
             role,
             is_active: true,
@@ -91,7 +94,7 @@ export const signUp = async (
 };
 
 export const getUserByEmail = async (email: string): Promise<User | null> => {
-    return mockQueryOne<User>('USERS', (u: any) => u.email === email && u.is_active);
+    return mockQueryOne<User>('USERS', (u: any) => (u.email === email || u.phone === email) && u.is_active);
 };
 
 // ====================================

@@ -48,17 +48,28 @@ router.get('/:id', async (req: Request, res: Response) => {
 // Create new group
 router.post('/', async (req: Request, res: Response) => {
     try {
-        const { name, description, course_id, max_students, is_active = true } = req.body;
+        const { name, description, max_students, is_active = true } = req.body;
+        let course_id = (req.body && req.body.course_id) ?? null;
 
         if (!name) {
             return res.status(400).json({ error: 'Group name is required' });
         }
 
-        // Set course_id to NULL to avoid foreign key constraint errors
-        // Groups will be linked to grades instead of courses
+        // Normalize incoming course_id: accept empty string or undefined as null
+        if (course_id === '' || course_id === undefined) {
+            course_id = null;
+        } else {
+            // verify course exists; if not, null it to avoid FK failure
+            const courseExists = await queryOne('SELECT id FROM courses WHERE id = ?', [course_id]);
+            if (!courseExists) {
+                console.warn(`Create group: provided course_id ${course_id} not found, setting to NULL`);
+                course_id = null;
+            }
+        }
+
         const result = await execute(
-            'INSERT INTO `groups` (name, description, course_id, max_students, is_active) VALUES (?, ?, NULL, ?, ?)',
-            [name, description || null, max_students || 30, is_active]
+            'INSERT INTO `groups` (name, description, course_id, max_students, is_active) VALUES (?, ?, ?, ?, ?)',
+            [name, description || null, course_id, max_students || 30, is_active]
         );
 
         const newGroup = await queryOne<Group>(
@@ -76,7 +87,20 @@ router.post('/', async (req: Request, res: Response) => {
 // Update group
 router.put('/:id', async (req: Request, res: Response) => {
     try {
-        const { name, description, course_id, max_students, is_active } = req.body;
+        const { name, description, max_students, is_active } = req.body;
+        let course_id = (req.body && req.body.course_id) ?? null;
+
+        // Normalize course_id: treat empty string or undefined as null
+        if (course_id === '' || course_id === undefined) {
+            course_id = null;
+        } else {
+            // If provided, ensure the referenced course actually exists. If not, set to null to avoid FK errors.
+            const courseExists = await queryOne('SELECT id FROM courses WHERE id = ?', [course_id]);
+            if (!courseExists) {
+                console.warn(`Update group: provided course_id ${course_id} not found, setting to NULL`);
+                course_id = null;
+            }
+        }
 
         const result = await execute(
             `UPDATE \`groups\` 

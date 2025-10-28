@@ -1,511 +1,354 @@
-import { useState, useEffect } from "react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Checkbox } from "@/components/ui/checkbox";
-import { FileText, Plus, Trash2, Upload, Video, FileImage } from "lucide-react";
-import Header from "@/components/Header";
-import { useToast } from "@/components/ui/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+﻿import { useState, useEffect } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
+import { useToast } from '@/hooks/use-toast';
+import { getCourses, getMaterials, createMaterial, deleteMaterial, convertDriveUrl, type Course, type CourseMaterial } from '@/lib/api-http';
+import { Upload, Video, FileText, Presentation, Trash2, Plus, Play, BookOpen, Clock, CheckCircle } from 'lucide-react';
+import { VideoPlayer } from '@/components/VideoPlayer';
+import Header from '@/components/Header';
 
-const CourseContentManager = () => {
-  const [courses, setCourses] = useState([]);
-  const [materials, setMaterials] = useState([]);
-  const [groups, setGroups] = useState([]);
-  const [isOpen, setIsOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [uploadFile, setUploadFile] = useState(null);
-  const [selectedGroups, setSelectedGroups] = useState([]);
-  const [videoUrl, setVideoUrl] = useState("");
-  const [formData, setFormData] = useState({
-    title: "",
-    description: "",
-    course_id: "",
-    material_type: ""
-  });
-  
+export default function CourseContentManager() {
   const { toast } = useToast();
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [materials, setMaterials] = useState<CourseMaterial[]>([]);
+  const [selectedCourse, setSelectedCourse] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+  const [playingVideo, setPlayingVideo] = useState<{ url: string; title: string } | null>(null);
+  const [formData, setFormData] = useState({ title: '', description: '', material_type: 'video' as CourseMaterial['material_type'], file_url: '', duration_minutes: '', is_free: false });
 
-  useEffect(() => {
-    fetchCourses();
-    fetchMaterials();
-    fetchGroups();
-  }, []);
+  const loadCourses = async () => { try { setCourses(await getCourses()); } catch { toast({ title: 'خطأ', description: 'فشل تحميل الدورات', variant: 'destructive' }); } };
+  const loadMaterials = async (courseId: string) => { try { setLoading(true); setMaterials(await getMaterials(courseId)); } catch { toast({ title: 'خطأ', description: 'فشل تحميل المحتوى', variant: 'destructive' }); } finally { setLoading(false); } };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadCourses(); }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (selectedCourse) loadMaterials(selectedCourse); }, [selectedCourse]);
 
-  const fetchCourses = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('courses')
-        .select('*')
-        .eq('is_active', true);
-      
-      if (error) throw error;
-      setCourses(data || []);
-    } catch (error) {
-      console.error('Error fetching courses:', error);
-    }
-  };
-
-  const fetchMaterials = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('course_materials')
-        .select(`
-          *,
-          courses (
-            id,
-            name,
-            subject
-          )
-        `)
-        .order('created_at', { ascending: false });
-      
-      if (error) throw error;
-      setMaterials(data || []);
-    } catch (error) {
-      console.error('Error fetching materials:', error);
-    }
-  };
-
-  const fetchGroups = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('groups')
-        .select('*')
-        .eq('is_active', true);
-      
-      if (error) throw error;
-      setGroups(data || []);
-    } catch (error) {
-      console.error('Error fetching groups:', error);
-    }
-  };
-
-  const handleFileUpload = async (file) => {
-    try {
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${Date.now()}-${file.name}`;
-      const filePath = `${formData.course_id}/${fileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from('course-materials')
-        .upload(filePath, file, {
-          cacheControl: '3600',
-          upsert: false
-        });
-
-      if (uploadError) throw uploadError;
-
-      const { data: { publicUrl } } = supabase.storage
-        .from('course-materials')
-        .getPublicUrl(filePath);
-
-      return { filePath, publicUrl, fileName: file.name };
-    } catch (error) {
-      console.error('Error uploading file:', error);
-      throw error;
-    }
-  };
-
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
-    
-    if (selectedGroups.length === 0) {
-      toast({
-        title: "خطأ",
-        description: "يجب اختيار مجموعة واحدة على الأقل",
-        variant: "destructive",
-      });
-      setLoading(false);
-      return;
-    }
-    
+    if (!selectedCourse) return toast({ title: 'خطأ', description: 'يرجى اختيار دورة', variant: 'destructive' });
+    if (!formData.title) return toast({ title: 'خطأ', description: 'يرجى إدخال عنوان المحتوى', variant: 'destructive' });
+    if (formData.material_type === 'video' && !formData.file_url) return toast({ title: 'خطأ', description: 'يرجى إدخال رابط الفيديو من Google Drive', variant: 'destructive' });
     try {
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      console.log('User check:', user, 'Error:', userError);
-      
-      if (!user) {
-        console.error('No user found');
-        throw new Error("يجب تسجيل الدخول أولاً");
+      setLoading(true);
+      let finalUrl = formData.file_url;
+      if (formData.material_type === 'video' && formData.file_url) {
+        try { const conv = await convertDriveUrl(formData.file_url); finalUrl = conv.embedUrl; } catch { toast({ title: 'تحذير', description: 'تأكد من أن الرابط من Google Drive', variant: 'destructive' }); }
       }
-      
-      console.log('User ID:', user.id);
-
-      let fileUrl = "";
-      let fileName = "";
-      let filePath = "";
-
-      // For videos, use Google Drive link if provided
-      if (formData.material_type === 'video' && videoUrl) {
-        fileUrl = videoUrl;
-        fileName = "رابط فيديو";
-      } else if (uploadFile) {
-        const uploadResult = await handleFileUpload(uploadFile);
-        fileUrl = uploadResult.publicUrl;
-        fileName = uploadResult.fileName;
-        filePath = uploadResult.filePath;
-      }
-
-      console.log('Inserting material with data:', {
-        course_id: formData.course_id,
-        title: formData.title,
-        uploaded_by: user.id
-      });
-
-      const { data: materialData, error } = await supabase
-        .from('course_materials')
-        .insert({
-          course_id: formData.course_id,
-          title: formData.title,
-          description: formData.description,
-          material_type: formData.material_type,
-          file_path: filePath,
-          file_name: fileName,
-          file_url: fileUrl,
-          uploaded_by: user.id,
-          file_size: uploadFile ? uploadFile.size : null
-        })
-        .select()
-        .single();
-
-      console.log('Insert result:', materialData, 'Error:', error);
-
-      if (error) {
-        console.error('Insert error:', error);
-        throw error;
-      }
-
-      // Insert material-group relationships
-      for (const groupId of selectedGroups) {
-        await supabase
-          .from('material_groups')
-          .insert({
-            material_id: materialData.id,
-            group_id: groupId
-          });
-      }
-
-      toast({
-        title: "تم الإضافة بنجاح",
-        description: "تم إضافة المحتوى وربطه بالمجموعات المحددة",
-      });
-
-      fetchMaterials();
-      setIsOpen(false);
-      setSelectedGroups([]);
-      setFormData({ title: "", description: "", course_id: "", material_type: "" });
-      setUploadFile(null);
-      setVideoUrl("");
+      await createMaterial({ course_id: selectedCourse, title: formData.title, description: formData.description || undefined, material_type: formData.material_type, file_url: finalUrl || undefined, duration_minutes: formData.duration_minutes ? parseInt(formData.duration_minutes) : undefined, is_free: formData.is_free, is_published: true, display_order: materials.length });
+      toast({ title: 'نجح', description: 'تم إضافة المحتوى بنجاح' });
+      setFormData({ title: '', description: '', material_type: 'video', file_url: '', duration_minutes: '', is_free: false });
+      loadMaterials(selectedCourse);
     } catch (error) {
-      console.error('Error:', error);
-      toast({
-        title: "خطأ",
-        description: error.message || "حدث خطأ، حاول مرة أخرى",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
+      toast({ title: 'خطأ', description: error instanceof Error ? error.message : 'فشل إضافة المحتوى', variant: 'destructive' });
+    } finally { setLoading(false); }
   };
 
-  const handleDelete = async (id, filePath) => {
-    try {
-      // Delete file from storage
-      if (filePath) {
-        await supabase.storage
-          .from('course-materials')
-          .remove([filePath]);
-      }
+  const handleDelete = async (id: string) => { if (!confirm('هل أنت متأكد من حذف هذا المحتوى؟')) return; try { await deleteMaterial(id); toast({ title: 'نجح', description: 'تم حذف المحتوى' }); loadMaterials(selectedCourse); } catch { toast({ title: 'خطأ', description: 'فشل حذف المحتوى', variant: 'destructive' }); } };
+  const getMaterialIcon = (type: CourseMaterial['material_type']) => { switch (type) { case 'video': return <Video className="h-5 w-5 text-blue-500" />; case 'pdf': return <FileText className="h-5 w-5 text-red-500" />; case 'presentation': return <Presentation className="h-5 w-5 text-orange-500" />; default: return <Upload className="h-5 w-5 text-gray-500" />; } };
 
-      // Delete record from database
-      const { error } = await supabase
-        .from('course_materials')
-        .delete()
-        .eq('id', id);
-      
-      if (error) throw error;
-      
-      fetchMaterials();
-      toast({
-        title: "تم الحذف بنجاح",
-        description: "تم حذف المحتوى",
-      });
-    } catch (error) {
-      toast({
-        title: "خطأ",
-        description: "حدث خطأ في الحذف",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const getMaterialIcon = (type) => {
-    switch (type) {
-      case 'pdf':
-        return <FileText className="w-5 h-5 text-red-500" />;
-      case 'presentation':
-        return <FileImage className="w-5 h-5 text-blue-500" />;
-      case 'video':
-        return <Video className="w-5 h-5 text-green-500" />;
-      default:
-        return <FileText className="w-5 h-5 text-gray-500" />;
-    }
-  };
+  const selectedCourseData = courses.find(c => c.id === selectedCourse);
 
   return (
-    <div className="min-h-screen bg-background" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
       <Header />
-      
-      <div className="container mx-auto px-4 py-8">
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
-              <FileText className="w-6 h-6 text-primary" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold text-foreground">إدارة المحتوى التعليمي</h1>
-              <p className="text-muted-foreground">إضافة وإدارة محتويات الكورسات</p>
-            </div>
+
+      <div className="container mx-auto px-4 py-8 space-y-6" dir="rtl">
+        {/* Page Header */}
+        <div className="flex items-center gap-3 mb-8">
+          <div className="p-3 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl shadow-lg">
+            <BookOpen className="h-8 w-8 text-white" />
           </div>
-          
-          <Dialog open={isOpen} onOpenChange={setIsOpen}>
-            <DialogTrigger asChild>
-              <Button className="shadow-medium">
-                <Plus className="w-4 h-4 ml-2" />
-                إضافة محتوى جديد
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-md">
-              <DialogHeader>
-                <DialogTitle>إضافة محتوى تعليمي جديد</DialogTitle>
-              </DialogHeader>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="course">الكورس</Label>
-                  <Select value={formData.course_id} onValueChange={(value) => setFormData(prev => ({ ...prev, course_id: value }))}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="اختر الكورس" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {courses.map((course) => (
-                        <SelectItem key={course.id} value={course.id}>
-                          {course.name} - {course.subject}
+          <div>
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+              إدارة محتوى الدورات
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              أضف وأدر الفيديوهات والملفات التعليمية
+            </p>
+          </div>
+        </div>
+
+        {/* Course Selector */}
+        <Card className="shadow-lg border-t-4 border-t-blue-500">
+          <CardHeader className="bg-gradient-to-r from-blue-50 to-purple-50 dark:from-gray-800 dark:to-gray-700">
+            <CardTitle className="flex items-center gap-2">
+              <BookOpen className="h-5 w-5 text-blue-600" />
+              اختر الدورة
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-6">
+            <Select value={selectedCourse} onValueChange={setSelectedCourse}>
+              <SelectTrigger className="h-12 text-lg">
+                <SelectValue placeholder="🎓 اختر دورة لإدارة محتواها" />
+              </SelectTrigger>
+              <SelectContent>
+                {courses.map(c => (
+                  <SelectItem key={c.id} value={c.id} className="text-lg py-3">
+                    <div className="flex items-center gap-2">
+                      <BookOpen className="h-4 w-4 text-blue-500" />
+                      <span className="font-semibold">{c.name}</span>
+                      <Badge variant="secondary" className="mr-auto">{c.subject}</Badge>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {selectedCourseData && (
+              <div className="mt-4 p-4 bg-blue-50 dark:bg-gray-800 rounded-lg border border-blue-200 dark:border-gray-700">
+                <p className="text-sm font-semibold text-blue-900 dark:text-blue-100">
+                  الدورة المختارة: {selectedCourseData.name}
+                </p>
+                {selectedCourseData.description && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {selectedCourseData.description}
+                  </p>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {selectedCourse && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Add Material Form */}
+            <Card className="lg:col-span-1 shadow-lg border-t-4 border-t-green-500 h-fit">
+              <CardHeader className="bg-gradient-to-r from-green-50 to-emerald-50 dark:from-gray-800 dark:to-gray-700">
+                <CardTitle className="flex items-center gap-2">
+                  <Plus className="h-5 w-5 text-green-600" />
+                  إضافة محتوى جديد
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-6">
+                <form onSubmit={handleSubmit} className="space-y-4">
+                  <div>
+                    <Label className="text-sm font-semibold">نوع المحتوى</Label>
+                    <Select
+                      value={formData.material_type}
+                      onValueChange={(v) => setFormData({ ...formData, material_type: v as CourseMaterial['material_type'] })}
+                    >
+                      <SelectTrigger className="mt-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="video">
+                          <div className="flex items-center gap-2">
+                            <Video className="h-4 w-4 text-blue-500" />
+                            فيديو
+                          </div>
                         </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                
-                <div className="space-y-2">
-                  <Label htmlFor="title">عنوان المحتوى</Label>
-                  <Input
-                    id="title"
-                    value={formData.title}
-                    onChange={(e) => setFormData(prev => ({ ...prev, title: e.target.value }))}
-                    placeholder="أدخل عنوان المحتوى"
-                    required
-                  />
-                </div>
-                
-                <div className="space-y-2">
-                  <Label htmlFor="description">الوصف</Label>
-                  <Input
-                    id="description"
-                    value={formData.description}
-                    onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
-                    placeholder="وصف المحتوى (اختياري)"
-                  />
-                </div>
-                
-                <div className="space-y-2">
-                  <Label htmlFor="material_type">نوع المحتوى</Label>
-                  <Select 
-                    value={formData.material_type} 
-                    onValueChange={(value) => {
-                      setFormData(prev => ({ ...prev, material_type: value }));
-                      setUploadFile(null);
-                      setVideoUrl("");
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="اختر نوع المحتوى" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="pdf">ملف PDF</SelectItem>
-                      <SelectItem value="presentation">عرض تقديمي</SelectItem>
-                      <SelectItem value="video">فيديو</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                
-                {formData.material_type === 'video' ? (
-                  <div className="space-y-2">
-                    <Label htmlFor="video_url">رابط Google Drive للفيديو</Label>
+                        <SelectItem value="pdf">
+                          <div className="flex items-center gap-2">
+                            <FileText className="h-4 w-4 text-red-500" />
+                            ملف PDF
+                          </div>
+                        </SelectItem>
+                        <SelectItem value="presentation">
+                          <div className="flex items-center gap-2">
+                            <Presentation className="h-4 w-4 text-orange-500" />
+                            عرض تقديمي
+                          </div>
+                        </SelectItem>
+                        <SelectItem value="link">رابط</SelectItem>
+                        <SelectItem value="other">أخرى</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label className="text-sm font-semibold">العنوان *</Label>
                     <Input
-                      id="video_url"
-                      type="url"
-                      value={videoUrl}
-                      onChange={(e) => setVideoUrl(e.target.value)}
-                      placeholder="https://drive.google.com/..."
+                      value={formData.title}
+                      onChange={e => setFormData({ ...formData, title: e.target.value })}
+                      placeholder="عنوان المحتوى"
                       required
+                      className="mt-1"
                     />
-                    <p className="text-xs text-muted-foreground">
-                      أدخل رابط الفيديو من Google Drive
+                  </div>
+
+                  <div>
+                    <Label className="text-sm font-semibold">الوصف</Label>
+                    <Textarea
+                      value={formData.description}
+                      onChange={e => setFormData({ ...formData, description: e.target.value })}
+                      placeholder="وصف المحتوى"
+                      rows={3}
+                      className="mt-1"
+                    />
+                  </div>
+
+                  {formData.material_type === 'video' && (
+                    <>
+                      <div>
+                        <Label className="text-sm font-semibold">رابط الفيديو (Google Drive) *</Label>
+                        <Input
+                          value={formData.file_url}
+                          onChange={e => setFormData({ ...formData, file_url: e.target.value })}
+                          placeholder="https://drive.google.com/file/d/..."
+                          type="url"
+                          required
+                          className="mt-1"
+                        />
+                        <p className="text-xs text-muted-foreground mt-1.5 flex items-center gap-1">
+                          💡 الصق رابط المشاركة من Google Drive
+                        </p>
+                      </div>
+
+                      <div>
+                        <Label className="text-sm font-semibold">المدة (بالدقائق)</Label>
+                        <Input
+                          value={formData.duration_minutes}
+                          onChange={e => setFormData({ ...formData, duration_minutes: e.target.value })}
+                          placeholder="30"
+                          type="number"
+                          min="1"
+                          className="mt-1"
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  <div className="flex items-center gap-2 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                    <input
+                      type="checkbox"
+                      id="is_free"
+                      checked={formData.is_free}
+                      onChange={e => setFormData({ ...formData, is_free: e.target.checked })}
+                      className="h-4 w-4 rounded border-gray-300"
+                    />
+                    <Label htmlFor="is_free" className="cursor-pointer text-sm font-medium">
+                      محتوى مجاني (متاح للجميع)
+                    </Label>
+                  </div>
+
+                  <Button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full h-11 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700"
+                  >
+                    <Plus className="h-4 w-4 ml-2" />
+                    إضافة المحتوى
+                  </Button>
+                </form>
+              </CardContent>
+            </Card>
+
+            {/* Materials List */}
+            <Card className="lg:col-span-2 shadow-lg border-t-4 border-t-purple-500">
+              <CardHeader className="bg-gradient-to-r from-purple-50 to-pink-50 dark:from-gray-800 dark:to-gray-700">
+                <CardTitle className="flex items-center justify-between">
+                  <span className="flex items-center gap-2">
+                    <Video className="h-5 w-5 text-purple-600" />
+                    محتوى الدورة
+                  </span>
+                  <Badge variant="secondary" className="text-lg px-3 py-1">
+                    {materials.length} عنصر
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-6">
+                {loading ? (
+                  <div className="flex flex-col items-center justify-center py-16">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mb-4"></div>
+                    <p className="text-muted-foreground">جاري التحميل...</p>
+                  </div>
+                ) : materials.length === 0 ? (
+                  <div className="text-center py-16 px-4">
+                    <Upload className="h-16 w-16 text-gray-300 mx-auto mb-4" />
+                    <p className="text-lg font-semibold text-gray-600 dark:text-gray-400">
+                      لا يوجد محتوى لهذه الدورة
+                    </p>
+                    <p className="text-sm text-muted-foreground mt-2">
+                      ابدأ بإضافة فيديوهات أو ملفات تعليمية
                     </p>
                   </div>
                 ) : (
-                  <div className="space-y-2">
-                    <Label htmlFor="file">رفع الملف</Label>
-                    <Input
-                      id="file"
-                      type="file"
-                      onChange={(e) => {
-                        const file = e.target.files[0];
-                        if (file) {
-                          const maxSize = 500 * 1024 * 1024; // 500MB
-                          if (file.size > maxSize) {
-                            toast({
-                              title: "خطأ",
-                              description: "حجم الملف يتجاوز الحد الأقصى المسموح به (500 ميجابايت)",
-                              variant: "destructive",
-                            });
-                            e.target.value = '';
-                            return;
-                          }
-                          setUploadFile(file);
-                        }
-                      }}
-                      accept={
-                        formData.material_type === 'pdf' ? '.pdf' :
-                        formData.material_type === 'presentation' ? '.ppt,.pptx,.pptm,.odp' :
-                        '.pdf,.ppt,.pptx'
-                      }
-                      required
-                      disabled={!formData.material_type}
-                    />
-                    {!formData.material_type && (
-                      <p className="text-xs text-muted-foreground">الرجاء اختيار نوع المحتوى أولاً</p>
-                    )}
-                    {formData.material_type && (
-                      <p className="text-xs text-muted-foreground">
-                        {formData.material_type === 'pdf' && 'يمكنك رفع ملفات PDF (الحد الأقصى 500 ميجابايت)'}
-                        {formData.material_type === 'presentation' && 'يمكنك رفع ملفات PowerPoint (الحد الأقصى 500 ميجابايت)'}
-                      </p>
-                    )}
-                    {uploadFile && (
-                      <p className="text-xs text-muted-foreground">
-                        حجم الملف: {(uploadFile.size / (1024 * 1024)).toFixed(2)} ميجابايت
-                      </p>
-                    )}
-                  </div>
-                )}
-                
-                <div className="space-y-2">
-                  <Label>المجموعات المستهدفة</Label>
-                  <div className="space-y-2 max-h-40 overflow-y-auto border rounded-md p-3">
-                    {groups.map((group) => (
-                      <div key={group.id} className="flex items-center space-x-2 space-x-reverse">
-                        <Checkbox
-                          id={`group-${group.id}`}
-                          checked={selectedGroups.includes(group.id)}
-                          onCheckedChange={(checked) => {
-                            if (checked) {
-                              setSelectedGroups([...selectedGroups, group.id]);
-                            } else {
-                              setSelectedGroups(selectedGroups.filter(id => id !== group.id));
-                            }
-                          }}
-                        />
-                        <Label htmlFor={`group-${group.id}`} className="text-sm font-normal">
-                          {group.name}
-                        </Label>
+                  <div className="space-y-3">
+                    {materials.map(m => (
+                      <div
+                        key={m.id}
+                        className="group flex items-center justify-between p-5 border rounded-xl hover:shadow-md hover:border-purple-300 dark:hover:border-purple-700 transition-all duration-200 bg-white dark:bg-gray-800"
+                      >
+                        <div className="flex items-start gap-4 flex-1">
+                          <div className="p-3 bg-gradient-to-br from-purple-100 to-pink-100 dark:from-purple-900 dark:to-pink-900 rounded-lg">
+                            {getMaterialIcon(m.material_type)}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <h4 className="font-bold text-lg mb-1 truncate">
+                              {m.title}
+                            </h4>
+                            {m.description && (
+                              <p className="text-sm text-muted-foreground line-clamp-2 mb-2">
+                                {m.description}
+                              </p>
+                            )}
+                            <div className="flex flex-wrap gap-2">
+                              <Badge variant="outline" className="text-xs">
+                                {m.material_type === 'video' ? '🎥 فيديو' :
+                                  m.material_type === 'pdf' ? '📄 PDF' :
+                                    m.material_type === 'presentation' ? '📊 عرض' : m.material_type}
+                              </Badge>
+                              {m.duration_minutes && (
+                                <Badge variant="secondary" className="text-xs flex items-center gap-1">
+                                  <Clock className="h-3 w-3" />
+                                  {m.duration_minutes} دقيقة
+                                </Badge>
+                              )}
+                              {m.is_free && (
+                                <Badge className="text-xs bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-100 flex items-center gap-1">
+                                  <CheckCircle className="h-3 w-3" />
+                                  مجاني
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2 mr-4">
+                          {m.material_type === 'video' && m.file_url && (
+                            <Button
+                              variant="default"
+                              size="sm"
+                              onClick={() => setPlayingVideo({ url: m.file_url!, title: m.title })}
+                              className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700"
+                            >
+                              <Play className="h-4 w-4 ml-1" />
+                              تشغيل
+                            </Button>
+                          )}
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => handleDelete(m.id)}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </div>
                     ))}
                   </div>
-                </div>
-                
-                <Button type="submit" className="w-full" disabled={loading}>
-                  {loading ? "جاري الرفع..." : "إضافة المحتوى"}
-                </Button>
-              </form>
-            </DialogContent>
-          </Dialog>
-        </div>
-
-        <Card className="shadow-soft">
-          <CardHeader>
-            <CardTitle>المحتويات التعليمية</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>المحتوى</TableHead>
-                  <TableHead>الكورس</TableHead>
-                  <TableHead>النوع</TableHead>
-                  <TableHead>تاريخ الإضافة</TableHead>
-                  <TableHead>الإجراءات</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {materials.map((material) => (
-                  <TableRow key={material.id}>
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        {getMaterialIcon(material.material_type)}
-                        <div>
-                          <p className="font-medium">{material.title}</p>
-                          {material.description && (
-                            <p className="text-sm text-muted-foreground">{material.description}</p>
-                          )}
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell>{material.courses?.name} - {material.courses?.subject}</TableCell>
-                    <TableCell>
-                      <span className="px-2 py-1 bg-primary/10 text-primary rounded text-xs">
-                        {material.material_type === 'pdf' ? 'PDF' : 
-                         material.material_type === 'presentation' ? 'عرض تقديمي' : 
-                         material.material_type === 'video' ? 'فيديو' : 'غير محدد'}
-                      </span>
-                    </TableCell>
-                    <TableCell>{new Date(material.created_at).toLocaleDateString('ar-SA')}</TableCell>
-                    <TableCell>
-                      <div className="flex gap-1">
-                        {material.file_url && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => window.open(material.file_url, '_blank')}
-                          >
-                            <Upload className="w-4 h-4" />
-                          </Button>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDelete(material.id, material.file_path)}
-                          className="text-destructive hover:text-destructive"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        )}
       </div>
+
+      {/* Video Player Modal */}
+      {playingVideo && (
+        <VideoPlayer
+          url={playingVideo.url}
+          title={playingVideo.title}
+          onClose={() => setPlayingVideo(null)}
+        />
+      )}
     </div>
   );
-};
-
-export default CourseContentManager;
+}

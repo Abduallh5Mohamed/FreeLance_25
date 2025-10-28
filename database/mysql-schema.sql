@@ -14,15 +14,18 @@ USE Freelance;
 
 CREATE TABLE users (
   id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
-  email VARCHAR(255) UNIQUE NOT NULL,
+  email VARCHAR(255) UNIQUE,
+  phone VARCHAR(50) UNIQUE,
   password_hash VARCHAR(255) NOT NULL,
   name VARCHAR(255) NOT NULL,
   role ENUM('admin', 'teacher', 'student') DEFAULT 'student',
   is_active BOOLEAN DEFAULT TRUE,
   email_verified BOOLEAN DEFAULT FALSE,
+  phone_verified BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_email (email),
+  INDEX idx_phone (phone),
   INDEX idx_role (role)
 ) ENGINE=InnoDB;
 
@@ -83,7 +86,7 @@ CREATE TABLE students (
 CREATE TABLE student_registration_requests (
   id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
   name VARCHAR(255) NOT NULL,
-  email VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NULL DEFAULT NULL,
   phone VARCHAR(50),
   grade_id CHAR(36),
   group_id CHAR(36),

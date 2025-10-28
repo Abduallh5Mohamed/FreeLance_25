@@ -1,0 +1,266 @@
+import { Router, Request, Response } from 'express';
+import { query, queryOne, execute } from '../db';
+
+const router = Router();
+
+interface CourseMaterial {
+    id: string;
+    course_id: string;
+    title: string;
+    description?: string;
+    material_type: 'pdf' | 'video' | 'presentation' | 'link' | 'other';
+    file_url?: string;
+    file_size?: number;
+    duration_minutes?: number;
+    display_order?: number;
+    is_free: boolean;
+    is_published: boolean;
+    created_at?: Date;
+    updated_at?: Date;
+}
+
+// Get all materials (with optional course filter)
+router.get('/', async (req: Request, res: Response) => {
+    try {
+        const { course_id } = req.query;
+
+        let sql = `
+            SELECT 
+                cm.*,
+                c.name as course_name,
+                c.subject as course_subject
+            FROM course_materials cm
+            LEFT JOIN courses c ON cm.course_id = c.id
+            WHERE cm.is_published = TRUE
+        `;
+        const params: string[] = [];
+
+        if (course_id && typeof course_id === 'string') {
+            sql += ' AND cm.course_id = ?';
+            params.push(course_id);
+        }
+
+        sql += ' ORDER BY cm.display_order ASC, cm.created_at DESC';
+
+        const materials = await query(sql, params);
+        res.json(materials);
+    } catch (error) {
+        console.error('Get materials error:', error);
+        res.status(500).json({ error: 'Failed to fetch materials' });
+    }
+});
+
+// Get material by ID
+router.get('/:id', async (req: Request, res: Response) => {
+    try {
+        const material = await queryOne(
+            `SELECT 
+                cm.*,
+                c.name as course_name,
+                c.subject as course_subject
+            FROM course_materials cm
+            LEFT JOIN courses c ON cm.course_id = c.id
+            WHERE cm.id = ?`,
+            [req.params.id]
+        );
+
+        if (!material) {
+            return res.status(404).json({ error: 'Material not found' });
+        }
+
+        res.json(material);
+    } catch (error) {
+        console.error('Get material error:', error);
+        res.status(500).json({ error: 'Failed to fetch material' });
+    }
+});
+
+// Create new material
+router.post('/', async (req: Request, res: Response) => {
+    try {
+        const {
+            course_id,
+            title,
+            description,
+            material_type,
+            file_url,
+            file_size,
+            duration_minutes,
+            display_order = 0,
+            is_free = false,
+            is_published = true
+        } = req.body;
+
+        if (!course_id || !title || !material_type) {
+            return res.status(400).json({
+                error: 'Course ID, title, and material type are required'
+            });
+        }
+
+        // For video type, file_url is required (Google Drive link)
+        if (material_type === 'video' && !file_url) {
+            return res.status(400).json({
+                error: 'Video URL is required for video materials'
+            });
+        }
+
+        const result = await execute(
+            `INSERT INTO course_materials 
+            (course_id, title, description, material_type, file_url, file_size, 
+             duration_minutes, display_order, is_free, is_published) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                course_id,
+                title,
+                description || null,
+                material_type,
+                file_url || null,
+                file_size || null,
+                duration_minutes || null,
+                display_order,
+                is_free,
+                is_published
+            ]
+        );
+
+        const newMaterial = await queryOne(
+            'SELECT * FROM course_materials WHERE id = ?',
+            [result.insertId]
+        );
+
+        res.status(201).json(newMaterial);
+    } catch (error) {
+        console.error('Create material error:', error);
+        res.status(500).json({ error: 'Failed to create material' });
+    }
+});
+
+// Update material
+router.put('/:id', async (req: Request, res: Response) => {
+    try {
+        const {
+            title,
+            description,
+            material_type,
+            file_url,
+            file_size,
+            duration_minutes,
+            display_order,
+            is_free,
+            is_published
+        } = req.body;
+
+        const result = await execute(
+            `UPDATE course_materials 
+             SET title = COALESCE(?, title),
+                 description = COALESCE(?, description),
+                 material_type = COALESCE(?, material_type),
+                 file_url = COALESCE(?, file_url),
+                 file_size = COALESCE(?, file_size),
+                 duration_minutes = COALESCE(?, duration_minutes),
+                 display_order = COALESCE(?, display_order),
+                 is_free = COALESCE(?, is_free),
+                 is_published = COALESCE(?, is_published),
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?`,
+            [
+                title ?? null,
+                description ?? null,
+                material_type ?? null,
+                file_url ?? null,
+                file_size ?? null,
+                duration_minutes ?? null,
+                display_order ?? null,
+                is_free ?? null,
+                is_published ?? null,
+                req.params.id
+            ]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Material not found' });
+        }
+
+        const updatedMaterial = await queryOne(
+            'SELECT * FROM course_materials WHERE id = ?',
+            [req.params.id]
+        );
+
+        res.json(updatedMaterial);
+    } catch (error) {
+        console.error('Update material error:', error);
+        res.status(500).json({ error: 'Failed to update material' });
+    }
+});
+
+// Delete material (soft delete by unpublishing)
+router.delete('/:id', async (req: Request, res: Response) => {
+    try {
+        const result = await execute(
+            'UPDATE course_materials SET is_published = FALSE WHERE id = ?',
+            [req.params.id]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Material not found' });
+        }
+
+        res.json({ message: 'Material deleted successfully' });
+    } catch (error) {
+        console.error('Delete material error:', error);
+        res.status(500).json({ error: 'Failed to delete material' });
+    }
+});
+
+// Helper endpoint: Convert Google Drive sharing link to embeddable URL
+router.post('/convert-drive-url', async (req: Request, res: Response) => {
+    try {
+        const { url } = req.body;
+
+        if (!url) {
+            return res.status(400).json({ error: 'URL is required' });
+        }
+
+        // Extract file ID from Google Drive URL
+        // Supports formats:
+        // - https://drive.google.com/file/d/FILE_ID/view
+        // - https://drive.google.com/open?id=FILE_ID
+        // - https://drive.google.com/uc?id=FILE_ID
+
+        let fileId = null;
+
+        const patterns = [
+            /\/file\/d\/([a-zA-Z0-9_-]+)/,
+            /[?&]id=([a-zA-Z0-9_-]+)/,
+            /\/d\/([a-zA-Z0-9_-]+)/
+        ];
+
+        for (const pattern of patterns) {
+            const match = url.match(pattern);
+            if (match && match[1]) {
+                fileId = match[1];
+                break;
+            }
+        }
+
+        if (!fileId) {
+            return res.status(400).json({
+                error: 'Could not extract file ID from Google Drive URL'
+            });
+        }
+
+        // Return embeddable URL
+        const embedUrl = `https://drive.google.com/file/d/${fileId}/preview`;
+
+        res.json({
+            fileId,
+            embedUrl,
+            originalUrl: url
+        });
+    } catch (error) {
+        console.error('Convert URL error:', error);
+        res.status(500).json({ error: 'Failed to convert URL' });
+    }
+});
+
+export default router;

@@ -17,24 +17,6 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 // Get student by ID
-router.get('/:id', async (req: Request, res: Response) => {
-    try {
-        const student = await queryOne(
-            'SELECT * FROM students WHERE id = ? AND is_active = TRUE',
-            [req.params.id]
-        );
-
-        if (!student) {
-            return res.status(404).json({ error: 'Student not found' });
-        }
-
-        res.json(student);
-    } catch (error) {
-        console.error('Get student error:', error);
-        res.status(500).json({ error: 'Failed to fetch student' });
-    }
-});
-
 // Get student by email
 router.get('/email/:email', async (req: Request, res: Response) => {
     try {
@@ -53,6 +35,46 @@ router.get('/email/:email', async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Failed to fetch student' });
     }
 });
+
+// Get student by phone
+router.get('/phone/:phone', async (req: Request, res: Response) => {
+    try {
+        const student = await queryOne(
+            'SELECT * FROM students WHERE phone = ? AND is_active = TRUE',
+            [req.params.phone]
+        );
+
+        if (!student) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
+
+        res.json(student);
+    } catch (error) {
+        console.error('Get student by phone error:', error);
+        res.status(500).json({ error: 'Failed to fetch student' });
+    }
+});
+
+// Get student by ID
+router.get('/:id', async (req: Request, res: Response) => {
+    try {
+        const student = await queryOne(
+            'SELECT * FROM students WHERE id = ? AND is_active = TRUE',
+            [req.params.id]
+        );
+
+        if (!student) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
+
+        res.json(student);
+    } catch (error) {
+        console.error('Get student error:', error);
+        res.status(500).json({ error: 'Failed to fetch student' });
+    }
+});
+
+// (moved email & phone handlers above to avoid route conflicts)
 
 // Create new student
 router.post('/', async (req: Request, res: Response) => {

@@ -57,7 +57,8 @@ async function request<T>(
 
 export interface User {
     id: string;
-    email: string;
+    email?: string | null;
+    phone?: string | null;
     name: string;
     role: 'admin' | 'teacher' | 'student';
     is_active: boolean;
@@ -70,13 +71,13 @@ export interface AuthResponse {
 }
 
 export const signIn = async (
-    email: string,
+    phone: string,
     password: string
 ): Promise<AuthResponse> => {
     try {
         const response = await request<{ user: User; token: string }>('/auth/login', {
             method: 'POST',
-            body: JSON.stringify({ email, password }),
+            body: JSON.stringify({ phone, password }),
         });
 
         if (response.token) {
@@ -91,15 +92,16 @@ export const signIn = async (
 };
 
 export const signUp = async (
-    email: string,
+    phone: string | null,
     password: string,
     name: string,
-    role: 'student' | 'teacher' = 'student'
+    role: 'student' | 'teacher' = 'student',
+    email?: string | null
 ): Promise<AuthResponse> => {
     try {
         const response = await request<{ user: User; token: string }>('/auth/register', {
             method: 'POST',
-            body: JSON.stringify({ email, password, name, role }),
+            body: JSON.stringify({ phone, email: email || null, password, name, role }),
         });
 
         if (response.token) {
@@ -113,11 +115,20 @@ export const signUp = async (
     }
 };
 
-export const getUserByEmail = async (email: string): Promise<User | null> => {
+export const getUserByPhone = async (phone: string): Promise<User | null> => {
     try {
-        const student = await request<User>(`/students/email/${email}`);
-        return student;
+        const response = await request<{ user: User }>(`/auth/me`);
+        // /auth/me requires token; this helper focuses on students lookup below
+        return response.user || null;
     } catch (error) {
+        return null;
+    }
+};
+
+export const getStudentByPhone = async (phone: string): Promise<Student | null> => {
+    try {
+        return await request<Student>(`/students/phone/${encodeURIComponent(phone)}`);
+    } catch {
         return null;
     }
 };
@@ -397,6 +408,62 @@ export const deleteSubscription = async (id: string): Promise<void> => {
 };
 
 // ====================================
+// Registration Requests Functions
+// ====================================
+
+export interface RegistrationRequest {
+    id: string;
+    name: string;
+    phone: string;
+    email?: string | null;
+    password_hash?: string;
+    grade_id?: string | null;
+    group_id?: string | null;
+    requested_courses?: string | null;
+    status: 'pending' | 'approved' | 'rejected';
+    rejection_reason?: string | null;
+    created_at?: string;
+    updated_at?: string;
+    grade_name?: string;
+    group_name?: string;
+}
+
+export const createRegistrationRequest = async (data: {
+    name: string;
+    phone: string;
+    password: string;
+    grade_id?: string | null;
+    group_id?: string | null;
+    requested_courses?: string[];
+}): Promise<{ id: string; message: string }> => {
+    return request('/registration-requests', {
+        method: 'POST',
+        body: JSON.stringify({
+            ...data,
+            requested_courses: data.requested_courses ? JSON.stringify(data.requested_courses) : null,
+        }),
+    });
+};
+
+export const getRegistrationRequests = async (status?: 'pending' | 'approved' | 'rejected'): Promise<RegistrationRequest[]> => {
+    const params = status ? `?status=${status}` : '';
+    return request<RegistrationRequest[]>(`/registration-requests${params}`);
+};
+
+export const approveRegistrationRequest = async (id: string): Promise<{ user: User; student: Student; message: string }> => {
+    return request(`/registration-requests/${id}/approve`, {
+        method: 'POST',
+    });
+};
+
+export const rejectRegistrationRequest = async (id: string, reason?: string): Promise<{ message: string }> => {
+    return request(`/registration-requests/${id}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+    });
+};
+
+// ====================================
 // Attendance & Exams (Placeholder)
 // ====================================
 
@@ -418,6 +485,73 @@ export interface Exam {
     total_marks: number;
     is_active: boolean;
 }
+
+// ====================================
+// Course Materials Functions
+// ====================================
+
+export interface CourseMaterial {
+    id: string;
+    course_id: string;
+    title: string;
+    description?: string;
+    material_type: 'pdf' | 'video' | 'presentation' | 'link' | 'other';
+    file_url?: string;
+    file_size?: number;
+    duration_minutes?: number;
+    display_order?: number;
+    is_free: boolean;
+    is_published: boolean;
+    created_at?: Date;
+    updated_at?: Date;
+    course_name?: string;
+    course_subject?: string;
+}
+
+export const getMaterials = async (courseId?: string): Promise<CourseMaterial[]> => {
+    const params = courseId ? `?course_id=${courseId}` : '';
+    return request<CourseMaterial[]>(`/materials${params}`);
+};
+
+export const getMaterialById = async (id: string): Promise<CourseMaterial | null> => {
+    try {
+        return await request<CourseMaterial>(`/materials/${id}`);
+    } catch {
+        return null;
+    }
+};
+
+export const createMaterial = async (material: Partial<CourseMaterial>): Promise<CourseMaterial> => {
+    return request<CourseMaterial>('/materials', {
+        method: 'POST',
+        body: JSON.stringify(material),
+    });
+};
+
+export const updateMaterial = async (id: string, material: Partial<CourseMaterial>): Promise<CourseMaterial> => {
+    return request<CourseMaterial>(`/materials/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(material),
+    });
+};
+
+export const deleteMaterial = async (id: string): Promise<void> => {
+    await request<void>(`/materials/${id}`, {
+        method: 'DELETE',
+    });
+};
+
+// Convert Google Drive sharing link to embeddable URL
+export const convertDriveUrl = async (url: string): Promise<{
+    fileId: string;
+    embedUrl: string;
+    originalUrl: string;
+}> => {
+    return request('/materials/convert-drive-url', {
+        method: 'POST',
+        body: JSON.stringify({ url }),
+    });
+};
 
 // Attendance functions
 export const markAttendance = async (attendance: Partial<Attendance>): Promise<string> => {
@@ -502,7 +636,7 @@ export default {
     // Auth
     signIn,
     signUp,
-    getUserByEmail,
+    getUserByPhone,
     getCurrentUser,
     setAuthToken,
     clearAuthToken,
@@ -510,10 +644,16 @@ export default {
     // Students
     getStudents,
     getStudentById,
-    getStudentByEmail,
+    getStudentByPhone,
     createStudent,
     updateStudent,
     deleteStudent,
+
+    // Registration Requests
+    createRegistrationRequest,
+    getRegistrationRequests,
+    approveRegistrationRequest,
+    rejectRegistrationRequest,
 
     // Courses
     getCourses,
@@ -542,4 +682,12 @@ export default {
     createExam,
     updateExam,
     deleteExam,
+
+    // Materials
+    getMaterials,
+    getMaterialById,
+    createMaterial,
+    updateMaterial,
+    deleteMaterial,
+    convertDriveUrl,
 };

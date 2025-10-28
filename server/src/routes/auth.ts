@@ -1,48 +1,67 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
+import jwt, { Secret } from 'jsonwebtoken';
 import { query, queryOne } from '../db';
 
 const router = Router();
 
 interface User {
     id: string;
-    email: string;
+    email?: string;
+    phone?: string;
     name: string;
     role: 'admin' | 'teacher' | 'student';
     is_active: boolean;
     password_hash?: string;
 }
 
+interface JWTPayload {
+    id: string;
+    email: string | null;
+    phone: string | null;
+    role: string;
+}
+
+interface QueryResult {
+    insertId: number;
+    affectedRows: number;
+}
+
 // Login endpoint
 router.post('/login', async (req: Request, res: Response) => {
     try {
-        const { email, password } = req.body;
+        // Prefer phone-based login; fall back to email for backwards compatibility
+        const { phone, email, password } = req.body;
 
-        if (!email || !password) {
-            return res.status(400).json({ error: 'Email and password are required' });
+        if ((!phone && !email) || !password) {
+            return res.status(400).json({ error: 'Phone (or email) and password are required' });
         }
 
+        const identifier = phone ? phone.trim() : (email || '').toLowerCase().trim();
+        const where = phone ? 'phone = ?' : 'email = ?';
+
         const user = await queryOne<User>(
-            'SELECT * FROM users WHERE email = ? AND is_active = TRUE',
-            [email.toLowerCase().trim()]
+            `SELECT * FROM users WHERE ${where} AND is_active = TRUE`,
+            [identifier]
         );
 
         if (!user || !user.password_hash) {
-            return res.status(401).json({ error: 'Invalid email or password' });
+            return res.status(401).json({ error: 'Invalid credentials' });
         }
 
         const isValidPassword = await bcrypt.compare(password, user.password_hash);
 
         if (!isValidPassword) {
-            return res.status(401).json({ error: 'Invalid email or password' });
+            return res.status(401).json({ error: 'Invalid credentials' });
         }
 
         // Generate JWT token
+        const jwtSecret: Secret = process.env.JWT_SECRET || 'secret';
+        const jwtExpiry = process.env.JWT_EXPIRES_IN || '7d';
         const token = jwt.sign(
-            { id: user.id, email: user.email, role: user.role },
-            process.env.JWT_SECRET || 'secret',
-            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+            { id: user.id, email: user.email || null, phone: user.phone || null, role: user.role },
+            jwtSecret,
+            { expiresIn: jwtExpiry } as jwt.SignOptions
         );
 
         // Remove password hash from response
@@ -61,16 +80,20 @@ router.post('/login', async (req: Request, res: Response) => {
 // Register endpoint
 router.post('/register', async (req: Request, res: Response) => {
     try {
-        const { email, password, name, role = 'student' } = req.body;
+        // Register with phone (preferred). For backward compatibility email may still be used.
+        const { phone, email, password, name, role = 'student' } = req.body;
 
-        if (!email || !password || !name) {
-            return res.status(400).json({ error: 'Email, password, and name are required' });
+        if ((!phone && !email) || !password || !name) {
+            return res.status(400).json({ error: 'Phone (or email), password, and name are required' });
         }
 
-        // Check if user already exists
+        const identifier = phone ? phone.trim() : (email || '').toLowerCase().trim();
+        const where = phone ? 'phone' : 'email';
+
+        // Check if user already exists by phone or email
         const existingUser = await queryOne(
-            'SELECT id FROM users WHERE email = ?',
-            [email.toLowerCase().trim()]
+            `SELECT id FROM users WHERE ${where} = ?`,
+            [identifier]
         );
 
         if (existingUser) {
@@ -82,22 +105,25 @@ router.post('/register', async (req: Request, res: Response) => {
 
         // Insert new user
         const result = await query(
-            'INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, ?)',
-            [email.toLowerCase().trim(), passwordHash, name, role]
+            `INSERT INTO users (email, phone, password_hash, name, role) VALUES (?, ?, ?, ?, ?)`,
+            [email ? email.toLowerCase().trim() : null, phone ? phone.trim() : null, passwordHash, name, role]
         );
 
-        const userId = (result as any).insertId;
+        const userId = (result as unknown as QueryResult).insertId;
 
         // Generate JWT token
+        const jwtSecret: Secret = process.env.JWT_SECRET || 'secret';
+        const jwtExpiry = process.env.JWT_EXPIRES_IN || '7d';
         const token = jwt.sign(
-            { id: userId, email, role },
-            process.env.JWT_SECRET || 'secret',
-            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+            { id: userId, email: email || null, phone: phone || null, role },
+            jwtSecret,
+            { expiresIn: jwtExpiry } as jwt.SignOptions
         );
 
         const user = {
             id: userId.toString(),
-            email: email.toLowerCase().trim(),
+            email: email ? email.toLowerCase().trim() : null,
+            phone: phone ? phone.trim() : null,
             name,
             role,
             is_active: true,
@@ -122,7 +148,7 @@ router.get('/me', async (req: Request, res: Response) => {
             return res.status(401).json({ error: 'No token provided' });
         }
 
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret') as any;
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret') as JWTPayload;
 
         const user = await queryOne<User>(
             'SELECT id, email, name, role, is_active FROM users WHERE id = ? AND is_active = TRUE',

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,19 +20,21 @@ import Header from "@/components/Header";
 import { motion } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
-import { getStudents, updateStudent, getGrades, getGroups, getCourses } from "@/lib/api";
+import { getStudents, updateStudent, getGrades, getGroups, getCourses, getRegistrationRequests, approveRegistrationRequest, rejectRegistrationRequest } from "@/lib/api";
 
 interface RegistrationRequest {
   id: string;
   name: string;
-  email: string;
+  email?: string | null;
   phone: string;
-  grade_id: string;
-  group_id: string;
-  requested_courses: string[];
+  grade_id?: string | null;
+  group_id?: string | null;
+  requested_courses?: string | null;
   status: 'pending' | 'approved' | 'rejected';
-  rejection_reason?: string;
-  created_at: string;
+  rejection_reason?: string | null;
+  created_at?: string;
+  grade_name?: string;
+  group_name?: string;
 }
 
 interface Grade {
@@ -59,35 +62,52 @@ export default function StudentRegistrationRequests() {
   const [rejectionReason, setRejectionReason] = useState("");
   const [showRejectionDialog, setShowRejectionDialog] = useState(false);
   const { toast } = useToast();
+  const navigate = useNavigate();
 
   useEffect(() => {
+    // Check if user is logged in and is admin
+    const currentUser = localStorage.getItem('currentUser');
+    if (!currentUser) {
+      toast({
+        title: "غير مصرح",
+        description: "يجب تسجيل الدخول أولاً",
+        variant: "destructive"
+      });
+      navigate('/auth');
+      return;
+    }
+
+    try {
+      const user = JSON.parse(currentUser);
+      if (user.role !== 'admin') {
+        toast({
+          title: "غير مصرح",
+          description: "هذه الصفحة متاحة للمسؤولين فقط",
+          variant: "destructive"
+        });
+        navigate('/');
+        return;
+      }
+    } catch (error) {
+      console.error('Error parsing user data:', error);
+      navigate('/auth');
+      return;
+    }
+
     fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchData = async () => {
     try {
-      const [studentsData, gradesData, groupsData, coursesData] = await Promise.all([
-        getStudents(),
+      const [requestsData, gradesData, groupsData, coursesData] = await Promise.all([
+        getRegistrationRequests(), // Fetch all registration requests
         getGrades(),
         getGroups(),
         getCourses()
       ]);
 
-      // Filter students with pending approval status
-      const pendingRequests = studentsData.filter(s => s.approval_status === 'pending');
-      setRequests(pendingRequests.map(s => ({
-        id: s.id,
-        name: s.name,
-        email: s.email || '',
-        phone: s.phone || '',
-        grade_id: s.grade_id || '',
-        group_id: s.group_id || '',
-        requested_courses: [], // TODO: Add courses field to students
-        status: s.approval_status as 'pending' | 'approved' | 'rejected',
-        created_at: new Date().toISOString()
-      })));
-
+      setRequests(requestsData);
       setGrades(gradesData);
       setGroups(groupsData);
       setCourses(coursesData);
@@ -105,18 +125,12 @@ export default function StudentRegistrationRequests() {
 
   const handleApprove = async (request: RegistrationRequest) => {
     try {
-      // Update student approval status
-      const success = await updateStudent(request.id, {
-        approval_status: 'approved'
-      });
-
-      if (!success) {
-        throw new Error('Failed to update student');
-      }
+      // Call the approve endpoint
+      const result = await approveRegistrationRequest(request.id);
 
       toast({
         title: "تم قبول الطلب",
-        description: `تم قبول طلب الطالب ${request.name} بنجاح`,
+        description: result.message || `تم قبول طلب الطالب ${request.name} بنجاح`,
       });
 
       // Refresh data
@@ -125,7 +139,7 @@ export default function StudentRegistrationRequests() {
       console.error('Error approving request:', error);
       toast({
         title: "خطأ",
-        description: "حدث خطأ أثناء قبول الطلب",
+        description: error instanceof Error ? error.message : "حدث خطأ أثناء قبول الطلب",
         variant: "destructive"
       });
     }
@@ -142,18 +156,12 @@ export default function StudentRegistrationRequests() {
     }
 
     try {
-      // Update student approval status to rejected
-      const success = await updateStudent(selectedRequest.id, {
-        approval_status: 'rejected'
-      });
-
-      if (!success) {
-        throw new Error('Failed to update student');
-      }
+      // Call the reject endpoint
+      const result = await rejectRegistrationRequest(selectedRequest.id, rejectionReason);
 
       toast({
         title: "تم رفض الطلب",
-        description: `تم رفض طلب الطالب ${selectedRequest.name}`,
+        description: result.message || `تم رفض طلب الطالب ${selectedRequest.name}`,
       });
 
       setShowRejectionDialog(false);
@@ -164,22 +172,30 @@ export default function StudentRegistrationRequests() {
       console.error('Error rejecting request:', error);
       toast({
         title: "خطأ",
-        description: "حدث خطأ أثناء رفض الطلب",
+        description: error instanceof Error ? error.message : "حدث خطأ أثناء رفض الطلب",
         variant: "destructive"
       });
     }
   };
 
-  const getGradeName = (gradeId: string) => {
+  const getGradeName = (gradeId?: string | null) => {
+    if (!gradeId) return 'غير محدد';
     return grades.find(g => g.id === gradeId)?.name || 'غير محدد';
   };
 
-  const getGroupName = (groupId: string) => {
+  const getGroupName = (groupId?: string | null) => {
+    if (!groupId) return 'غير محدد';
     return groups.find(g => g.id === groupId)?.name || 'غير محدد';
   };
 
-  const getRequestedCoursesNames = (courseIds: string[]) => {
-    return courseIds.map(id => courses.find(c => c.id === id)?.name || 'غير معروف').join(', ') || 'لا يوجد';
+  const getRequestedCoursesNames = (requestedCourses?: string | null) => {
+    if (!requestedCourses) return 'لا يوجد';
+    try {
+      const courseIds: string[] = JSON.parse(requestedCourses);
+      return courseIds.map(id => courses.find(c => c.id === id)?.name || 'غير معروف').join(', ') || 'لا يوجد';
+    } catch {
+      return 'لا يوجد';
+    }
   };
 
   const renderRequestCard = (request: RegistrationRequest) => (
@@ -199,26 +215,28 @@ export default function StudentRegistrationRequests() {
           </Badge>
         </div>
         <CardDescription>
-          تاريخ التقديم: {new Date(request.created_at).toLocaleDateString('ar-EG')}
+          تاريخ التقديم: {request.created_at ? new Date(request.created_at).toLocaleDateString('ar-EG') : 'غير محدد'}
         </CardDescription>
       </CardHeader>
       <CardContent>
         <div className="space-y-2 text-sm">
-          <div className="flex items-center gap-2">
-            <Mail className="h-4 w-4" />
-            <span>البريد الإلكتروني: {request.email}</span>
-          </div>
+          {request.email && (
+            <div className="flex items-center gap-2">
+              <Mail className="h-4 w-4" />
+              <span>البريد الإلكتروني: {request.email}</span>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <Phone className="h-4 w-4" />
             <span>الهاتف: {request.phone}</span>
           </div>
           <div className="flex items-center gap-2">
             <GraduationCap className="h-4 w-4" />
-            <span>الصف: {getGradeName(request.grade_id)}</span>
+            <span>الصف: {request.grade_name || getGradeName(request.grade_id)}</span>
           </div>
           <div className="flex items-center gap-2">
             <GraduationCap className="h-4 w-4" />
-            <span>المجموعة: {getGroupName(request.group_id)}</span>
+            <span>المجموعة: {request.group_name || getGroupName(request.group_id)}</span>
           </div>
           <div>
             <span className="font-semibold">الكورسات المطلوبة: </span>
