@@ -7,10 +7,10 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { GraduationCap, LogIn, UserPlus, Sparkles, Lock, Mail, User, Phone as PhoneIcon, BookOpen, Users } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { signIn, signUp, getStudentByEmail, getCourses, getGrades, getGroups } from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast";
-import alQaedLogo from "@/assets/al-qaed-logo-new.jpg";
+import alQaedLogo from "@/assets/Qaad_Logo.png";
 import logBackground from "@/assets/Log_Background.jpg";
 import mohamedRamadan from "@/assets/Mohamed_Ramadan.png";
 import bcrypt from "bcryptjs";
@@ -174,11 +174,14 @@ const Auth = () => {
       />
       
       {/* Top Navbar */}
-      <nav className="absolute top-0 left-0 right-0 z-50 px-8 py-6">
+      <nav className="absolute -top-4 left-0 right-0 z-50 px-8 py-0">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          {/* Login button on the left */}
-          <Button className="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white px-8 py-2 rounded-lg font-semibold shadow-lg">
-            إنشاء حساب جديد
+          {/* Toggle button */}
+          <Button 
+            onClick={() => setIsLogin(!isLogin)}
+            className="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white px-8 py-2 rounded-lg font-semibold shadow-lg"
+          >
+            {isLogin ? "إنشاء حساب جديد" : "تسجيل الدخول"}
           </Button>
           
           {/* Navigation links */}
@@ -191,12 +194,9 @@ const Auth = () => {
           </div>
           
           {/* Logo on the right */}
-          <div className="flex items-center gap-3">
-            <span className="text-white font-bold text-2xl">القائد</span>
-            <div className="w-12 h-12 bg-gradient-to-br from-yellow-400 to-orange-500 rounded-lg flex items-center justify-center shadow-lg">
-              <span className="text-white font-bold text-xl">MK</span>
-            </div>
-          </div>
+          <Link to="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity cursor-pointer">
+            <img src={alQaedLogo} alt="منصة القائد" className="w-32 h-32 rounded-lg object-cover" />
+          </Link>
         </div>
       </nav>
       
@@ -230,12 +230,12 @@ const Auth = () => {
       </motion.div>
 
       {/* Main Content - Form on the right with more spacing */}
-      <div className="flex items-center justify-start min-h-screen px-8 lg:px-24 lg:pr-40 pt-12">
+      <div className="flex items-center justify-center min-h-screen px-8 lg:px-0 pt-12">
         <motion.div
           initial={{ opacity: 0, x: -50 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.6 }}
-          className="w-full max-w-lg lg:max-w-xl z-20 mr-auto lg:mr-0"
+          className="w-full max-w-lg lg:max-w-xl z-20 lg:fixed lg:right-24"
         >
           {/* Welcome Text - Above form, centered */}
           <motion.div
@@ -485,7 +485,7 @@ const Auth = () => {
                       <div className="w-full border-t border-white/20"></div>
                     </div>
                     <div className="relative flex justify-center text-sm">
-                      <span className="px-4 bg-black/40 text-white">OU ORTINUE WIT</span>
+                      <span className="px-4 bg-black/40 text-white">سجل الدخول ب</span>
                     </div>
                   </div>
 

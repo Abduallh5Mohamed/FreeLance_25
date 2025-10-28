@@ -7,6 +7,9 @@ import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import TeacherDashboard from "./pages/TeacherDashboard";
 import StudentDashboard from "./pages/StudentDashboard";
+import StudentChat from "./pages/StudentChat";
+import StudentContent from "./pages/StudentContent";
+import StudentExams from "./pages/StudentExams";
 import Courses from "./pages/Courses";
 import Students from "./pages/Students";
 import OfflineStudents from "./pages/OfflineStudents";
@@ -31,6 +34,7 @@ import Staff from "./pages/Staff";
 import OnlineMeeting from "./pages/OnlineMeeting";
 import NotFound from "./pages/NotFound";
 import PromoVideo from "./pages/PromoVideo";
+import StudentLectures from "./pages/StudentLectures";
 import Grades from "./pages/Grades";
 import StudentRegistrationRequests from "./pages/StudentRegistrationRequests";
 
@@ -48,6 +52,10 @@ const App = () => (
           <Route path="/auth" element={<Auth />} />
           <Route path="/teacher" element={<TeacherDashboard />} />
           <Route path="/student" element={<StudentDashboard />} />
+          <Route path="/student-chat" element={<StudentChat />} />
+          <Route path="/student-content" element={<StudentContent />} />
+          <Route path="/student-lectures" element={<StudentLectures />} />
+          <Route path="/student-exams" element={<StudentExams />} />
           <Route path="/courses" element={<Courses />} />
           <Route path="/students" element={<Students />} />
           <Route path="/offline-students" element={<OfflineStudents />} />

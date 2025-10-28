@@ -9,22 +9,36 @@ import {
   MessageCircle,
   User,
   FileText,
-  BookOpen
+  BookOpen,
+  Video,
+  File
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
-import alQaedLogo from "@/assets/al-qaed-logo-new.jpg";
+import alQaedLogo from "@/assets/Qaad_Logo.png";
 
 const StudentHeader = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
 
-  const handleNavigate = (href: string, name: string) => {
-    if (name === "الكورسات" && window.location.pathname === "/student") {
-      // Scroll to courses section if already on student page
-      const coursesSection = document.querySelector('[data-section="courses"]');
-      if (coursesSection) {
-        coursesSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const handleNavigate = (href: string, name: string, scrollTo?: string) => {
+    if (scrollTo) {
+      // Always navigate to /student first if not already there
+      if (window.location.pathname !== "/student") {
+        navigate("/student");
+        // Wait for navigation then scroll
+        setTimeout(() => {
+          const section = document.querySelector(`[data-section="${scrollTo}"]`);
+          if (section) {
+            section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }, 100);
+      } else {
+        // Already on student page, just scroll
+        const section = document.querySelector(`[data-section="${scrollTo}"]`);
+        if (section) {
+          section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
       }
     } else {
       navigate(href);
@@ -33,8 +47,10 @@ const StudentHeader = () => {
 
   const studentNavigation = [
     { name: "البروفايل", href: "/student", icon: User },
-    { name: "الكورسات", href: "/student", icon: BookOpen },
-    { name: "الرسائل", href: "/messages", icon: MessageCircle },
+    { name: "المحاضرات", href: "/student-lectures", icon: Video },
+    { name: "المحتوى التعليمي", href: "/student-content", icon: File },
+    { name: "الامتحانات", href: "/student-exams", icon: FileText },
+    { name: "المحادثات", href: "/student-chat", icon: MessageCircle },
   ];
 
   const handleLogout = async () => {
