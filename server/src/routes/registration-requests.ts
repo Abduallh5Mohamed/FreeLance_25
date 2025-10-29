@@ -197,12 +197,15 @@ router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthReq
             [userId, request.phone, request.password_hash, request.name, 'student', true, true]
         );
 
-        // Create student record with UUID (without email)
+        // Generate unique barcode for the student
+        const barcode = `STU${Date.now()}${Math.random().toString(36).substr(2, 9)}`.toUpperCase();
+
+        // Create student record with UUID and barcode
         const studentId = randomUUID();
         await connection.query(
-            `INSERT INTO students (id, name, phone, grade_id, group_id, password_hash, approval_status, is_offline, created_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-            [studentId, request.name, request.phone, request.grade_id, request.group_id, request.password_hash, 'approved', false]
+            `INSERT INTO students (id, name, phone, grade_id, group_id, password_hash, barcode, approval_status, is_offline, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+            [studentId, request.name, request.phone, request.grade_id, request.group_id, request.password_hash, barcode, 'approved', false]
         );
 
         // If requested courses, create student_courses entries

@@ -1,13 +1,17 @@
 ﻿import { useState, useEffect } from 'react';
-import { getStudents, updateStudent } from '@/lib/api-http';
+import { getStudents, updateStudent, getGroups } from '@/lib/api-http';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Barcode, Plus, Trash2, CheckCircle, Zap } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Barcode, Plus, Trash2, CheckCircle, Zap, Users } from 'lucide-react';
 import Header from '@/components/Header';
 import { motion } from 'framer-motion';
+import BarcodeReact from 'react-barcode';
 
 export default function StudentBarcodes() {
   const [students, setStudents] = useState([]);
+  const [groups, setGroups] = useState([]);
+  const [selectedGroup, setSelectedGroup] = useState('all');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState(null);
 
@@ -19,16 +23,29 @@ export default function StudentBarcodes() {
 
   const loadData = async () => {
     try {
-      const studentsData = await getStudents();
+      const [studentsData, groupsData] = await Promise.all([
+        getStudents(),
+        getGroups()
+      ]);
       
       setStudents(studentsData || []);
+      setGroups(groupsData || []);
       
       console.log('Students loaded:', studentsData?.length);
+      console.log('Groups loaded:', groupsData?.length);
     } catch (error) {
       console.error('Error loading data:', error);
       setMessage({ type: 'error', text: `خطأ في تحميل البيانات: ${error?.message}` });
     }
   };
+
+  const getFilteredStudents = () => {
+    if (selectedGroup === 'all') return students;
+    if (selectedGroup === 'no-group') return students.filter(s => !s.group_id);
+    return students.filter(s => s.group_id === selectedGroup);
+  };
+
+  const filteredStudents = getFilteredStudents();
 
   const generateBarcode = async (studentId) => {
     setLoading(true);
@@ -136,25 +153,49 @@ export default function StudentBarcodes() {
 
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
           className="bg-white dark:bg-slate-800 rounded-lg border border-primary/20 shadow-soft overflow-hidden mb-6">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-primary/5 border-b border-primary/20">
-                <tr>
-                  <th className="px-6 py-4 text-right text-primary font-semibold">الطالب</th>
-                  <th className="px-6 py-4 text-right text-primary font-semibold">الباركود</th>
-                  <th className="px-6 py-4 text-right text-primary font-semibold">الحالة</th>
-                  <th className="px-6 py-4 text-right text-primary font-semibold">الإجراءات</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-primary/10">
-                {students.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="px-6 py-8 text-center text-muted-foreground">
-                      لا توجد طلاب
-                    </td>
-                  </tr>
-                ) : (
-                  students.map((student, index) => {
+          
+          <Tabs value={selectedGroup} onValueChange={setSelectedGroup} className="w-full">
+            <div className="border-b border-primary/20 bg-primary/5 px-4 py-2">
+              <TabsList className="bg-transparent">
+                <TabsTrigger value="all" className="data-[state=active]:bg-primary data-[state=active]:text-white">
+                  <Users className="w-4 h-4 ml-2" />
+                  الكل ({students.length})
+                </TabsTrigger>
+                {groups.map(group => (
+                  <TabsTrigger 
+                    key={group.id} 
+                    value={group.id}
+                    className="data-[state=active]:bg-primary data-[state=active]:text-white"
+                  >
+                    {group.name} ({students.filter(s => s.group_id === group.id).length})
+                  </TabsTrigger>
+                ))}
+                <TabsTrigger value="no-group" className="data-[state=active]:bg-primary data-[state=active]:text-white">
+                  بدون مجموعة ({students.filter(s => !s.group_id).length})
+                </TabsTrigger>
+              </TabsList>
+            </div>
+
+            <TabsContent value={selectedGroup} className="m-0">
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-primary/5 border-b border-primary/20">
+                    <tr>
+                      <th className="px-6 py-4 text-right text-primary font-semibold">الطالب</th>
+                      <th className="px-6 py-4 text-right text-primary font-semibold">الباركود</th>
+                      <th className="px-6 py-4 text-right text-primary font-semibold">الحالة</th>
+                      <th className="px-6 py-4 text-right text-primary font-semibold">الإجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-primary/10">
+                    {filteredStudents.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="px-6 py-8 text-center text-muted-foreground">
+                          لا توجد طلاب في هذه المجموعة
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredStudents.map((student, index) => {
                     const barcode = student.barcode;
                     return (
                       <motion.tr key={student.id} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: index * 0.05 }}
@@ -162,9 +203,16 @@ export default function StudentBarcodes() {
                         <td className="px-6 py-4 text-foreground font-medium">{student.name}</td>
                         <td className="px-6 py-4">
                           {barcode ? (
-                            <span className="font-mono text-sm text-primary bg-primary/10 px-3 py-1 rounded dark:bg-primary/20">
-                              {barcode}
-                            </span>
+                            <div className="flex flex-col items-start gap-1">
+                              <BarcodeReact 
+                                value={barcode} 
+                                width={1.5}
+                                height={40}
+                                fontSize={12}
+                                background="#ffffff"
+                                lineColor="#000000"
+                              />
+                            </div>
                           ) : (
                             <span className="text-muted-foreground">---</span>
                           )}
@@ -176,8 +224,8 @@ export default function StudentBarcodes() {
                               مسجل
                             </span>
                           ) : (
-                            <span className="text-amber-700 dark:text-amber-400 text-sm bg-amber-100 dark:bg-amber-500/20 px-3 py-1 rounded">
-                              معلق
+                            <span className="text-muted-foreground text-sm">
+                              ---
                             </span>
                           )}
                         </td>
@@ -200,9 +248,11 @@ export default function StudentBarcodes() {
                     );
                   })
                 )}
-              </tbody>
-            </table>
-          </div>
+                  </tbody>
+                </table>
+              </div>
+            </TabsContent>
+          </Tabs>
         </motion.div>
 
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -211,7 +261,7 @@ export default function StudentBarcodes() {
               <CardTitle className="text-primary text-sm">إجمالي الطلاب</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold text-primary">{students.length}</div>
+              <div className="text-3xl font-bold text-primary">{filteredStudents.length}</div>
             </CardContent>
           </Card>
 
@@ -220,7 +270,7 @@ export default function StudentBarcodes() {
               <CardTitle className="text-primary text-sm">مع باركود</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold text-green-600 dark:text-green-400">{students.filter(s => s.barcode).length}</div>
+              <div className="text-3xl font-bold text-green-600 dark:text-green-400">{filteredStudents.filter(s => s.barcode).length}</div>
             </CardContent>
           </Card>
 
@@ -229,7 +279,7 @@ export default function StudentBarcodes() {
               <CardTitle className="text-primary text-sm">بدون باركود</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold text-amber-600 dark:text-amber-400">{students.filter(s => !s.barcode).length}</div>
+              <div className="text-3xl font-bold text-amber-600 dark:text-amber-400">{filteredStudents.filter(s => !s.barcode).length}</div>
             </CardContent>
           </Card>
         </motion.div>
