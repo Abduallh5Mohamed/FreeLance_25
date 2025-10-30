@@ -19,27 +19,45 @@ router.get('/', async (req: Request, res: Response) => {
     try {
         const { date, student_id, group_id, course_id } = req.query;
 
-        let sql = 'SELECT * FROM attendance WHERE 1=1';
+        let sql = `
+            SELECT 
+                a.id,
+                a.student_id,
+                a.course_id,
+                COALESCE(a.group_id, s.group_id) as group_id,
+                a.attendance_date,
+                a.attendance_time,
+                a.status,
+                a.notes,
+                a.marked_by,
+                a.method,
+                a.created_at,
+                s.name as student_name,
+                s.barcode as student_barcode
+            FROM attendance a
+            LEFT JOIN students s ON a.student_id = s.id
+            WHERE 1=1
+        `;
         const params: any[] = [];
 
         if (date) {
-            sql += ' AND DATE(attendance_date) = ?';
+            sql += ' AND DATE(a.attendance_date) = ?';
             params.push(date);
         }
         if (student_id) {
-            sql += ' AND student_id = ?';
+            sql += ' AND a.student_id = ?';
             params.push(student_id);
         }
         if (group_id) {
-            sql += ' AND group_id = ?';
+            sql += ' AND a.group_id = ?';
             params.push(group_id);
         }
         if (course_id) {
-            sql += ' AND course_id = ?';
+            sql += ' AND a.course_id = ?';
             params.push(course_id);
         }
 
-        sql += ' ORDER BY attendance_date DESC';
+        sql += ' ORDER BY a.attendance_date DESC, a.created_at DESC';
 
         const attendance = await query<Attendance>(sql, params);
         res.json(attendance);

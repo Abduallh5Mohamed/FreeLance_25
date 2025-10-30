@@ -106,27 +106,51 @@ router.post('/', async (req: Request, res: Response) => {
 // Update student
 router.put('/:id', async (req: Request, res: Response) => {
     try {
-        const { name, email, phone, grade, grade_id, group_id } = req.body;
+        const { name, email, phone, grade, grade_id, group_id, barcode } = req.body;
+
+        // Build dynamic SQL for fields that are provided
+        const updates: string[] = [];
+        const params: any[] = [];
+
+        if (name !== undefined) {
+            updates.push('name = ?');
+            params.push(name);
+        }
+        if (email !== undefined) {
+            updates.push('email = ?');
+            params.push(email);
+        }
+        if (phone !== undefined) {
+            updates.push('phone = ?');
+            params.push(phone);
+        }
+        if (grade !== undefined) {
+            updates.push('grade = ?');
+            params.push(grade);
+        }
+        if (grade_id !== undefined) {
+            updates.push('grade_id = ?');
+            params.push(grade_id);
+        }
+        if (group_id !== undefined) {
+            updates.push('group_id = ?');
+            params.push(group_id);
+        }
+        if (barcode !== undefined) {
+            updates.push('barcode = ?');
+            params.push(barcode);
+        }
+
+        if (updates.length === 0) {
+            return res.status(400).json({ error: 'No fields to update' });
+        }
+
+        updates.push('updated_at = CURRENT_TIMESTAMP');
+        params.push(req.params.id);
 
         const result = await execute(
-            `UPDATE students 
-             SET name = COALESCE(?, name),
-                 email = COALESCE(?, email),
-                 phone = COALESCE(?, phone),
-                 grade = COALESCE(?, grade),
-                 grade_id = COALESCE(?, grade_id),
-                 group_id = COALESCE(?, group_id),
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?`,
-            [
-                name ?? null,
-                email ?? null,
-                phone ?? null,
-                grade ?? null,
-                grade_id ?? null,
-                group_id ?? null,
-                req.params.id
-            ]
+            `UPDATE students SET ${updates.join(', ')} WHERE id = ?`,
+            params
         );
 
         if (result.affectedRows === 0) {

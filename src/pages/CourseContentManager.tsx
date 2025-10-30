@@ -155,8 +155,6 @@ export default function CourseContentManager() {
                             عرض تقديمي
                           </div>
                         </SelectItem>
-                        <SelectItem value="link">رابط</SelectItem>
-                        <SelectItem value="other">أخرى</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -212,6 +210,50 @@ export default function CourseContentManager() {
                         />
                       </div>
                     </>
+                  )}
+
+                  {formData.material_type === 'pdf' && (
+                    <div>
+                      <Label className="text-sm font-semibold">رفع ملف PDF *</Label>
+                      <div className="mt-1">
+                        <Input
+                          type="file"
+                          accept=".pdf"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              setFormData({ ...formData, file_url: file.name });
+                            }
+                          }}
+                          className="cursor-pointer"
+                        />
+                        <p className="text-xs text-muted-foreground mt-1.5 flex items-center gap-1">
+                          📄 اختر ملف PDF من جهازك
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {formData.material_type === 'presentation' && (
+                    <div>
+                      <Label className="text-sm font-semibold">رفع عرض تقديمي (PowerPoint) *</Label>
+                      <div className="mt-1">
+                        <Input
+                          type="file"
+                          accept=".ppt,.pptx"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              setFormData({ ...formData, file_url: file.name });
+                            }
+                          }}
+                          className="cursor-pointer"
+                        />
+                        <p className="text-xs text-muted-foreground mt-1.5 flex items-center gap-1">
+                          📊 اختر ملف PowerPoint من جهازك
+                        </p>
+                      </div>
+                    </div>
                   )}
 
                   <div className="flex items-center gap-2 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
