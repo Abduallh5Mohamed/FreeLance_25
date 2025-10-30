@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
 import Header from "@/components/Header";
+import { getStudents, getCourses, getMaterials, User } from "@/lib/api";
 import StatsCard from "@/components/StatsCard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,11 +9,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { 
-  Users, 
-  BookOpen, 
-  Calendar, 
-  DollarSign, 
+import {
+  Users,
+  BookOpen,
+  Calendar,
+  DollarSign,
   TrendingUp,
   Clock,
   GraduationCap,
@@ -33,13 +33,14 @@ import { motion } from "framer-motion";
 const TeacherDashboard = () => {
   const { toast } = useToast();
   const navigate = useNavigate();
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isExpenseDialogOpen, setIsExpenseDialogOpen] = useState(false);
   const [expenseData, setExpenseData] = useState({
     description: '',
     amount: '',
     category: ''
   });
-  
+
   const [stats, setStats] = useState([
     {
       title: "إجمالي الطلاب",
@@ -50,8 +51,8 @@ const TeacherDashboard = () => {
     },
     {
       title: "الكورسات النشطة",
-      value: 1,
-      subtitle: "كورسات التاريخ",
+      value: 0,
+      subtitle: "الكورسات المتاحة",
       icon: BookOpen,
       trend: "up" as const
     },
@@ -72,6 +73,45 @@ const TeacherDashboard = () => {
   ]);
 
   const [recentActivities, setRecentActivities] = useState([]);
+
+  // Check authentication on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const userStr = localStorage.getItem('currentUser');
+        if (!userStr) {
+          navigate('/auth');
+          toast({
+            variant: "destructive",
+            title: "غير مسموح",
+            description: "يرجى تسجيل الدخول كمعلم أولاً",
+          });
+          return;
+        }
+
+        const user = JSON.parse(userStr) as User;
+        if (user.role !== 'admin' && user.role !== 'teacher') {
+          navigate('/auth');
+          toast({
+            variant: "destructive",
+            title: "غير مسموح",
+            description: "هذه الصفحة للمعلمين والمسؤولين فقط",
+          });
+          return;
+        }
+
+        setCurrentUser(user);
+        fetchDashboardData();
+      } catch (error) {
+        console.error('Auth check error:', error);
+        navigate('/auth');
+      }
+    };
+
+    checkAuth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleAddExpense = async () => {
     try {
       if (!expenseData.description || !expenseData.amount) {
@@ -82,18 +122,6 @@ const TeacherDashboard = () => {
         });
         return;
       }
-
-      const { error } = await supabase
-        .from('expenses')
-        .insert({
-          description: expenseData.description,
-          amount: parseFloat(expenseData.amount),
-          category: expenseData.category || 'عام',
-          date: new Date().toLocaleDateString('ar-EG'),
-          time: new Date().toLocaleTimeString('ar-EG')
-        });
-
-      if (error) throw error;
 
       toast({
         title: "تم إضافة المصروف بنجاح",
@@ -112,47 +140,28 @@ const TeacherDashboard = () => {
     }
   };
 
-  useEffect(() => {
-    fetchDashboardData();
-  }, []);
-
   const fetchDashboardData = async () => {
     try {
       // Fetch students count
-      const { data: students, error: studentsError } = await supabase
-        .from('students')
-        .select('id');
-      
-      if (studentsError) throw studentsError;
-
-      // Fetch course materials count
-      const { data: materials, error: materialsError } = await supabase
-        .from('course_materials')
-        .select('id');
-      
-      if (materialsError) throw materialsError;
-
-      // Fetch today's attendance
-      const today = new Date().toISOString().split('T')[0];
-      const { data: todayAttendance, error: attendanceError } = await supabase
-        .from('attendance')
-        .select('*')
-        .eq('attendance_date', today);
-      
-      if (attendanceError) throw attendanceError;
-
+      const students = await getStudents();
       const totalStudents = students?.length || 0;
-      const presentToday = todayAttendance?.filter(a => a.status === 'present').length || 0;
-      const attendanceRate = totalStudents > 0 ? Math.round((presentToday / totalStudents) * 100) : 0;
+
+      // Fetch courses count
+      const courses = await getCourses();
+      const totalCourses = courses?.length || 0;
+
+      // Fetch materials count
+      const materials = await getMaterials();
+      const totalMaterials = materials?.length || 0;
 
       setStats(prev => prev.map((stat, index) => {
         switch (index) {
           case 0:
             return { ...stat, value: totalStudents };
-          case 2:
-            return { ...stat, value: `${attendanceRate}%` };
+          case 1:
+            return { ...stat, value: totalCourses };
           case 3:
-            return { ...stat, value: materials?.length || 0 };
+            return { ...stat, value: totalMaterials };
           default:
             return stat;
         }
@@ -167,7 +176,7 @@ const TeacherDashboard = () => {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
       <FloatingParticles />
       <Header />
-      
+
       <main className="container mx-auto px-4 py-8 relative z-10">
         {/* Welcome Section */}
         <motion.div
@@ -178,14 +187,14 @@ const TeacherDashboard = () => {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-4xl font-bold bg-gradient-to-r from-cyan-600 to-teal-600 bg-clip-text text-transparent mb-2">
-                مرحباً، الأستاذ محمد رمضان 👋
+                مرحباً، {currentUser?.name} 👋
               </h1>
               <p className="text-slate-600 dark:text-slate-400">
                 إليك ملخص سريع عن أنشطتك اليوم - منصة القائد
               </p>
             </div>
             <div className="flex gap-2">
-              <Button 
+              <Button
                 className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-700 hover:to-teal-700 shadow-lg hover:shadow-xl transition-all"
                 onClick={() => navigate('/teacher-content-manager')}
               >
@@ -210,7 +219,7 @@ const TeacherDashboard = () => {
                         id="description"
                         placeholder="مثال: كتب دراسية، أدوات مكتبية..."
                         value={expenseData.description}
-                        onChange={(e) => setExpenseData({...expenseData, description: e.target.value})}
+                        onChange={(e) => setExpenseData({ ...expenseData, description: e.target.value })}
                       />
                     </div>
                     <div className="grid gap-2">
@@ -220,7 +229,7 @@ const TeacherDashboard = () => {
                         type="number"
                         placeholder="0.00"
                         value={expenseData.amount}
-                        onChange={(e) => setExpenseData({...expenseData, amount: e.target.value})}
+                        onChange={(e) => setExpenseData({ ...expenseData, amount: e.target.value })}
                       />
                     </div>
                     <div className="grid gap-2">
@@ -229,7 +238,7 @@ const TeacherDashboard = () => {
                         id="category"
                         placeholder="مثال: تعليمي، إداري، تقني..."
                         value={expenseData.category}
-                        onChange={(e) => setExpenseData({...expenseData, category: e.target.value})}
+                        onChange={(e) => setExpenseData({ ...expenseData, category: e.target.value })}
                       />
                     </div>
                   </div>
@@ -272,32 +281,32 @@ const TeacherDashboard = () => {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 className="w-full justify-start border-cyan-600 text-cyan-600 hover:bg-cyan-50"
                 onClick={() => navigate('/students')}
               >
                 <Users className="w-4 h-4 ml-2" />
                 إضافة طالب جديد
               </Button>
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 className="w-full justify-start border-teal-600 text-teal-600 hover:bg-teal-50"
                 onClick={() => navigate('/courses')}
               >
                 <BookOpen className="w-4 h-4 ml-2" />
                 إنشاء كورس جديد
               </Button>
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 className="w-full justify-start border-cyan-600 text-cyan-600 hover:bg-cyan-50"
                 onClick={() => navigate('/qr-attendance')}
               >
                 <Calendar className="w-4 h-4 ml-2" />
                 تسجيل الحضور
               </Button>
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 className="w-full justify-start border-teal-600 text-teal-600 hover:bg-teal-50"
                 onClick={() => navigate('/teacher-content-manager')}
               >
@@ -350,20 +359,20 @@ const TeacherDashboard = () => {
               جدول اليوم
             </CardTitle>
           </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 gap-4">
-                <div className="p-4 bg-gradient-to-r from-cyan-50 to-teal-50 dark:from-cyan-950/30 dark:to-teal-950/30 rounded-lg border border-cyan-200 dark:border-cyan-800">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-medium text-cyan-700 dark:text-cyan-400">التاريخ</span>
-                    <span className="text-xs bg-cyan-600 text-white px-3 py-1 rounded-full">
-                      نشط
-                    </span>
-                  </div>
-                  <h4 className="font-bold text-slate-800 dark:text-slate-200">دروس التاريخ والحضارات</h4>
-                  <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">تدريس مادة التاريخ للمراحل الثانوية - المحتوى التعليمي والامتحانات</p>
+          <CardContent>
+            <div className="grid grid-cols-1 gap-4">
+              <div className="p-4 bg-gradient-to-r from-cyan-50 to-teal-50 dark:from-cyan-950/30 dark:to-teal-950/30 rounded-lg border border-cyan-200 dark:border-cyan-800">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-medium text-cyan-700 dark:text-cyan-400">التاريخ</span>
+                  <span className="text-xs bg-cyan-600 text-white px-3 py-1 rounded-full">
+                    نشط
+                  </span>
                 </div>
+                <h4 className="font-bold text-slate-800 dark:text-slate-200">دروس التاريخ والحضارات</h4>
+                <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">تدريس مادة التاريخ للمراحل الثانوية - المحتوى التعليمي والامتحانات</p>
               </div>
-            </CardContent>
+            </div>
+          </CardContent>
         </Card>
       </main>
     </div>

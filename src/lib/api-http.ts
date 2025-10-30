@@ -548,6 +548,59 @@ export interface Exam {
 }
 
 // ====================================
+// Lectures Functions (Teacher Lectures)
+// ====================================
+
+export interface Lecture {
+    id: string;
+    course_id: string;
+    title: string;
+    description?: string;
+    video_url: string;
+    duration_minutes?: number;
+    display_order?: number;
+    is_free: boolean;
+    is_published: boolean;
+    created_at?: Date;
+    updated_at?: Date;
+    course_name?: string;
+    course_subject?: string;
+}
+
+export const getLectures = async (courseId?: string): Promise<Lecture[]> => {
+    const params = courseId ? `?course_id=${courseId}` : '';
+    return request<Lecture[]>(`/lectures${params}`);
+};
+
+export const getLectureById = async (id: string): Promise<Lecture | null> => {
+    try {
+        return await request<Lecture>(`/lectures/${id}`);
+    } catch {
+        return null;
+    }
+};
+
+export const createLecture = async (lecture: Partial<Lecture>): Promise<Lecture> => {
+    return request<Lecture>('/lectures', {
+        method: 'POST',
+        body: JSON.stringify(lecture),
+    });
+};
+
+export const updateLecture = async (id: string, lecture: Partial<Lecture>): Promise<Lecture> => {
+    return request<Lecture>(`/lectures/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(lecture),
+    });
+};
+
+export const deleteLecture = async (id: string): Promise<void> => {
+    await request<void>(`/lectures/${id}`, {
+        method: 'DELETE',
+    });
+};
+
+// ====================================
 // Course Materials Functions
 // ====================================
 
@@ -686,6 +739,20 @@ export const deleteExam = async (id: string): Promise<boolean> => {
         return true;
     } catch {
         return false;
+    }
+};
+
+// Get exam questions
+export const getExamQuestions = async (examId: string) => {
+    try {
+        console.log('📚 Fetching questions for exam:', examId);
+        // Add cache-busting parameter
+        const result = await request(`/exams/${examId}/questions?t=${Date.now()}`);
+        console.log('✅ Questions fetched successfully:', result);
+        return result;
+    } catch (error) {
+        console.error('❌ Error fetching exam questions:', error);
+        return [];
     }
 };
 

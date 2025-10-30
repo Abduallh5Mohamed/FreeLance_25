@@ -1,31 +1,42 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { Clock, AlertCircle, CheckCircle2, XCircle, Trophy, Timer } from "lucide-react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useToast } from "@/components/ui/use-toast";
+import { useToast } from "@/hooks/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import { getExamById, getExamQuestions } from "@/lib/api";
 
 interface Question {
   id: string;
-  question: string;
-  options: string[];
-  correctAnswer: number;
-  points: number;
+  question_text?: string;
+  question?: string;
+  options?: string | string[];
+  correct_answer?: string | number;
+  correctAnswer?: number;
+  marks?: number;
+  points?: number;
+  display_order?: number;
 }
 
 interface ExamData {
   id: string;
   title: string;
-  course: string;
-  duration: number; // in minutes
-  totalMarks: number;
-  passingMarks: number;
+  course_id?: string;
+  course?: string;
+  duration_minutes?: number;
+  duration?: number;
+  total_marks?: number;
+  totalMarks?: number;
+  passing_marks?: number;
+  passingMarks?: number;
+  start_time?: Date;
+  end_time?: Date;
   questions: Question[];
 }
 
@@ -33,7 +44,7 @@ const TakeExam = () => {
   const { examId } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-  
+
   const [exam, setExam] = useState<ExamData | null>(null);
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [timeLeft, setTimeLeft] = useState(0); // in seconds
@@ -116,10 +127,109 @@ const TakeExam = () => {
   };
 
   useEffect(() => {
-    // Load exam data
-    setExam(sampleExam);
-    setTimeLeft(sampleExam.duration * 60); // Convert to seconds
-    setLoading(false);
+    const loadExamData = async () => {
+      try {
+        if (!examId) return;
+
+        // Load exam details
+        console.log('🔍 Loading exam with ID:', examId);
+        const examData = await getExamById(examId);
+        console.log('📋 Exam data loaded:', examData);
+
+        if (!examData) {
+          toast({
+            title: 'خطأ',
+            description: 'لم يتم العثور على الامتحان',
+            variant: 'destructive'
+          });
+          navigate('/student-exams');
+          return;
+        }
+
+        // Load exam questions
+        console.log('🎯 Fetching questions for exam:', examId);
+        const questions = await getExamQuestions(examId);
+        console.log('📝 Questions fetched:', questions, 'Count:', Array.isArray(questions) ? questions.length : 0);
+
+        // Convert question options if they're JSON strings
+        const processedQuestions = Array.isArray(questions)
+          ? (questions).map((q: Question) => {
+            console.log('Processing question:', q);
+            // Parse options - they come as either string or object from API
+            let parsedOptions: string[] = [];
+            if (typeof q.options === 'string') {
+              try {
+                const parsed = JSON.parse(q.options);
+                // If options is an object like {a: "option1", b: "option2", ...}, convert to array
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                  parsedOptions = [parsed.a, parsed.b, parsed.c, parsed.d].filter(Boolean);
+                } else if (Array.isArray(parsed)) {
+                  parsedOptions = parsed;
+                }
+              } catch (e) {
+                console.error('Failed to parse options string:', e);
+                parsedOptions = [];
+              }
+            } else if (typeof q.options === 'object' && !Array.isArray(q.options) && q.options !== null) {
+              // Options is already an object {a: "...", b: "...", c: "...", d: "..."}
+              const opts = q.options as Record<string, string>;
+              parsedOptions = [opts.a, opts.b, opts.c, opts.d].filter(Boolean);
+            } else if (Array.isArray(q.options)) {
+              parsedOptions = q.options;
+            }
+
+            // Convert correct_answer from letter to index if needed
+            let correctAnswer: string | number | undefined = q.correct_answer;
+            if (typeof correctAnswer === 'string') {
+              const letterToIndex = { 'a': 0, 'b': 1, 'c': 2, 'd': 3 };
+              correctAnswer = letterToIndex[correctAnswer as keyof typeof letterToIndex];
+              if (correctAnswer === undefined) {
+                console.warn(`⚠️ Unknown letter for correct_answer: ${q.correct_answer}, defaulting to 0`);
+                correctAnswer = 0;
+              }
+            } else if (typeof correctAnswer === 'number') {
+              // Already a number, keep it
+            } else {
+              console.warn(`⚠️ Unexpected correct_answer type: ${typeof correctAnswer}, value: ${correctAnswer}`);
+              correctAnswer = 0;
+            }
+
+            console.log(`Q ID: ${q.id}, Original: ${q.correct_answer}, Converted: ${correctAnswer}`);
+
+            console.log('Processed question options:', parsedOptions);
+
+            return {
+              ...q,
+              options: parsedOptions,
+              correct_answer: correctAnswer
+            };
+          })
+          : [];
+
+        console.log('✅ Processed questions:', processedQuestions);
+
+        // Create exam with questions
+        const fullExam: ExamData = {
+          ...examData,
+          questions: processedQuestions
+        };
+
+        setExam(fullExam);
+        setTimeLeft((examData.duration_minutes || 60) * 60); // Convert to seconds
+        setLoading(false);
+      } catch (error) {
+        console.error('❌ Error loading exam:', error);
+        setLoading(false);
+        toast({
+          title: 'خطأ',
+          description: 'فشل تحميل الامتحان',
+          variant: 'destructive'
+        });
+        navigate('/student-exams');
+      }
+    };
+
+    loadExamData();
 
     // Prevent page refresh during exam
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -130,28 +240,7 @@ const TakeExam = () => {
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [examId]);
-
-  // Timer countdown
-  useEffect(() => {
-    if (timeLeft > 0 && !isSubmitted && !loading) {
-      const timer = setTimeout(() => setTimeLeft(timeLeft - 1), 1000);
-      return () => clearTimeout(timer);
-    } else if (timeLeft === 0 && exam && !isSubmitted) {
-      toast({
-        title: "انتهى الوقت!",
-        description: "سيتم تسليم الامتحان تلقائياً",
-        variant: "destructive"
-      });
-      handleSubmit();
-    }
-  }, [timeLeft, isSubmitted, exam, loading]);
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
+  }, [examId, navigate, toast, isSubmitted]);
 
   const handleAnswerChange = (questionId: string, answerIndex: number) => {
     setAnswers(prev => ({
@@ -160,34 +249,71 @@ const TakeExam = () => {
     }));
   };
 
-  const calculateScore = () => {
+  const calculateScore = useCallback(() => {
     if (!exam) return { score: 0, total: 0, percentage: 0, passed: false };
 
     let score = 0;
-    exam.questions.forEach(question => {
-      if (answers[question.id] === question.correctAnswer) {
-        score += question.points;
+    let correctCount = 0;
+    let wrongCount = 0;
+
+    console.log('=== Calculating Score ===');
+    console.log('Exam questions:', exam.questions);
+    console.log('User answers:', answers);
+
+    exam.questions.forEach((question: Question, idx: number) => {
+      const userAnswer = answers[question.id];
+      const correctAnswer = question.correct_answer;
+
+      console.log(`Q${idx + 1}: User answered: ${userAnswer}, Correct: ${correctAnswer}, Match: ${userAnswer === correctAnswer}`);
+
+      if (userAnswer === correctAnswer) {
+        score += question.marks || question.points || 1;
+        correctCount++;
+        console.log(`✅ Correct! Score: ${question.marks || question.points || 1}`);
+      } else {
+        wrongCount++;
+        console.log(`❌ Wrong!`);
       }
     });
 
-    const percentage = (score / exam.totalMarks) * 100;
-    const passed = score >= exam.passingMarks;
+    const totalMarks = exam.total_marks || exam.totalMarks || 0;
+    const passingMarks = exam.passing_marks || exam.passingMarks || 0;
+    const percentage = totalMarks > 0 ? (score / totalMarks) * 100 : 0;
+    const passed = score >= passingMarks;
 
-    return { score, total: exam.totalMarks, percentage, passed };
-  };
+    console.log(`Final: ${score}/${totalMarks}, Correct: ${correctCount}, Wrong: ${wrongCount}, Passed: ${passed}`);
 
-  const handleSubmit = () => {
+    return { score, total: totalMarks, percentage, passed };
+  }, [exam, answers]);
+
+  const handleSubmit = useCallback(() => {
     const examResult = calculateScore();
     setResult(examResult);
     setIsSubmitted(true);
 
     toast({
       title: examResult.passed ? "تهانينا! 🎉" : "للأسف",
-      description: examResult.passed 
-        ? `لقد نجحت بدرجة ${examResult.score}/${examResult.total}` 
+      description: examResult.passed
+        ? `لقد نجحت بدرجة ${examResult.score}/${examResult.total}`
         : `لم تحصل على درجة النجاح. حصلت على ${examResult.score}/${examResult.total}`,
       variant: examResult.passed ? "default" : "destructive"
     });
+  }, [calculateScore, toast]);
+
+  // Timer countdown
+  useEffect(() => {
+    if (timeLeft > 0 && !isSubmitted && !loading) {
+      const timer = setTimeout(() => setTimeLeft(timeLeft - 1), 1000);
+      return () => clearTimeout(timer);
+    } else if (timeLeft === 0 && exam && !isSubmitted && !loading) {
+      handleSubmit();
+    }
+  }, [timeLeft, isSubmitted, exam, loading, handleSubmit]);
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
   const getTimeColor = () => {
@@ -222,6 +348,23 @@ const TakeExam = () => {
           <CardContent className="pt-6 text-center">
             <XCircle className="w-16 h-16 mx-auto mb-4 text-destructive" />
             <h2 className="text-xl font-bold mb-2">خطأ في تحميل الامتحان</h2>
+            <Button onClick={() => navigate('/student-exams')} className="mt-4">
+              العودة للامتحانات
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (exam.questions.length === 0) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 flex items-center justify-center">
+        <Card className="max-w-md">
+          <CardContent className="pt-6 text-center">
+            <AlertCircle className="w-16 h-16 mx-auto mb-4 text-yellow-600" />
+            <h2 className="text-xl font-bold mb-2">لا توجد أسئلة في هذا الامتحان</h2>
+            <p className="text-muted-foreground mb-4">يرجى الاتصال بالمعلم لإضافة أسئلة</p>
             <Button onClick={() => navigate('/student-exams')} className="mt-4">
               العودة للامتحانات
             </Button>
@@ -275,13 +418,13 @@ const TakeExam = () => {
                   <Card className="p-4 text-center">
                     <div className="text-sm text-muted-foreground mb-1">إجابات صحيحة</div>
                     <div className="text-2xl font-bold text-green-600">
-                      {exam.questions.filter(q => answers[q.id] === q.correctAnswer).length}
+                      {exam.questions.filter(q => answers[q.id] === q.correct_answer).length}
                     </div>
                   </Card>
                   <Card className="p-4 text-center">
                     <div className="text-sm text-muted-foreground mb-1">إجابات خاطئة</div>
                     <div className="text-2xl font-bold text-red-600">
-                      {exam.questions.filter(q => answers[q.id] !== undefined && answers[q.id] !== q.correctAnswer).length}
+                      {exam.questions.filter(q => answers[q.id] !== undefined && answers[q.id] !== q.correct_answer).length}
                     </div>
                   </Card>
                 </div>
@@ -291,7 +434,7 @@ const TakeExam = () => {
                   <h3 className="font-bold text-lg">الإجابات التفصيلية:</h3>
                   {exam.questions.map((question, idx) => {
                     const userAnswer = answers[question.id];
-                    const isCorrect = userAnswer === question.correctAnswer;
+                    const isCorrect = userAnswer === question.correct_answer;
                     const wasAnswered = userAnswer !== undefined;
 
                     return (
@@ -308,16 +451,16 @@ const TakeExam = () => {
                           </div>
                           <div className="flex-1">
                             <div className="font-medium mb-2">
-                              السؤال {idx + 1}: {question.question}
+                              السؤال {idx + 1}: {question.question_text || question.question}
                             </div>
                             {wasAnswered && (
                               <div className="text-sm space-y-1">
-                                <div className={userAnswer === question.correctAnswer ? 'text-green-600' : 'text-red-600'}>
-                                  إجابتك: {question.options[userAnswer]}
+                                <div className={userAnswer === question.correct_answer ? 'text-green-600' : 'text-red-600'}>
+                                  إجابتك: {Array.isArray(question.options) ? question.options[userAnswer] : 'خيار غير معروف'}
                                 </div>
                                 {!isCorrect && (
                                   <div className="text-green-600">
-                                    الإجابة الصحيحة: {question.options[question.correctAnswer]}
+                                    الإجابة الصحيحة: {Array.isArray(question.options) ? question.options[question.correct_answer as number] : 'خيار غير معروف'}
                                   </div>
                                 )}
                               </div>
@@ -329,7 +472,7 @@ const TakeExam = () => {
                             )}
                           </div>
                           <Badge variant={isCorrect ? "default" : "destructive"}>
-                            {question.points} نقطة
+                            {question.points || question.marks || 1} نقطة
                           </Badge>
                         </div>
                       </Card>
@@ -364,7 +507,7 @@ const TakeExam = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
       <FloatingParticles />
-      
+
       {/* Sticky Header with Timer */}
       <div className="sticky top-0 z-50 bg-background/95 backdrop-blur-sm border-b shadow-lg">
         <div className="container mx-auto px-4 py-4">
@@ -373,7 +516,7 @@ const TakeExam = () => {
               <h1 className="text-xl font-bold">{exam.title}</h1>
               <p className="text-sm text-muted-foreground">{exam.course}</p>
             </div>
-            
+
             <div className="flex items-center gap-4">
               {/* Progress */}
               <div className="hidden md:flex items-center gap-2">
@@ -428,11 +571,11 @@ const TakeExam = () => {
                         السؤال {currentQuestion + 1} من {exam.questions.length}
                       </Badge>
                       <Badge>
-                        {exam.questions[currentQuestion].points} نقطة
+                        {exam.questions[currentQuestion].points || exam.questions[currentQuestion].marks || 1} نقطة
                       </Badge>
                     </div>
                     <CardTitle className="text-xl">
-                      {exam.questions[currentQuestion].question}
+                      {exam.questions[currentQuestion].question_text || exam.questions[currentQuestion].question}
                     </CardTitle>
                   </div>
                 </div>
@@ -440,29 +583,64 @@ const TakeExam = () => {
               <CardContent>
                 <RadioGroup
                   value={answers[exam.questions[currentQuestion].id]?.toString()}
-                  onValueChange={(value) => handleAnswerChange(exam.questions[currentQuestion].id, parseInt(value))}
+                  onValueChange={(value) => {
+                    console.log(`Selected answer index: ${value} for question: ${exam.questions[currentQuestion].id}`);
+                    handleAnswerChange(exam.questions[currentQuestion].id, parseInt(value));
+                  }}
                   className="space-y-3"
                 >
-                  {exam.questions[currentQuestion].options.map((option, idx) => (
-                    <motion.div
-                      key={idx}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: idx * 0.1 }}
-                    >
-                      <Label
-                        htmlFor={`option-${idx}`}
-                        className={`flex items-center gap-3 p-4 rounded-lg border-2 cursor-pointer transition-all hover:bg-accent ${
-                          answers[exam.questions[currentQuestion].id] === idx 
-                            ? 'border-primary bg-primary/10' 
-                            : 'border-border'
-                        }`}
+                  {(() => {
+                    const q = exam.questions[currentQuestion];
+                    const options = q.options;
+                    let optionsArray: string[] = [];
+
+                    console.log(`=== Rendering Question ${currentQuestion + 1} ===`);
+                    console.log('Question object:', q);
+                    console.log('Correct answer stored:', q.correct_answer, 'Type:', typeof q.correct_answer);
+
+                    if (typeof options === 'string') {
+                      try {
+                        const parsed = JSON.parse(options);
+                        // If it's an object like {a: "...", b: "...", c: "...", d: "..."}, convert to array
+                        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                          optionsArray = [parsed.a, parsed.b, parsed.c, parsed.d].filter(Boolean);
+                        } else if (Array.isArray(parsed)) {
+                          optionsArray = parsed;
+                        }
+                      } catch (e) {
+                        console.error('Failed to parse options:', e, options);
+                        optionsArray = [];
+                      }
+                    } else if (Array.isArray(options)) {
+                      optionsArray = options;
+                    }
+
+                    console.log('Rendering options:', optionsArray);
+
+                    if (optionsArray.length === 0) {
+                      return <div className="text-center py-8 text-muted-foreground">لا توجد خيارات متاحة</div>;
+                    }
+
+                    return optionsArray.map((option: string, idx: number) => (
+                      <motion.div
+                        key={idx}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: idx * 0.1 }}
                       >
-                        <RadioGroupItem value={idx.toString()} id={`option-${idx}`} />
-                        <span className="flex-1 text-base">{option}</span>
-                      </Label>
-                    </motion.div>
-                  ))}
+                        <Label
+                          htmlFor={`option-${idx}`}
+                          className={`flex items-center gap-3 p-4 rounded-lg border-2 cursor-pointer transition-all hover:bg-accent ${answers[exam.questions[currentQuestion].id] === idx
+                              ? 'border-primary bg-primary/10'
+                              : 'border-border'
+                            }`}
+                        >
+                          <RadioGroupItem value={idx.toString()} id={`option-${idx}`} />
+                          <span className="flex-1 text-base">{option}</span>
+                        </Label>
+                      </motion.div>
+                    ));
+                  })()}
                 </RadioGroup>
               </CardContent>
             </Card>
@@ -483,13 +661,12 @@ const TakeExam = () => {
                   <button
                     key={idx}
                     onClick={() => setCurrentQuestion(idx)}
-                    className={`w-10 h-10 rounded-lg font-medium transition-all ${
-                      idx === currentQuestion
+                    className={`w-10 h-10 rounded-lg font-medium transition-all ${idx === currentQuestion
                         ? 'bg-primary text-white scale-110'
                         : answers[exam.questions[idx].id] !== undefined
-                        ? 'bg-green-500 text-white'
-                        : 'bg-muted hover:bg-muted-foreground/20'
-                    }`}
+                          ? 'bg-green-500 text-white'
+                          : 'bg-muted hover:bg-muted-foreground/20'
+                      }`}
                   >
                     {idx + 1}
                   </button>

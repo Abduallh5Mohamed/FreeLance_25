@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -9,118 +10,56 @@ import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
+import { getMaterials, CourseMaterial, User } from "@/lib/api";
+import { VideoPlayer } from "@/components/VideoPlayer";
 
-interface Material {
-  id: string;
-  title: string;
-  description: string;
-  type: 'pdf' | 'image' | 'video' | 'document';
-  course: string;
-  uploadDate: string;
-  size: string;
-  url: string;
+interface Material extends CourseMaterial {
   thumbnail?: string;
-  youtubeId?: string;
 }
 
 const StudentContent = () => {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedType, setSelectedType] = useState<string>('all');
+  const [materials, setMaterials] = useState<Material[]>([]);
+  const [selectedMaterial, setSelectedMaterial] = useState<Material | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  // Sample educational content with YouTube videos
-  const [materials] = useState<Material[]>([
-    {
-      id: '1',
-      title: 'ملخص الحرب العالمية الأولى',
-      description: 'ملخص شامل لأسباب ونتائج الحرب العالمية الأولى مع الخرائط والصور',
-      type: 'pdf',
-      course: 'التاريخ الحديث',
-      uploadDate: '2025-10-20',
-      size: '2.5 MB',
-      url: '#',
-      thumbnail: 'https://images.unsplash.com/photo-1456513080510-7bf3a84b82f8?w=400'
-    },
-    {
-      id: '2',
-      title: 'خريطة التضاريس الطبيعية',
-      description: 'خرائط توضيحية لأنواع التضاريس المختلفة وتأثيرها على الحياة',
-      type: 'image',
-      course: 'الجغرافيا الطبيعية',
-      uploadDate: '2025-10-18',
-      size: '1.2 MB',
-      url: '#',
-      thumbnail: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=400'
-    },
-    {
-      id: '3',
-      title: 'مذكرة الجغرافيا البشرية',
-      description: 'مذكرة كاملة للفصل الدراسي الأول مع أمثلة عملية وخرائط',
-      type: 'pdf',
-      course: 'الجغرافيا البشرية',
-      uploadDate: '2025-10-15',
-      size: '3.8 MB',
-      url: '#',
-      thumbnail: 'https://images.unsplash.com/photo-1526628953301-3e589a6a8b74?w=400'
-    },
-    {
-      id: '4',
-      title: 'جدول أهم الأحداث التاريخية',
-      description: 'جدول زمني يوضح أهم الأحداث من القرن 19 إلى القرن 21',
-      type: 'image',
-      course: 'التاريخ الحديث',
-      uploadDate: '2025-10-22',
-      size: '856 KB',
-      url: '#',
-      thumbnail: 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=400'
-    },
-    {
-      id: '5',
-      title: 'ملخص الثورة الفرنسية',
-      description: 'ملف وورد يحتوي على تفاصيل الثورة الفرنسية والأحداث الرئيسية',
-      type: 'document',
-      course: 'التاريخ الحديث',
-      uploadDate: '2025-10-10',
-      size: '1.5 MB',
-      url: '#',
-      thumbnail: 'https://images.unsplash.com/photo-1488515503393-29d440291138?w=400'
-    },
-    {
-      id: '6',
-      title: 'أطلس الجغرافيا العالمية',
-      description: 'مجموعة خرائط شاملة للعالم مع التقسيمات الجغرافية والسياسية',
-      type: 'image',
-      course: 'الجغرافيا',
-      uploadDate: '2025-10-25',
-      size: '2.1 MB',
-      url: '#',
-      thumbnail: 'https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=400'
-    },
-    {
-      id: '7',
-      title: 'كتاب: الدولة الإسلامية',
-      description: 'كتاب شامل عن تاريخ الدولة الإسلامية والعصور الإسلامية',
-      type: 'pdf',
-      course: 'التاريخ الإسلامي',
-      uploadDate: '2025-10-12',
-      size: '4.2 MB',
-      url: '#',
-      thumbnail: 'https://images.unsplash.com/photo-1506880018603-83d5b814b5a6?w=400'
-    },
-    {
-      id: '8',
-      title: 'صور توضيحية للعصور التاريخية',
-      description: 'مجموعة صور نادرة وتوضيحية للعصور التاريخية المختلفة',
-      type: 'image',
-      course: 'التاريخ',
-      uploadDate: '2025-10-08',
-      size: '3.5 MB',
-      url: '#',
-      thumbnail: 'https://images.unsplash.com/photo-1506755855726-89015b63dc70?w=400'
+  // Check authentication
+  useEffect(() => {
+    const userStr = localStorage.getItem('currentUser');
+    const user: User | null = userStr ? JSON.parse(userStr) : null;
+
+    if (!user || user.role !== 'student') {
+      navigate('/auth');
+      return;
     }
-  ]);
 
-  const getIcon = (type: string) => {
+    loadMaterials();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const loadMaterials = async () => {
+    try {
+      setLoading(true);
+      const data = await getMaterials();
+      // Include all materials including videos (lectures)
+      const contentData = data || [];
+      setMaterials(contentData);
+    } catch (error) {
+      console.error('Error loading materials:', error);
+      toast({
+        title: 'خطأ',
+        description: 'فشل تحميل المحتوى',
+        variant: 'destructive'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getIcon = (type?: string) => {
     switch (type) {
       case 'pdf':
         return <FileText className="w-5 h-5 text-red-500" />;
@@ -135,7 +74,7 @@ const StudentContent = () => {
     }
   };
 
-  const getTypeLabel = (type: string) => {
+  const getTypeLabel = (type?: string) => {
     switch (type) {
       case 'pdf':
         return 'PDF';
@@ -150,19 +89,47 @@ const StudentContent = () => {
     }
   };
 
+  const getThumbnailUrl = (fileUrl?: string) => {
+    if (!fileUrl) return 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=400';
+
+    // If it's a direct image URL, use it as thumbnail
+    if (fileUrl.includes('.jpg') || fileUrl.includes('.png') || fileUrl.includes('.gif') || fileUrl.includes('.webp')) {
+      return fileUrl;
+    }
+
+    // If it's a Google Drive URL, generate preview thumbnail
+    if (fileUrl.includes('drive.google.com')) {
+      const fileId = fileUrl.match(/\/d\/([a-zA-Z0-9-_]+)/)?.[1];
+      if (fileId) return `https://drive.google.com/thumbnail?id=${fileId}&sz=w200`;
+    }
+
+    // If it's a YouTube URL, generate YouTube thumbnail
+    if (fileUrl.includes('youtube.com') || fileUrl.includes('youtu.be')) {
+      const videoId = fileUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&]+)/)?.[1];
+      if (videoId) return `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+    }
+
+    // Default fallback
+    return 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=400';
+  };
+
   const filteredMaterials = materials.filter(material => {
-    const matchesSearch = material.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         material.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         material.course.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesType = selectedType === 'all' || material.type === selectedType;
+    const matchesSearch = material.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      material.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (material.course_name?.toLowerCase().includes(searchQuery.toLowerCase()) || false);
+    const matchesType = selectedType === 'all' || material.material_type === selectedType;
     return matchesSearch && matchesType;
   });
 
   const handleView = (material: Material) => {
-    toast({
-      title: "جاري فتح الملف",
-      description: material.title
-    });
+    if (material.material_type === 'video') {
+      setSelectedMaterial(material);
+    } else {
+      toast({
+        title: "جاري فتح الملف",
+        description: material.title
+      });
+    }
   };
 
   const handleDownload = (material: Material) => {
@@ -258,18 +225,21 @@ const StudentContent = () => {
               >
                 <Card className="overflow-hidden hover:shadow-2xl transition-all duration-300 h-full flex flex-col group">
                   {/* Thumbnail */}
-                  {material.thumbnail && (
+                  {material.thumbnail || material.file_url && (
                     <div className="relative h-48 bg-gradient-to-br from-primary/20 to-accent/20 overflow-hidden">
                       <img
-                        src={material.thumbnail}
+                        src={material.thumbnail || getThumbnailUrl(material.file_url)}
                         alt={material.title}
                         className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=400';
+                        }}
                       />
                       <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                        {material.type === 'video' ? (
+                        {material.material_type === 'video' ? (
                           <div className="flex flex-col items-center gap-3">
                             <PlayCircle className="w-16 h-16 text-white drop-shadow-lg" />
-                            <span className="text-white font-medium">{material.size}</span>
+                            <span className="text-white font-medium">{material.duration_minutes || 0} دقيقة</span>
                           </div>
                         ) : (
                           <Eye className="w-12 h-12 text-white" />
@@ -277,8 +247,8 @@ const StudentContent = () => {
                       </div>
                       <div className="absolute top-2 right-2">
                         <Badge className="gap-1 shadow-lg">
-                          {getIcon(material.type)}
-                          {getTypeLabel(material.type)}
+                          {getIcon(material.material_type)}
+                          {getTypeLabel(material.material_type)}
                         </Badge>
                       </div>
                     </div>
@@ -288,7 +258,7 @@ const StudentContent = () => {
                   <CardContent className="p-4 flex-1 flex flex-col">
                     <div className="flex-1">
                       <Badge variant="outline" className="mb-2 text-xs">
-                        {material.course}
+                        {material.course_name || 'مادة عامة'}
                       </Badge>
                       <h3 className="font-bold text-base mb-2 line-clamp-2">
                         {material.title}
@@ -297,9 +267,9 @@ const StudentContent = () => {
                         {material.description}
                       </p>
                       <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                        <span>{new Date(material.uploadDate).toLocaleDateString('ar-EG')}</span>
+                        <span>{new Date(material.created_at || new Date()).toLocaleDateString('ar-EG')}</span>
                         <span>•</span>
-                        <span>{material.size}</span>
+                        <span>{material.duration_minutes ? `${material.duration_minutes} دقيقة` : 'ملف'}</span>
                       </div>
                     </div>
 
@@ -346,6 +316,63 @@ const StudentContent = () => {
             </GlassmorphicCard>
           </motion.div>
         )}
+
+        {/* Video Player Modal */}
+        <AnimatePresence>
+          {selectedMaterial && selectedMaterial.material_type === 'video' && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+              onClick={() => setSelectedMaterial(null)}
+            >
+              <motion.div
+                initial={{ scale: 0.9 }}
+                animate={{ scale: 1 }}
+                exit={{ scale: 0.9 }}
+                className="bg-black rounded-lg shadow-2xl max-w-4xl w-full"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Header */}
+                <div className="flex items-center justify-between p-4 border-b border-white/10">
+                  <h2 className="text-xl font-bold text-white">{selectedMaterial.title}</h2>
+                  <button
+                    onClick={() => setSelectedMaterial(null)}
+                    className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                  >
+                    <X className="w-6 h-6 text-white" />
+                  </button>
+                </div>
+
+                {/* Video Player */}
+                <div className="w-full bg-black">
+                  {selectedMaterial.file_url ? (
+                    <VideoPlayer 
+                      url={selectedMaterial.file_url}
+                      title={selectedMaterial.title}
+                      onClose={() => setSelectedMaterial(null)}
+                    />
+                  ) : (
+                    <div className="aspect-video flex items-center justify-center bg-black/50">
+                      <div className="text-center">
+                        <Play className="w-16 h-16 mx-auto mb-4 text-white/50" />
+                        <p className="text-white/70">لم يتم تحديد فيديو</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Info */}
+                {selectedMaterial.description && (
+                  <div className="p-4 border-t border-white/10 bg-white/5">
+                    <p className="text-sm text-white/70">{selectedMaterial.description}</p>
+                  </div>
+                )}
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );

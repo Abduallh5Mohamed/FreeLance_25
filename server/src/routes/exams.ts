@@ -24,8 +24,9 @@ interface ExamQuestion {
     question_type: 'multiple_choice' | 'true_false' | 'short_answer' | 'essay';
     options?: string;
     correct_answer?: string;
-    marks: number;
+    points: number;
     display_order: number;
+    explanation?: string;
 }
 
 interface ExamResult {
@@ -50,13 +51,18 @@ router.get('/', async (req: Request, res: Response) => {
         let sql = 'SELECT * FROM exams WHERE 1=1';
         const params: string[] = [];
 
+        // Default to active exams only (soft delete)
+        if (is_active === undefined) {
+            sql += ' AND is_active = ?';
+            params.push('1');
+        } else if (is_active !== undefined) {
+            sql += ' AND is_active = ?';
+            params.push(is_active as string);
+        }
+
         if (course_id) {
             sql += ' AND course_id = ?';
             params.push(course_id as string);
-        }
-        if (is_active !== undefined) {
-            sql += ' AND is_active = ?';
-            params.push(is_active as string);
         }
 
         sql += ' ORDER BY created_at DESC';
@@ -213,13 +219,20 @@ router.delete('/:id', async (req: Request, res: Response) => {
 // Get questions for an exam
 router.get('/:examId/questions', async (req: Request, res: Response) => {
     try {
+        const examId = req.params.examId;
+        console.log(`📝 Fetching questions for exam: ${examId}`);
+
         const questions = await query<ExamQuestion>(
             'SELECT * FROM exam_questions WHERE exam_id = ? ORDER BY display_order',
-            [req.params.examId]
+            [examId]
         );
+
+        console.log(`✅ Found ${questions.length} questions for exam ${examId}`);
+        console.log('Questions:', JSON.stringify(questions, null, 2));
+
         res.json(questions);
     } catch (error) {
-        console.error('Get exam questions error:', error);
+        console.error('❌ Get exam questions error:', error);
         res.status(500).json({ error: 'Failed to fetch exam questions' });
     }
 });
@@ -241,7 +254,7 @@ router.post('/:examId/questions', async (req: Request, res: Response) => {
         }
 
         await execute(
-            `INSERT INTO exam_questions (id, exam_id, question_text, question_type, options, correct_answer, marks, display_order, created_at)
+            `INSERT INTO exam_questions (id, exam_id, question_text, question_type, options, correct_answer, points, display_order, created_at)
              VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, NOW())`,
             [
                 req.params.examId,

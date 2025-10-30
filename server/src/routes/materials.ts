@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { query, queryOne, execute } from '../db';
+import https from 'https';
+import type { IncomingMessage } from 'http';
 
 const router = Router();
 
@@ -263,4 +265,93 @@ router.post('/convert-drive-url', async (req: Request, res: Response) => {
     }
 });
 
+// Stream video from Google Drive
+router.get('/stream/:fileId', async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { fileId } = req.params;
+
+        if (!fileId) {
+            res.status(400).json({
+                error: 'File ID is required'
+            });
+            return;
+        }
+
+        // Google Drive export URL for video streaming
+        const driveUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+
+        // Forward the request to Google Drive
+        https.get(driveUrl, (response: IncomingMessage) => {
+            // Set appropriate headers for video streaming
+            res.setHeader('Content-Type', response.headers['content-type'] || 'video/mp4');
+            res.setHeader('Content-Length', response.headers['content-length'] || '');
+            res.setHeader('Accept-Ranges', 'bytes');
+
+            // Allow CORS
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+
+            response.pipe(res);
+        }).on('error', (err: Error) => {
+            console.error('Stream error:', err);
+            res.status(500).json({ error: 'Failed to stream video' });
+        });
+    } catch (error) {
+        console.error('Stream error:', error);
+        res.status(500).json({ error: 'Failed to stream video' });
+    }
+});
+
+// Get direct download URL for Google Drive files
+router.post('/get-stream-url', async (req: Request, res: Response) => {
+    try {
+        const { file_url } = req.body;
+
+        if (!file_url) {
+            return res.status(400).json({
+                error: 'File URL is required'
+            });
+        }
+
+        // Extract file ID
+        let fileId = null;
+        const patterns = [
+            /\/file\/d\/([a-zA-Z0-9_-]+)/,
+            /[?&]id=([a-zA-Z0-9_-]+)/,
+            /\/d\/([a-zA-Z0-9_-]+)/
+        ];
+
+        for (const pattern of patterns) {
+            const match = file_url.match(pattern);
+            if (match && match[1]) {
+                fileId = match[1];
+                break;
+            }
+        }
+
+        if (!fileId) {
+            return res.status(400).json({
+                error: 'Could not extract file ID from Google Drive URL'
+            });
+        }
+
+        // Return streaming URL (our proxy endpoint)
+        const streamUrl = `/api/materials/stream/${fileId}`;
+
+        // Also return direct Google Drive export URL
+        const directUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+
+        res.json({
+            fileId,
+            streamUrl,
+            directUrl,
+            originalUrl: file_url
+        });
+    } catch (error) {
+        console.error('Get stream URL error:', error);
+        res.status(500).json({ error: 'Failed to get stream URL' });
+    }
+});
+
 export default router;
+

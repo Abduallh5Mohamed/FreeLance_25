@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -10,145 +11,73 @@ import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
+import { getLectures, Lecture as APILecture, User } from "@/lib/api";
+import { VideoPlayer } from "@/components/VideoPlayer";
 
-interface Lecture {
-  id: string;
-  title: string;
-  description: string;
-  instructor: string;
-  course: string;
-  duration: string;
-  students: number;
-  rating: number;
-  reviews: number;
-  thumbnail: string;
-  videoUrl: string;
-  youtubeId: string;
-  completed: boolean;
-  progress: number;
-  lessons: number;
-  level: 'beginner' | 'intermediate' | 'advanced';
+interface Lecture extends APILecture {
+  completed?: boolean;
+  progress?: number;
+  lessons?: number;
+  level?: 'beginner' | 'intermediate' | 'advanced';
+  students?: number;
+  rating?: number;
+  reviews?: number;
+  instructor?: string;
 }
 
 const StudentLectures = () => {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLecture, setSelectedLecture] = useState<Lecture | null>(null);
+  const [playingVideo, setPlayingVideo] = useState<{ url: string; title: string } | null>(null);
   const [filterLevel, setFilterLevel] = useState<string>('all');
+  const [lectures, setLectures] = useState<Lecture[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // Sample lectures data (Coursera style)
-  const [lectures] = useState<Lecture[]>([
-    {
-      id: '1',
-      title: 'مقدمة في التاريخ الإسلامي',
-      description: 'نظرة شاملة على بداية الدولة الإسلامية وأهم الأحداث التي شكلت التاريخ الإسلامي',
-      instructor: 'د. أحمد الزهراني',
-      course: 'التاريخ الإسلامي 101',
-      duration: '45 دقيقة',
-      students: 2543,
-      rating: 4.8,
-      reviews: 342,
-      thumbnail: 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=500',
-      videoUrl: 'https://www.youtube.com/embed/jNQXAC9IVRw',
-      youtubeId: 'jNQXAC9IVRw',
-      completed: true,
-      progress: 100,
-      lessons: 5,
-      level: 'beginner'
-    },
-    {
-      id: '2',
-      title: 'العصر الأموي - الفتوحات والإنجازات',
-      description: 'دراسة معمقة للدولة الأموية وأهم إنجازاتها الحضارية والعسكرية والإدارية',
-      instructor: 'أ.د محمود خليل',
-      course: 'التاريخ الإسلامي 102',
-      duration: '52 دقيقة',
-      students: 1876,
-      rating: 4.7,
-      reviews: 215,
-      thumbnail: 'https://images.unsplash.com/photo-1503676260728-1c00da094a0b?w=500',
-      videoUrl: 'https://www.youtube.com/embed/jNQXAC9IVRw',
-      youtubeId: 'jNQXAC9IVRw',
-      completed: false,
-      progress: 45,
-      lessons: 6,
-      level: 'intermediate'
-    },
-    {
-      id: '3',
-      title: 'العصر العباسي - العصر الذهبي',
-      description: 'الازدهار الثقافي والعلمي في العصر العباسي ودوره في الحضارة الإسلامية العامة',
-      instructor: 'د. فاطمة العتيبي',
-      course: 'التاريخ الإسلامي 103',
-      duration: '48 دقيقة',
-      students: 1654,
-      rating: 4.9,
-      reviews: 298,
-      thumbnail: 'https://images.unsplash.com/photo-1488515503393-29d440291138?w=500',
-      videoUrl: 'https://www.youtube.com/embed/jNQXAC9IVRw',
-      youtubeId: 'jNQXAC9IVRw',
-      completed: false,
-      progress: 0,
-      lessons: 7,
-      level: 'advanced'
-    },
-    {
-      id: '4',
-      title: 'الجغرافيا الطبيعية - التضاريس والمناخ',
-      description: 'فهم شامل لأنواع التضاريس وتأثيرها على المناخ والسكان والاقتصاد',
-      instructor: 'د. سليمان النجار',
-      course: 'الجغرافيا 101',
-      duration: '38 دقيقة',
-      students: 3221,
-      rating: 4.6,
-      reviews: 421,
-      thumbnail: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=500',
-      videoUrl: 'https://www.youtube.com/embed/jNQXAC9IVRw',
-      youtubeId: 'jNQXAC9IVRw',
-      completed: true,
-      progress: 100,
-      lessons: 4,
-      level: 'beginner'
-    },
-    {
-      id: '5',
-      title: 'الجغرافيا البشرية - التوزيع السكاني',
-      description: 'دراسة أنماط التوزيع السكاني وأسبابها والعوامل المؤثرة على الهجرة والعمران',
-      instructor: 'د. ليلى العبدالله',
-      course: 'الجغرافيا 102',
-      duration: '41 دقيقة',
-      students: 1432,
-      rating: 4.7,
-      reviews: 187,
-      thumbnail: 'https://images.unsplash.com/photo-1526628953301-3e589a6a8b74?w=500',
-      videoUrl: 'https://www.youtube.com/embed/jNQXAC9IVRw',
-      youtubeId: 'jNQXAC9IVRw',
-      completed: false,
-      progress: 30,
-      lessons: 5,
-      level: 'intermediate'
-    },
-    {
-      id: '6',
-      title: 'الحرب العالمية الأولى - الأسباب والنتائج',
-      description: 'تحليل شامل لأسباب الحرب العالمية الأولى ونتائجها على العالم الحديث',
-      instructor: 'أ.د علي الدوسري',
-      course: 'التاريخ الحديث 101',
-      duration: '55 دقيقة',
-      students: 2187,
-      rating: 4.8,
-      reviews: 356,
-      thumbnail: 'https://images.unsplash.com/photo-1456513080510-7bf3a84b82f8?w=500',
-      videoUrl: 'https://www.youtube.com/embed/jNQXAC9IVRw',
-      youtubeId: 'jNQXAC9IVRw',
-      completed: false,
-      progress: 60,
-      lessons: 6,
-      level: 'intermediate'
+  // Check authentication
+  useEffect(() => {
+    const userStr = localStorage.getItem('currentUser');
+    const user: User | null = userStr ? JSON.parse(userStr) : null;
+
+    if (!user || user.role !== 'student') {
+      navigate('/auth');
+      return;
     }
-  ]);
 
-  const getLevelLabel = (level: string) => {
+    loadLectures();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const loadLectures = async () => {
+    try {
+      setLoading(true);
+      const data = await getLectures();
+      const lecturesData = data?.map(m => ({
+        ...m,
+        completed: false,
+        progress: 0,
+        lessons: 1,
+        level: 'intermediate' as const,
+        students: Math.floor(Math.random() * 3000) + 100,
+        rating: Math.floor(Math.random() * 2) + 4,
+        reviews: Math.floor(Math.random() * 500) + 50,
+        instructor: 'المدرس'
+      })) || [];
+      setLectures(lecturesData);
+    } catch (error) {
+      console.error('Error loading lectures:', error);
+      toast({
+        title: 'خطأ',
+        description: 'فشل تحميل المحاضرات',
+        variant: 'destructive'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getLevelLabel = (level?: string) => {
     switch (level) {
       case 'beginner':
         return 'مبتدئ';
@@ -157,11 +86,11 @@ const StudentLectures = () => {
       case 'advanced':
         return 'متقدم';
       default:
-        return 'مستوى';
+        return 'متوسط';
     }
   };
 
-  const getLevelColor = (level: string) => {
+  const getLevelColor = (level?: string) => {
     switch (level) {
       case 'beginner':
         return 'bg-green-500/10 text-green-700';
@@ -175,35 +104,43 @@ const StudentLectures = () => {
   };
 
   const filteredLectures = lectures.filter(lecture => {
-    const matchesSearch = 
-      lecture.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      lecture.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      lecture.instructor.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      lecture.course.toLowerCase().includes(searchQuery.toLowerCase());
-    
+    const matchesSearch =
+      lecture.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      lecture.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (lecture.instructor?.toLowerCase().includes(searchQuery.toLowerCase()) || false) ||
+      (lecture.course_name?.toLowerCase().includes(searchQuery.toLowerCase()) || false);
+
     const matchesLevel = filterLevel === 'all' || lecture.level === filterLevel;
-    
+
     return matchesSearch && matchesLevel;
   });
 
   const handlePlayLecture = (lecture: Lecture) => {
-    setSelectedLecture(lecture);
+    console.log('Playing lecture:', {
+      title: lecture.title,
+      video_url: lecture.video_url,
+    });
+    setPlayingVideo({
+      url: lecture.video_url,
+      title: lecture.title
+    });
     toast({
       title: "جاري تشغيل المحاضرة",
       description: lecture.title
     });
   };
 
-  const renderStars = (rating: number) => {
+  const renderStars = (rating?: number) => {
+    const rate = rating || 4.5;
     return (
       <div className="flex items-center gap-1">
         {[...Array(5)].map((_, i) => (
           <Star
             key={i}
-            className={`w-4 h-4 ${i < Math.floor(rating) ? 'fill-yellow-400 text-yellow-400' : 'text-gray-300'}`}
+            className={`w-4 h-4 ${i < Math.floor(rate) ? 'fill-yellow-400 text-yellow-400' : 'text-gray-300'}`}
           />
         ))}
-        <span className="text-sm font-medium ml-1">({rating})</span>
+        <span className="text-sm font-medium ml-1">({rate.toFixed(1)})</span>
       </div>
     );
   };
@@ -214,80 +151,13 @@ const StudentLectures = () => {
       <StudentHeader />
 
       {/* Video Player Modal */}
-      <AnimatePresence>
-        {selectedLecture && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
-            onClick={() => setSelectedLecture(null)}
-          >
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-5xl"
-            >
-              <div className="relative">
-                <button
-                  onClick={() => setSelectedLecture(null)}
-                  className="absolute -top-12 left-0 text-white hover:text-gray-300 transition-colors"
-                >
-                  <X className="w-8 h-8" />
-                </button>
-
-                <div className="aspect-video bg-black rounded-lg overflow-hidden">
-                  <iframe
-                    width="100%"
-                    height="100%"
-                    src={`${selectedLecture.videoUrl}?autoplay=1`}
-                    title={selectedLecture.title}
-                    frameBorder="0"
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                    allowFullScreen
-                    className="w-full h-full"
-                  />
-                </div>
-              </div>
-
-              <Card className="mt-4">
-                <CardContent className="pt-6">
-                  <h2 className="text-xl font-bold mb-2">{selectedLecture.title}</h2>
-                  <p className="text-muted-foreground mb-4">{selectedLecture.description}</p>
-                  
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                    <div>
-                      <p className="text-sm text-muted-foreground">المدرس</p>
-                      <p className="font-medium">{selectedLecture.instructor}</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-muted-foreground">المدة</p>
-                      <p className="font-medium">{selectedLecture.duration}</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-muted-foreground">الطلاب</p>
-                      <p className="font-medium">{selectedLecture.students.toLocaleString('ar-EG')}</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-muted-foreground">التقييم</p>
-                      {renderStars(selectedLecture.rating)}
-                    </div>
-                  </div>
-
-                  <Button
-                    onClick={() => setSelectedLecture(null)}
-                    className="w-full bg-gradient-to-r from-primary to-accent"
-                  >
-                    إغلاق
-                  </Button>
-                </CardContent>
-              </Card>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {playingVideo && (
+        <VideoPlayer
+          url={playingVideo.url}
+          title={playingVideo.title}
+          onClose={() => setPlayingVideo(null)}
+        />
+      )}
 
       <div className="container mx-auto px-4 py-6 relative z-10 max-w-7xl">
         {/* Header */}
@@ -368,11 +238,16 @@ const StudentLectures = () => {
                   {/* Thumbnail */}
                   <div className="relative h-48 bg-gradient-to-br from-primary/20 to-accent/20 overflow-hidden">
                     <img
-                      src={lecture.thumbnail}
+                      src={lecture.video_url.includes('drive.google.com') 
+                        ? `https://drive.google.com/thumbnail?id=${lecture.video_url.match(/\/d\/([a-zA-Z0-9-_]+)/)?.[1]}&sz=w500`
+                        : 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=500'}
                       alt={lecture.title}
                       className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=500';
+                      }}
                     />
-                    
+
                     {/* Overlay */}
                     <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                       <PlayCircle className="w-16 h-16 text-white drop-shadow-lg" />
@@ -394,7 +269,7 @@ const StudentLectures = () => {
                     {/* Duration */}
                     <div className="absolute bottom-2 right-2 bg-black/80 text-white px-2 py-1 rounded text-sm flex items-center gap-1">
                       <Clock className="w-3 h-3" />
-                      {lecture.duration}
+                      {lecture.duration_minutes || 0} دقيقة
                     </div>
 
                     {/* Progress Bar */}
@@ -409,7 +284,7 @@ const StudentLectures = () => {
                   <CardContent className="p-4 flex-1 flex flex-col">
                     <div className="flex-1">
                       <Badge variant="outline" className="mb-2 text-xs">
-                        {lecture.course}
+                        {lecture.course_name || 'دورة عامة'}
                       </Badge>
                       <h3 className="font-bold text-sm mb-2 line-clamp-2 group-hover:text-primary transition-colors">
                         {lecture.title}
@@ -421,7 +296,7 @@ const StudentLectures = () => {
                       {/* Instructor */}
                       <div className="mb-3 pb-3 border-b">
                         <p className="text-xs font-medium text-muted-foreground">المدرس</p>
-                        <p className="text-sm">{lecture.instructor}</p>
+                        <p className="text-sm">{lecture.instructor || 'المدرس'}</p>
                       </div>
 
                       {/* Stats */}
@@ -429,27 +304,27 @@ const StudentLectures = () => {
                         <div className="flex items-center justify-between">
                           <span className="flex items-center gap-1">
                             <Users className="w-3 h-3" />
-                            {lecture.students.toLocaleString('ar-EG')} طالب
+                            {(lecture.students || 0).toLocaleString('ar-EG')} طالب
                           </span>
                           <span className="flex items-center gap-1">
                             <Award className="w-3 h-3" />
-                            {lecture.lessons} درس
+                            {lecture.lessons || 1} درس
                           </span>
                         </div>
                         <div className="flex items-center justify-between">
                           {renderStars(lecture.rating)}
-                          <span>({lecture.reviews} تقييم)</span>
+                          <span>({lecture.reviews || 0} تقييم)</span>
                         </div>
                       </div>
 
                       {/* Progress */}
-                      {lecture.progress > 0 && (
+                      {(lecture.progress || 0) > 0 && (
                         <div className="mb-3">
                           <div className="flex items-center justify-between text-xs mb-1">
                             <span>التقدم</span>
                             <span>{lecture.progress}%</span>
                           </div>
-                          <Progress value={lecture.progress} className="h-1.5" />
+                          <Progress value={lecture.progress || 0} className="h-1.5" />
                         </div>
                       )}
                     </div>
@@ -461,7 +336,7 @@ const StudentLectures = () => {
                       size="sm"
                     >
                       <Play className="w-4 h-4 ml-2" />
-                      {lecture.completed ? 'إعادة المشاهدة' : 'بدء المحاضرة'}
+                      {(lecture.completed) ? 'إعادة المشاهدة' : 'بدء المحاضرة'}
                     </Button>
                   </CardContent>
                 </Card>
@@ -516,7 +391,7 @@ const StudentLectures = () => {
             <CardContent className="pt-6 text-center">
               <Play className="w-8 h-8 mx-auto mb-2 text-green-500" />
               <p className="text-2xl font-bold">
-                {Math.round(lectures.reduce((acc, l) => acc + l.progress, 0) / lectures.length)}%
+                {lectures.length > 0 ? Math.round(lectures.reduce((acc, l) => acc + (l.progress || 0), 0) / lectures.length) : 0}%
               </p>
               <p className="text-sm text-muted-foreground">متوسط التقدم</p>
             </CardContent>

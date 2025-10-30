@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -7,114 +8,66 @@ import StudentHeader from "@/components/StudentHeader";
 import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
-import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
+import { getExams, Exam, User } from "@/lib/api";
 
-interface Exam {
-  id: string;
-  title: string;
-  description: string;
-  course: string;
-  duration: number; // in minutes
-  totalMarks: number;
-  passingMarks: number;
-  questionsCount: number;
-  examDate?: string;
-  startTime?: string;
-  endTime?: string;
-  status: 'available' | 'upcoming' | 'completed' | 'expired';
-  attempts: number;
-  maxAttempts: number;
+interface StudentExam extends Exam {
+  course_name?: string;
+  description?: string;
+  start_date?: string;
+  end_date?: string;
+  passing_score?: number;
+  status?: 'available' | 'upcoming' | 'completed' | 'expired';
+  attempts?: number;
+  maxAttempts?: number;
   lastScore?: number;
-  difficulty: 'easy' | 'medium' | 'hard';
+  difficulty?: 'easy' | 'medium' | 'hard';
 }
 
 const StudentExams = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [selectedTab, setSelectedTab] = useState<'available' | 'upcoming' | 'completed'>('available');
+  const [exams, setExams] = useState<StudentExam[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // Sample exams data
-  const [exams] = useState<Exam[]>([
-    {
-      id: '1',
-      title: 'امتحان الحرب العالمية الأولى',
-      description: 'امتحان شامل يغطي جميع جوانب الحرب العالمية الأولى من الأسباب إلى النتائج',
-      course: 'التاريخ الحديث',
-      duration: 60,
-      totalMarks: 50,
-      passingMarks: 30,
-      questionsCount: 25,
-      examDate: '2025-11-05',
-      startTime: '10:00',
-      endTime: '11:00',
-      status: 'available',
-      attempts: 0,
-      maxAttempts: 2,
-      difficulty: 'medium'
-    },
-    {
-      id: '2',
-      title: 'اختبار التضاريس الطبيعية',
-      description: 'اختبار قصير على أنواع التضاريس وتأثيرها على المناخ',
-      course: 'الجغرافيا الطبيعية',
-      duration: 30,
-      totalMarks: 30,
-      passingMarks: 18,
-      questionsCount: 15,
-      status: 'available',
-      attempts: 0,
-      maxAttempts: 3,
-      difficulty: 'easy'
-    },
-    {
-      id: '3',
-      title: 'امتحان العصر العباسي',
-      description: 'امتحان تفصيلي عن الفترة العباسية والإنجازات الحضارية',
-      course: 'التاريخ الإسلامي',
-      duration: 90,
-      totalMarks: 100,
-      passingMarks: 60,
-      questionsCount: 40,
-      examDate: '2025-11-10',
-      startTime: '09:00',
-      endTime: '10:30',
-      status: 'upcoming',
-      attempts: 0,
-      maxAttempts: 1,
-      difficulty: 'hard'
-    },
-    {
-      id: '4',
-      title: 'اختبار الجغرافيا البشرية',
-      description: 'اختبار على أنماط التوزيع السكاني والعوامل المؤثرة',
-      course: 'الجغرافيا البشرية',
-      duration: 45,
-      totalMarks: 40,
-      passingMarks: 24,
-      questionsCount: 20,
-      status: 'completed',
-      attempts: 1,
-      maxAttempts: 2,
-      lastScore: 35,
-      difficulty: 'medium'
-    },
-    {
-      id: '5',
-      title: 'امتحان الثورة الفرنسية',
-      description: 'امتحان شامل عن أحداث ونتائج الثورة الفرنسية',
-      course: 'التاريخ الحديث',
-      duration: 60,
-      totalMarks: 50,
-      passingMarks: 30,
-      questionsCount: 25,
-      status: 'completed',
-      attempts: 2,
-      maxAttempts: 2,
-      lastScore: 42,
-      difficulty: 'medium'
+  // Check authentication
+  useEffect(() => {
+    const userStr = localStorage.getItem('currentUser');
+    const user: User | null = userStr ? JSON.parse(userStr) : null;
+
+    if (!user || user.role !== 'student') {
+      navigate('/auth');
+      return;
     }
-  ]);
+
+    loadExams();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const loadExams = async () => {
+    try {
+      setLoading(true);
+      const data = await getExams();
+      const examsData = data?.map((exam: StudentExam) => ({
+        ...exam,
+        status: (exam.status || 'available') as 'available' | 'upcoming' | 'completed' | 'expired',
+        attempts: exam.attempts || 0,
+        maxAttempts: exam.maxAttempts || 2,
+        difficulty: (exam.difficulty || 'medium') as 'easy' | 'medium' | 'hard'
+      })) || [];
+      setExams(examsData);
+    } catch (error) {
+      console.error('Error loading exams:', error);
+      toast({
+        title: 'خطأ',
+        description: 'فشل تحميل الامتحانات',
+        variant: 'destructive'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const getDifficultyColor = (difficulty: string) => {
     switch (difficulty) {
@@ -179,8 +132,8 @@ const StudentExams = () => {
     return true;
   });
 
-  const handleStartExam = (exam: Exam) => {
-    if (exam.attempts >= exam.maxAttempts) {
+  const handleStartExam = (exam: StudentExam) => {
+    if ((exam.attempts || 0) >= (exam.maxAttempts || 2)) {
       toast({
         title: "لا يمكن الدخول للامتحان",
         description: "لقد استنفذت عدد المحاولات المتاحة",
@@ -234,7 +187,7 @@ const StudentExams = () => {
                     <Button
                       key={tab.value}
                       variant={selectedTab === tab.value ? 'default' : 'outline'}
-                      onClick={() => setSelectedTab(tab.value as any)}
+                      onClick={() => setSelectedTab(tab.value as 'available' | 'upcoming' | 'completed')}
                       className="gap-2"
                     >
                       <Icon className="w-4 h-4" />
@@ -261,7 +214,7 @@ const StudentExams = () => {
               >
                 <Card className="overflow-hidden hover:shadow-2xl transition-all duration-300 h-full border-2 border-primary/20">
                   <div className={`h-2 ${getStatusColor(exam.status)}`} />
-                  
+
                   <CardHeader>
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1">
@@ -270,13 +223,13 @@ const StudentExams = () => {
                         </CardTitle>
                         <div className="flex flex-wrap gap-2">
                           <Badge variant="outline" className="text-xs">
-                            {exam.course}
+                            {exam.course_name || 'دورة عامة'}
                           </Badge>
-                          <Badge className={`${getDifficultyColor(exam.difficulty)} text-white text-xs`}>
-                            {getDifficultyLabel(exam.difficulty)}
+                          <Badge className={`${getDifficultyColor(exam.difficulty || 'medium')} text-white text-xs`}>
+                            {getDifficultyLabel(exam.difficulty || 'medium')}
                           </Badge>
-                          <Badge className={`${getStatusColor(exam.status)} text-white text-xs`}>
-                            {getStatusLabel(exam.status)}
+                          <Badge className={`${getStatusColor(exam.status || 'available')} text-white text-xs`}>
+                            {getStatusLabel(exam.status || 'available')}
                           </Badge>
                         </div>
                       </div>
@@ -295,33 +248,33 @@ const StudentExams = () => {
                     <div className="grid grid-cols-2 gap-3 mb-4">
                       <div className="flex items-center gap-2 text-sm">
                         <Clock className="w-4 h-4 text-primary" />
-                        <span>{exam.duration} دقيقة</span>
+                        <span>{exam.duration_minutes || 0} دقيقة</span>
                       </div>
                       <div className="flex items-center gap-2 text-sm">
                         <Target className="w-4 h-4 text-primary" />
-                        <span>{exam.questionsCount} سؤال</span>
+                        <span>أسئلة متعددة</span>
                       </div>
                       <div className="flex items-center gap-2 text-sm">
                         <Trophy className="w-4 h-4 text-primary" />
-                        <span>{exam.totalMarks} درجة</span>
+                        <span>{exam.total_marks || 0} درجة</span>
                       </div>
                       <div className="flex items-center gap-2 text-sm">
                         <AlertCircle className="w-4 h-4 text-primary" />
-                        <span>{exam.attempts}/{exam.maxAttempts} محاولة</span>
+                        <span>{exam.attempts || 0}/{exam.maxAttempts || 2} محاولة</span>
                       </div>
                     </div>
 
                     {/* Date and Time (if available) */}
-                    {exam.examDate && (
+                    {exam.start_date && (
                       <div className="bg-muted/50 rounded-lg p-3 mb-4">
                         <div className="flex items-center gap-2 text-sm">
                           <Calendar className="w-4 h-4 text-primary" />
-                          <span>{new Date(exam.examDate).toLocaleDateString('ar-EG')}</span>
-                          {exam.startTime && (
+                          <span>{new Date(exam.start_date).toLocaleDateString('ar-EG')}</span>
+                          {exam.start_date && (
                             <>
                               <span>•</span>
                               <Clock className="w-4 h-4 text-primary" />
-                              <span>{exam.startTime} - {exam.endTime}</span>
+                              <span>{new Date(exam.start_date).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
                             </>
                           )}
                         </div>
@@ -330,11 +283,11 @@ const StudentExams = () => {
 
                     {/* Last Score (if completed) */}
                     {exam.status === 'completed' && exam.lastScore !== undefined && (
-                      <div className={`p-3 rounded-lg mb-4 ${exam.lastScore >= exam.passingMarks ? 'bg-green-500/10 border border-green-500/20' : 'bg-red-500/10 border border-red-500/20'}`}>
+                      <div className={`p-3 rounded-lg mb-4 ${(exam.lastScore || 0) >= (exam.passing_score || 0) ? 'bg-green-500/10 border border-green-500/20' : 'bg-red-500/10 border border-red-500/20'}`}>
                         <div className="flex items-center justify-between">
                           <span className="text-sm font-medium">آخر درجة:</span>
-                          <span className={`text-lg font-bold ${exam.lastScore >= exam.passingMarks ? 'text-green-600' : 'text-red-600'}`}>
-                            {exam.lastScore}/{exam.totalMarks}
+                          <span className={`text-lg font-bold ${(exam.lastScore || 0) >= (exam.passing_score || 0) ? 'text-green-600' : 'text-red-600'}`}>
+                            {exam.lastScore}/{exam.total_marks}
                           </span>
                         </div>
                       </div>
@@ -345,9 +298,9 @@ const StudentExams = () => {
                       <Button
                         onClick={() => handleStartExam(exam)}
                         className="w-full bg-gradient-to-r from-primary to-accent hover:shadow-lg"
-                        disabled={exam.attempts >= exam.maxAttempts}
+                        disabled={(exam.attempts || 0) >= (exam.maxAttempts || 2)}
                       >
-                        {exam.attempts >= exam.maxAttempts ? 'استنفذت المحاولات' : 'بدء الامتحان'}
+                        {(exam.attempts || 0) >= (exam.maxAttempts || 2) ? 'استنفذت المحاولات' : 'بدء الامتحان'}
                       </Button>
                     )}
                     {exam.status === 'upcoming' && (
@@ -355,13 +308,13 @@ const StudentExams = () => {
                         الامتحان قريباً
                       </Button>
                     )}
-                    {exam.status === 'completed' && exam.attempts < exam.maxAttempts && (
+                    {exam.status === 'completed' && (exam.attempts || 0) < (exam.maxAttempts || 2) && (
                       <Button
                         onClick={() => handleStartExam(exam)}
                         className="w-full"
                         variant="outline"
                       >
-                        إعادة المحاولة ({exam.maxAttempts - exam.attempts} متبقية)
+                        إعادة المحاولة ({(exam.maxAttempts || 2) - (exam.attempts || 0)} متبقية)
                       </Button>
                     )}
                   </CardContent>

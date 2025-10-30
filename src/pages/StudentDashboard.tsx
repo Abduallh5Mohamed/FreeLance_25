@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { BookOpen, FileText, Clock, Calendar, Download, Play, Eye, MessageSquare, Award, Users, Calendar as CalendarIcon, Sparkles, TrendingUp, Trophy, Target } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
 import { useNavigate } from "react-router-dom";
-import { getStudents, getCourses, getGroups } from "@/lib/api";
+import { getStudents, getCourses, getGroups, getMaterials, Student, User, Course } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 import { motion, AnimatePresence } from "framer-motion";
@@ -17,85 +17,108 @@ import { AnimatedCounter } from "@/components/AnimatedCounter";
 
 const StudentDashboard = () => {
   useScreenRecordingPrevention(); // Prevent screen recording
-  const [studentData, setStudentData] = useState(null);
-  const [courses, setCourses] = useState([]);
+  const [studentData, setStudentData] = useState<Student | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [courses, setCourses] = useState<Course[]>([]);
   const [materials, setMaterials] = useState([]);
   const [exams, setExams] = useState([]);
   const [examResults, setExamResults] = useState([]);
   const [groupInfo, setGroupInfo] = useState(null);
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
-  
+
   const navigate = useNavigate();
   const { toast } = useToast();
 
   useEffect(() => {
     fetchStudentData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchStudentData = async () => {
     try {
-      // TEMPORARY: Demo mode for student dashboard
-      const DEMO_MODE = true;
+      // Check if user is logged in and is a student
+      const userStr = localStorage.getItem('currentUser');
+      const studentStr = localStorage.getItem('currentStudent');
 
-      if (DEMO_MODE) {
-        // Set demo session in localStorage for Messages page
-        localStorage.setItem('student_session', JSON.stringify({
-          email: 'demo@student.com',
-          loginTime: Date.now()
-        }));
-
-        // Fetch real students from MySQL API
-        const allStudents = await getStudents();
-        const demoStudent = allStudents?.[0] || {
-          id: 'demo-123',
-          name: 'محمد أحمد',
-          email: 'demo@student.com',
-          phone: '01234567890',
-          grade: 'الصف الثاني الثانوي',
-          group_id: null
-        };
-
-        setStudentData(demoStudent);
-
-        // Fetch real courses from MySQL API
-        const allCourses = await getCourses();
-        setCourses(allCourses || []);
-
-        // Fetch group info if student has a group
-        if (demoStudent.group_id) {
-          const allGroups = await getGroups();
-          const studentGroup = allGroups?.find(g => g.id === demoStudent.group_id);
-          if (studentGroup) {
-            setGroupInfo(studentGroup);
-          }
-        }
-
-        // TODO: Add API routes for materials, exams, messages
-        setMaterials([]);
-        setExams([]);
-        setMessages([]);
-
+      if (!userStr) {
+        navigate('/auth');
+        toast({
+          variant: "destructive",
+          title: "غير مسموح",
+          description: "يرجى تسجيل الدخول أولاً",
+        });
         setLoading(false);
         return;
       }
 
-      // Production mode would require proper authentication
-      // For now, redirect to auth
-      toast({
-        title: "تسجيل الدخول مطلوب",
-        description: "يرجى تسجيل الدخول للوصول إلى لوحة التحكم",
-        variant: "destructive",
-      });
-      navigate('/auth');
+      const user = JSON.parse(userStr) as User;
+      if (user.role !== 'student') {
+        navigate('/auth');
+        toast({
+          variant: "destructive",
+          title: "غير مسموح",
+          description: "هذه الصفحة للطلاب فقط",
+        });
+        setLoading(false);
+        return;
+      }
+
+      setCurrentUser(user);
+
+      // Get student data
+      let student: Student | null = null;
+
+      if (studentStr) {
+        student = JSON.parse(studentStr) as Student;
+      } else {
+        // Fetch from API if not in localStorage
+        const students = await getStudents();
+        student = students?.find(s => s.id === user.id) || null;
+      }
+
+      if (!student) {
+        throw new Error("لم يتم العثور على بيانات الطالب");
+      }
+
+      setStudentData(student);
+
+      // Set demo session in localStorage for Messages page
+      localStorage.setItem('student_session', JSON.stringify({
+        email: student.email || user.email || 'student@school.com',
+        loginTime: Date.now()
+      }));
+
+      // Fetch real courses from MySQL API
+      const allCourses = await getCourses();
+      setCourses(allCourses || []);
+
+      // Fetch group info if student has a group
+      if (student.group_id) {
+        const allGroups = await getGroups();
+        const studentGroup = allGroups?.find(g => g.id === student.group_id);
+        if (studentGroup) {
+          setGroupInfo(studentGroup);
+        }
+      }
+
+      // Fetch materials
+      const allMaterials = await getMaterials();
+      setMaterials(allMaterials || []);
+
+      // TODO: Add API routes for exams, messages
+      setExams([]);
+      setMessages([]);
+
+      setLoading(false);
     } catch (error) {
       console.error('Error fetching student data:', error);
+      const errorMessage = error instanceof Error ? error.message : "حدث خطأ في تحميل البيانات";
       toast({
         title: "خطأ",
-        description: "حدث خطأ في تحميل البيانات",
+        description: errorMessage,
         variant: "destructive",
       });
-    } finally {
       setLoading(false);
     }
   };
@@ -214,14 +237,14 @@ const StudentDashboard = () => {
                   </Avatar>
                 </motion.div>
                 <div className="flex-1 text-center md:text-right">
-                  <motion.h1 
+                  <motion.h1
                     initial={{ opacity: 0, x: -20 }}
                     animate={{ opacity: 1, x: 0 }}
                     className="text-xl sm:text-2xl md:text-3xl lg:text-4xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent"
                   >
                     مرحباً، {studentData.name} 👋
                   </motion.h1>
-                  
+
                   {/* Badges - Stack vertically on mobile */}
                   <div className="flex flex-col sm:flex-row gap-2 items-center justify-center flex-wrap">
                     <Badge className="bg-gradient-to-r from-blue-500 to-cyan-500 text-white border-0 text-xs sm:text-sm px-3 py-1">
@@ -232,7 +255,7 @@ const StudentDashboard = () => {
                     </Badge>
                   </div>
                 </div>
-                <motion.div 
+                <motion.div
                   whileHover={{ scale: 1.05 }}
                   className="bg-gradient-to-br from-primary/10 to-accent/10 backdrop-blur-sm p-4 md:p-5 lg:p-6 rounded-xl md:rounded-2xl text-center border-2 border-primary/20 w-full sm:w-auto min-w-[200px]"
                 >
@@ -329,7 +352,7 @@ const StudentDashboard = () => {
                         <h3 className="font-bold text-base md:text-lg mb-1 md:mb-2 text-primary">{groupInfo.name}</h3>
                         <p className="text-xs md:text-sm text-muted-foreground leading-relaxed">{groupInfo.description}</p>
                       </div>
-                      
+
                       <div className="flex items-center justify-between p-3 bg-muted/30 rounded-lg">
                         <span className="text-sm font-medium flex items-center gap-2">
                           <Users className="w-4 h-4" />

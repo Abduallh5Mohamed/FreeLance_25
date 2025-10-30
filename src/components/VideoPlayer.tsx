@@ -34,6 +34,7 @@ export function VideoPlayer({ url, title, onClose }: VideoPlayerProps) {
         for (const pattern of patterns) {
             const match = driveUrl.match(pattern);
             if (match && match[1]) {
+                // Try using the preview URL which works better in most cases
                 return `https://drive.google.com/file/d/${match[1]}/preview`;
             }
         }
@@ -77,7 +78,27 @@ export function VideoPlayer({ url, title, onClose }: VideoPlayerProps) {
                         allow="autoplay; encrypted-media; fullscreen"
                         allowFullScreen
                         title={title || 'Video Player'}
+                        onError={() => {
+                            console.warn('iframe failed to load, trying alternative method');
+                        }}
                     />
+                    {/* Fallback message */}
+                    <noscript>
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/80 text-white text-center p-4">
+                            <div>
+                                <p className="text-lg font-semibold mb-4">فيديو من Google Drive</p>
+                                <p className="text-sm mb-4">إذا لم يتم تحميل الفيديو، جرب:</p>
+                                <a
+                                    href={embedUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-block px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-white"
+                                >
+                                    فتح الفيديو مباشرة
+                                </a>
+                            </div>
+                        </div>
+                    </noscript>
                 </div>
 
                 {/* Footer Info */}
