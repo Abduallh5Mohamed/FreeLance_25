@@ -824,3 +824,76 @@ export default {
     deleteMaterial,
     convertDriveUrl,
 };
+
+// ====================================
+// Fees Functions
+// ====================================
+
+export interface Fee {
+    id: string;
+    student_name: string;
+    phone?: string;
+    grade_id?: string;
+    grade_name?: string;
+    group_id?: string;
+    group_name?: string;
+    barcode?: string;
+    amount: number;
+    paid_amount: number;
+    remaining_amount?: number;
+    status: string;
+    payment_method?: string;
+    is_offline: boolean;
+    notes?: string;
+    due_date?: string;
+    payment_date?: string;
+    receipt_image_url?: string;
+    created_at?: string;
+    updated_at?: string;
+}
+
+export const getFees = async (isOffline?: boolean, status?: string): Promise<Fee[]> => {
+    let url = '/fees';
+    const params = new URLSearchParams();
+    
+    if (isOffline !== undefined) {
+        params.append('is_offline', isOffline.toString());
+    }
+    if (status) {
+        params.append('status', status);
+    }
+    
+    if (params.toString()) {
+        url += `?${params.toString()}`;
+    }
+    
+    return request<Fee[]>(url);
+};
+
+export const getFeeById = async (id: string): Promise<Fee | null> => {
+    try {
+        return await request<Fee>(`/fees/${id}`);
+    } catch {
+        return null;
+    }
+};
+
+export const createFee = async (fee: Partial<Fee>): Promise<Fee> => {
+    return request<Fee>('/fees', {
+        method: 'POST',
+        body: JSON.stringify(fee),
+    });
+};
+
+export const updateFee = async (id: string, fee: Partial<Fee>): Promise<Fee> => {
+    return request<Fee>(`/fees/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(fee),
+    });
+};
+
+export const deleteFee = async (id: string): Promise<void> => {
+    await request<void>(`/fees/${id}`, {
+        method: 'DELETE',
+    });
+};
