@@ -123,10 +123,10 @@ const OfflineStudents = () => {
     }
   };
 
-  const filteredStudents = students.filter((student: any) =>
+  const filteredStudents = students.filter(student =>
     student.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     student.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    student.phone?.toLowerCase().includes(searchTerm.toLowerCase())
+    student.phone?.includes(searchTerm)
   );
 
   const handleSubmit = async (e: React.FormEvent) => {

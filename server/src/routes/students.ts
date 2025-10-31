@@ -109,7 +109,7 @@ router.post('/', async (req: Request, res: Response) => {
                 );
 
                 console.log(`User created successfully for student ${name} with email ${email}`);
-            } catch (userError: any) {
+            } catch (userError: unknown) {
                 // If user already exists, update the student_id
                 if (userError.code === 'ER_DUP_ENTRY') {
                     await execute(
@@ -142,8 +142,24 @@ router.put('/:id', async (req: Request, res: Response) => {
         const { name, email, phone, grade, grade_id, group_id, password } = req.body;
 
         const result = await execute(
-            `UPDATE students SET ${updates.join(', ')} WHERE id = ?`,
-            params
+            `UPDATE students 
+             SET name = COALESCE(?, name),
+                 email = COALESCE(?, email),
+                 phone = COALESCE(?, phone),
+                 grade = COALESCE(?, grade),
+                 grade_id = COALESCE(?, grade_id),
+                 group_id = COALESCE(?, group_id),
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?`,
+            [
+                name ?? null,
+                email ?? null,
+                phone ?? null,
+                grade ?? null,
+                grade_id ?? null,
+                group_id ?? null,
+                req.params.id
+            ]
         );
 
         if (result.affectedRows === 0) {

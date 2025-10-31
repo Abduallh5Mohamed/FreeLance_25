@@ -48,7 +48,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 // Create new group
 router.post('/', async (req: Request, res: Response) => {
     try {
-        const { name, description, max_students, is_active = true } = req.body;
+        const { name, description, max_students, is_active = true, grade_id } = req.body;
         let course_id = (req.body && req.body.course_id) ?? null;
 
         if (!name) {
@@ -67,9 +67,15 @@ router.post('/', async (req: Request, res: Response) => {
             }
         }
 
+        // Handle grade_id
+        let finalGradeId = grade_id || null;
+        if (finalGradeId === '' || finalGradeId === undefined) {
+            finalGradeId = null;
+        }
+
         const result = await execute(
-            'INSERT INTO `groups` (name, description, course_id, max_students, is_active) VALUES (?, ?, ?, ?, ?)',
-            [name, description || null, course_id, max_students || 30, is_active]
+            'INSERT INTO `groups` (name, description, course_id, grade_id, max_students, is_active) VALUES (?, ?, ?, ?, ?, ?)',
+            [name, description || null, course_id, finalGradeId, max_students || 30, is_active]
         );
 
         const newGroup = await queryOne<Group>(
@@ -87,7 +93,7 @@ router.post('/', async (req: Request, res: Response) => {
 // Update group
 router.put('/:id', async (req: Request, res: Response) => {
     try {
-        const { name, description, max_students, is_active } = req.body;
+        const { name, description, max_students, is_active, grade_id } = req.body;
         let course_id = (req.body && req.body.course_id) ?? null;
 
         // Normalize course_id: treat empty string or undefined as null
@@ -102,11 +108,18 @@ router.put('/:id', async (req: Request, res: Response) => {
             }
         }
 
+        // Handle grade_id
+        let finalGradeId = grade_id;
+        if (finalGradeId === '' || finalGradeId === undefined) {
+            finalGradeId = null;
+        }
+
         const result = await execute(
             `UPDATE \`groups\` 
              SET name = COALESCE(?, name),
                  description = COALESCE(?, description),
                  course_id = COALESCE(?, course_id),
+                 grade_id = COALESCE(?, grade_id),
                  max_students = COALESCE(?, max_students),
                  is_active = COALESCE(?, is_active),
                  updated_at = CURRENT_TIMESTAMP
@@ -115,6 +128,7 @@ router.put('/:id', async (req: Request, res: Response) => {
                 name ?? null,
                 description ?? null,
                 course_id ?? null,
+                finalGradeId ?? null,
                 max_students ?? null,
                 is_active ?? null,
                 req.params.id
@@ -137,11 +151,11 @@ router.put('/:id', async (req: Request, res: Response) => {
     }
 });
 
-// Delete group (soft delete)
+// Delete group (hard delete - permanent deletion from database)
 router.delete('/:id', async (req: Request, res: Response) => {
     try {
         const result = await execute(
-            'UPDATE `groups` SET is_active = FALSE WHERE id = ?',
+            'DELETE FROM `groups` WHERE id = ?',
             [req.params.id]
         );
 

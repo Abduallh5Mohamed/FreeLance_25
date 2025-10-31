@@ -61,7 +61,7 @@ const Groups = () => {
       const gradesData = await getGrades();
       const groupsWithGrades = data.map(group => ({
         ...group,
-        grade_name: gradesData.find(g => g.id === group.course_id)?.name || '-'
+        grade_name: gradesData.find(g => g.id === group.grade_id)?.name || '-'
       }));
       setGroups(groupsWithGrades);
     } catch (error) {
@@ -93,7 +93,7 @@ const Groups = () => {
       const groupData = {
         name: formData.name,
         description: formData.description,
-        course_id: formData.grade_id || undefined,
+        grade_id: formData.grade_id || undefined,
         max_students: formData.max_students,
         is_active: true
       };
@@ -129,7 +129,7 @@ const Groups = () => {
     setFormData({
       name: group.name,
       description: group.description || '',
-      grade_id: group.course_id || '',
+      grade_id: group.grade_id || '',
       max_students: group.max_students || 50
     });
     setIsEditing(true);

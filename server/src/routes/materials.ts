@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { query, queryOne, execute } from '../db';
 import https from 'https';
 import type { IncomingMessage } from 'http';
+import crypto from 'crypto';
 
 const router = Router();
 
@@ -45,6 +46,16 @@ router.get('/', async (req: Request, res: Response) => {
         sql += ' ORDER BY cm.display_order ASC, cm.created_at DESC';
 
         const materials = await query(sql, params);
+        
+        // Fetch group_ids for each material
+        for (const material of materials) {
+            const groups = await query(
+                'SELECT group_id FROM material_groups WHERE material_id = ?',
+                [material.id]
+            );
+            material.group_ids = groups.map((g: any) => g.group_id);
+        }
+        
         res.json(materials);
     } catch (error) {
         console.error('Get materials error:', error);
@@ -90,7 +101,9 @@ router.post('/', async (req: Request, res: Response) => {
             duration_minutes,
             display_order = 0,
             is_free = false,
-            is_published = true
+            is_published = true,
+            grade_id,
+            group_ids
         } = req.body;
 
         if (!course_id || !title || !material_type) {
@@ -106,12 +119,16 @@ router.post('/', async (req: Request, res: Response) => {
             });
         }
 
+        // Generate UUID for the new material
+        const materialId = crypto.randomUUID();
+        
         const result = await execute(
             `INSERT INTO course_materials 
-            (course_id, title, description, material_type, file_url, file_size, 
+            (id, course_id, title, description, material_type, file_url, file_size, 
              duration_minutes, display_order, is_free, is_published) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
+                materialId,
                 course_id,
                 title,
                 description || null,
@@ -125,15 +142,52 @@ router.post('/', async (req: Request, res: Response) => {
             ]
         );
 
+        // Insert material-group relationships if group_ids provided
+        if (group_ids && Array.isArray(group_ids) && group_ids.length > 0) {
+            // Validate that all group_ids exist
+            for (const groupId of group_ids) {
+                const groupExists = await queryOne(
+                    'SELECT id FROM `groups` WHERE id = ? AND is_active = TRUE',
+                    [groupId]
+                );
+                
+                if (!groupExists) {
+                    console.warn(`Group ${groupId} not found or inactive, skipping...`);
+                    continue;
+                }
+                
+                await execute(
+                    'INSERT INTO material_groups (material_id, group_id) VALUES (?, ?)',
+                    [materialId, groupId]
+                );
+            }
+        }
+
         const newMaterial = await queryOne(
             'SELECT * FROM course_materials WHERE id = ?',
-            [result.insertId]
+            [materialId]
         );
 
-        res.status(201).json(newMaterial);
-    } catch (error) {
+        // Add grade_id and group_ids to response
+        const materialWithGroups = {
+            ...newMaterial,
+            grade_id: grade_id || null,
+            group_ids: group_ids || []
+        };
+
+        res.status(201).json(materialWithGroups);
+    } catch (error: any) {
         console.error('Create material error:', error);
-        res.status(500).json({ error: 'Failed to create material' });
+        console.error('Error details:', {
+            message: error.message,
+            code: error.code,
+            sqlMessage: error.sqlMessage,
+            sql: error.sql
+        });
+        res.status(500).json({ 
+            error: 'Failed to create material',
+            details: error.message 
+        });
     }
 });
 

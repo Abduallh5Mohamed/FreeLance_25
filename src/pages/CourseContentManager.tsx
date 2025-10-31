@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { getCourses, getMaterials, createMaterial, deleteMaterial, convertDriveUrl, type Course, type CourseMaterial } from '@/lib/api-http';
+import { getCourses, getMaterials, createMaterial, deleteMaterial, convertDriveUrl, getGrades, getGroups, type Course, type CourseMaterial, type Grade, type Group } from '@/lib/api-http';
 import { Upload, Video, FileText, Presentation, Trash2, Plus, Play, BookOpen, Clock, CheckCircle } from 'lucide-react';
 import { VideoPlayer } from '@/components/VideoPlayer';
 import Header from '@/components/Header';
@@ -19,13 +19,17 @@ export default function CourseContentManager() {
   const [selectedCourse, setSelectedCourse] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [playingVideo, setPlayingVideo] = useState<{ url: string; title: string } | null>(null);
-  const [formData, setFormData] = useState({ title: '', description: '', material_type: 'video' as CourseMaterial['material_type'], file_url: '', duration_minutes: '', is_free: false });
+  const [grades, setGrades] = useState<Grade[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [formData, setFormData] = useState({ title: '', description: '', material_type: 'video' as CourseMaterial['material_type'], file_url: '', duration_minutes: '', is_free: false, grade_id: '', group_ids: [] as string[] });
 
   const loadCourses = async () => { try { setCourses(await getCourses()); } catch { toast({ title: 'خطأ', description: 'فشل تحميل الدورات', variant: 'destructive' }); } };
+  const loadGrades = async () => { try { setGrades(await getGrades()); } catch { toast({ title: 'خطأ', description: 'فشل تحميل الصفوف الدراسية', variant: 'destructive' }); } };
+  const loadGroups = async () => { try { setGroups(await getGroups()); } catch { toast({ title: 'خطأ', description: 'فشل تحميل المجموعات', variant: 'destructive' }); } };
   const loadMaterials = async (courseId: string) => { try { setLoading(true); setMaterials(await getMaterials(courseId)); } catch { toast({ title: 'خطأ', description: 'فشل تحميل المحتوى', variant: 'destructive' }); } finally { setLoading(false); } };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { loadCourses(); }, []);
+  useEffect(() => { loadCourses(); loadGrades(); loadGroups(); }, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (selectedCourse) loadMaterials(selectedCourse); }, [selectedCourse]);
 
@@ -34,15 +38,17 @@ export default function CourseContentManager() {
     if (!selectedCourse) return toast({ title: 'خطأ', description: 'يرجى اختيار دورة', variant: 'destructive' });
     if (!formData.title) return toast({ title: 'خطأ', description: 'يرجى إدخال عنوان المحتوى', variant: 'destructive' });
     if (formData.material_type === 'video' && !formData.file_url) return toast({ title: 'خطأ', description: 'يرجى إدخال رابط الفيديو من Google Drive', variant: 'destructive' });
+    if (!formData.grade_id) return toast({ title: 'خطأ', description: 'يرجى اختيار الصف الدراسي', variant: 'destructive' });
+    if (formData.group_ids.length === 0) return toast({ title: 'خطأ', description: 'يرجى اختيار مجموعة واحدة على الأقل', variant: 'destructive' });
     try {
       setLoading(true);
       let finalUrl = formData.file_url;
       if (formData.material_type === 'video' && formData.file_url) {
         try { const conv = await convertDriveUrl(formData.file_url); finalUrl = conv.embedUrl; } catch { toast({ title: 'تحذير', description: 'تأكد من أن الرابط من Google Drive', variant: 'destructive' }); }
       }
-      await createMaterial({ course_id: selectedCourse, title: formData.title, description: formData.description || undefined, material_type: formData.material_type, file_url: finalUrl || undefined, duration_minutes: formData.duration_minutes ? parseInt(formData.duration_minutes) : undefined, is_free: formData.is_free, is_published: true, display_order: materials.length });
+      await createMaterial({ course_id: selectedCourse, title: formData.title, description: formData.description || undefined, material_type: formData.material_type, file_url: finalUrl || undefined, duration_minutes: formData.duration_minutes ? parseInt(formData.duration_minutes) : undefined, is_free: formData.is_free, is_published: true, display_order: materials.length, grade_id: formData.grade_id, group_ids: formData.group_ids });
       toast({ title: 'نجح', description: 'تم إضافة المحتوى بنجاح' });
-      setFormData({ title: '', description: '', material_type: 'video', file_url: '', duration_minutes: '', is_free: false });
+      setFormData({ title: '', description: '', material_type: 'video', file_url: '', duration_minutes: '', is_free: false, grade_id: '', group_ids: [] });
       loadMaterials(selectedCourse);
     } catch (error) {
       toast({ title: 'خطأ', description: error instanceof Error ? error.message : 'فشل إضافة المحتوى', variant: 'destructive' });
@@ -157,6 +163,59 @@ export default function CourseContentManager() {
                         </SelectItem>
                       </SelectContent>
                     </Select>
+                  </div>
+
+                  <div>
+                    <Label className="text-sm font-semibold">الصف الدراسي *</Label>
+                    <Select
+                      value={formData.grade_id}
+                      onValueChange={(v) => setFormData({ ...formData, grade_id: v, group_ids: [] })}
+                    >
+                      <SelectTrigger className="mt-1">
+                        <SelectValue placeholder="اختر الصف الدراسي" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {grades.map(g => (
+                          <SelectItem key={g.id} value={g.id}>
+                            {g.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label className="text-sm font-semibold">المجموعات *</Label>
+                    <div className="mt-1 space-y-2 max-h-40 overflow-y-auto border rounded-md p-3">
+                      {formData.grade_id ? (
+                        groups.filter(g => g.grade_id === formData.grade_id).length > 0 ? (
+                          groups.filter(g => g.grade_id === formData.grade_id).map(group => (
+                            <div key={group.id} className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                id={`group-${group.id}`}
+                                checked={formData.group_ids.includes(group.id)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setFormData({ ...formData, group_ids: [...formData.group_ids, group.id] });
+                                  } else {
+                                    setFormData({ ...formData, group_ids: formData.group_ids.filter(id => id !== group.id) });
+                                  }
+                                }}
+                                className="h-4 w-4 rounded border-gray-300"
+                              />
+                              <Label htmlFor={`group-${group.id}`} className="cursor-pointer text-sm">
+                                {group.name}
+                              </Label>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="text-xs text-muted-foreground">لا توجد مجموعات لهذا الصف</p>
+                        )
+                      ) : (
+                        <p className="text-xs text-muted-foreground">اختر الصف الدراسي أولاً</p>
+                      )}
+                    </div>
                   </div>
 
                   <div>
