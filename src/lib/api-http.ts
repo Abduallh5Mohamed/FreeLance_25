@@ -328,6 +328,7 @@ export interface Group {
     name: string;
     description?: string;
     course_id?: string;
+    grade_id?: string;
     max_students?: number;
     current_students?: number;
     is_active: boolean;
@@ -496,7 +497,6 @@ export const createRegistrationRequest = async (data: {
     grade_id?: string | null;
     group_id?: string | null;
     requested_courses?: string[];
-    is_offline?: boolean;
 }): Promise<{ id: string; message: string }> => {
     return request('/registration-requests', {
         method: 'POST',
@@ -621,6 +621,8 @@ export interface CourseMaterial {
     updated_at?: Date;
     course_name?: string;
     course_subject?: string;
+    grade_id?: string;
+    group_ids?: string[];
 }
 
 export const getMaterials = async (courseId?: string): Promise<CourseMaterial[]> => {
@@ -824,77 +826,4 @@ export default {
     updateMaterial,
     deleteMaterial,
     convertDriveUrl,
-};
-
-// ====================================
-// Fees Functions
-// ====================================
-
-export interface Fee {
-    id: string;
-    student_name: string;
-    phone?: string;
-    grade_id?: string;
-    grade_name?: string;
-    group_id?: string;
-    group_name?: string;
-    barcode?: string;
-    amount: number;
-    paid_amount: number;
-    remaining_amount?: number;
-    status: string;
-    payment_method?: string;
-    is_offline: boolean;
-    notes?: string;
-    due_date?: string;
-    payment_date?: string;
-    receipt_image_url?: string;
-    created_at?: string;
-    updated_at?: string;
-}
-
-export const getFees = async (isOffline?: boolean, status?: string): Promise<Fee[]> => {
-    let url = '/fees';
-    const params = new URLSearchParams();
-    
-    if (isOffline !== undefined) {
-        params.append('is_offline', isOffline.toString());
-    }
-    if (status) {
-        params.append('status', status);
-    }
-    
-    if (params.toString()) {
-        url += `?${params.toString()}`;
-    }
-    
-    return request<Fee[]>(url);
-};
-
-export const getFeeById = async (id: string): Promise<Fee | null> => {
-    try {
-        return await request<Fee>(`/fees/${id}`);
-    } catch {
-        return null;
-    }
-};
-
-export const createFee = async (fee: Partial<Fee>): Promise<Fee> => {
-    return request<Fee>('/fees', {
-        method: 'POST',
-        body: JSON.stringify(fee),
-    });
-};
-
-export const updateFee = async (id: string, fee: Partial<Fee>): Promise<Fee> => {
-    return request<Fee>(`/fees/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(fee),
-    });
-};
-
-export const deleteFee = async (id: string): Promise<void> => {
-    await request<void>(`/fees/${id}`, {
-        method: 'DELETE',
-    });
 };

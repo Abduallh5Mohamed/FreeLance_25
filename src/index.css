@@ -8,61 +8,61 @@ All colors MUST be HSL for consistency and theme support.
 
 @layer base {
   :root {
-    /* Light Mode - Modern Gradient Theme */
+    /* Light Mode - Golden & White Theme */
     --background: 0 0% 100%;
-    --foreground: 222 47% 11%;
+    --foreground: 20 14.3% 4.1%;
 
     --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
+    --card-foreground: 20 14.3% 4.1%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 222 47% 11%;
+    --popover-foreground: 20 14.3% 4.1%;
 
-    /* Modern primary colors - Vibrant Blue to Purple */
-    --primary: 262 80% 50%;
-    --primary-foreground: 0 0% 100%;
-    --primary-glow: 262 100% 65%;
+    /* Golden primary colors */
+    --primary: 38 92% 50%;
+    --primary-foreground: 26 83.3% 14.1%;
+    --primary-glow: 43 100% 70%;
 
-    /* Cyan accent */
-    --accent: 188 95% 42%;
-    --accent-foreground: 0 0% 100%;
-    --accent-glow: 188 100% 50%;
+    /* Dark accent */
+    --accent: 43 100% 70%;
+    --accent-foreground: 26 83.3% 14.1%;
+    --accent-glow: 45 95% 65%;
 
     /* Success green */
-    --success: 142 76% 36%;
+    --success: 142 70% 45%;
     --success-foreground: 0 0% 100%;
-    --success-glow: 142 80% 45%;
+    --success-glow: 142 70% 55%;
 
-    /* Warning orange */
-    --warning: 25 95% 53%;
-    --warning-foreground: 0 0% 100%;
+    /* Warning golden */
+    --warning: 45 95% 55%;
+    --warning-foreground: 0 0% 0%;
 
-    --secondary: 217 33% 97%;
-    --secondary-foreground: 222 47% 11%;
+    --secondary: 40 20% 96%;
+    --secondary-foreground: 20 14.3% 4.1%;
 
-    --muted: 217 33% 97%;
-    --muted-foreground: 215 20% 45%;
+    --muted: 40 20% 96%;
+    --muted-foreground: 25 5.3% 44.7%;
 
-    --destructive: 0 84% 60%;
+    --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 262 80% 50%;
+    --border: 40 20% 90%;
+    --input: 40 20% 90%;
+    --ring: 38 92% 50%;
 
-    /* Modern gradients */
-    --gradient-primary: linear-gradient(135deg, hsl(262 80% 50%) 0%, hsl(280 85% 65%) 50%, hsl(188 95% 42%) 100%);
-    --gradient-dark: linear-gradient(180deg, hsl(222 47% 11%) 0%, hsl(224 71% 4%) 100%);
+    /* Luxurious gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(38 92% 50%) 0%, hsl(43 100% 70%) 100%);
+    --gradient-dark: linear-gradient(180deg, hsl(26 83.3% 14.1%) 0%, hsl(20 14.3% 4.1%) 100%);
     --gradient-hero: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.8) 100%);
-    --gradient-gold-shine: linear-gradient(90deg, hsl(262 80% 50%), hsl(280 85% 65%), hsl(262 80% 50%));
-    --gradient-card: linear-gradient(145deg, hsl(0 0% 100%) 0%, hsl(217 33% 98%) 100%);
+    --gradient-gold-shine: linear-gradient(90deg, hsl(38 92% 50%), hsl(43 100% 70%), hsl(38 92% 50%));
+    --gradient-card: linear-gradient(145deg, hsl(0 0% 100%) 0%, hsl(40 20% 98%) 100%);
 
-    /* Modern shadows */
-    --shadow-soft: 0 4px 6px -1px rgb(0 0 0 / 0.1);
-    --shadow-medium: 0 10px 15px -3px rgb(0 0 0 / 0.1);
-    --shadow-glow: 0 0 50px hsl(262 80% 50% / 0.3);
-    --shadow-success: 0 0 25px hsl(142 76% 36% / 0.3);
-    --shadow-golden: 0 0 40px hsl(280 85% 65% / 0.4);
+    /* Elegant shadows */
+    --shadow-soft: 0 2px 8px -2px hsl(20 14.3% 4.1% / 0.1);
+    --shadow-medium: 0 8px 25px -5px hsl(20 14.3% 4.1% / 0.15);
+    --shadow-glow: 0 0 40px hsl(38 92% 50% / 0.4);
+    --shadow-success: 0 0 20px hsl(142 70% 45% / 0.3);
+    --shadow-golden: 0 0 30px hsl(43 100% 70% / 0.5);
 
     /* Smooth transitions */
     --transition-smooth: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
@@ -91,49 +91,49 @@ All colors MUST be HSL for consistency and theme support.
   }
 
   .dark {
-    /* Dark Mode - Unified Dark Theme */
-    --background: 220 40% 8%;
-    --foreground: 210 40% 98%;
+    /* Dark Mode - Clean Black & White & Gold Theme (من الصورة المرجعية) */
+    --background: 0 0% 5%;
+    --foreground: 0 0% 95%;
 
-    --card: 220 40% 10%;
-    --card-foreground: 210 40% 98%;
+    --card: 0 0% 10%;
+    --card-foreground: 0 0% 95%;
 
-    --popover: 220 40% 10%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 0 0% 10%;
+    --popover-foreground: 0 0% 95%;
 
-    /* Elegant Purple/Pink */
-    --primary: 280 80% 60%;
-    --primary-foreground: 220 40% 8%;
-    --primary-glow: 280 90% 70%;
+    /* Pure Gold */
+    --primary: 30 100% 55%;
+    --primary-foreground: 0 0% 5%;
+    --primary-glow: 35 100% 60%;
 
-    --secondary: 220 40% 12%;
-    --secondary-foreground: 210 40% 98%;
+    --secondary: 0 0% 15%;
+    --secondary-foreground: 0 0% 95%;
 
-    --muted: 220 40% 15%;
-    --muted-foreground: 215 20% 65%;
+    --muted: 0 0% 20%;
+    --muted-foreground: 0 0% 70%;
 
-    --accent: 190 80% 50%;
-    --accent-foreground: 220 40% 8%;
+    --accent: 35 100% 60%;
+    --accent-foreground: 0 0% 5%;
 
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
 
-    --border: 220 40% 15%;
-    --input: 220 40% 15%;
-    --ring: 280 80% 60%;
+    --border: 0 0% 20%;
+    --input: 0 0% 18%;
+    --ring: 30 100% 55%;
 
-    /* Seamless gradients */
-    --gradient-primary: linear-gradient(135deg, hsl(280 80% 60%) 0%, hsl(300 80% 55%) 50%, hsl(190 80% 50%) 100%);
-    --gradient-dark: linear-gradient(180deg, hsl(220 40% 8%) 0%, hsl(220 40% 10%) 100%);
-    --gradient-hero: linear-gradient(180deg, rgba(20, 25, 40, 0) 0%, rgba(20, 25, 40, 0.98) 100%);
-    --gradient-gold-shine: linear-gradient(90deg, hsl(280 80% 60%), hsl(300 80% 55%), hsl(320 80% 60%), hsl(300 80% 55%), hsl(280 80% 60%));
-    --gradient-card: linear-gradient(145deg, hsl(220 40% 10%) 0%, hsl(220 40% 8%) 100%);
+    /* Ultra clean gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(30 100% 55%) 0%, hsl(35 100% 60%) 100%);
+    --gradient-dark: linear-gradient(180deg, hsl(0 0% 5%) 0%, hsl(0 0% 10%) 100%);
+    --gradient-hero: linear-gradient(180deg, rgba(12, 12, 12, 0) 0%, rgba(12, 12, 12, 0.98) 100%);
+    --gradient-gold-shine: linear-gradient(90deg, hsl(30 100% 55%), hsl(35 100% 60%), hsl(40 100% 65%), hsl(35 100% 60%), hsl(30 100% 55%));
+    --gradient-card: linear-gradient(145deg, hsl(0 0% 10%) 0%, hsl(0 0% 5%) 100%);
 
-    /* Subtle shadows */
-    --shadow-soft: 0 4px 20px -3px rgba(0, 0, 0, 0.5);
-    --shadow-medium: 0 12px 48px -8px rgba(0, 0, 0, 0.7);
-    --shadow-glow: 0 0 60px hsla(280, 80%, 60%, 0.3);
-    --shadow-golden: 0 0 40px hsla(300, 80%, 55%, 0.4);
+    /* Clean shadows */
+    --shadow-soft: 0 4px 20px -3px rgba(0, 0, 0, 0.9);
+    --shadow-medium: 0 12px 48px -8px rgba(0, 0, 0, 0.95);
+    --shadow-glow: 0 0 80px hsla(30, 100%, 55%, 0.8);
+    --shadow-golden: 0 0 60px hsla(35, 100%, 60%, 0.9);
 
     --sidebar-background: 240 5.9% 10%;
     --sidebar-foreground: 240 4.8% 95.9%;
@@ -180,11 +180,11 @@ All colors MUST be HSL for consistency and theme support.
 }
 
 .text-glow-gold {
-  text-shadow: 0 0 30px hsla(280, 100%, 70%, 0.8), 0 0 60px hsla(300, 100%, 65%, 0.6);
+  text-shadow: 0 0 30px hsla(30, 100%, 55%, 0.8), 0 0 60px hsla(35, 100%, 60%, 0.6);
 }
 
 .bg-luxury-dark {
-  background: linear-gradient(135deg, hsl(222 84% 5%) 0%, hsl(217 33% 12%) 50%, hsl(222 84% 5%) 100%);
+  background: linear-gradient(135deg, #0B1321 0%, #142036 50%, #0B1321 100%);
 }
 
 .delay-1000 {
@@ -204,7 +204,7 @@ All colors MUST be HSL for consistency and theme support.
 
 /* Golden gradient text */
 .text-gradient-gold {
-  background: linear-gradient(135deg, hsl(280 100% 70%), hsl(300 100% 65%), hsl(320 100% 70%));
+  background: linear-gradient(135deg, hsl(30 100% 55%), hsl(35 100% 60%), hsl(40 100% 65%));
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -217,100 +217,10 @@ All colors MUST be HSL for consistency and theme support.
 }
 
 .golden-shine {
-  background: linear-gradient(90deg, hsl(280 100% 70%), hsl(300 100% 65%), hsl(320 100% 70%), hsl(300 100% 65%), hsl(280 100% 70%));
+  background: linear-gradient(90deg, hsl(30 100% 55%), hsl(35 100% 60%), hsl(40 100% 65%), hsl(35 100% 60%), hsl(30 100% 55%));
   background-size: 200% auto;
   animation: golden-shine 3s linear infinite;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-}
-
-/* Responsive Design Media Queries */
-@media (max-width: 1536px) {
-  .container {
-    max-width: 1280px;
-  }
-}
-
-@media (max-width: 1280px) {
-  .container {
-    max-width: 1024px;
-  }
-}
-
-@media (max-width: 1024px) {
-  .container {
-    max-width: 768px;
-  }
-  
-  /* Adjust text sizes for tablets */
-  h1 { font-size: clamp(2.5rem, 5vw, 4rem); }
-  h2 { font-size: clamp(2rem, 4vw, 3rem); }
-  h3 { font-size: clamp(1.5rem, 3vw, 2rem); }
-}
-
-@media (max-width: 768px) {
-  .container {
-    max-width: 640px;
-    padding: 0 1rem;
-  }
-  
-  /* Mobile optimizations */
-  .grid {
-    grid-template-columns: 1fr !important;
-  }
-  
-  /* Adjust padding and margins */
-  section {
-    padding-top: 3rem !important;
-    padding-bottom: 3rem !important;
-  }
-  
-  /* Mobile text sizes */
-  h1 { font-size: clamp(2rem, 6vw, 3rem); }
-  h2 { font-size: clamp(1.75rem, 5vw, 2.5rem); }
-  h3 { font-size: clamp(1.25rem, 4vw, 1.75rem); }
-  p { font-size: clamp(0.875rem, 2.5vw, 1rem); }
-}
-
-@media (max-width: 640px) {
-  .container {
-    max-width: 100%;
-    padding: 0 0.75rem;
-  }
-  
-  /* Smaller buttons on mobile */
-  button {
-    padding: 0.5rem 1rem;
-    font-size: 0.875rem;
-  }
-  
-  /* Stack navigation items */
-  nav .flex {
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-}
-
-@media (max-width: 480px) {
-  /* Extra small devices */
-  h1 { font-size: 1.75rem; }
-  h2 { font-size: 1.5rem; }
-  h3 { font-size: 1.25rem; }
-  
-  /* Reduce padding on very small screens */
-  .p-10 { padding: 1.5rem !important; }
-  .p-8 { padding: 1.25rem !important; }
-  .p-6 { padding: 1rem !important; }
-}
-
-/* Responsive utilities */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
 }

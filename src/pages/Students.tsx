@@ -11,7 +11,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Users, Plus, Edit2, Trash2, Search, Phone, Mail } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-import { getStudents, getGrades, getGroups, getCourses, getSubscriptions, updateStudent, deleteStudent } from "@/lib/api-http";
 import { supabase } from "@/integrations/supabase/client";
 
 const Students = () => {
@@ -35,7 +34,7 @@ const Students = () => {
     group_id: "",
     password: ""
   });
-
+  
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
 
@@ -49,7 +48,12 @@ const Students = () => {
 
   const fetchGrades = async () => {
     try {
-      const data = await getGrades();
+      const { data, error } = await supabase
+        .from('grades')
+        .select('*')
+        .eq('is_active', true);
+      
+      if (error) throw error;
       setGrades(data || []);
     } catch (error) {
       console.error('Error fetching grades:', error);
@@ -58,10 +62,28 @@ const Students = () => {
 
   const fetchStudents = async () => {
     try {
-      const data = await getStudents();
-      // Filter for online students only (is_offline = false or 0)
-      const onlineStudents = data.filter(student => !student.is_offline || student.is_offline === 0 || student.is_offline === false);
-      setStudents(onlineStudents || []);
+      const { data, error } = await supabase
+        .from('students')
+        .select(`
+          *,
+          subscriptions (
+            id,
+            name,
+            duration_months,
+            price
+          ),
+          student_courses (
+            courses (
+              id,
+              name,
+              subject
+            )
+          )
+        `)
+        .eq('is_offline', false);
+      
+      if (error) throw error;
+      setStudents(data || []);
     } catch (error) {
       console.error('Error fetching students:', error);
     }
@@ -69,7 +91,11 @@ const Students = () => {
 
   const fetchCourses = async () => {
     try {
-      const data = await getCourses();
+      const { data, error } = await supabase
+        .from('courses')
+        .select('*');
+      
+      if (error) throw error;
       setCourses(data || []);
     } catch (error) {
       console.error('Error fetching courses:', error);
@@ -78,7 +104,12 @@ const Students = () => {
 
   const fetchSubscriptions = async () => {
     try {
-      const data = await getSubscriptions();
+      const { data, error } = await supabase
+        .from('subscriptions')
+        .select('*')
+        .eq('is_active', true);
+      
+      if (error) throw error;
       setSubscriptions(data || []);
     } catch (error) {
       console.error('Error fetching subscriptions:', error);
@@ -87,7 +118,13 @@ const Students = () => {
 
   const fetchGroups = async () => {
     try {
-      const data = await getGroups();
+      const { data, error } = await supabase
+        .from('groups')
+        .select('*')
+        .eq('is_active', true)
+        .eq('type', 'online'); // للطلاب الأونلاين، نعرض المجموعات الأونلاين المفتوحة فقط
+      
+      if (error) throw error;
       setGroups(data || []);
     } catch (error) {
       console.error('Error fetching groups:', error);
@@ -95,15 +132,15 @@ const Students = () => {
   };
 
   const filteredStudents = students.filter(student =>
-    student.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    student.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    student.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    student.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     student.phone?.includes(searchTerm)
   );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-
+    
     if (selectedCourses.length === 0) {
       toast({
         title: "خطأ",
@@ -115,12 +152,19 @@ const Students = () => {
     }
 
     try {
+      // Get current user profile
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) {
+        throw new Error("يجب تسجيل الدخول أولاً");
+      }
+
       if (!editingStudent) {
         throw new Error("هذه الصفحة للتعديل فقط. الطلاب الأونلاين يسجلون من خلال صفحة التسجيل");
       }
 
-      // Update student via Backend API
-      const updateData: Record<string, unknown> = {
+      // Update student
+      const updateData: any = {
         name: formData.name,
         email: formData.email,
         phone: formData.phone,
@@ -128,28 +172,44 @@ const Students = () => {
         grade_id: formData.grade_id || null,
         group_id: formData.group_id || null,
       };
+      
+      const { error: studentError } = await supabase
+        .from('students')
+        .update(updateData)
+        .eq('id', editingStudent.id);
+      
+      if (studentError) throw studentError;
 
-      const success = await updateStudent(editingStudent.id, updateData);
+      // Update enrollments
+      await supabase
+        .from('student_courses')
+        .delete()
+        .eq('student_id', editingStudent.id);
 
-      if (!success) {
-        throw new Error("فشل تحديث بيانات الطالب");
+      for (const courseId of selectedCourses) {
+        await supabase
+          .from('student_courses')
+          .insert({
+            student_id: editingStudent.id,
+            course_id: courseId
+          });
       }
-
+      
       toast({
         title: "تم التحديث بنجاح",
-        description: "تم تحديث بيانات الطالب في قاعدة البيانات",
+        description: "تم تحديث بيانات الطالب",
       });
-
+      
       fetchStudents();
       setIsOpen(false);
       setEditingStudent(null);
       setSelectedCourses([]);
       setFormData({ name: "", email: "", phone: "", grade: "", grade_id: "", subscription_id: "", subscription_price: "", group_id: "", password: "" });
-    } catch (error: unknown) {
+    } catch (error: any) {
       console.error('Error:', error);
       toast({
         title: "خطأ",
-        description: error instanceof Error ? error.message : "حدث خطأ، حاول مرة أخرى",
+        description: error.message || "حدث خطأ، حاول مرة أخرى",
         variant: "destructive",
       });
     } finally {
@@ -176,22 +236,22 @@ const Students = () => {
 
   const handleDelete = async (id: string) => {
     try {
-      const success = await deleteStudent(id);
-
-      if (success) {
-        fetchStudents();
-        toast({
-          title: "تم الحذف بنجاح",
-          description: "تم حذف الطالب من قاعدة البيانات",
-        });
-      } else {
-        throw new Error("فشل حذف الطالب");
-      }
+      const { error } = await supabase
+        .from('students')
+        .delete()
+        .eq('id', id);
+      
+      if (error) throw error;
+      
+      fetchStudents();
+      toast({
+        title: "تم الحذف بنجاح",
+        description: "تم حذف الطالب",
+      });
     } catch (error) {
-      console.error('Error deleting student:', error);
       toast({
         title: "خطأ",
-        description: "حدث خطأ في حذف الطالب",
+        description: "حدث خطأ في الحذف",
         variant: "destructive",
       });
     }
@@ -204,7 +264,7 @@ const Students = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
       <Header />
-
+      
       <div className="container mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
@@ -216,7 +276,7 @@ const Students = () => {
               <p className="text-muted-foreground">الطلاب الذين سجلوا عبر المنصة. للموافقة على طلبات التسجيل، انتقل إلى صفحة "طلبات التسجيل"</p>
             </div>
           </div>
-
+          
           <Dialog open={isOpen} onOpenChange={setIsOpen}>
             <DialogContent className="max-w-md">
               <DialogHeader>
@@ -256,8 +316,8 @@ const Students = () => {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="grade">الصف الدراسي</Label>
-                  <Select
-                    value={formData.grade_id}
+                  <Select 
+                    value={formData.grade_id} 
                     onValueChange={(value) => {
                       setFormData(prev => ({ ...prev, grade_id: value, group_id: '' }));
                     }}
@@ -276,8 +336,8 @@ const Students = () => {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="group">المجموعة</Label>
-                  <Select
-                    value={formData.group_id}
+                  <Select 
+                    value={formData.group_id} 
                     onValueChange={(value) => setFormData(prev => ({ ...prev, group_id: value }))}
                     disabled={!formData.grade_id}
                   >
@@ -315,8 +375,8 @@ const Students = () => {
                   <Label htmlFor="subscription">خطة الاشتراك</Label>
                   <Select value={formData.subscription_id} onValueChange={(value) => {
                     const selectedSub = subscriptions.find(s => s.id === value);
-                    setFormData(prev => ({
-                      ...prev,
+                    setFormData(prev => ({ 
+                      ...prev, 
                       subscription_id: value,
                       subscription_price: selectedSub ? selectedSub.price.toString() : ""
                     }));
@@ -404,90 +464,91 @@ const Students = () => {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredStudents.map((student) => (
-                    <TableRow key={student.id}>
-                      <TableCell className="min-w-[200px]">
-                        <div className="flex items-center gap-2">
-                          <Avatar className="h-8 w-8">
-                            <AvatarFallback className="text-xs">{getInitials(student.name)}</AvatarFallback>
-                          </Avatar>
-                          <div className="min-w-0">
-                            <p className="font-medium text-sm truncate">{student.name}</p>
-                            <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
-                              <div className="flex items-center gap-1 truncate">
-                                <Mail className="w-3 h-3 flex-shrink-0" />
-                                <span className="truncate">{student.email}</span>
-                              </div>
-                              {student.phone && (
-                                <div className="flex items-center gap-1">
-                                  <Phone className="w-3 h-3 flex-shrink-0" />
-                                  <span>{student.phone}</span>
-                                </div>
-                              )}
+                {filteredStudents.map((student) => (
+                  <TableRow key={student.id}>
+                    <TableCell className="min-w-[200px]">
+                      <div className="flex items-center gap-2">
+                        <Avatar className="h-8 w-8">
+                          <AvatarFallback className="text-xs">{getInitials(student.name)}</AvatarFallback>
+                        </Avatar>
+                        <div className="min-w-0">
+                          <p className="font-medium text-sm truncate">{student.name}</p>
+                          <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+                            <div className="flex items-center gap-1 truncate">
+                              <Mail className="w-3 h-3 flex-shrink-0" />
+                              <span className="truncate">{student.email}</span>
                             </div>
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-xs md:text-sm">{student.grade}</TableCell>
-                      <TableCell className="min-w-[150px]">
-                        {student.subscriptions ? (
-                          <div className="space-y-1">
-                            <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-[10px] md:text-xs whitespace-nowrap">
-                              {student.subscriptions.name}
-                            </span>
-                            <div className="text-[10px] md:text-xs text-muted-foreground">
-                              {student.subscription_price} جنيه
-                            </div>
-                            {student.subscription_end_date && (
-                              <div className="text-[10px] md:text-xs text-muted-foreground">
-                                ينتهي: {new Date(student.subscription_end_date).toLocaleDateString('ar-SA')}
+                            {student.phone && (
+                              <div className="flex items-center gap-1">
+                                <Phone className="w-3 h-3 flex-shrink-0" />
+                                <span>{student.phone}</span>
                               </div>
                             )}
                           </div>
-                        ) : (
-                          <span className="text-[10px] md:text-xs text-muted-foreground">لا يوجد اشتراك</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="min-w-[120px]">
-                        <div className="flex flex-wrap gap-1">
-                          {student.student_courses?.map((enrollment) => (
-                            <span key={enrollment.courses.id} className="px-1.5 py-0.5 bg-primary/10 text-primary rounded text-[10px] md:text-xs whitespace-nowrap">
-                              {enrollment.courses.name}
-                            </span>
-                          ))}
                         </div>
-                      </TableCell>
-                      <TableCell className="text-xs md:text-sm whitespace-nowrap">{new Date(student.enrollment_date).toLocaleDateString('ar-SA')}</TableCell>
-                      <TableCell>
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] md:text-xs whitespace-nowrap ${student.is_active ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
-                          }`}>
-                          {student.is_active ? 'نشط' : 'غير نشط'}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleEdit(student)}
-                            className="h-7 w-7 p-0"
-                          >
-                            <Edit2 className="w-3 h-3 md:w-4 md:h-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleDelete(student.id)}
-                            className="text-destructive hover:text-destructive h-7 w-7 p-0"
-                          >
-                            <Trash2 className="w-3 h-3 md:w-4 md:h-4" />
-                          </Button>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-xs md:text-sm">{student.grade}</TableCell>
+                    <TableCell className="min-w-[150px]">
+                      {student.subscriptions ? (
+                        <div className="space-y-1">
+                          <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-[10px] md:text-xs whitespace-nowrap">
+                            {student.subscriptions.name}
+                          </span>
+                          <div className="text-[10px] md:text-xs text-muted-foreground">
+                            {student.subscription_price} جنيه
+                          </div>
+                          {student.subscription_end_date && (
+                            <div className="text-[10px] md:text-xs text-muted-foreground">
+                              ينتهي: {new Date(student.subscription_end_date).toLocaleDateString('ar-SA')}
+                            </div>
+                          )}
                         </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                      ) : (
+                        <span className="text-[10px] md:text-xs text-muted-foreground">لا يوجد اشتراك</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="min-w-[120px]">
+                      <div className="flex flex-wrap gap-1">
+                        {student.student_courses?.map((enrollment) => (
+                          <span key={enrollment.courses.id} className="px-1.5 py-0.5 bg-primary/10 text-primary rounded text-[10px] md:text-xs whitespace-nowrap">
+                            {enrollment.courses.name}
+                          </span>
+                        ))}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-xs md:text-sm whitespace-nowrap">{new Date(student.enrollment_date).toLocaleDateString('ar-SA')}</TableCell>
+                    <TableCell>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] md:text-xs whitespace-nowrap ${
+                        student.is_active ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+                      }`}>
+                        {student.is_active ? 'نشط' : 'غير نشط'}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleEdit(student)}
+                          className="h-7 w-7 p-0"
+                        >
+                          <Edit2 className="w-3 h-3 md:w-4 md:h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDelete(student.id)}
+                          className="text-destructive hover:text-destructive h-7 w-7 p-0"
+                        >
+                          <Trash2 className="w-3 h-3 md:w-4 md:h-4" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
             </div>
           </CardContent>
         </Card>

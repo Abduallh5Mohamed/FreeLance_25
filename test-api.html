@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test API Connection</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        pre {
+            background: #f4f4f4;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+            direction: ltr;
+            text-align: left;
+        }
+        .success {
+            color: green;
+            font-weight: bold;
+        }
+        .error {
+            color: red;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>اختبار الاتصال بـ MySQL API</h1>
+        
+        <div>
+            <button onclick="testGrades()">اختبار جلب الصفوف الدراسية</button>
+            <button onclick="testGroups()">اختبار جلب المجموعات</button>
+            <button onclick="testBoth()">اختبار الاثنين معاً</button>
+        </div>
+
+        <div id="result"></div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:3001/api';
+
+        async function testGrades() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<p>جاري جلب الصفوف الدراسية...</p>';
+            
+            try {
+                const response = await fetch(`${API_URL}/grades`);
+                const data = await response.json();
+                
+                resultDiv.innerHTML = `
+                    <h2 class="success">✅ تم جلب الصفوف الدراسية بنجاح من MySQL</h2>
+                    <p><strong>عدد الصفوف:</strong> ${data.length}</p>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <h2 class="error">❌ فشل الاتصال</h2>
+                    <p>${error.message}</p>
+                `;
+            }
+        }
+
+        async function testGroups() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<p>جاري جلب المجموعات...</p>';
+            
+            try {
+                const response = await fetch(`${API_URL}/groups`);
+                const data = await response.json();
+                
+                resultDiv.innerHTML = `
+                    <h2 class="success">✅ تم جلب المجموعات بنجاح من MySQL</h2>
+                    <p><strong>عدد المجموعات:</strong> ${data.length}</p>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <h2 class="error">❌ فشل الاتصال</h2>
+                    <p>${error.message}</p>
+                `;
+            }
+        }
+
+        async function testBoth() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<p>جاري جلب البيانات...</p>';
+            
+            try {
+                const [gradesResponse, groupsResponse] = await Promise.all([
+                    fetch(`${API_URL}/grades`),
+                    fetch(`${API_URL}/groups`)
+                ]);
+                
+                const grades = await gradesResponse.json();
+                const groups = await groupsResponse.json();
+                
+                // Create a map of grades
+                const gradeMap = {};
+                grades.forEach(grade => {
+                    gradeMap[grade.id] = grade.name;
+                });
+                
+                // Group groups by grade
+                const groupsByGrade = {};
+                groups.forEach(group => {
+                    const gradeName = gradeMap[group.grade_id] || 'بدون صف';
+                    if (!groupsByGrade[gradeName]) {
+                        groupsByGrade[gradeName] = [];
+                    }
+                    groupsByGrade[gradeName].push(group.name);
+                });
+                
+                let html = `
+                    <h2 class="success">✅ تم جلب البيانات بنجاح من MySQL</h2>
+                    <h3>الصفوف الدراسية (${grades.length})</h3>
+                    <ul>
+                `;
+                
+                grades.forEach(grade => {
+                    html += `<li><strong>${grade.name}</strong> (ID: ${grade.id})</li>`;
+                });
+                
+                html += `</ul><h3>المجموعات (${groups.length})</h3>`;
+                
+                for (const [gradeName, groupNames] of Object.entries(groupsByGrade)) {
+                    html += `<h4>${gradeName}</h4><ul>`;
+                    groupNames.forEach(name => {
+                        html += `<li>${name}</li>`;
+                    });
+                    html += `</ul>`;
+                }
+                
+                html += `
+                    <h3>البيانات الكاملة:</h3>
+                    <h4>الصفوف:</h4>
+                    <pre>${JSON.stringify(grades, null, 2)}</pre>
+                    <h4>المجموعات:</h4>
+                    <pre>${JSON.stringify(groups, null, 2)}</pre>
+                `;
+                
+                resultDiv.innerHTML = html;
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <h2 class="error">❌ فشل الاتصال</h2>
+                    <p>${error.message}</p>
+                `;
+            }
+        }
+
+        // Auto-run test on page load
+        window.onload = () => {
+            testBoth();
+        };
+    </script>
+</body>
+</html>
