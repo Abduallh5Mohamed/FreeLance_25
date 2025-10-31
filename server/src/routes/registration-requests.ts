@@ -52,7 +52,7 @@ const requireAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
 
 router.post('/', async (req: Request, res: Response) => {
     try {
-        const { name, phone, password, grade_id, group_id, requested_courses } = req.body;
+        const { name, phone, password, grade_id, group_id, requested_courses, is_offline } = req.body;
 
         // Validation
         if (!name || !phone || !password) {
@@ -89,8 +89,8 @@ router.post('/', async (req: Request, res: Response) => {
         const requestId = randomUUID();
         await pool.query(
             `INSERT INTO student_registration_requests 
-            (id, name, phone, password_hash, grade_id, group_id, requested_courses, status, created_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+            (id, name, phone, password_hash, grade_id, group_id, requested_courses, status, is_offline, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
             [
                 requestId,
                 name,
@@ -99,7 +99,8 @@ router.post('/', async (req: Request, res: Response) => {
                 grade_id || null,
                 group_id || null,
                 coursesJson,
-                'pending'
+                'pending',
+                is_offline || false,
             ]
         );
 
@@ -120,7 +121,7 @@ router.post('/', async (req: Request, res: Response) => {
 
 router.get('/', authenticateToken, requireAdmin, async (req: AuthRequest, res: Response) => {
     try {
-        const { status } = req.query;
+        const { status, is_offline } = req.query;
 
         let query = `
             SELECT 
@@ -132,11 +133,21 @@ router.get('/', authenticateToken, requireAdmin, async (req: AuthRequest, res: R
             LEFT JOIN \`groups\` gr ON rr.group_id = gr.id
         `;
 
-        const params: string[] = [];
+        const params: (string | number | boolean)[] = [];
+        const conditions: string[] = [];
 
         if (status && ['pending', 'approved', 'rejected'].includes(status as string)) {
-            query += ' WHERE rr.status = ?';
+            conditions.push('rr.status = ?');
             params.push(status as string);
+        }
+
+        if (is_offline !== undefined) {
+            conditions.push('rr.is_offline = ?');
+            params.push(is_offline === 'true' ? 1 : 0);
+        }
+
+        if (conditions.length > 0) {
+            query += ' WHERE ' + conditions.join(' AND ');
         }
 
         query += ' ORDER BY rr.created_at DESC';
@@ -202,7 +213,7 @@ router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthReq
         await connection.query(
             `INSERT INTO students (id, name, phone, grade_id, group_id, password_hash, approval_status, is_offline, created_at) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-            [studentId, request.name, request.phone, request.grade_id, request.group_id, request.password_hash, 'approved', false]
+            [studentId, request.name, request.phone, request.grade_id, request.group_id, request.password_hash, 'approved', request.is_offline || false]
         );
 
         // If requested courses, create student_courses entries

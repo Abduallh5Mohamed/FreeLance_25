@@ -496,6 +496,7 @@ export const createRegistrationRequest = async (data: {
     grade_id?: string | null;
     group_id?: string | null;
     requested_courses?: string[];
+    is_offline?: boolean;
 }): Promise<{ id: string; message: string }> => {
     return request('/registration-requests', {
         method: 'POST',
