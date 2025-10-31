@@ -45,6 +45,16 @@ router.get('/', async (req: Request, res: Response) => {
         sql += ' ORDER BY cm.display_order ASC, cm.created_at DESC';
 
         const materials = await query(sql, params);
+        
+        // Fetch group_ids for each material
+        for (const material of materials) {
+            const groups = await query(
+                'SELECT group_id FROM material_groups WHERE material_id = ?',
+                [material.id]
+            );
+            material.group_ids = groups.map((g: any) => g.group_id);
+        }
+        
         res.json(materials);
     } catch (error) {
         console.error('Get materials error:', error);
@@ -90,7 +100,9 @@ router.post('/', async (req: Request, res: Response) => {
             duration_minutes,
             display_order = 0,
             is_free = false,
-            is_published = true
+            is_published = true,
+            grade_id,
+            group_ids
         } = req.body;
 
         if (!course_id || !title || !material_type) {
@@ -125,12 +137,31 @@ router.post('/', async (req: Request, res: Response) => {
             ]
         );
 
+        const materialId = result.insertId;
+
+        // Insert material-group relationships if group_ids provided
+        if (group_ids && Array.isArray(group_ids) && group_ids.length > 0) {
+            for (const groupId of group_ids) {
+                await execute(
+                    'INSERT INTO material_groups (material_id, group_id) VALUES (?, ?)',
+                    [materialId, groupId]
+                );
+            }
+        }
+
         const newMaterial = await queryOne(
             'SELECT * FROM course_materials WHERE id = ?',
-            [result.insertId]
+            [materialId]
         );
 
-        res.status(201).json(newMaterial);
+        // Add grade_id and group_ids to response
+        const materialWithGroups = {
+            ...newMaterial,
+            grade_id: grade_id || null,
+            group_ids: group_ids || []
+        };
+
+        res.status(201).json(materialWithGroups);
     } catch (error) {
         console.error('Create material error:', error);
         res.status(500).json({ error: 'Failed to create material' });

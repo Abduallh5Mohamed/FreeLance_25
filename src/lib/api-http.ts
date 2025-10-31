@@ -328,6 +328,7 @@ export interface Group {
     name: string;
     description?: string;
     course_id?: string;
+    grade_id?: string;
     max_students?: number;
     current_students?: number;
     is_active: boolean;
@@ -621,6 +622,8 @@ export interface CourseMaterial {
     updated_at?: Date;
     course_name?: string;
     course_subject?: string;
+    grade_id?: string;
+    group_ids?: string[];
 }
 
 export const getMaterials = async (courseId?: string): Promise<CourseMaterial[]> => {

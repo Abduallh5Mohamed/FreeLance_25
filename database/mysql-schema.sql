@@ -146,6 +146,7 @@ CREATE TABLE `groups` (
   name VARCHAR(255) NOT NULL,
   description TEXT,
   course_id CHAR(36),
+  grade_id CHAR(36),
   max_students INT DEFAULT 30,
   current_students INT DEFAULT 0,
   schedule_days JSON,
@@ -154,7 +155,9 @@ CREATE TABLE `groups` (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE SET NULL,
+  FOREIGN KEY (grade_id) REFERENCES grades(id) ON DELETE SET NULL,
   INDEX idx_course_id (course_id),
+  INDEX idx_grade_id (grade_id),
   INDEX idx_active (is_active)
 ) ENGINE=InnoDB;
 

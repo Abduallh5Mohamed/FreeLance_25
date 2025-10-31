@@ -22,15 +22,17 @@ interface Lecture {
 // Get all lectures (published by default)
 router.get('/', async (req: Request, res: Response) => {
     try {
-        const { course_id } = req.query;
+        const { course_id, group_id } = req.query;
 
         let sql = `
             SELECT 
                 l.*,
                 c.name as course_name,
-                c.subject as course_subject
+                c.subject as course_subject,
+                g.name as group_name
             FROM lectures l
             LEFT JOIN courses c ON l.course_id = c.id
+            LEFT JOIN \`groups\` g ON l.group_id = g.id
             WHERE l.is_published = TRUE
         `;
         const params: string[] = [];
@@ -38,6 +40,11 @@ router.get('/', async (req: Request, res: Response) => {
         if (course_id && typeof course_id === 'string') {
             sql += ' AND l.course_id = ?';
             params.push(course_id);
+        }
+
+        if (group_id && typeof group_id === 'string') {
+            sql += ' AND (l.group_id = ? OR l.group_id IS NULL)';
+            params.push(group_id);
         }
 
         sql += ' ORDER BY l.display_order ASC, l.created_at DESC';
@@ -58,9 +65,11 @@ router.get('/:id', async (req: Request, res: Response) => {
             `SELECT 
                 l.*,
                 c.name as course_name,
-                c.subject as course_subject
+                c.subject as course_subject,
+                g.name as group_name
             FROM lectures l
             LEFT JOIN courses c ON l.course_id = c.id
+            LEFT JOIN \`groups\` g ON l.group_id = g.id
             WHERE l.id = ?`,
             [req.params.id]
         );
@@ -81,6 +90,7 @@ router.post('/', async (req: Request, res: Response) => {
     try {
         const {
             course_id,
+            group_id,
             title,
             description,
             video_url,
@@ -96,14 +106,15 @@ router.post('/', async (req: Request, res: Response) => {
             });
         }
 
-        console.log('[Lectures] Creating lecture:', { course_id, title, video_url });
+        console.log('[Lectures] Creating lecture:', { course_id, group_id, title, video_url });
 
         const result = await execute(
             `INSERT INTO lectures 
-            (course_id, title, description, video_url, duration_minutes, display_order, is_free, is_published) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            (course_id, group_id, title, description, video_url, duration_minutes, display_order, is_free, is_published) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 course_id,
+                group_id || null,
                 title,
                 description || null,
                 video_url,
