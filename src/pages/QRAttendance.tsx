@@ -1,13 +1,20 @@
 ﻿import { useState, useRef, useEffect } from 'react';
-import { getStudents, markAttendance, getAttendanceByDate } from '@/lib/api-http';
+import { getStudents, markAttendance, getAttendanceByDate, getGroups } from '@/lib/api-http';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Barcode, Check, AlertCircle, Clock, Users } from 'lucide-react';
+import { Calendar } from '@/components/ui/calendar';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Barcode, Check, AlertCircle, Users, CalendarIcon } from 'lucide-react';
 import Header from '@/components/Header';
 import { motion } from 'framer-motion';
+import { format } from 'date-fns';
+import { ar } from 'date-fns/locale';
 
 export default function BarcodeAttendance() {
   const [barcodeInput, setBarcodeInput] = useState('');
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [selectedGroup, setSelectedGroup] = useState('all');
+  const [groups, setGroups] = useState([]);
   const [attendanceRecords, setAttendanceRecords] = useState([]);
   const [message, setMessage] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -15,23 +22,42 @@ export default function BarcodeAttendance() {
 
   useEffect(() => {
     barcodeInputRef.current?.focus();
-    loadTodayAttendance();
+    loadGroups();
   }, []);
 
-  const loadTodayAttendance = async () => {
+  useEffect(() => {
+    loadAttendanceByDate(selectedDate);
+  }, [selectedDate]);
+
+  const loadGroups = async () => {
     try {
-      const today = new Date();
-      const records = await getAttendanceByDate(today);
-      setAttendanceRecords(records || []);
+      const groupsData = await getGroups();
+      setGroups(groupsData || []);
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Error loading groups:', error);
     }
   };
 
-  const handleBarcodeScan = async (e) => {
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-    const barcode = barcodeInput.trim();
+  const loadAttendanceByDate = async (date) => {
+    try {
+      const records = await getAttendanceByDate(date);
+      setAttendanceRecords(records || []);
+    } catch (error) {
+      console.error('Error loading attendance:', error);
+    }
+  };
+
+  const getFilteredRecords = () => {
+    if (selectedGroup === 'all') return attendanceRecords;
+    if (selectedGroup === 'no-group') {
+      return attendanceRecords.filter(r => !r.group_id);
+    }
+    return attendanceRecords.filter(r => r.group_id === selectedGroup);
+  };
+
+  const filteredRecords = getFilteredRecords();
+
+  const processBarcode = async (barcode) => {
     if (!barcode) {
       setMessage({ type: 'error', text: 'أدخل الباركود' });
       return;
@@ -48,26 +74,31 @@ export default function BarcodeAttendance() {
         return;
       }
 
-      const today = new Date().toISOString().split('T')[0];
-      const todayRecords = attendanceRecords.filter(r => 
-        r.student_id === student.id && r.attendance_date === today
+      const selectedDateStr = selectedDate.toISOString().split('T')[0];
+      const existingRecord = attendanceRecords.find(r => 
+        r.student_id === student.id && 
+        new Date(r.attendance_date).toISOString().split('T')[0] === selectedDateStr
       );
       
-      if (todayRecords.length > 0) {
-        setMessage({ type: 'error', text: `${student.name} مسجل بالفعل` });
+      if (existingRecord) {
+        setMessage({ type: 'error', text: `${student.name} مسجل بالفعل في هذا اليوم` });
         setBarcodeInput('');
         setLoading(false);
         return;
       }
 
+      const attendanceDateStr = selectedDate.toISOString().split('T')[0];
+      
       await markAttendance({ 
         student_id: student.id,
-        attendance_date: new Date(),
+        group_id: student.group_id,
+        attendance_date: attendanceDateStr,
+        status: 'present',
       });
       
       setMessage({ type: 'success', text: `✓ تم تسجيل حضور ${student.name}` });
       setBarcodeInput('');
-      setTimeout(() => loadTodayAttendance(), 500);
+      setTimeout(() => loadAttendanceByDate(selectedDate), 500);
       setTimeout(() => setMessage(null), 3000);
     } catch (error) {
       console.error('Error:', error);
@@ -76,6 +107,23 @@ export default function BarcodeAttendance() {
       setLoading(false);
       barcodeInputRef.current?.focus();
     }
+  };
+
+  const handleBarcodeScan = async (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const barcode = barcodeInput.trim();
+    await processBarcode(barcode);
+  };
+
+  const handlePaste = async (e) => {
+    e.preventDefault();
+    const pastedText = e.clipboardData.getData('text').trim();
+    setBarcodeInput(pastedText);
+    // تأخير بسيط للسماح بتحديث الـ state
+    setTimeout(() => {
+      processBarcode(pastedText);
+    }, 100);
   };
 
   return (
@@ -94,21 +142,22 @@ export default function BarcodeAttendance() {
           </div>
         </motion.div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="lg:col-span-2">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
             <Card className="bg-white dark:bg-slate-800 border-primary/20 shadow-soft h-full">
               <CardHeader className="border-b border-primary/20">
                 <CardTitle className="text-primary">ماسح الباركود</CardTitle>
               </CardHeader>
               <CardContent className="p-8">
                 <div className="space-y-4">
-                  <p className="text-muted-foreground text-sm">اضغط Enter بعد الفراغ من المسح</p>
+                  <p className="text-muted-foreground text-sm">الصق الباركود أو اضغط Enter بعد المسح</p>
                   <Input
                     ref={barcodeInputRef}
                     type="text"
                     value={barcodeInput}
                     onChange={(e) => setBarcodeInput(e.target.value)}
                     onKeyDown={handleBarcodeScan}
+                    onPaste={handlePaste}
                     placeholder="ضع الماسح هنا..."
                     disabled={loading}
                     className="bg-white dark:bg-slate-700 border-primary/30 dark:border-primary/50 text-foreground text-xl py-6 placeholder-muted-foreground focus:border-primary"
@@ -132,17 +181,72 @@ export default function BarcodeAttendance() {
           </motion.div>
 
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
-            <Card className="bg-white dark:bg-slate-800 border-primary/20 shadow-soft">
+            <Card className="bg-white dark:bg-slate-800 border-primary/20 shadow-soft h-full">
               <CardHeader className="border-b border-primary/20">
-                <div className="flex items-center gap-2 text-primary">
-                  <Users className="w-5 h-5" />
-                  <CardTitle className="text-lg">اليوم</CardTitle>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-primary">
+                    <Users className="w-5 h-5" />
+                    <CardTitle className="text-lg">قائمة الحضور</CardTitle>
+                  </div>
                 </div>
               </CardHeader>
-              <CardContent className="p-6">
-                <div className="text-center">
-                  <div className="text-5xl font-bold text-primary mb-2">{attendanceRecords.length}</div>
-                  <p className="text-muted-foreground">طالب مسجل</p>
+              <CardContent className="p-4">
+                <div className="mb-4">
+                  <Select value={selectedGroup} onValueChange={setSelectedGroup}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="اختر المجموعة" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">
+                        <div className="flex items-center gap-2">
+                          <Users className="w-4 h-4" />
+                          الكل ({attendanceRecords.length})
+                        </div>
+                      </SelectItem>
+                      {groups.map(group => (
+                        <SelectItem key={group.id} value={group.id}>
+                          {group.name} ({attendanceRecords.filter(r => r.group_id === group.id).length})
+                        </SelectItem>
+                      ))}
+                      <SelectItem value="no-group">
+                        بدون مجموعة ({attendanceRecords.filter(r => !r.group_id).length})
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="mb-4 text-center">
+                  <div className="text-3xl font-bold text-primary mb-1">{filteredRecords.length}</div>
+                  <p className="text-muted-foreground text-sm">طالب مسجل</p>
+                </div>
+                <div className="max-h-[400px] overflow-y-auto space-y-2">
+                  {filteredRecords.length === 0 ? (
+                    <div className="text-center text-muted-foreground py-8">
+                      <p>لا يوجد حضور في هذه المجموعة</p>
+                    </div>
+                  ) : (
+                    filteredRecords.map((record, i) => (
+                      <motion.div
+                        key={record.id}
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: i * 0.02 }}
+                        className="flex items-center justify-between p-3 bg-primary/5 dark:bg-primary/10 rounded-lg hover:bg-primary/10 dark:hover:bg-primary/20 transition"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 bg-primary/20 rounded-full flex items-center justify-center">
+                            <span className="text-primary font-bold text-sm">{i + 1}</span>
+                          </div>
+                          <span className="text-foreground font-medium">{record.student_name || record.student_id}</span>
+                        </div>
+                        <span className="text-muted-foreground text-xs">
+                          {new Date(record.attendance_date).toLocaleTimeString('ar-EG', { 
+                            hour: '2-digit', 
+                            minute: '2-digit' 
+                          })}
+                        </span>
+                      </motion.div>
+                    ))
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -153,40 +257,18 @@ export default function BarcodeAttendance() {
           <Card className="bg-white dark:bg-slate-800 border-primary/20 shadow-soft">
             <CardHeader className="border-b border-primary/20">
               <div className="flex items-center gap-2 text-primary">
-                <Clock className="w-5 h-5" />
-                <CardTitle>سجل الحضور</CardTitle>
+                <CalendarIcon className="w-5 h-5" />
+                <CardTitle>اختر التاريخ</CardTitle>
               </div>
             </CardHeader>
-            <CardContent className="p-0">
-              {attendanceRecords.length === 0 ? (
-                <div className="p-8 text-center text-muted-foreground">
-                  <p>لم يتم تسجيل أي حضور بعد</p>
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="bg-primary/5 border-b border-primary/20">
-                      <tr>
-                        <th className="px-6 py-3 text-right text-primary font-semibold text-sm">#</th>
-                        <th className="px-6 py-3 text-right text-primary font-semibold text-sm">الطالب</th>
-                        <th className="px-6 py-3 text-right text-primary font-semibold text-sm">الوقت</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-primary/10">
-                      {attendanceRecords.map((record, i) => (
-                        <motion.tr key={record.id} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.02 }}
-                          className="hover:bg-primary/5 dark:hover:bg-primary/10 transition">
-                          <td className="px-6 py-3 text-primary font-semibold">{i + 1}</td>
-                          <td className="px-6 py-3 text-foreground font-medium">{record.student_id}</td>
-                          <td className="px-6 py-3 text-muted-foreground text-sm">
-                            {new Date(record.attendance_date).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                          </td>
-                        </motion.tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+            <CardContent className="p-6 flex justify-center">
+              <Calendar
+                mode="single"
+                selected={selectedDate}
+                onSelect={(date) => date && setSelectedDate(date)}
+                locale={ar}
+                className="rounded-md border border-primary/20"
+              />
             </CardContent>
           </Card>
         </motion.div>

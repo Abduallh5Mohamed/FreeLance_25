@@ -348,7 +348,7 @@ const StudentContent = () => {
                 {/* Video Player */}
                 <div className="w-full bg-black">
                   {selectedMaterial.file_url ? (
-                    <VideoPlayer 
+                    <VideoPlayer
                       url={selectedMaterial.file_url}
                       title={selectedMaterial.title}
                       onClose={() => setSelectedMaterial(null)}

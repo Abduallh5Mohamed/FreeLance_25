@@ -1,6 +1,5 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -15,135 +14,117 @@ serve(async (req) => {
   try {
     const { message, studentId } = await req.json();
     
-    if (!message || !studentId) {
-      throw new Error('Message and studentId are required');
+    if (!message) {
+      throw new Error('Message is required');
     }
 
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const lovableApiKey = Deno.env.get('LOVABLE_API_KEY')!;
-    
-    const supabase = createClient(supabaseUrl, supabaseKey);
+    const googleApiKey = 'AIzaSyAm-hpg9pjc66DqNnS8qHpdgeKBd-FZP70';
 
-    // Get student info and enrolled courses
-    const { data: student, error: studentError } = await supabase
-      .from('students')
-      .select(`
-        id,
-        name,
-        grade,
-        student_courses (
-          courses (
-            id,
-            name,
-            subject,
-            description
-          )
-        )
-      `)
-      .eq('id', studentId)
-      .single();
+    const systemPrompt = `أنت مساعد ذكي تعليمي متخصص حصراً في مساعدة طلاب المرحلة الثانوية المصريين في دراسة التاريخ.
 
-    if (studentError) {
-      console.error('Error fetching student:', studentError);
-      throw new Error('Failed to fetch student data');
-    }
+*** نظام التعليمات الرئيسي ***
 
-    // Get course materials for student's enrolled courses
-    const courseIds = student.student_courses?.map(sc => sc.courses.id) || [];
-    let courseMaterials = [];
-    
-    if (courseIds.length > 0) {
-      const { data: materials } = await supabase
-        .from('course_materials')
-        .select('id, title, description, courses(name, subject)')
-        .in('course_id', courseIds)
-        .limit(10);
-      
-      courseMaterials = materials || [];
-    }
+وظيفتك الأساسية:
+- شرح الأحداث التاريخية والشخصيات والفترات بوضوح ودقة
+- مساعدة الطلاب على فهم دروس المنهج المصري للتاريخ
+- تقديم ملخصات وتحليلات ومقارنات للأحداث التاريخية
+- الإجابة على أسئلة من نمط الامتحانات
+- مساعدة الطالب على كتابة الإجابات الطويلة
 
-    // Prepare context for AI
-    const courses = student.student_courses?.map(sc => sc.courses) || [];
-    const coursesInfo = courses.map(c => 
-      `- ${c.name} (${c.subject})${c.description ? ': ' + c.description : ''}`
-    ).join('\n');
-    
-    const materialsInfo = courseMaterials.map(m =>
-      `- ${m.title} من كورس ${m.courses.name}${m.description ? ': ' + m.description : ''}`
-    ).join('\n');
+نطاق المناقشة - يمكنك فقط النقاش في:
+✅ التاريخ المصري والعالمي (قديم ووسيط وحديث ومعاصر)
+✅ الشخصيات التاريخية والثورات والحروب والحضارات والإصلاحات والمعاهدات
+✅ أسئلة الامتحانات والملخصات ونصائح الدراسة
+✅ تحليل أسباب ونتائج ودلالة الأحداث التاريخية
 
-    const systemPrompt = `أنت مساعد ذكي لمنصة القائد التعليمية للأستاذ محمد رمضان (التاريخ والجغرافيا).
+لا يمكنك النقاش في:
+❌ العلوم أو الرياضيات أو الأدب أو مواد أخرى
+❌ الأحداث الجارية أو الآراء السياسية
+❌ الموضوعات التقنية أو الكود أو الرياضة أو الترفيه
 
-معلومات الطالب:
-- الاسم: ${student.name}
-- الصف: ${student.grade}
+أسلوب الرد:
+- رد دائماً بالعربية فقط (اللغة العربية الفصحى المبسطة)
+- إذا كتب الطالب باللهجة المصرية، رد بنفس اللهجة بشكل طبيعي
+- كن ودوداً وصبوراً وشجاعاً - بدو كمعلم مختص وليس روبوت
+- ابدأ بالسياق والأسباب ثم النتائج بترتيب واضح
 
-الكورسات المسجل فيها الطالب:
-${coursesInfo || 'لم يسجل في أي كورسات بعد'}
+عند الإجابة على أنواع الأسئلة:
+1. أسئلة الشرح: قدم السياق والأسباب والنتائج بترتيب منطقي
+2. أسئلة المقارنة: استخدم تنسيق (أوجه الشبه - أوجه الاختلاف)
+3. أسئلة الامتحانات: قدم إجابة نموذجية مع نصائح الامتحان
+4. ملخصات المراجعة: قدم نقاط منقطة موجزة للدراسة السريعة
 
-المحتوى التعليمي المتاح:
-${materialsInfo || 'لا يوجد محتوى متاح حالياً'}
+نصائح الامتحان:
+- أشير إلى أن السؤال قد يأتي في الامتحان بصيغة معينة
+- قدم مثالاً على كيفية الرد في الامتحان
 
-دورك:
-1. الإجابة على أسئلة الطلاب المتعلقة بالتاريخ والجغرافيا
-2. شرح المواضيع الدراسية بطريقة بسيطة ومفهومة
-3. مساعدة الطلاب في فهم المحتوى التعليمي
-4. تقديم نصائح دراسية مفيدة
-5. الرد بالعربية دائماً
+في حالة الأسئلة خارج نطاق التاريخ:
+"أنا هنا علشان أساعدك في مادة التاريخ فقط. تحب أشرح لك الدرس اللي بتسأل فيه؟"
 
-إذا سأل الطالب عن:
-- معلومات شخصية → ارجع لمعلوماته أعلاه
-- كورساته → اذكر الكورسات المسجل فيها
-- محتوى تعليمي → اشرح بناءً على المحتوى المتاح
-- أسئلة عامة في التاريخ/الجغرافيا → أجب بناءً على معرفتك
+معلومات إضافية:
+- المستوى الدراسي: طلاب السنة الأولى والثانية والثالثة من المرحلة الثانوية (16-18 سنة)
+- شجع الطالب على طرح أسئلة للمزيد من التفاصيل
+- استخدم أمثلة من التاريخ المصري الحديث والقديم
+- لا تدعي أنك بديل للمعلم - شجعهم على التحقق من المعلومات في الكتاب أو سؤال المعلم عند الشك`;
 
-ملاحظات مهمة:
-- كن لطيفاً ومشجعاً
-- استخدم أمثلة من التاريخ المصري والعربي عند الحاجة
-- إذا لم تكن متأكداً من إجابة، أخبر الطالب أن يسأل الأستاذ محمد رمضان مباشرة
-- لا تقدم معلومات خاطئة أو مضللة`;
-
-    // Call Lovable AI Gateway
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+    // Call Google Generative AI API
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${googleApiKey}`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${lovableApiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: message }
+        systemInstruction: {
+          parts: [{ text: systemPrompt }]
+        },
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: message }
+            ]
+          }
         ],
-        temperature: 0.7,
-        max_tokens: 1000,
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 1000,
+          topK: 40,
+          topP: 0.95,
+        },
       }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('AI Gateway error:', response.status, errorText);
+      console.error('Google AI error:', response.status, errorText);
       
       if (response.status === 429) {
         throw new Error('تم تجاوز حد الاستخدام، يرجى المحاولة لاحقاً');
       }
-      if (response.status === 402) {
-        throw new Error('الرصيد غير كافٍ، يرجى التواصل مع الإدارة');
+      if (response.status === 400) {
+        throw new Error('طلب غير صحيح، تحقق من البيانات المرسلة');
+      }
+      if (response.status === 401 || response.status === 403) {
+        throw new Error('مفتاح API غير صحيح أو غير مصرح');
       }
       
       throw new Error('حدث خطأ في الاتصال بالمساعد الذكي');
     }
 
     const data = await response.json();
-    const aiResponse = data.choices[0].message.content;
+    
+    // Extract text from Google API response format
+    let aiResponse = '';
+    if (data.candidates && data.candidates[0]?.content?.parts?.[0]?.text) {
+      aiResponse = data.candidates[0].content.parts[0].text;
+    } else {
+      throw new Error('لم نتمكن من الحصول على رد من المساعد الذكي');
+    }
 
     return new Response(
       JSON.stringify({ 
         success: true,
-        response: aiResponse,
-        studentName: student.name
+        response: aiResponse
       }),
       { 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

@@ -238,7 +238,7 @@ const StudentLectures = () => {
                   {/* Thumbnail */}
                   <div className="relative h-48 bg-gradient-to-br from-primary/20 to-accent/20 overflow-hidden">
                     <img
-                      src={lecture.video_url.includes('drive.google.com') 
+                      src={lecture.video_url.includes('drive.google.com')
                         ? `https://drive.google.com/thumbnail?id=${lecture.video_url.match(/\/d\/([a-zA-Z0-9-_]+)/)?.[1]}&sz=w500`
                         : 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=500'}
                       alt={lecture.title}
