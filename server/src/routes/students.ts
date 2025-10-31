@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import bcrypt from 'bcryptjs';
 import { query, queryOne, execute } from '../db';
 
 const router = Router();
@@ -79,21 +80,53 @@ router.get('/:id', async (req: Request, res: Response) => {
 // Create new student
 router.post('/', async (req: Request, res: Response) => {
     try {
-        const { name, email, phone, grade, grade_id, group_id, is_offline = false, approval_status = 'approved' } = req.body;
+        const { name, email, phone, grade, grade_id, group_id, password, is_offline = false, approval_status = 'approved' } = req.body;
 
         if (!name) {
             return res.status(400).json({ error: 'Student name is required' });
         }
 
+        // Insert into students table
         const result = await execute(
             `INSERT INTO students (name, email, phone, grade, grade_id, group_id, is_offline, approval_status) 
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             [name, email || null, phone || null, grade || null, grade_id || null, group_id || null, is_offline, approval_status]
         );
 
+        const studentId = result.insertId;
+
+        // Also insert into users table if it's an offline student
+        if (is_offline && email) {
+            try {
+                // Hash the password before storing
+                const passwordToHash = password || 'default123';
+                const passwordHash = await bcrypt.hash(passwordToHash, 10);
+
+                await execute(
+                    `INSERT INTO users (email, password_hash, role, phone, name, student_id) 
+                     VALUES (?, ?, 'student', ?, ?, ?)`,
+                    [email, passwordHash, phone || null, name, studentId]
+                );
+
+                console.log(`User created successfully for student ${name} with email ${email}`);
+            } catch (userError: any) {
+                // If user already exists, update the student_id
+                if (userError.code === 'ER_DUP_ENTRY') {
+                    await execute(
+                        `UPDATE users SET student_id = ?, phone = ?, name = ? WHERE email = ?`,
+                        [studentId, phone || null, name, email]
+                    );
+                    console.log(`User updated for existing email ${email}`);
+                } else {
+                    console.error('Error creating user:', userError);
+                    throw userError; // Re-throw to see the error
+                }
+            }
+        }
+
         const newStudent = await queryOne(
             'SELECT * FROM students WHERE id = ?',
-            [result.insertId]
+            [studentId]
         );
 
         res.status(201).json(newStudent);
@@ -106,47 +139,7 @@ router.post('/', async (req: Request, res: Response) => {
 // Update student
 router.put('/:id', async (req: Request, res: Response) => {
     try {
-        const { name, email, phone, grade, grade_id, group_id, barcode } = req.body;
-
-        // Build dynamic SQL for fields that are provided
-        const updates: string[] = [];
-        const params: any[] = [];
-
-        if (name !== undefined) {
-            updates.push('name = ?');
-            params.push(name);
-        }
-        if (email !== undefined) {
-            updates.push('email = ?');
-            params.push(email);
-        }
-        if (phone !== undefined) {
-            updates.push('phone = ?');
-            params.push(phone);
-        }
-        if (grade !== undefined) {
-            updates.push('grade = ?');
-            params.push(grade);
-        }
-        if (grade_id !== undefined) {
-            updates.push('grade_id = ?');
-            params.push(grade_id);
-        }
-        if (group_id !== undefined) {
-            updates.push('group_id = ?');
-            params.push(group_id);
-        }
-        if (barcode !== undefined) {
-            updates.push('barcode = ?');
-            params.push(barcode);
-        }
-
-        if (updates.length === 0) {
-            return res.status(400).json({ error: 'No fields to update' });
-        }
-
-        updates.push('updated_at = CURRENT_TIMESTAMP');
-        params.push(req.params.id);
+        const { name, email, phone, grade, grade_id, group_id, password } = req.body;
 
         const result = await execute(
             `UPDATE students SET ${updates.join(', ')} WHERE id = ?`,
@@ -155,6 +148,26 @@ router.put('/:id', async (req: Request, res: Response) => {
 
         if (result.affectedRows === 0) {
             return res.status(404).json({ error: 'Student not found' });
+        }
+
+        // Also update users table if email exists
+        if (email) {
+            const updateFields = ['name = ?', 'phone = ?'];
+            const updateValues = [name, phone || null];
+
+            if (password) {
+                // Hash the password before updating
+                const passwordHash = await bcrypt.hash(password, 10);
+                updateFields.push('password_hash = ?');
+                updateValues.push(passwordHash);
+            }
+
+            updateValues.push(email);
+
+            await execute(
+                `UPDATE users SET ${updateFields.join(', ')} WHERE email = ? AND role = 'student'`,
+                updateValues
+            );
         }
 
         const updatedStudent = await queryOne(
@@ -169,11 +182,18 @@ router.put('/:id', async (req: Request, res: Response) => {
     }
 });
 
-// Delete student (soft delete)
+// Delete student (hard delete - removes from database)
 router.delete('/:id', async (req: Request, res: Response) => {
     try {
+        // First delete related records (student_courses)
+        await execute(
+            'DELETE FROM student_courses WHERE student_id = ?',
+            [req.params.id]
+        );
+
+        // Then delete the student (only from students table, keep in users table)
         const result = await execute(
-            'UPDATE students SET is_active = FALSE WHERE id = ?',
+            'DELETE FROM students WHERE id = ?',
             [req.params.id]
         );
 
