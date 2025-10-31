@@ -3,7 +3,7 @@
  * Replaces the mock localStorage database with real HTTP requests
  */
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
 // DEV: quick toggle to disable authentication / backend strictness while
 // developing locally. When true this will populate a demo user/student in
@@ -896,5 +896,62 @@ export const updateFee = async (id: string, fee: Partial<Fee>): Promise<Fee> => 
 export const deleteFee = async (id: string): Promise<void> => {
     await request<void>(`/fees/${id}`, {
         method: 'DELETE',
+    });
+};
+
+// ====================================
+// Payment Requests Functions
+// ====================================
+
+export interface PaymentRequest {
+    id: string;
+    studentName: string;
+    phone: string;
+    gradeId: string | null;
+    gradeName: string | null;
+    groupId: string | null;
+    groupName: string | null;
+    amount: number;
+    notes: string | null;
+    receiptImageUrl: string | null;
+    status: 'pending' | 'approved' | 'rejected';
+    createdAt: string;
+    updatedAt: string;
+}
+
+export const getPaymentRequests = async (status?: 'pending' | 'approved' | 'rejected'): Promise<PaymentRequest[]> => {
+    let url = '/payment-requests';
+    if (status) {
+        url += `?status=${status}`;
+    }
+    return request<PaymentRequest[]>(url);
+};
+
+export const createPaymentRequest = async (data: {
+    student_name: string;
+    phone: string;
+    grade_id?: string | null;
+    grade_name?: string | null;
+    group_id?: string | null;
+    group_name?: string | null;
+    amount: number;
+    notes?: string | null;
+    receipt_image_url?: string | null;
+}): Promise<PaymentRequest> => {
+    return request<PaymentRequest>('/payment-requests', {
+        method: 'POST',
+        body: JSON.stringify(data),
+    });
+};
+
+export const approvePaymentRequest = async (id: string): Promise<{ message: string; paymentRequest: PaymentRequest }> => {
+    return request<{ message: string; paymentRequest: PaymentRequest }>(`/payment-requests/${id}/approve`, {
+        method: 'POST',
+    });
+};
+
+export const rejectPaymentRequest = async (id: string): Promise<{ message: string }> => {
+    return request<{ message: string }>(`/payment-requests/${id}/reject`, {
+        method: 'POST',
     });
 };
