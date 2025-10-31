@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { GraduationCap, BookOpen, Users, Award, ChevronDown, Mail, Phone, MapPin, Facebook, Twitter, Instagram, Youtube, Star, TrendingUp, Target, Zap, Shield, Clock, CheckCircle, Sparkles, Trophy, Rocket, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import alQaedLogo from "@/assets/Qaad_Logo.png";
+import alQaedLogo from "@/assets/Hero_Logo.png";
 import heroBgImage from "@/assets/Hero-bg.jpg";
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useEffect, useMemo } from "react";
@@ -215,13 +215,11 @@ const Index = () => {
             </div>
 
             {/* Logo on the right */}
-            <div className="flex-shrink-0 relative group" style={{ transform: 'scale(1.2)', transformOrigin: 'center' }}>
-              <div className="absolute inset-0 bg-gradient-to-br from-[#0d9488] to-[#06b6d4] opacity-80 rounded-full transform scale-[0.92] group-hover:scale-95 transition-all duration-300 shadow-sm"></div>
-              <div className="absolute inset-0 bg-white/20 rounded-full transform scale-[0.92] group-hover:scale-95 transition-all duration-300"></div>
+            <div className="flex-shrink-0 relative mt-1" style={{ transform: 'scale(1.35)', transformOrigin: 'center' }}>
               <img 
                 src={alQaedLogo} 
                 alt="Qaad Logo" 
-                className="h-20 w-auto cursor-pointer relative z-10 transform hover:scale-105 transition-transform duration-300 p-1" 
+                className="h-24 w-auto cursor-pointer relative z-10 transform hover:scale-105 transition-transform duration-300 p-1" 
                 style={{ 
                   filter: 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1)) brightness(1.02) saturate(1.1)',
                   WebkitFilter: 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1)) brightness(1.02) saturate(1.1)'
@@ -711,8 +709,8 @@ const Index = () => {
             <h2 className="text-4xl md:text-5xl font-black mb-4 text-[#0d9488]">
               لماذا نحن الأفضل؟
             </h2>
-            <p className="text-lg text-[#0d9488] font-semibold">
-              مميزات فريدة تجعلنا الخيار الأول للطلاب
+            <p className="text-sm text-[#0d9488] flex items-center gap-2">
+              © 2025 القائد. جميع الحقوق محفوظة
             </p>
           </motion.div>
 
