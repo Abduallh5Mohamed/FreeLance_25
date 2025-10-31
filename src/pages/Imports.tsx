@@ -314,6 +314,84 @@ const Imports = () => {
                   </div>
                 </div>
 
+                {/* Items */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <Label>الأصناف *</Label>
+                    <Button type="button" variant="outline" size="sm" onClick={handleAddItem}>
+                      <Plus className="ml-2 h-4 w-4" />
+                      إضافة صنف
+                    </Button>
+                  </div>
+
+                  <div className="space-y-3 max-h-80 overflow-y-auto border rounded-lg p-4">
+                    {currentItems.map((item, index) => (
+                      <div key={index} className="grid grid-cols-5 gap-2 items-end">
+                        <div className="space-y-2">
+                          <Label className="text-xs">كود الصنف</Label>
+                          <Input
+                            value={item.item_code}
+                            onChange={(e) => handleItemChange(index, 'item_code', e.target.value)}
+                            placeholder="كود"
+                            list="items-list"
+                          />
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <Label className="text-xs">اسم الصنف</Label>
+                          <Input
+                            value={item.item_name}
+                            onChange={(e) => handleItemChange(index, 'item_name', e.target.value)}
+                            placeholder="اسم الصنف"
+                            required
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label className="text-xs">الكمية</Label>
+                          <Input
+                            type="number"
+                            value={item.quantity}
+                            onChange={(e) => handleItemChange(index, 'quantity', e.target.value)}
+                            min="1"
+                            required
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label className="text-xs">السعر</Label>
+                          <Input
+                            type="number"
+                            value={item.unit_price}
+                            onChange={(e) => handleItemChange(index, 'unit_price', e.target.value)}
+                            min="0"
+                            step="0.01"
+                            required
+                          />
+                        </div>
+
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleRemoveItem(index)}
+                          disabled={currentItems.length === 1}
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <datalist id="items-list">
+                    {items.map((item) => (
+                      <option key={item.id} value={item.code}>
+                        {item.name}
+                      </option>
+                    ))}
+                  </datalist>
+                </div>
+
                 {/* Payment & Total */}
                 <div className="grid grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg">
                   <div>
