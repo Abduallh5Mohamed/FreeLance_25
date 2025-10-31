@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { query, queryOne, execute } from '../db';
 import https from 'https';
 import type { IncomingMessage } from 'http';
+import crypto from 'crypto';
 
 const router = Router();
 
@@ -118,12 +119,16 @@ router.post('/', async (req: Request, res: Response) => {
             });
         }
 
+        // Generate UUID for the new material
+        const materialId = crypto.randomUUID();
+        
         const result = await execute(
             `INSERT INTO course_materials 
-            (course_id, title, description, material_type, file_url, file_size, 
+            (id, course_id, title, description, material_type, file_url, file_size, 
              duration_minutes, display_order, is_free, is_published) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
+                materialId,
                 course_id,
                 title,
                 description || null,
@@ -137,11 +142,20 @@ router.post('/', async (req: Request, res: Response) => {
             ]
         );
 
-        const materialId = result.insertId;
-
         // Insert material-group relationships if group_ids provided
         if (group_ids && Array.isArray(group_ids) && group_ids.length > 0) {
+            // Validate that all group_ids exist
             for (const groupId of group_ids) {
+                const groupExists = await queryOne(
+                    'SELECT id FROM `groups` WHERE id = ? AND is_active = TRUE',
+                    [groupId]
+                );
+                
+                if (!groupExists) {
+                    console.warn(`Group ${groupId} not found or inactive, skipping...`);
+                    continue;
+                }
+                
                 await execute(
                     'INSERT INTO material_groups (material_id, group_id) VALUES (?, ?)',
                     [materialId, groupId]
@@ -162,9 +176,18 @@ router.post('/', async (req: Request, res: Response) => {
         };
 
         res.status(201).json(materialWithGroups);
-    } catch (error) {
+    } catch (error: any) {
         console.error('Create material error:', error);
-        res.status(500).json({ error: 'Failed to create material' });
+        console.error('Error details:', {
+            message: error.message,
+            code: error.code,
+            sqlMessage: error.sqlMessage,
+            sql: error.sql
+        });
+        res.status(500).json({ 
+            error: 'Failed to create material',
+            details: error.message 
+        });
     }
 });
 
