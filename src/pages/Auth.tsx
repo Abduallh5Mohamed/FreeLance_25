@@ -33,7 +33,6 @@ const Auth = () => {
   const [courses, setCourses] = useState<Array<{ id: string; name: string }>>([]);
   const [grades, setGrades] = useState<Array<{ id: string; name: string }>>([]);
   const [groups, setGroups] = useState<Array<{ id: string; name: string }>>([]);
-  const [studentType, setStudentType] = useState<"online" | "offline">("online"); // Online or Offline
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -128,7 +127,7 @@ const Auth = () => {
           throw new Error("يجب اختيار الصف الدراسي");
         }
 
-        // Create registration request with student type (online/offline)
+        // Create registration request
         const result = await createRegistrationRequest({
           name: name.trim(),
           phone: phone.trim(),
@@ -136,7 +135,6 @@ const Auth = () => {
           grade_id: gradeId,
           group_id: selectedGroup || null,
           requested_courses: selectedCourses.length > 0 ? selectedCourses : undefined,
-          is_offline: studentType === "offline", // Pass student type
         });
 
         // Clear form
@@ -148,7 +146,6 @@ const Auth = () => {
         setGradeId("");
         setSelectedCourses([]);
         setSelectedGroup("");
-        setStudentType("online"); // Reset to online
 
         toast({
           title: "تم إرسال طلب التسجيل بنجاح",
@@ -260,39 +257,6 @@ const Auth = () => {
           {/* Login/Register Form */}
           <div className="bg-black/50 backdrop-blur-xl rounded-3xl p-10 border border-white/10 shadow-2xl mt-3">
             <form onSubmit={handleAuth} className="space-y-6">
-              {/* Student Type Selection - Only for registration */}
-              {!isLogin && (
-                <div className="space-y-3">
-                  <Label className="text-white text-right block">
-                    نوع الطالب
-                  </Label>
-                  <div className="grid grid-cols-2 gap-4">
-                    <button
-                      type="button"
-                      onClick={() => setStudentType("online")}
-                      className={`py-3 px-4 rounded-xl font-semibold transition-all duration-300 flex items-center justify-center gap-2 ${studentType === "online"
-                          ? "bg-gradient-to-r from-yellow-500 to-orange-500 text-white shadow-lg"
-                          : "bg-white/10 text-white hover:bg-white/20 border border-white/20"
-                        }`}
-                    >
-                      <span>🌐</span>
-                      أونلاين
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setStudentType("offline")}
-                      className={`py-3 px-4 rounded-xl font-semibold transition-all duration-300 flex items-center justify-center gap-2 ${studentType === "offline"
-                          ? "bg-gradient-to-r from-yellow-500 to-orange-500 text-white shadow-lg"
-                          : "bg-white/10 text-white hover:bg-white/20 border border-white/20"
-                        }`}
-                    >
-                      <span>📍</span>
-                      أوفلاين
-                    </button>
-                  </div>
-                </div>
-              )}
-
               {/* Name & Phone - Side by side on desktop (for registration) */}
               {!isLogin ? (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
