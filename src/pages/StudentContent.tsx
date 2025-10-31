@@ -10,7 +10,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
-import { getMaterials, CourseMaterial, User } from "@/lib/api";
+import { getStudentMaterials, CourseMaterial, User } from "@/lib/api-http";
 import { VideoPlayer } from "@/components/VideoPlayer";
 
 interface Material extends CourseMaterial {
@@ -43,8 +43,22 @@ const StudentContent = () => {
   const loadMaterials = async () => {
     try {
       setLoading(true);
-      const data = await getMaterials();
-      // Include all materials including videos (lectures)
+      
+      // Get current user from localStorage
+      const userStr = localStorage.getItem('currentUser');
+      const user: User | null = userStr ? JSON.parse(userStr) : null;
+      
+      if (!user) {
+        console.error('No user found');
+        setMaterials([]);
+        return;
+      }
+      
+      // Use student_id if available, otherwise use user id
+      const studentIdentifier = user.student_id || user.id;
+      
+      // Get materials for this student's group only
+      const data = await getStudentMaterials(studentIdentifier);
       const contentData = data || [];
       setMaterials(contentData);
     } catch (error) {

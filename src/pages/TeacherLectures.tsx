@@ -11,7 +11,7 @@ import { Upload, Video, Trash2, Play, BookOpen, Clock, Eye } from 'lucide-react'
 import { useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import { motion } from 'framer-motion';
-import { getCourses, getLectures, createLecture, deleteLecture, Course, Lecture, User } from '@/lib/api';
+import { getCourses, getLectures, createLecture, deleteLecture, getGrades, getGroups, Course, Lecture, User, Grade, Group } from '@/lib/api';
 
 export default function TeacherLectures() {
   const { toast } = useToast();
@@ -19,6 +19,8 @@ export default function TeacherLectures() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [courses, setCourses] = useState<Course[]>([]);
   const [lectures, setLectures] = useState<Lecture[]>([]);
+  const [grades, setGrades] = useState<Grade[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
   const [selectedCourse, setSelectedCourse] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
@@ -26,6 +28,8 @@ export default function TeacherLectures() {
     description: '',
     video_url: '',
     duration_minutes: '',
+    grade_id: '',
+    group_id: '',
     is_free: false
   });
 
@@ -37,6 +41,8 @@ export default function TeacherLectures() {
   useEffect(() => {
     if (currentUser) {
       loadCourses();
+      loadGrades();
+      loadGroups();
       loadLectures();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -87,6 +93,24 @@ export default function TeacherLectures() {
     }
   };
 
+  const loadGrades = async () => {
+    try {
+      const data = await getGrades();
+      setGrades(data || []);
+    } catch (error) {
+      console.error('Error loading grades:', error);
+    }
+  };
+
+  const loadGroups = async () => {
+    try {
+      const data = await getGroups();
+      setGroups(data || []);
+    } catch (error) {
+      console.error('Error loading groups:', error);
+    }
+  };
+
   const loadLectures = async () => {
     try {
       const data = await getLectures();
@@ -98,10 +122,10 @@ export default function TeacherLectures() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedCourse || !formData.title || !formData.video_url) {
+    if (!selectedCourse || !formData.grade_id || !formData.group_id || !formData.title || !formData.video_url) {
       toast({
         title: 'خطأ',
-        description: 'يرجى ملء جميع الحقول المطلوبة',
+        description: 'يرجى ملء جميع الحقول المطلوبة (الدورة، الصف، المجموعة، العنوان، رابط الفيديو)',
         variant: 'destructive'
       });
       return;
@@ -111,6 +135,7 @@ export default function TeacherLectures() {
     try {
       await createLecture({
         course_id: selectedCourse,
+        group_id: formData.group_id || null,
         title: formData.title,
         description: formData.description || null,
         video_url: formData.video_url,
@@ -129,6 +154,8 @@ export default function TeacherLectures() {
         description: '',
         video_url: '',
         duration_minutes: '',
+        grade_id: '',
+        group_id: '',
         is_free: false
       });
       setSelectedCourse('');
@@ -216,6 +243,44 @@ export default function TeacherLectures() {
                             </div>
                           </SelectItem>
                         ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>الصف الدراسي *</Label>
+                    <Select value={formData.grade_id} onValueChange={(value) => setFormData({ ...formData, grade_id: value, group_id: '' })}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="اختر الصف الدراسي" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {grades.map(grade => (
+                          <SelectItem key={grade.id} value={grade.id}>
+                            {grade.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>المجموعة *</Label>
+                    <Select 
+                      value={formData.group_id} 
+                      onValueChange={(value) => setFormData({ ...formData, group_id: value })}
+                      disabled={!formData.grade_id}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder={formData.grade_id ? "اختر المجموعة" : "اختر الصف أولاً"} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {groups
+                          .filter(group => group.grade_id === formData.grade_id)
+                          .map(group => (
+                            <SelectItem key={group.id} value={group.id}>
+                              {group.name}
+                            </SelectItem>
+                          ))}
                       </SelectContent>
                     </Select>
                   </div>

@@ -102,6 +102,7 @@ export interface User {
     name: string;
     role: 'admin' | 'teacher' | 'student';
     is_active: boolean;
+    student_id?: string | null;
 }
 
 export interface AuthResponse {
@@ -556,6 +557,7 @@ export interface Exam {
 export interface Lecture {
     id: string;
     course_id: string;
+    group_id?: string | null;
     title: string;
     description?: string;
     video_url: string;
@@ -567,6 +569,7 @@ export interface Lecture {
     updated_at?: Date;
     course_name?: string;
     course_subject?: string;
+    group_name?: string;
 }
 
 export const getLectures = async (courseId?: string): Promise<Lecture[]> => {
@@ -629,6 +632,14 @@ export interface CourseMaterial {
 export const getMaterials = async (courseId?: string): Promise<CourseMaterial[]> => {
     const params = courseId ? `?course_id=${courseId}` : '';
     return request<CourseMaterial[]>(`/materials${params}`);
+};
+
+export const getStudentMaterials = async (studentId: string): Promise<CourseMaterial[]> => {
+    return request<CourseMaterial[]>(`/materials/student/${studentId}`);
+};
+
+export const getStudentLectures = async (studentId: string): Promise<Lecture[]> => {
+    return request<Lecture[]>(`/lectures/student/${studentId}`);
 };
 
 export const getMaterialById = async (id: string): Promise<CourseMaterial | null> => {

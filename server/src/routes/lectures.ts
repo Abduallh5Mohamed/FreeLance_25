@@ -58,6 +58,67 @@ router.get('/', async (req: Request, res: Response) => {
     }
 });
 
+// Get lectures for a specific student based on their group
+router.get('/student/:userId', async (req: Request, res: Response) => {
+    try {
+        const { userId } = req.params;
+        
+        // Find student's group_id (similar to materials endpoint)
+        let student = await queryOne(
+            'SELECT id, group_id FROM students WHERE id = ? AND is_active = TRUE',
+            [userId]
+        );
+        
+        // If not found by id, try to find by user_id from users table
+        if (!student) {
+            const userRecord = await queryOne(
+                'SELECT student_id FROM users WHERE id = ? AND role = "student"',
+                [userId]
+            );
+            
+            if (userRecord && userRecord.student_id) {
+                student = await queryOne(
+                    'SELECT id, group_id FROM students WHERE id = ? AND is_active = TRUE',
+                    [userRecord.student_id]
+                );
+            }
+        }
+        
+        if (!student) {
+            console.log(`Student not found for user/student id: ${userId}`);
+            return res.json([]);
+        }
+        
+        if (!student.group_id) {
+            console.log(`Student ${userId} has no group assigned`);
+            return res.json([]);
+        }
+        
+        // Get lectures assigned to the student's specific group
+        let sql = `
+            SELECT 
+                l.*,
+                c.name as course_name,
+                c.subject as course_subject,
+                g.name as group_name
+            FROM lectures l
+            LEFT JOIN courses c ON l.course_id = c.id
+            LEFT JOIN \`groups\` g ON l.group_id = g.id
+            WHERE l.is_published = TRUE
+                AND l.group_id = ?
+            ORDER BY l.display_order ASC, l.created_at DESC
+        `;
+        
+        const lectures = await query(sql, [student.group_id]);
+        
+        console.log(`[Lectures] Student ${userId} in group ${student.group_id} - Found ${lectures?.length || 0} lectures`);
+        res.json(lectures);
+    } catch (error) {
+        console.error('Get student lectures error:', error);
+        res.status(500).json({ error: 'Failed to fetch student lectures' });
+    }
+});
+
 // Get lecture by ID
 router.get('/:id', async (req: Request, res: Response) => {
     try {

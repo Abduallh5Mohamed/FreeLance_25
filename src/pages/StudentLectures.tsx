@@ -11,7 +11,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
-import { getLectures, Lecture as APILecture, User } from "@/lib/api";
+import { getStudentLectures, Lecture as APILecture, User } from "@/lib/api-http";
 import { VideoPlayer } from "@/components/VideoPlayer";
 
 interface Lecture extends APILecture {
@@ -52,7 +52,22 @@ const StudentLectures = () => {
   const loadLectures = async () => {
     try {
       setLoading(true);
-      const data = await getLectures();
+      
+      // Get current user from localStorage
+      const userStr = localStorage.getItem('currentUser');
+      const user: User | null = userStr ? JSON.parse(userStr) : null;
+      
+      if (!user) {
+        console.error('No user found');
+        setLectures([]);
+        return;
+      }
+      
+      // Use student_id if available, otherwise use user id
+      const studentIdentifier = user.student_id || user.id;
+      
+      // Get lectures for this student's group only
+      const data = await getStudentLectures(studentIdentifier);
       const lecturesData = data?.map(m => ({
         ...m,
         completed: false,

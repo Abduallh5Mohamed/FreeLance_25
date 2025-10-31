@@ -63,6 +63,75 @@ router.get('/', async (req: Request, res: Response) => {
     }
 });
 
+// Get materials for a specific student based on their group
+router.get('/student/:userId', async (req: Request, res: Response) => {
+    try {
+        const { userId } = req.params;
+        
+        // First check if there's a student record with this user_id
+        // or if this is directly a student id
+        let student = await queryOne(
+            'SELECT id, group_id FROM students WHERE id = ? AND is_active = TRUE',
+            [userId]
+        );
+        
+        // If not found by id, try to find by user_id from users table
+        if (!student) {
+            const userRecord = await queryOne(
+                'SELECT student_id FROM users WHERE id = ? AND role = "student"',
+                [userId]
+            );
+            
+            if (userRecord && userRecord.student_id) {
+                student = await queryOne(
+                    'SELECT id, group_id FROM students WHERE id = ? AND is_active = TRUE',
+                    [userRecord.student_id]
+                );
+            }
+        }
+        
+        if (!student) {
+            console.log(`Student not found for user/student id: ${userId}`);
+            return res.json([]);
+        }
+        
+        if (!student.group_id) {
+            console.log(`Student ${userId} has no group assigned`);
+            return res.json([]);
+        }
+        
+        // Get all materials assigned to the student's group
+        let sql = `
+            SELECT DISTINCT
+                cm.*,
+                c.name as course_name,
+                c.subject as course_subject
+            FROM course_materials cm
+            LEFT JOIN courses c ON cm.course_id = c.id
+            INNER JOIN material_groups mg ON cm.id = mg.material_id
+            WHERE cm.is_published = TRUE
+                AND mg.group_id = ?
+            ORDER BY cm.display_order ASC, cm.created_at DESC
+        `;
+        
+        const materials = await query(sql, [student.group_id]);
+        
+        // Add group_ids to each material
+        for (const material of materials) {
+            const groups = await query(
+                'SELECT group_id FROM material_groups WHERE material_id = ?',
+                [material.id]
+            );
+            material.group_ids = groups.map((g: any) => g.group_id);
+        }
+        
+        res.json(materials);
+    } catch (error) {
+        console.error('Get student materials error:', error);
+        res.status(500).json({ error: 'Failed to fetch materials' });
+    }
+});
+
 // Get material by ID
 router.get('/:id', async (req: Request, res: Response) => {
     try {

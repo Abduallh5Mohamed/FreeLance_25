@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { query, queryOne, execute } from '../db';
 
 const router = Router();
@@ -86,14 +87,15 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Student name is required' });
         }
 
-        // Insert into students table
-        const result = await execute(
-            `INSERT INTO students (name, email, phone, grade, grade_id, group_id, is_offline, approval_status) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [name, email || null, phone || null, grade || null, grade_id || null, group_id || null, is_offline, approval_status]
-        );
+        // Generate UUID for new student
+        const studentId = crypto.randomUUID();
 
-        const studentId = result.insertId;
+        // Insert into students table
+        await execute(
+            `INSERT INTO students (id, name, email, phone, grade, grade_id, group_id, is_offline, approval_status) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [studentId, name, email || null, phone || null, grade || null, grade_id || null, group_id || null, is_offline, approval_status]
+        );
 
         // Also insert into users table if it's an offline student
         if (is_offline && email) {
@@ -130,9 +132,17 @@ router.post('/', async (req: Request, res: Response) => {
         );
 
         res.status(201).json(newStudent);
-    } catch (error) {
+    } catch (error: any) {
         console.error('Create student error:', error);
-        res.status(500).json({ error: 'Failed to create student' });
+        console.error('Error details:', {
+            message: error.message,
+            code: error.code,
+            sqlMessage: error.sqlMessage
+        });
+        res.status(500).json({ 
+            error: 'Failed to create student',
+            details: error.message 
+        });
     }
 });
 
