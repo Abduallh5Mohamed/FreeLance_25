@@ -10,17 +10,17 @@ import { Textarea } from "@/components/ui/textarea";
 import { DollarSign, Plus, CreditCard, AlertTriangle, CheckCircle, Search, Upload, X, Eye, Check, XCircle } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-import { getGrades, getGroups, createFee, getFees, getPaymentRequests, approvePaymentRequest, rejectPaymentRequest, type PaymentRequest } from "@/lib/api-http";
+import { getGrades, getGroups, createFee, getFees } from "@/lib/api-http";
 
 const Fees = () => {
   const [fees, setFees] = useState([]);
   const [offlineFees, setOfflineFees] = useState([]);
-  const [subscriptionRequests, setSubscriptionRequests] = useState<PaymentRequest[]>([]);
+  const [subscriptionRequests, setSubscriptionRequests] = useState([]);
   
   const [isOpen, setIsOpen] = useState(false);
   const [isAddNewOpen, setIsAddNewOpen] = useState(false);
   const [isViewRequestOpen, setIsViewRequestOpen] = useState(false);
-  const [selectedRequest, setSelectedRequest] = useState<PaymentRequest | null>(null);
+  const [selectedRequest, setSelectedRequest] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
   const [grades, setGrades] = useState([]);
@@ -53,16 +53,15 @@ const Fees = () => {
   }, [isAddNewOpen]);
 
   useEffect(() => {
-    loadPaymentRequests();
+    loadSubscriptionRequests();
     loadFeesFromDB();
   }, []);
 
-  const loadPaymentRequests = async () => {
-    try {
-      const requests = await getPaymentRequests('pending');
-      setSubscriptionRequests(requests || []);
-    } catch (error) {
-      console.error('Error loading payment requests:', error);
+  const loadSubscriptionRequests = () => {
+    const requests = localStorage.getItem('subscriptionRequests');
+    if (requests) {
+      const parsedRequests = JSON.parse(requests);
+      setSubscriptionRequests(parsedRequests.filter(r => r.status === 'pending'));
     }
   };
 
@@ -156,19 +155,83 @@ const Fees = () => {
     setImagePreview(null);
   };
 
-  const handleApproveRequest = async (request: PaymentRequest) => {
-    try {
-      await approvePaymentRequest(request.id);
+  const handleNewImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) {
+        toast({
+          title: "حجم الصورة كبير",
+          description: "الحد الأقصى لحجم الصورة هو 5 ميجابايت",
+          variant: "destructive",
+        });
+        return;
+      }
 
+      if (!file.type.startsWith('image/')) {
+        toast({
+          title: "نوع الملف غير صحيح",
+          description: "يرجى اختيار صورة فقط",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setNewPaymentImage(file);
+      
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setNewImagePreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+
+
+  const handleApproveRequest = async (request) => {
+    try {
+      const amount = parseFloat(request.amount) || 0;
+      
+      const feeData = {
+        student_name: request.studentName,
+        phone: request.phone,
+        grade_id: request.gradeId,
+        grade_name: request.gradeName,
+        group_id: request.groupId,
+        group_name: request.groupName,
+        amount: amount,
+        paid_amount: amount,
+        status: 'paid',
+        payment_method: 'online',
+        is_offline: false,
+        notes: request.notes,
+        due_date: new Date().toISOString().split('T')[0],
+        payment_date: new Date().toISOString().split('T')[0],
+        receipt_image_url: request.imagePreview
+      };
+
+      const createdFee = await createFee(feeData);
+      
+      // Update local state
+      setFees([...fees, createdFee]);
+
+      // Update request status in localStorage
+      const requests = JSON.parse(localStorage.getItem('subscriptionRequests') || '[]');
+      const updatedRequests = requests.map(r => 
+        r.id === request.id ? { ...r, status: 'approved' } : r
+      );
+      localStorage.setItem('subscriptionRequests', JSON.stringify(updatedRequests));
+      
+      // Remove from pending list
+      setSubscriptionRequests(subscriptionRequests.filter(r => r.id !== request.id));
+      
       toast({
         title: "تم قبول الطلب",
         description: `تم قبول طلب الطالب ${request.studentName} وحفظه في قاعدة البيانات`,
       });
-
+      
       setIsViewRequestOpen(false);
       setSelectedRequest(null);
-
-      await Promise.all([loadPaymentRequests(), loadFeesFromDB()]);
     } catch (error) {
       console.error('Error approving request:', error);
       toast({
@@ -179,28 +242,25 @@ const Fees = () => {
     }
   };
 
-  const handleRejectRequest = async (request: PaymentRequest) => {
-    try {
-      await rejectPaymentRequest(request.id);
-
-      toast({
-        title: "تم رفض الطلب",
-        description: `تم رفض طلب الطالب ${request.studentName}`,
-        variant: "destructive",
-      });
-
-      setIsViewRequestOpen(false);
-      setSelectedRequest(null);
-
-      await loadPaymentRequests();
-    } catch (error) {
-      console.error('Error rejecting request:', error);
-      toast({
-        title: "خطأ",
-        description: "فشل تحديث حالة الطلب",
-        variant: "destructive",
-      });
-    }
+  const handleRejectRequest = (request) => {
+    // Update request status in localStorage
+    const requests = JSON.parse(localStorage.getItem('subscriptionRequests') || '[]');
+    const updatedRequests = requests.map(r => 
+      r.id === request.id ? { ...r, status: 'rejected' } : r
+    );
+    localStorage.setItem('subscriptionRequests', JSON.stringify(updatedRequests));
+    
+    // Remove from pending list
+    setSubscriptionRequests(subscriptionRequests.filter(r => r.id !== request.id));
+    
+    toast({
+      title: "تم رفض الطلب",
+      description: `تم رفض طلب الطالب ${request.studentName}`,
+      variant: "destructive",
+    });
+    
+    setIsViewRequestOpen(false);
+    setSelectedRequest(null);
   };
 
   const processOfflinePayment = async (e: React.FormEvent) => {
@@ -822,11 +882,11 @@ const Fees = () => {
                   </div>
                 )}
 
-                {selectedRequest.receiptImageUrl && (
+                {selectedRequest.imagePreview && (
                   <div>
                     <Label className="text-muted-foreground">صورة إيصال الدفع</Label>
                     <img
-                      src={selectedRequest.receiptImageUrl}
+                      src={selectedRequest.imagePreview}
                       alt="إيصال الدفع"
                       className="mt-2 w-full rounded-lg border-2 border-gray-200"
                     />

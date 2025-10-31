@@ -34,7 +34,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
-import { getGrades, getGroups, createPaymentRequest } from "@/lib/api-http";
+import { getGrades, getGroups } from "@/lib/api-http";
 import alQaedLogo from "@/assets/Qaad_Logo.png";
 
 const StudentHeader = () => {
@@ -50,8 +50,6 @@ const StudentHeader = () => {
   const [paymentImage, setPaymentImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -229,91 +227,7 @@ const StudentHeader = () => {
                 <DialogHeader>
                   <DialogTitle className="text-xl">💳 دفع الاشتراك</DialogTitle>
                 </DialogHeader>
-                <form className="space-y-4 mt-4" onSubmit={async (e) => {
-                  e.preventDefault();
-
-                  if (isSubmitting) {
-                    return;
-                  }
-
-                  if (!paymentImage || !imagePreview) {
-                    toast({
-                      title: "يرجى رفع صورة الإيصال",
-                      description: "قم برفع صورة إيصال الدفع أولاً",
-                      variant: "destructive",
-                    });
-                    return;
-                  }
-
-                  if (!studentName || !studentPhone) {
-                    toast({
-                      title: "بيانات ناقصة",
-                      description: "يرجى إدخال الاسم ورقم الهاتف",
-                      variant: "destructive",
-                    });
-                    return;
-                  }
-
-                  if (!selectedGrade || !selectedGroup) {
-                    toast({
-                      title: "بيانات ناقصة",
-                      description: "يرجى اختيار الصف والمجموعة",
-                      variant: "destructive",
-                    });
-                    return;
-                  }
-
-                  if (!paymentAmount || parseFloat(paymentAmount) <= 0) {
-                    toast({
-                      title: "بيانات ناقصة",
-                      description: "يرجى إدخال المبلغ المدفوع",
-                      variant: "destructive",
-                    });
-                    return;
-                  }
-
-                  try {
-                    setIsSubmitting(true);
-
-                    const selectedGradeData = grades.find((g) => g.id === selectedGrade);
-                    const selectedGroupData = groups.find((g) => g.id === selectedGroup);
-
-                    await createPaymentRequest({
-                      student_name: studentName,
-                      phone: studentPhone,
-                      grade_id: selectedGrade,
-                      grade_name: selectedGradeData?.name || null,
-                      group_id: selectedGroup,
-                      group_name: selectedGroupData?.name || null,
-                      amount: parseFloat(paymentAmount),
-                      notes: notes || null,
-                      receipt_image_url: imagePreview,
-                    });
-
-                    toast({
-                      title: "تم إرسال الطلب بنجاح",
-                      description: "سيتم مراجعة طلبك والرد عليك قريباً",
-                    });
-
-                    setShowPaymentDialog(false);
-                    setStudentName("");
-                    setStudentPhone("");
-                    setPaymentAmount("");
-                    setSelectedGrade("");
-                    setSelectedGroup("");
-                    setNotes("");
-                    removeImage();
-                  } catch (error) {
-                    console.error("Error submitting payment request:", error);
-                    toast({
-                      title: "حدث خطأ",
-                      description: "فشل إرسال الطلب. حاول مرة أخرى",
-                      variant: "destructive",
-                    });
-                  } finally {
-                    setIsSubmitting(false);
-                  }
-                }}>
+                <form className="space-y-4 mt-4">
                   <div>
                     <Label>اسم الطالب *</Label>
                     <Input
@@ -430,11 +344,85 @@ const StudentHeader = () => {
                   </div>
 
                   <Button 
-                    type="submit"
+                    type="button"
                     className="w-full bg-gradient-to-r from-green-500 to-emerald-600"
-                    disabled={isSubmitting}
+                    onClick={() => {
+                      if (!paymentImage) {
+                        toast({
+                          title: "يرجى رفع صورة الإيصال",
+                          description: "قم برفع صورة إيصال الدفع أولاً",
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+
+                      if (!studentName || !studentPhone) {
+                        toast({
+                          title: "بيانات ناقصة",
+                          description: "يرجى إدخال الاسم ورقم الهاتف",
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+
+                      if (!selectedGrade || !selectedGroup) {
+                        toast({
+                          title: "بيانات ناقصة",
+                          description: "يرجى اختيار الصف والمجموعة",
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+
+                      if (!paymentAmount || parseFloat(paymentAmount) <= 0) {
+                        toast({
+                          title: "بيانات ناقصة",
+                          description: "يرجى إدخال المبلغ المدفوع",
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+
+                      const selectedGradeData = grades.find(g => g.id === selectedGrade);
+                      const selectedGroupData = groups.find(g => g.id === selectedGroup);
+
+                      const subscriptionRequest = {
+                        id: Date.now(),
+                        studentName: studentName,
+                        phone: studentPhone,
+                        gradeId: selectedGrade,
+                        gradeName: selectedGradeData?.name || '',
+                        groupId: selectedGroup,
+                        groupName: selectedGroupData?.name || '',
+                        amount: parseFloat(paymentAmount),
+                        notes: notes,
+                        imagePreview: imagePreview,
+                        status: 'pending',
+                        createdAt: new Date().toISOString()
+                      };
+
+                      // Save to localStorage
+                      const existingRequests = localStorage.getItem('subscriptionRequests');
+                      const requests = existingRequests ? JSON.parse(existingRequests) : [];
+                      requests.push(subscriptionRequest);
+                      localStorage.setItem('subscriptionRequests', JSON.stringify(requests));
+                      
+                      toast({
+                        title: "تم إرسال الطلب بنجاح",
+                        description: "سيتم مراجعة طلبك والرد عليك قريباً",
+                      });
+                      
+                      setShowPaymentDialog(false);
+                      setStudentName("");
+                      setStudentPhone("");
+                      setPaymentAmount("");
+                      setSelectedGrade("");
+                      setSelectedGroup("");
+                      setNotes("");
+                      removeImage();
+                    }}
                   >
-                    {isSubmitting ? "جاري الإرسال..." : "💳 دفع الآن"}
+                    💳 دفع الآن
                   </Button>
                 </form>
               </DialogContent>
