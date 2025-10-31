@@ -20,7 +20,6 @@ import {
   Video,
   Upload,
   ClipboardCheck,
-  Brain
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import alQaedLogo from "@/assets/Qaad_Logo.png";
@@ -39,7 +38,6 @@ const Header = () => {
   const mainNavigation = [
     { name: "لوحة التحكم", href: "/teacher", icon: LayoutDashboard },
     { name: "المحتوى التعليمي", href: "/course-content", icon: FileText },
-    { name: "المساعد الذكي", href: "/chat-assistant", icon: Brain },
     { name: "الرسائل", href: "/messages", icon: MessageCircle },
   ];
 

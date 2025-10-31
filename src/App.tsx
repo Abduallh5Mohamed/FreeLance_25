@@ -41,7 +41,6 @@ import TeacherContentManager from "./pages/TeacherContentManager";
 import TeacherLectures from "./pages/TeacherLectures";
 import TeacherMaterials from "./pages/TeacherMaterials";
 import TeacherExams from "./pages/TeacherExams";
-import ChatAssistant from "./pages/ChatAssistant";
 
 const queryClient = new QueryClient();
 
@@ -86,7 +85,6 @@ const App = () => (
           <Route path="/teacher-lectures" element={<TeacherLectures />} />
           <Route path="/teacher-materials" element={<TeacherMaterials />} />
           <Route path="/teacher-exams" element={<TeacherExams />} />
-          <Route path="/chat-assistant" element={<ChatAssistant />} />
           <Route path="/exam-manager" element={<ExamManager />} />
           <Route path="/exam-access" element={<ExamAccess />} />
           <Route path="/take-exam/:examId" element={<TakeExam />} />

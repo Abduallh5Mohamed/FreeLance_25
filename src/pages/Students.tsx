@@ -391,22 +391,22 @@ const Students = () => {
           </CardHeader>
           <CardContent className="overflow-x-auto">
             <div className="min-w-[800px]">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-xs md:text-sm">الطالب</TableHead>
-                    <TableHead className="text-xs md:text-sm">المرحلة</TableHead>
-                    <TableHead className="text-xs md:text-sm">الاشتراك</TableHead>
-                    <TableHead className="text-xs md:text-sm">الكورسات</TableHead>
-                    <TableHead className="text-xs md:text-sm">تاريخ الانضمام</TableHead>
-                    <TableHead className="text-xs md:text-sm">الحالة</TableHead>
-                    <TableHead className="text-xs md:text-sm">الإجراءات</TableHead>
+              <Table className="text-sm">
+                <TableHeader className="bg-primary/5 border border-primary/10">
+                  <TableRow className="text-primary font-semibold text-xs md:text-sm">
+                    <TableHead className="text-right w-[24%]">الطالب</TableHead>
+                    <TableHead className="text-right w-[12%]">المرحلة</TableHead>
+                    <TableHead className="text-right w-[18%]">الاشتراك</TableHead>
+                    <TableHead className="text-right w-[18%]">الكورسات</TableHead>
+                    <TableHead className="text-right w-[12%]">تاريخ الانضمام</TableHead>
+                    <TableHead className="text-right w-[8%]">الحالة</TableHead>
+                    <TableHead className="text-right w-[8%]">الإجراءات</TableHead>
                   </TableRow>
                 </TableHeader>
-                <TableBody>
+                <TableBody className="divide-y divide-primary/10">
                   {filteredStudents.map((student) => (
-                    <TableRow key={student.id}>
-                      <TableCell className="min-w-[200px]">
+                    <TableRow key={student.id} className="hover:bg-primary/5 transition dark:hover:bg-primary/10">
+                      <TableCell className="px-4 py-3 align-top">
                         <div className="flex items-center gap-2">
                           <Avatar className="h-8 w-8">
                             <AvatarFallback className="text-xs">{getInitials(student.name)}</AvatarFallback>
@@ -428,8 +428,8 @@ const Students = () => {
                           </div>
                         </div>
                       </TableCell>
-                      <TableCell className="text-xs md:text-sm">{student.grade}</TableCell>
-                      <TableCell className="min-w-[150px]">
+                      <TableCell className="px-4 py-3 align-top text-xs md:text-sm text-right whitespace-nowrap">{student.grade || '---'}</TableCell>
+                      <TableCell className="px-4 py-3 align-top">
                         {student.subscriptions ? (
                           <div className="space-y-1">
                             <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-[10px] md:text-xs whitespace-nowrap">
@@ -448,7 +448,7 @@ const Students = () => {
                           <span className="text-[10px] md:text-xs text-muted-foreground">لا يوجد اشتراك</span>
                         )}
                       </TableCell>
-                      <TableCell className="min-w-[120px]">
+                      <TableCell className="px-4 py-3 align-top">
                         <div className="flex flex-wrap gap-1">
                           {student.student_courses?.map((enrollment) => (
                             <span key={enrollment.courses.id} className="px-1.5 py-0.5 bg-primary/10 text-primary rounded text-[10px] md:text-xs whitespace-nowrap">
@@ -457,15 +457,17 @@ const Students = () => {
                           ))}
                         </div>
                       </TableCell>
-                      <TableCell className="text-xs md:text-sm whitespace-nowrap">{new Date(student.enrollment_date).toLocaleDateString('ar-SA')}</TableCell>
-                      <TableCell>
+                      <TableCell className="px-4 py-3 align-top text-xs md:text-sm whitespace-nowrap text-right">
+                        {student.enrollment_date ? new Date(student.enrollment_date).toLocaleDateString('ar-SA') : '---'}
+                      </TableCell>
+                      <TableCell className="px-4 py-3 align-top text-right">
                         <span className={`px-2 py-0.5 rounded-full text-[10px] md:text-xs whitespace-nowrap ${student.is_active ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
                           }`}>
                           {student.is_active ? 'نشط' : 'غير نشط'}
                         </span>
                       </TableCell>
-                      <TableCell>
-                        <div className="flex gap-1">
+                      <TableCell className="px-4 py-3 align-top">
+                        <div className="flex gap-1 justify-end">
                           <Button
                             variant="ghost"
                             size="sm"
