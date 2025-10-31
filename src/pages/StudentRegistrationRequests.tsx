@@ -35,6 +35,7 @@ interface RegistrationRequest {
   created_at?: string;
   grade_name?: string;
   group_name?: string;
+  is_offline?: boolean; // Add this to track online/offline status
 }
 
 interface Grade {
@@ -101,12 +102,13 @@ export default function StudentRegistrationRequests() {
   const fetchData = async () => {
     try {
       const [requestsData, gradesData, groupsData, coursesData] = await Promise.all([
-        getRegistrationRequests(), // Fetch all registration requests
+        getRegistrationRequests('pending'), // Fetch all pending requests (online and offline)
         getGrades(),
         getGroups(),
         getCourses()
       ]);
 
+      // Show both online and offline requests
       setRequests(requestsData);
       setGrades(gradesData);
       setGroups(groupsData);
@@ -205,6 +207,10 @@ export default function StudentRegistrationRequests() {
           <div className="flex items-center gap-2">
             <User className="h-5 w-5" />
             <CardTitle>{request.name}</CardTitle>
+            {/* Badge for Online/Offline */}
+            <Badge variant="outline" className={request.is_offline ? "bg-purple-100 text-purple-800 border-purple-300" : "bg-blue-100 text-blue-800 border-blue-300"}>
+              {request.is_offline ? "📍 أوفلاين" : "🌐 أونلاين"}
+            </Badge>
           </div>
           <Badge variant={
             request.status === 'pending' ? 'secondary' :

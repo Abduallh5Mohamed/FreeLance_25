@@ -15,6 +15,7 @@ import subscriptionsRoutes from './routes/subscriptions';
 import materialsRoutes from './routes/materials';
 import lecturesRoutes from './routes/lectures';
 import registrationRequestsRoutes from './routes/registration-requests';
+import feesRoutes from './routes/fees';
 
 dotenv.config();
 
@@ -59,6 +60,7 @@ app.use('/api/subscriptions', subscriptionsRoutes);
 app.use('/api/materials', materialsRoutes);
 app.use('/api/lectures', lecturesRoutes);
 app.use('/api/registration-requests', registrationRequestsRoutes);
+app.use('/api/fees', feesRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {

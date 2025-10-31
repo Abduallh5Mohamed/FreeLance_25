@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
@@ -11,15 +11,105 @@ import {
   FileText,
   BookOpen,
   Video,
-  File
+  File,
+  CreditCard,
+  Upload,
+  Image as ImageIcon
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
+import { getGrades, getGroups } from "@/lib/api-http";
 import alQaedLogo from "@/assets/Qaad_Logo.png";
 
 const StudentHeader = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [showPaymentDialog, setShowPaymentDialog] = useState(false);
+  const [grades, setGrades] = useState([]);
+  const [groups, setGroups] = useState([]);
+  const [selectedGrade, setSelectedGrade] = useState("");
+  const [selectedGroup, setSelectedGroup] = useState("");
+  const [studentName, setStudentName] = useState("");
+  const [studentPhone, setStudentPhone] = useState("");
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentImage, setPaymentImage] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [notes, setNotes] = useState("");
   const { toast } = useToast();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (showPaymentDialog) {
+      loadGradesAndGroups();
+    }
+  }, [showPaymentDialog]);
+
+  const loadGradesAndGroups = async () => {
+    try {
+      const [gradesData, groupsData] = await Promise.all([
+        getGrades(),
+        getGroups()
+      ]);
+      setGrades(gradesData || []);
+      setGroups(groupsData || []);
+    } catch (error) {
+      console.error('Error loading data:', error);
+    }
+  };
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      // Check file size (max 5MB)
+      if (file.size > 5 * 1024 * 1024) {
+        toast({
+          title: "حجم الصورة كبير",
+          description: "الحد الأقصى لحجم الصورة هو 5 ميجابايت",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Check file type
+      if (!file.type.startsWith('image/')) {
+        toast({
+          title: "نوع الملف غير صحيح",
+          description: "يرجى اختيار صورة فقط",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setPaymentImage(file);
+      
+      // Create preview
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setImagePreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const removeImage = () => {
+    setPaymentImage(null);
+    setImagePreview(null);
+  };
 
   const handleNavigate = (href: string, name: string, scrollTo?: string) => {
     if (scrollTo) {
@@ -123,6 +213,221 @@ const StudentHeader = () => {
 
           {/* Desktop Actions */}
           <div className="hidden md:flex items-center gap-3">
+            <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
+              <DialogTrigger asChild>
+                <Button
+                  variant="ghost"
+                  className="text-white hover:bg-green-500/20 hover:text-white rounded-xl font-medium transition-all duration-300 border border-white/20"
+                >
+                  <CreditCard className="w-4 h-4 ml-2" />
+                  💰 دفع الاشتراك
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto" dir="rtl">
+                <DialogHeader>
+                  <DialogTitle className="text-xl">💳 دفع الاشتراك</DialogTitle>
+                </DialogHeader>
+                <form className="space-y-4 mt-4">
+                  <div>
+                    <Label>اسم الطالب *</Label>
+                    <Input
+                      type="text"
+                      value={studentName}
+                      onChange={(e) => setStudentName(e.target.value)}
+                      placeholder="أدخل اسم الطالب"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <Label>رقم الهاتف *</Label>
+                    <Input
+                      type="tel"
+                      value={studentPhone}
+                      onChange={(e) => setStudentPhone(e.target.value)}
+                      placeholder="01xxxxxxxxx"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <Label>الصف الدراسي *</Label>
+                    <Select value={selectedGrade} onValueChange={setSelectedGrade}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="اختر الصف الدراسي" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {grades.map((grade) => (
+                          <SelectItem key={grade.id} value={grade.id}>
+                            {grade.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>المجموعة *</Label>
+                    <Select value={selectedGroup} onValueChange={setSelectedGroup}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="اختر المجموعة" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {groups.map((group) => (
+                          <SelectItem key={group.id} value={group.id}>
+                            {group.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>المبلغ المدفوع *</Label>
+                    <Input
+                      type="number"
+                      value={paymentAmount}
+                      onChange={(e) => setPaymentAmount(e.target.value)}
+                      placeholder="أدخل المبلغ بالجنيه"
+                      required
+                      min="0"
+                    />
+                  </div>
+
+                  <div>
+                    <Label>ملاحظات</Label>
+                    <Textarea
+                      rows={3}
+                      placeholder="أضف ملاحظاتك هنا..."
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <Label>صورة إيصال الدفع</Label>
+                    <div className="mt-2">
+                      {!imagePreview ? (
+                        <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors">
+                          <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                            <Upload className="w-8 h-8 mb-2 text-gray-400" />
+                            <p className="text-sm text-gray-500">اضغط لرفع صورة الإيصال</p>
+                            <p className="text-xs text-gray-400 mt-1">PNG, JPG (حد أقصى 5MB)</p>
+                          </div>
+                          <input
+                            type="file"
+                            className="hidden"
+                            accept="image/*"
+                            onChange={handleImageChange}
+                          />
+                        </label>
+                      ) : (
+                        <div className="relative">
+                          <img
+                            src={imagePreview}
+                            alt="معاينة الإيصال"
+                            className="w-full h-48 object-cover rounded-lg border-2 border-gray-200"
+                          />
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="sm"
+                            className="absolute top-2 left-2"
+                            onClick={removeImage}
+                          >
+                            <X className="w-4 h-4 ml-1" />
+                            حذف
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <Button 
+                    type="button"
+                    className="w-full bg-gradient-to-r from-green-500 to-emerald-600"
+                    onClick={() => {
+                      if (!paymentImage) {
+                        toast({
+                          title: "يرجى رفع صورة الإيصال",
+                          description: "قم برفع صورة إيصال الدفع أولاً",
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+
+                      if (!studentName || !studentPhone) {
+                        toast({
+                          title: "بيانات ناقصة",
+                          description: "يرجى إدخال الاسم ورقم الهاتف",
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+
+                      if (!selectedGrade || !selectedGroup) {
+                        toast({
+                          title: "بيانات ناقصة",
+                          description: "يرجى اختيار الصف والمجموعة",
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+
+                      if (!paymentAmount || parseFloat(paymentAmount) <= 0) {
+                        toast({
+                          title: "بيانات ناقصة",
+                          description: "يرجى إدخال المبلغ المدفوع",
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+
+                      const selectedGradeData = grades.find(g => g.id === selectedGrade);
+                      const selectedGroupData = groups.find(g => g.id === selectedGroup);
+
+                      const subscriptionRequest = {
+                        id: Date.now(),
+                        studentName: studentName,
+                        phone: studentPhone,
+                        gradeId: selectedGrade,
+                        gradeName: selectedGradeData?.name || '',
+                        groupId: selectedGroup,
+                        groupName: selectedGroupData?.name || '',
+                        amount: parseFloat(paymentAmount),
+                        notes: notes,
+                        imagePreview: imagePreview,
+                        status: 'pending',
+                        createdAt: new Date().toISOString()
+                      };
+
+                      // Save to localStorage
+                      const existingRequests = localStorage.getItem('subscriptionRequests');
+                      const requests = existingRequests ? JSON.parse(existingRequests) : [];
+                      requests.push(subscriptionRequest);
+                      localStorage.setItem('subscriptionRequests', JSON.stringify(requests));
+                      
+                      toast({
+                        title: "تم إرسال الطلب بنجاح",
+                        description: "سيتم مراجعة طلبك والرد عليك قريباً",
+                      });
+                      
+                      setShowPaymentDialog(false);
+                      setStudentName("");
+                      setStudentPhone("");
+                      setPaymentAmount("");
+                      setSelectedGrade("");
+                      setSelectedGroup("");
+                      setNotes("");
+                      removeImage();
+                    }}
+                  >
+                    💳 دفع الآن
+                  </Button>
+                </form>
+              </DialogContent>
+            </Dialog>
+
             <Button
               onClick={handleLogout}
               variant="ghost"
