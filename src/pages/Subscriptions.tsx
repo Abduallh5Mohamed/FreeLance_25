@@ -226,46 +226,46 @@ const Subscriptions = () => {
             <CardTitle>قائمة الاشتراكات</CardTitle>
           </CardHeader>
           <CardContent>
-            <Table className="text-sm">
-              <TableHeader className="bg-primary/5 border border-primary/10">
-                <TableRow className="text-primary font-semibold">
-                  <TableHead className="text-right w-[22%]">اسم الاشتراك</TableHead>
-                  <TableHead className="text-right w-[18%]">المدة</TableHead>
-                  <TableHead className="text-right w-[18%]">السعر</TableHead>
-                  <TableHead className="text-right w-[22%]">الوصف</TableHead>
-                  <TableHead className="text-right w-[10%]">الحالة</TableHead>
-                  <TableHead className="text-right w-[10%]">الإجراءات</TableHead>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>اسم الاشتراك</TableHead>
+                  <TableHead>المدة</TableHead>
+                  <TableHead>السعر</TableHead>
+                  <TableHead>الوصف</TableHead>
+                  <TableHead>الحالة</TableHead>
+                  <TableHead>الإجراءات</TableHead>
                 </TableRow>
               </TableHeader>
-              <TableBody className="divide-y divide-primary/10">
+              <TableBody>
                 {subscriptions.map((subscription) => (
-                  <TableRow key={subscription.id} className="hover:bg-primary/5 transition dark:hover:bg-primary/10">
-                    <TableCell className="align-top px-4">
-                      <div className="flex items-center gap-3 whitespace-nowrap">
+                  <TableRow key={subscription.id}>
+                    <TableCell>
+                      <div className="flex items-center gap-3">
                         <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center">
                           <CreditCard className="w-4 h-4 text-primary" />
                         </div>
                         <span className="font-medium">{subscription.name}</span>
                       </div>
                     </TableCell>
-                    <TableCell className="align-top px-4 whitespace-nowrap">
-                      <div className="flex items-center gap-1 text-sm">
+                    <TableCell>
+                      <div className="flex items-center gap-1">
                         <Calendar className="w-4 h-4 text-muted-foreground" />
                         {subscription.duration_months} أشهر
                       </div>
                     </TableCell>
-                    <TableCell className="align-top px-4 whitespace-nowrap">
-                      <div className="flex items-center gap-1 text-sm">
+                    <TableCell>
+                      <div className="flex items-center gap-1">
                         <DollarSign className="w-4 h-4 text-muted-foreground" />
                         {subscription.price} جنيه
                       </div>
                     </TableCell>
-                    <TableCell className="align-top px-4">
+                    <TableCell>
                       <span className="text-sm text-muted-foreground">
                         {subscription.description || "لا يوجد وصف"}
                       </span>
                     </TableCell>
-                    <TableCell className="align-top px-4 whitespace-nowrap">
+                    <TableCell>
                       <Button
                         variant="ghost"
                         size="sm"
@@ -278,13 +278,12 @@ const Subscriptions = () => {
                         {subscription.is_active ? 'نشط' : 'غير نشط'}
                       </Button>
                     </TableCell>
-                    <TableCell className="align-top px-4">
-                      <div className="flex gap-1 justify-end">
+                    <TableCell>
+                      <div className="flex gap-1">
                         <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => handleEdit(subscription)}
-                          className="hover:text-primary"
                         >
                           <Edit2 className="w-4 h-4" />
                         </Button>

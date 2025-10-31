@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { getStudents, updateStudent, getGroups } from '@/lib/api-http';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -178,16 +178,22 @@ export default function StudentBarcodes() {
 
             <TabsContent value={selectedGroup} className="m-0">
               <div className="overflow-x-auto">
-                <table className="w-full">
+                <table className="w-full table-fixed">
+                  <colgroup>
+                    <col className="w-[15%]" />
+                    <col className="w-[45%]" />
+                    <col className="w-[15%]" />
+                    <col className="w-[25%]" />
+                  </colgroup>
                   <thead className="bg-primary/5 border-b border-primary/20">
-                    <tr className="text-primary font-semibold text-sm">
-                      <th className="px-4 py-3 text-right w-[22%]">الطالب</th>
-                      <th className="px-4 py-3 text-right w-[38%]">الباركود</th>
-                      <th className="px-4 py-3 text-right w-[20%]">الحالة</th>
-                      <th className="px-4 py-3 text-right w-[20%]">الإجراءات</th>
+                    <tr>
+                      <th className="px-6 py-4 text-right text-primary font-semibold">الطالب</th>
+                      <th className="px-6 py-4 text-right text-primary font-semibold">الباركود</th>
+                      <th className="px-6 py-4 text-right text-primary font-semibold">الحالة</th>
+                      <th className="px-6 py-4 text-right text-primary font-semibold">الإجراءات</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-primary/10 text-sm">
+                  <tbody className="divide-y divide-primary/10">
                     {filteredStudents.length === 0 ? (
                       <tr>
                         <td colSpan={4} className="px-6 py-8 text-center text-muted-foreground">
@@ -200,10 +206,10 @@ export default function StudentBarcodes() {
                     return (
                       <motion.tr key={student.id} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: index * 0.05 }}
                         className="hover:bg-primary/5 transition dark:hover:bg-primary/10">
-                        <td className="px-4 py-3 align-top text-foreground font-medium whitespace-nowrap">{student.name}</td>
-                        <td className="px-4 py-3 align-top">
+                        <td className="px-6 py-4 text-foreground font-medium align-middle">{student.name}</td>
+                        <td className="px-6 py-4 align-middle">
                           {barcode ? (
-                            <div className="flex flex-col gap-2">
+                            <div className="flex items-center justify-start">
                               <BarcodeReact 
                                 value={barcode} 
                                 width={1.2}
@@ -213,15 +219,12 @@ export default function StudentBarcodes() {
                                 lineColor="#000000"
                                 margin={0}
                               />
-                              <span className="text-xs text-muted-foreground ltr:tracking-widest rtl:tracking-normal">
-                                {barcode}
-                              </span>
                             </div>
                           ) : (
                             <span className="text-muted-foreground">---</span>
                           )}
                         </td>
-                        <td className="px-4 py-3 align-top">
+                        <td className="px-6 py-4 align-middle">
                           {barcode ? (
                             <span className="inline-flex items-center gap-2 text-green-700 dark:text-green-400 text-sm bg-green-100 dark:bg-green-500/20 px-3 py-1 rounded whitespace-nowrap">
                               <CheckCircle className="w-4 h-4" />
@@ -233,7 +236,7 @@ export default function StudentBarcodes() {
                             </span>
                           )}
                         </td>
-                        <td className="px-4 py-3 align-top">
+                        <td className="px-6 py-4 align-middle">
                           <div className="flex items-center gap-2 justify-end">
                             <Button size="sm" onClick={() => generateBarcode(student.id)} disabled={loading}
                               className="bg-primary hover:bg-primary/90 text-white text-xs gap-1 whitespace-nowrap">

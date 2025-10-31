@@ -18,15 +18,15 @@ All colors MUST be HSL for consistency and theme support.
     --popover: 0 0% 100%;
     --popover-foreground: 20 14.3% 4.1%;
 
-    /* Turquoise primary palette */
-    --primary: 188 72% 45%;
-    --primary-foreground: 0 0% 100%;
-    --primary-glow: 188 72% 65%;
+    /* Golden primary colors */
+    --primary: 38 92% 50%;
+    --primary-foreground: 26 83.3% 14.1%;
+    --primary-glow: 43 100% 70%;
 
-    /* Turquoise accents */
-    --accent: 188 70% 55%;
-    --accent-foreground: 0 0% 100%;
-    --accent-glow: 188 70% 70%;
+    /* Dark accent */
+    --accent: 43 100% 70%;
+    --accent-foreground: 26 83.3% 14.1%;
+    --accent-glow: 45 95% 65%;
 
     /* Success green */
     --success: 142 70% 45%;
@@ -48,21 +48,21 @@ All colors MUST be HSL for consistency and theme support.
 
     --border: 40 20% 90%;
     --input: 40 20% 90%;
-    --ring: 188 72% 45%;
+    --ring: 38 92% 50%;
 
     /* Luxurious gradients */
-    --gradient-primary: linear-gradient(135deg, hsl(188 72% 45%) 0%, hsl(188 70% 60%) 100%);
+    --gradient-primary: linear-gradient(135deg, hsl(38 92% 50%) 0%, hsl(43 100% 70%) 100%);
     --gradient-dark: linear-gradient(180deg, hsl(26 83.3% 14.1%) 0%, hsl(20 14.3% 4.1%) 100%);
     --gradient-hero: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.8) 100%);
-    --gradient-gold-shine: linear-gradient(90deg, hsl(188 72% 45%), hsl(188 70% 60%), hsl(188 72% 45%));
+    --gradient-gold-shine: linear-gradient(90deg, hsl(38 92% 50%), hsl(43 100% 70%), hsl(38 92% 50%));
     --gradient-card: linear-gradient(145deg, hsl(0 0% 100%) 0%, hsl(40 20% 98%) 100%);
 
     /* Elegant shadows */
     --shadow-soft: 0 2px 8px -2px hsl(20 14.3% 4.1% / 0.1);
     --shadow-medium: 0 8px 25px -5px hsl(20 14.3% 4.1% / 0.15);
-    --shadow-glow: 0 0 40px hsl(188 72% 45% / 0.4);
+    --shadow-glow: 0 0 40px hsl(38 92% 50% / 0.4);
     --shadow-success: 0 0 20px hsl(142 70% 45% / 0.3);
-    --shadow-golden: 0 0 30px hsl(188 70% 60% / 0.5);
+    --shadow-golden: 0 0 30px hsl(43 100% 70% / 0.5);
 
     /* Smooth transitions */
     --transition-smooth: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
@@ -120,29 +120,29 @@ All colors MUST be HSL for consistency and theme support.
 
     --border: 0 0% 20%;
     --input: 0 0% 18%;
-    --ring: 188 72% 50%;
+    --ring: 30 100% 55%;
 
     /* Ultra clean gradients */
-    --gradient-primary: linear-gradient(135deg, hsl(188 72% 45%) 0%, hsl(188 70% 60%) 100%);
+    --gradient-primary: linear-gradient(135deg, hsl(30 100% 55%) 0%, hsl(35 100% 60%) 100%);
     --gradient-dark: linear-gradient(180deg, hsl(0 0% 5%) 0%, hsl(0 0% 10%) 100%);
     --gradient-hero: linear-gradient(180deg, rgba(12, 12, 12, 0) 0%, rgba(12, 12, 12, 0.98) 100%);
-    --gradient-gold-shine: linear-gradient(90deg, hsl(188 72% 45%), hsl(188 70% 60%), hsl(188 65% 70%), hsl(188 70% 60%), hsl(188 72% 45%));
+    --gradient-gold-shine: linear-gradient(90deg, hsl(30 100% 55%), hsl(35 100% 60%), hsl(40 100% 65%), hsl(35 100% 60%), hsl(30 100% 55%));
     --gradient-card: linear-gradient(145deg, hsl(0 0% 10%) 0%, hsl(0 0% 5%) 100%);
 
     /* Clean shadows */
     --shadow-soft: 0 4px 20px -3px rgba(0, 0, 0, 0.9);
     --shadow-medium: 0 12px 48px -8px rgba(0, 0, 0, 0.95);
-    --shadow-glow: 0 0 80px hsla(188, 72%, 45%, 0.6);
-    --shadow-golden: 0 0 60px hsla(188, 70%, 60%, 0.75);
+    --shadow-glow: 0 0 80px hsla(30, 100%, 55%, 0.8);
+    --shadow-golden: 0 0 60px hsla(35, 100%, 60%, 0.9);
 
     --sidebar-background: 240 5.9% 10%;
     --sidebar-foreground: 240 4.8% 95.9%;
-    --sidebar-primary: 188 72% 45%;
-    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-primary: 38 92% 50%;
+    --sidebar-primary-foreground: 26 83.3% 14.1%;
     --sidebar-accent: 240 3.7% 15.9%;
     --sidebar-accent-foreground: 240 4.8% 95.9%;
     --sidebar-border: 40 20% 20%;
-    --sidebar-ring: 188 72% 45%;
+    --sidebar-ring: 38 92% 50%;
   }
 }
 
@@ -159,32 +159,6 @@ All colors MUST be HSL for consistency and theme support.
   
   html {
     direction: rtl;
-  }
-}
-
-@layer components {
-  .admin-table thead tr {
-    @apply bg-primary/5 border-b border-primary/10 text-primary;
-  }
-
-  .admin-table thead th {
-    @apply font-semibold text-sm px-4 py-3 whitespace-nowrap align-middle;
-  }
-
-  .admin-table tbody tr {
-    @apply border-b border-primary/10 transition-colors hover:bg-primary/5;
-  }
-
-  .admin-table tbody td {
-    @apply px-4 py-3 align-top text-sm text-foreground;
-  }
-
-  .admin-table tbody tr:last-child {
-    @apply border-b-0;
-  }
-
-  .admin-table caption {
-    @apply mt-4 text-sm text-muted-foreground;
   }
 }
 

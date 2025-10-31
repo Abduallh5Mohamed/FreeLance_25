@@ -228,57 +228,48 @@ const Groups = () => {
           <CardHeader>
             <CardTitle>قائمة المجموعات</CardTitle>
           </CardHeader>
-          <CardContent className="overflow-x-auto">
-            <div className="min-w-[750px]">
-              <Table className="text-sm">
-                <TableHeader className="bg-primary/5 border border-primary/10">
-                  <TableRow className="text-primary font-semibold text-xs md:text-sm">
-                    <TableHead className="text-right w-[22%]">اسم المجموعة</TableHead>
-                    <TableHead className="text-right w-[20%]">الوصف</TableHead>
-                    <TableHead className="text-right w-[14%]">الصف الدراسي</TableHead>
-                    <TableHead className="text-right w-[14%]">النوع</TableHead>
-                    <TableHead className="text-right w-[12%]">الطلاب</TableHead>
-                    <TableHead className="text-right w-[10%]">الحالة</TableHead>
-                    <TableHead className="text-right w-[8%]">الإجراءات</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody className="divide-y divide-primary/10">
-                  {groups.map((group) => (
-                  <TableRow key={group.id} className="hover:bg-primary/5 transition dark:hover:bg-primary/10">
-                    <TableCell className="px-4 py-3 align-top font-medium">
-                      <div className="flex items-center gap-2">
-                        <Users className="w-4 h-4 text-primary" />
-                        <span className="truncate" title={group.name}>{group.name}</span>
-                      </div>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>اسم المجموعة</TableHead>
+                  <TableHead>الوصف</TableHead>
+                  <TableHead>الصف الدراسي</TableHead>
+                  <TableHead>النوع</TableHead>
+                  <TableHead>الطلاب</TableHead>
+                  <TableHead>الحالة</TableHead>
+                  <TableHead>الإجراءات</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {groups.map((group) => (
+                  <TableRow key={group.id}>
+                    <TableCell className="font-medium">{group.name}</TableCell>
+                    <TableCell>{group.description}</TableCell>
+                    <TableCell>{group.grade_name || '-'}</TableCell>
+                    <TableCell>
+                      <Badge variant="secondary">مجموعة دراسية</Badge>
                     </TableCell>
-                    <TableCell className="px-4 py-3 align-top text-sm text-muted-foreground">
-                      {group.description?.trim() ? group.description : '-'}
-                    </TableCell>
-                    <TableCell className="px-4 py-3 align-top whitespace-nowrap">
-                      {group.grade_name || '-'}
-                    </TableCell>
-                    <TableCell className="px-4 py-3 align-top">
-                      <Badge variant="secondary" className="whitespace-nowrap">مجموعة دراسية</Badge>
-                    </TableCell>
-                    <TableCell className="px-4 py-3 align-top whitespace-nowrap text-center">
+                    <TableCell>
                       {group.current_students || 0} / {group.max_students || 50}
                     </TableCell>
-                    <TableCell className="px-4 py-3 align-top">
-                      <div className="flex items-center gap-2 justify-end">
-                        <span className="text-sm whitespace-nowrap">{group.is_active ? 'مفتوحة' : 'مغلقة'}</span>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
                         <Switch
                           checked={group.is_active}
                           onCheckedChange={() => toggleGroupStatus(group)}
                         />
+                        <span className="text-sm">
+                          {group.is_active ? 'مفتوحة' : 'مغلقة'}
+                        </span>
                       </div>
                     </TableCell>
-                    <TableCell className="px-4 py-3 align-top">
-                      <div className="flex items-center gap-2 justify-end">
+                    <TableCell>
+                      <div className="flex items-center gap-2">
                         <Button
                           size="sm"
                           variant="outline"
                           onClick={() => handleEdit(group)}
-                          className="h-8 w-8 p-0"
                         >
                           <Edit className="w-4 h-4" />
                         </Button>
@@ -286,7 +277,6 @@ const Groups = () => {
                           size="sm"
                           variant="destructive"
                           onClick={() => handleDelete(group.id)}
-                          className="h-8 w-8 p-0"
                         >
                           <Trash2 className="w-4 h-4" />
                         </Button>
@@ -294,9 +284,8 @@ const Groups = () => {
                     </TableCell>
                   </TableRow>
                 ))}
-                </TableBody>
-              </Table>
-            </div>
+              </TableBody>
+            </Table>
           </CardContent>
         </Card>
 
