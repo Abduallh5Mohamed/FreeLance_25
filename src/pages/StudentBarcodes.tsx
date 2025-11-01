@@ -42,10 +42,10 @@ export default function StudentBarcodes() {
         getStudents(),
         getGroups()
       ]);
-      
+
       setStudents(studentsData || []);
       setGroups(groupsData || []);
-      
+
       console.log('Students loaded:', studentsData?.length);
       console.log('Groups loaded:', groupsData?.length);
     } catch (error) {
@@ -56,7 +56,7 @@ export default function StudentBarcodes() {
 
   const getFilteredStudents = () => {
     let filtered = students;
-    
+
     if (selectedGroup !== 'all') {
       if (selectedGroup === 'no-group') {
         filtered = students.filter(s => !s.group_id);
@@ -64,7 +64,7 @@ export default function StudentBarcodes() {
         filtered = students.filter(s => s.group_id === selectedGroup);
       }
     }
-    
+
     if (searchTerm.trim()) {
       filtered = filtered.filter(s =>
         s.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -72,7 +72,7 @@ export default function StudentBarcodes() {
         s.barcode?.toLowerCase().includes(searchTerm.toLowerCase())
       );
     }
-    
+
     return filtered;
   };
 
@@ -88,15 +88,15 @@ export default function StudentBarcodes() {
       );
       const barcode = createBarcode(existingBarcodes);
       const student = students.find(s => s.id === studentId);
-      
+
       if (!student) throw new Error('الطالب غير موجود');
-      
+
       const success = await updateStudent(studentId, { barcode });
-      
+
       if (!success) throw new Error('فشل تحديث الباركود');
-      
+
       setMessage({ type: 'success', text: student.barcode ? 'تم تحديث الباركود' : 'تم إنشاء الباركود' });
-      
+
       await loadData();
       setTimeout(() => setMessage(null), 2000);
     } catch (error) {
@@ -111,7 +111,7 @@ export default function StudentBarcodes() {
     try {
       const success = await updateStudent(studentId, { barcode: null });
       if (!success) throw new Error('فشل حذف الباركود');
-      
+
       setMessage({ type: 'success', text: 'تم حذف الباركود' });
       await loadData();
       setTimeout(() => setMessage(null), 2000);
@@ -134,7 +134,7 @@ export default function StudentBarcodes() {
         if (!student.barcode) {
           const barcode = createBarcode(existingBarcodes);
           const success = await updateStudent(student.id, { barcode });
-          
+
           if (success) {
             count++;
             existingBarcodes.add(barcode);
@@ -168,8 +168,8 @@ export default function StudentBarcodes() {
                 <p className="text-muted-foreground">إنشاء وإدارة رموز الباركود الفريدة</p>
               </div>
             </div>
-            <Button 
-              onClick={generateAllBarcodes} 
+            <Button
+              onClick={generateAllBarcodes}
               disabled={loading || students.filter(s => !s.barcode).length === 0}
               className="bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-600 hover:to-teal-600 text-white gap-2"
             >
@@ -181,9 +181,8 @@ export default function StudentBarcodes() {
 
         {message && (
           <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
-            className={`mb-6 p-4 rounded-lg flex items-center gap-3 ${
-              message.type === 'success' ? 'bg-green-100 border border-green-300 text-green-800' : 'bg-red-100 border border-red-300 text-red-800'
-            }`}>
+            className={`mb-6 p-4 rounded-lg flex items-center gap-3 ${message.type === 'success' ? 'bg-green-100 border border-green-300 text-green-800' : 'bg-red-100 border border-red-300 text-red-800'
+              }`}>
             <CheckCircle className="w-5 h-5" />
             <span>{message.text}</span>
           </motion.div>
@@ -191,7 +190,7 @@ export default function StudentBarcodes() {
 
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
           className="bg-white dark:bg-slate-800 rounded-lg border border-cyan-200 dark:border-cyan-800 shadow-soft overflow-hidden mb-6">
-          
+
           <Tabs value={selectedGroup} onValueChange={setSelectedGroup} className="w-full">
             <div className="border-b border-cyan-200 dark:border-cyan-800 bg-gradient-to-r from-cyan-50 to-teal-50 dark:from-cyan-950/30 dark:to-teal-950/30 px-4 py-2">
               <TabsList className="bg-transparent">
@@ -200,8 +199,8 @@ export default function StudentBarcodes() {
                   الكل ({students.length})
                 </TabsTrigger>
                 {groups.map(group => (
-                  <TabsTrigger 
-                    key={group.id} 
+                  <TabsTrigger
+                    key={group.id}
                     value={group.id}
                     className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-cyan-500 data-[state=active]:to-teal-500 data-[state=active]:text-white"
                   >
@@ -235,10 +234,10 @@ export default function StudentBarcodes() {
                   <div className="space-y-4">
                     {filteredStudents.map((student, index) => {
                       const barcode = sanitizeBarcode(student.barcode);
-                      const groupName = student.group_id 
-                        ? groups.find(g => g.id === student.group_id)?.name 
+                      const groupName = student.group_id
+                        ? groups.find(g => g.id === student.group_id)?.name
                         : 'لا يوجد اشتراك';
-                      
+
                       return (
                         <motion.div
                           key={student.id}
@@ -337,8 +336,8 @@ export default function StudentBarcodes() {
                                   <span className="text-sm text-muted-foreground">الباركود</span>
                                 </div>
                                 <div className="bg-white p-2 rounded border inline-block">
-                                  <BarcodeReact 
-                                    value={barcode} 
+                                  <BarcodeReact
+                                    value={barcode}
                                     width={1.2}
                                     height={35}
                                     fontSize={10}

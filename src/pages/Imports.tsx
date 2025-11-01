@@ -63,7 +63,7 @@ const Imports = () => {
       const { data, error } = await supabase
         .from('items')
         .select('*');
-      
+
       if (error) throw error;
       setItems(data || []);
     } catch (error) {
@@ -83,7 +83,7 @@ const Imports = () => {
   const handleItemChange = (index: number, field: string, value: any) => {
     const newItems = [...currentItems];
     newItems[index] = { ...newItems[index], [field]: value };
-    
+
     // Auto-fill item name if code is selected
     if (field === 'item_code') {
       const selectedItem = items.find(item => item.code === value);
@@ -91,7 +91,7 @@ const Imports = () => {
         newItems[index].item_name = selectedItem.name;
       }
     }
-    
+
     setCurrentItems(newItems);
   };
 
@@ -233,7 +233,7 @@ const Imports = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
       <Header />
-      
+
       <div className="container mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
@@ -245,7 +245,7 @@ const Imports = () => {
               <p className="text-muted-foreground">إدارة المستوردات والمشتريات من الموردين</p>
             </div>
           </div>
-          
+
           <Dialog open={isOpen} onOpenChange={(open) => {
             setIsOpen(open);
             if (!open) resetForm();
@@ -260,7 +260,7 @@ const Imports = () => {
               <DialogHeader>
                 <DialogTitle>إضافة مستوردات جديدة</DialogTitle>
               </DialogHeader>
-              
+
               <form onSubmit={handleSubmit} className="space-y-6">
                 {/* Supplier Info */}
                 <div className="grid grid-cols-2 gap-4">
@@ -273,7 +273,7 @@ const Imports = () => {
                       required
                     />
                   </div>
-                  
+
                   <div className="space-y-2">
                     <Label htmlFor="supplier_phone">هاتف المورد</Label>
                     <Input
@@ -320,7 +320,7 @@ const Imports = () => {
                     <Label className="text-sm text-muted-foreground">الإجمالي</Label>
                     <p className="text-2xl font-bold text-cyan-600">{calculateTotal().toFixed(2)} ج.م</p>
                   </div>
-                  
+
                   <div className="space-y-2">
                     <Label htmlFor="paid_amount">المبلغ المدفوع</Label>
                     <Input
@@ -403,13 +403,13 @@ const Imports = () => {
             ) : (
               <div className="space-y-4">
                 {imports.map((importRecord: any, index) => {
-                  const paymentMethodLabel = 
+                  const paymentMethodLabel =
                     importRecord.payment_method === 'cash' ? 'كاش' :
-                    importRecord.payment_method === 'visa' ? 'فيزا' :
-                    importRecord.payment_method === 'instapay' ? 'إنستاباي' : 'آجل';
-                  
+                      importRecord.payment_method === 'visa' ? 'فيزا' :
+                        importRecord.payment_method === 'instapay' ? 'إنستاباي' : 'آجل';
+
                   return (
-                    <div 
+                    <div
                       key={importRecord.id}
                       className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
                     >
@@ -443,7 +443,7 @@ const Imports = () => {
                           </Button>
                         </div>
                       </div>
-                      
+
                       <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4">
                         <div>
                           <div className="flex items-center gap-2 mb-2">
@@ -452,7 +452,7 @@ const Imports = () => {
                           </div>
                           <p className="font-medium">{new Date(importRecord.import_date).toLocaleDateString('ar-SA')}</p>
                         </div>
-                        
+
                         <div>
                           <div className="flex items-center gap-2 mb-2">
                             <ShoppingCart className="w-4 h-4 text-cyan-600" />
@@ -460,7 +460,7 @@ const Imports = () => {
                           </div>
                           <p className="font-medium">{importRecord.items?.length || 0}</p>
                         </div>
-                        
+
                         <div>
                           <div className="flex items-center gap-2 mb-2">
                             <DollarSign className="w-4 h-4 text-cyan-600" />
@@ -468,7 +468,7 @@ const Imports = () => {
                           </div>
                           <p className="font-bold text-cyan-600">{Number(importRecord.total_amount).toFixed(2)} ج.م</p>
                         </div>
-                        
+
                         <div>
                           <div className="flex items-center gap-2 mb-2">
                             <DollarSign className="w-4 h-4 text-green-600" />
@@ -476,7 +476,7 @@ const Imports = () => {
                           </div>
                           <p className="font-bold text-green-600">{Number(importRecord.paid_amount).toFixed(2)} ج.م</p>
                         </div>
-                        
+
                         <div>
                           <div className="flex items-center gap-2 mb-2">
                             <DollarSign className="w-4 h-4 text-orange-600" />
@@ -484,7 +484,7 @@ const Imports = () => {
                           </div>
                           <p className="font-bold text-orange-600">{Number(importRecord.remaining_amount).toFixed(2)} ج.م</p>
                         </div>
-                        
+
                         <div>
                           <div className="flex items-center gap-2 mb-2">
                             <FileText className="w-4 h-4 text-cyan-600" />
@@ -492,7 +492,7 @@ const Imports = () => {
                           </div>
                           <p className="font-medium">{paymentMethodLabel}</p>
                         </div>
-                        
+
                         {importRecord.notes && (
                           <div className="col-span-2">
                             <div className="flex items-center gap-2 mb-2">
