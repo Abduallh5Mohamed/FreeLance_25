@@ -1,22 +1,18 @@
-# Welcome to your Lovable project
+# منصة القائد التعليمية
 
-## Project info
+## معلومات المشروع
 
-**URL**: https://lovable.dev/projects/b3fcf10e-7a33-4bc8-80ea-ed79ea2fa660
+**الشركة المطورة**: Nested  
+**الموقع الإلكتروني**: Nested.Website  
+**فريق التطوير**: Abduallh, Baraa, Omar
 
-## How can I edit this code?
+## كيف يمكنني التعديل على الكود؟
 
-There are several ways of editing your application.
+هناك عدة طرق لتعديل التطبيق:
 
-**Use Lovable**
+**استخدام IDE المفضل لديك**
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/b3fcf10e-7a33-4bc8-80ea-ed79ea2fa660) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+يمكنك العمل محليًا باستخدام IDE الخاص بك، فقط قم باستنساخ المستودع ودفع التغييرات.
 
 The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
 
@@ -60,14 +56,14 @@ This project is built with:
 - shadcn-ui
 - Tailwind CSS
 
-## How can I deploy this project?
+## كيف يمكنني نشر هذا المشروع؟
 
-Simply open [Lovable](https://lovable.dev/projects/b3fcf10e-7a33-4bc8-80ea-ed79ea2fa660) and click on Share -> Publish.
+يمكنك نشر المشروع على أي منصة استضافة مثل:
+- Vercel
+- Netlify
+- AWS
+- Azure
 
-## Can I connect a custom domain to my Lovable project?
+## هل يمكنني ربط نطاق مخصص؟
 
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/tips-tricks/custom-domain#step-by-step-guide)
+نعم، يمكنك ربط نطاقك الخاص عبر إعدادات منصة الاستضافة التي تختارها.
