@@ -9,7 +9,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api'
 // developing locally. When true this will populate a demo user/student in
 // localStorage and make some functions return safe defaults instead of
 // throwing. Set to `false` for production or when your backend is running.
-const DISABLE_AUTH_DEV = true;
+const DISABLE_AUTH_DEV = false;
 
 if (DISABLE_AUTH_DEV && typeof localStorage !== 'undefined') {
     try {

@@ -43,26 +43,32 @@ const StudentContent = () => {
   const loadMaterials = async () => {
     try {
       setLoading(true);
-      
+
       // Get current user from localStorage
       const userStr = localStorage.getItem('currentUser');
       const user: User | null = userStr ? JSON.parse(userStr) : null;
-      
+
+      console.log('👤 Current user:', user);
+
       if (!user) {
-        console.error('No user found');
+        console.error('❌ No user found in localStorage');
         setMaterials([]);
         return;
       }
-      
+
       // Use student_id if available, otherwise use user id
       const studentIdentifier = user.student_id || user.id;
-      
+      console.log('🔑 Student identifier:', studentIdentifier);
+
       // Get materials for this student's group only
       const data = await getStudentMaterials(studentIdentifier);
+      console.log('📚 Materials received from API:', data);
+
       const contentData = data || [];
       setMaterials(contentData);
+      console.log('✅ Materials set to state:', contentData.length, 'items');
     } catch (error) {
-      console.error('Error loading materials:', error);
+      console.error('❌ Error loading materials:', error);
       toast({
         title: 'خطأ',
         description: 'فشل تحميل المحتوى',
