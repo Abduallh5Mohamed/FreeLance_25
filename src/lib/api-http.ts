@@ -702,7 +702,7 @@ export const getAttendanceByDate = async (date: Date, groupId?: string): Promise
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     const dateStr = `${year}-${month}-${day}`;
-    
+
     const params = new URLSearchParams({ date: dateStr });
     if (groupId) params.append('group_id', groupId);
 
@@ -875,18 +875,18 @@ export interface Fee {
 export const getFees = async (isOffline?: boolean, status?: string): Promise<Fee[]> => {
     let url = '/fees';
     const params = new URLSearchParams();
-    
+
     if (isOffline !== undefined) {
         params.append('is_offline', isOffline.toString());
     }
     if (status) {
         params.append('status', status);
     }
-    
+
     if (params.toString()) {
         url += `?${params.toString()}`;
     }
-    
+
     return request<Fee[]>(url);
 };
 

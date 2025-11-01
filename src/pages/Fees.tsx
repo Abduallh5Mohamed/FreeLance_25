@@ -553,7 +553,7 @@ const Fees = () => {
                 </h3>
                 <div className="space-y-3">
                   {subscriptionRequests.map((request) => (
-                    <div 
+                    <div
                       key={request.id}
                       className="border border-yellow-200 dark:border-yellow-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-yellow-50 dark:bg-yellow-950/20"
                     >
@@ -581,7 +581,7 @@ const Fees = () => {
                           عرض
                         </Button>
                       </div>
-                      
+
                       <div className="p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                         <div>
                           <span className="text-xs text-muted-foreground">الموبايل:</span>
@@ -615,7 +615,7 @@ const Fees = () => {
             ) : (
               <div className="space-y-4">
                 {filteredFees.map((fee, index) => (
-                  <div 
+                  <div
                     key={fee.id}
                     className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
                   >
@@ -647,7 +647,7 @@ const Fees = () => {
                         )}
                       </div>
                     </div>
-                    
+
                     <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4">
                       <div>
                         <div className="flex items-center gap-2 mb-2">
@@ -656,7 +656,7 @@ const Fees = () => {
                         </div>
                         <p className="font-bold text-cyan-600">{fee.amount} ج.م</p>
                       </div>
-                      
+
                       <div>
                         <div className="flex items-center gap-2 mb-2">
                           <CheckCircle className="w-4 h-4 text-green-600" />
@@ -664,7 +664,7 @@ const Fees = () => {
                         </div>
                         <p className="font-bold text-green-600">{fee.paidAmount} ج.م</p>
                       </div>
-                      
+
                       <div>
                         <div className="flex items-center gap-2 mb-2">
                           <AlertTriangle className="w-4 h-4 text-red-600" />
@@ -672,7 +672,7 @@ const Fees = () => {
                         </div>
                         <p className="font-bold text-red-600">{fee.amount - fee.paidAmount} ج.م</p>
                       </div>
-                      
+
                       <div>
                         <div className="flex items-center gap-2 mb-2">
                           <Calendar className="w-4 h-4 text-cyan-600" />
@@ -680,7 +680,7 @@ const Fees = () => {
                         </div>
                         <p className="font-medium">{fee.dueDate}</p>
                       </div>
-                      
+
                       <div className="col-span-2">
                         <div className="flex items-center gap-2 mb-2">
                           <span className="text-sm text-muted-foreground">الحالة</span>
@@ -876,7 +876,7 @@ const Fees = () => {
             ) : (
               <div className="space-y-4">
                 {offlineFees.map((fee, index) => (
-                  <div 
+                  <div
                     key={fee.id}
                     className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
                   >
@@ -908,7 +908,7 @@ const Fees = () => {
                         )}
                       </div>
                     </div>
-                    
+
                     <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4">
                       <div>
                         <div className="flex items-center gap-2 mb-2">
@@ -917,7 +917,7 @@ const Fees = () => {
                         </div>
                         <p className="font-bold text-cyan-600">{fee.amount} ج.م</p>
                       </div>
-                      
+
                       <div>
                         <div className="flex items-center gap-2 mb-2">
                           <CheckCircle className="w-4 h-4 text-green-600" />
@@ -925,7 +925,7 @@ const Fees = () => {
                         </div>
                         <p className="font-bold text-green-600">{fee.paidAmount} ج.م</p>
                       </div>
-                      
+
                       <div>
                         <div className="flex items-center gap-2 mb-2">
                           <AlertTriangle className="w-4 h-4 text-red-600" />
@@ -933,7 +933,7 @@ const Fees = () => {
                         </div>
                         <p className="font-bold text-red-600">{fee.amount - fee.paidAmount} ج.م</p>
                       </div>
-                      
+
                       <div>
                         <div className="flex items-center gap-2 mb-2">
                           <Calendar className="w-4 h-4 text-cyan-600" />
@@ -941,7 +941,7 @@ const Fees = () => {
                         </div>
                         <p className="font-medium">{fee.dueDate}</p>
                       </div>
-                      
+
                       <div className="col-span-2">
                         <div className="flex items-center gap-2 mb-2">
                           <span className="text-sm text-muted-foreground">الحالة</span>

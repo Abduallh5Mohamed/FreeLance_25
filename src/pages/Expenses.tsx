@@ -20,7 +20,7 @@ const Expenses = () => {
     amount: "",
     category: ""
   });
-  
+
   const { toast } = useToast();
 
   useEffect(() => {
@@ -33,7 +33,7 @@ const Expenses = () => {
         .from('expenses')
         .select('*')
         .order('created_at', { ascending: false });
-      
+
       if (error) throw error;
       setExpenses(data || []);
     } catch (error) {
@@ -49,7 +49,7 @@ const Expenses = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
-    
+
     try {
       const now = new Date();
       const expenseData = {
@@ -65,9 +65,9 @@ const Expenses = () => {
           .from('expenses')
           .update(expenseData)
           .eq('id', editingExpense.id);
-        
+
         if (error) throw error;
-        
+
         toast({
           title: "تم التحديث بنجاح",
           description: "تم تحديث بيانات المصروف",
@@ -76,15 +76,15 @@ const Expenses = () => {
         const { error } = await supabase
           .from('expenses')
           .insert(expenseData);
-        
+
         if (error) throw error;
-        
+
         toast({
           title: "تم الإضافة بنجاح",
           description: "تم إضافة مصروف جديد",
         });
       }
-      
+
       fetchExpenses();
       setIsOpen(false);
       setEditingExpense(null);
@@ -117,9 +117,9 @@ const Expenses = () => {
         .from('expenses')
         .delete()
         .eq('id', id);
-      
+
       if (error) throw error;
-      
+
       fetchExpenses();
       toast({
         title: "تم الحذف بنجاح",
@@ -139,7 +139,7 @@ const Expenses = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
       <Header />
-      
+
       <div className="container mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
@@ -151,7 +151,7 @@ const Expenses = () => {
               <p className="text-muted-foreground">تسجيل ومتابعة مصروفات السنتر</p>
             </div>
           </div>
-          
+
           <Dialog open={isOpen} onOpenChange={setIsOpen}>
             <DialogTrigger asChild>
               <Button className="shadow-medium">
@@ -220,7 +220,7 @@ const Expenses = () => {
               </div>
             </CardContent>
           </Card>
-          
+
           <Card className="shadow-soft">
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
@@ -249,7 +249,7 @@ const Expenses = () => {
             ) : (
               <div className="space-y-4">
                 {expenses.map((expense) => (
-                  <div 
+                  <div
                     key={expense.id}
                     className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
                   >
@@ -288,25 +288,25 @@ const Expenses = () => {
                         </Button>
                       </div>
                     </div>
-                    
+
                     <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📝 الوصف</div>
                         <div className="text-sm font-medium">{expense.description}</div>
                       </div>
-                      
+
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🏷️ الفئة</div>
                         <div className="text-sm font-medium">{expense.category || '-'}</div>
                       </div>
-                      
+
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">💰 المبلغ</div>
                         <div className="text-sm font-bold text-red-600 dark:text-red-400">
                           {parseFloat(expense.amount).toFixed(2)} ج.م
                         </div>
                       </div>
-                      
+
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📅 التاريخ</div>
                         <div className="text-sm font-medium flex items-center gap-2">

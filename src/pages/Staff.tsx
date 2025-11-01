@@ -225,9 +225,9 @@ const Staff = () => {
                     .join('')
                     .toUpperCase()
                     .slice(0, 2);
-                  
+
                   return (
-                    <div 
+                    <div
                       key={staffMember.id}
                       className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
                     >
@@ -267,13 +267,13 @@ const Staff = () => {
                           </Button>
                         </div>
                       </div>
-                      
+
                       <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         <div>
                           <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📧 البريد الإلكتروني</div>
                           <div className="text-sm font-medium">{staffMember.email}</div>
                         </div>
-                        
+
                         <div>
                           <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📱 رقم الهاتف</div>
                           <div className="text-sm font-medium flex items-center gap-2">
@@ -281,7 +281,7 @@ const Staff = () => {
                             {staffMember.phone || '-'}
                           </div>
                         </div>
-                        
+
                         <div>
                           <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🔐 الصلاحيات</div>
                           <div className="text-sm font-medium">

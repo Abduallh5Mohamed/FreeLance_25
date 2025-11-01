@@ -36,7 +36,7 @@ const ExamManager = () => {
   const [selectedGroups, setSelectedGroups] = useState([]);
   const [editingExam, setEditingExam] = useState(null);
   const [editingQuestion, setEditingQuestion] = useState(null);
-  
+
   const [examForm, setExamForm] = useState({
     title: "",
     description: "",
@@ -47,7 +47,7 @@ const ExamManager = () => {
     total_marks: 100,
     total_questions: 10,
   });
-  
+
   const [questionForm, setQuestionForm] = useState({
     question_text: "",
     question_type: "multiple_choice",
@@ -57,7 +57,7 @@ const ExamManager = () => {
     points: 1,
     explanation: ""
   });
-  
+
   const { toast } = useToast();
 
   useEffect(() => {
@@ -72,7 +72,7 @@ const ExamManager = () => {
         .from('courses')
         .select('*')
         .eq('is_active', true);
-      
+
       if (error) throw error;
       setCourses(data || []);
     } catch (error) {
@@ -107,7 +107,7 @@ const ExamManager = () => {
           )
         `)
         .order('created_at', { ascending: false });
-      
+
       if (error) throw error;
       setExams(data || []);
     } catch (error) {
@@ -122,7 +122,7 @@ const ExamManager = () => {
         .select('*')
         .eq('exam_id', examId)
         .order('created_at', { ascending: true });
-      
+
       if (error) throw error;
       setQuestions(data || []);
     } catch (error) {
@@ -133,7 +133,7 @@ const ExamManager = () => {
   const handleExamSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
-    
+
     if (selectedGroups.length === 0) {
       toast({
         title: "خطأ",
@@ -143,7 +143,7 @@ const ExamManager = () => {
       setLoading(false);
       return;
     }
-    
+
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
@@ -209,7 +209,7 @@ const ExamManager = () => {
   const handleQuestionSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
-    
+
     try {
       // Check if exam has reached question limit
       const { data: examData } = await supabase
@@ -277,9 +277,9 @@ const ExamManager = () => {
         .from('exams')
         .delete()
         .eq('id', id);
-      
+
       if (error) throw error;
-      
+
       fetchExams();
       toast({
         title: "تم الحذف بنجاح",
@@ -300,9 +300,9 @@ const ExamManager = () => {
         .from('exam_questions')
         .delete()
         .eq('id', id);
-      
+
       if (error) throw error;
-      
+
       fetchQuestions(selectedExam.id);
       toast({
         title: "تم الحذف بنجاح",
@@ -319,16 +319,16 @@ const ExamManager = () => {
 
   const handleEditExam = async (exam) => {
     setEditingExam(exam);
-    
+
     // Fetch exam groups
     const { data: examGroupsData } = await supabase
       .from('exam_groups')
       .select('group_id')
       .eq('exam_id', exam.id);
-    
+
     const groupIds = examGroupsData?.map(eg => eg.group_id) || [];
     setSelectedGroups(groupIds);
-    
+
     setExamForm({
       title: exam.title,
       description: exam.description || "",
@@ -409,13 +409,13 @@ const ExamManager = () => {
 
   const handleEditQuestion = (question) => {
     setEditingQuestion(question);
-    
+
     // Find the index of the correct answer
     let correctAnswerIndex = -1;
     if (question.options && question.correct_answer) {
       correctAnswerIndex = question.options.findIndex(opt => opt === question.correct_answer);
     }
-    
+
     setQuestionForm({
       question_text: question.question_text,
       question_type: question.question_type,
@@ -431,7 +431,7 @@ const ExamManager = () => {
   const handleUpdateQuestion = async (e) => {
     e.preventDefault();
     setLoading(true);
-    
+
     try {
       const { error } = await supabase
         .from('exam_questions')
@@ -484,7 +484,7 @@ const ExamManager = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
       <Header />
-      
+
       <div className="container mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
@@ -496,7 +496,7 @@ const ExamManager = () => {
               <p className="text-muted-foreground">إضافة وإدارة امتحانات الكورسات</p>
             </div>
           </div>
-          
+
           <Dialog open={isExamOpen} onOpenChange={(open) => {
             setIsExamOpen(open);
             if (!open) {
@@ -540,7 +540,7 @@ const ExamManager = () => {
                     </SelectContent>
                   </Select>
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label htmlFor="title">عنوان الامتحان</Label>
                   <Input
@@ -551,7 +551,7 @@ const ExamManager = () => {
                     required
                   />
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label htmlFor="description">الوصف</Label>
                   <Textarea
@@ -561,7 +561,7 @@ const ExamManager = () => {
                     placeholder="وصف الامتحان (اختياري)"
                   />
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label>تاريخ الامتحان</Label>
                   <Popover>
@@ -592,7 +592,7 @@ const ExamManager = () => {
                     </PopoverContent>
                   </Popover>
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label htmlFor="exam_time">وقت الامتحان</Label>
                   <Input
@@ -603,7 +603,7 @@ const ExamManager = () => {
                     required
                   />
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label htmlFor="duration">مدة الامتحان (بالدقائق)</Label>
                   <Input
@@ -614,7 +614,7 @@ const ExamManager = () => {
                     min="1"
                   />
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label htmlFor="total_marks">إجمالي الدرجات</Label>
                   <Input
@@ -626,7 +626,7 @@ const ExamManager = () => {
                     required
                   />
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label>المجموعات المستهدفة</Label>
                   <div className="space-y-2 max-h-40 overflow-y-auto border rounded-md p-3">
@@ -650,7 +650,7 @@ const ExamManager = () => {
                     ))}
                   </div>
                 </div>
-                
+
                 <Button type="submit" className="w-full" disabled={loading}>
                   {loading ? (editingExam ? "جاري التحديث..." : "جاري الإضافة...") : (editingExam ? "تحديث الامتحان" : "إضافة الامتحان")}
                 </Button>
@@ -668,61 +668,61 @@ const ExamManager = () => {
               <Table className="enhanced-table">
                 <TableHeader>
                   <TableRow>
-                  <TableHead>الامتحان</TableHead>
-                  <TableHead>الكورس</TableHead>
-                  <TableHead>التاريخ</TableHead>
-                  <TableHead>المدة</TableHead>
-                  <TableHead>الدرجات</TableHead>
-                  <TableHead>الإجراءات</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {exams.map((exam) => (
-                  <TableRow key={exam.id}>
-                    <TableCell>
-                      <div>
-                        <p className="font-medium">{exam.title}</p>
-                        {exam.description && (
-                          <p className="text-sm text-muted-foreground">{exam.description}</p>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>{exam.courses?.name} - {exam.courses?.subject}</TableCell>
-                    <TableCell>
-                      {exam.exam_date ? format(new Date(exam.exam_date), 'dd/MM/yyyy', { locale: ar }) : 'غير محدد'}
-                    </TableCell>
-                    <TableCell>{exam.duration_minutes} دقيقة</TableCell>
-                    <TableCell>{exam.total_marks} درجة</TableCell>
-                    <TableCell>
-                      <div className="flex gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleEditExam(exam)}
-                        >
-                          <Edit2 className="w-4 h-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => openQuestionsDialog(exam)}
-                        >
-                          <Eye className="w-4 h-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteExam(exam.id)}
-                          className="text-destructive hover:text-destructive"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
+                    <TableHead>الامتحان</TableHead>
+                    <TableHead>الكورس</TableHead>
+                    <TableHead>التاريخ</TableHead>
+                    <TableHead>المدة</TableHead>
+                    <TableHead>الدرجات</TableHead>
+                    <TableHead>الإجراءات</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {exams.map((exam) => (
+                    <TableRow key={exam.id}>
+                      <TableCell>
+                        <div>
+                          <p className="font-medium">{exam.title}</p>
+                          {exam.description && (
+                            <p className="text-sm text-muted-foreground">{exam.description}</p>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>{exam.courses?.name} - {exam.courses?.subject}</TableCell>
+                      <TableCell>
+                        {exam.exam_date ? format(new Date(exam.exam_date), 'dd/MM/yyyy', { locale: ar }) : 'غير محدد'}
+                      </TableCell>
+                      <TableCell>{exam.duration_minutes} دقيقة</TableCell>
+                      <TableCell>{exam.total_marks} درجة</TableCell>
+                      <TableCell>
+                        <div className="flex gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleEditExam(exam)}
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => openQuestionsDialog(exam)}
+                          >
+                            <Eye className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDeleteExam(exam.id)}
+                            className="text-destructive hover:text-destructive"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             </div>
           </CardContent>
         </Card>
@@ -743,7 +743,7 @@ const ExamManager = () => {
                 </Button>
               </DialogTitle>
             </DialogHeader>
-            
+
             <div className="space-y-4">
               {questions.map((question, index) => (
                 <Card key={question.id}>
@@ -827,7 +827,7 @@ const ExamManager = () => {
                   required
                 />
               </div>
-              
+
               <div className="space-y-2">
                 <Label htmlFor="question_type">نوع السؤال</Label>
                 <Select value={questionForm.question_type} onValueChange={(value) => setQuestionForm(prev => ({ ...prev, question_type: value }))}>
@@ -840,7 +840,7 @@ const ExamManager = () => {
                   </SelectContent>
                 </Select>
               </div>
-              
+
               {questionForm.question_type === 'multiple_choice' && (
                 <div className="space-y-3">
                   <Label>الخيارات (اختر الإجابة الصحيحة بعلامة ✓)</Label>
@@ -850,8 +850,8 @@ const ExamManager = () => {
                         checked={questionForm.correct_answer_index === index}
                         onCheckedChange={(checked) => {
                           if (checked) {
-                            setQuestionForm(prev => ({ 
-                              ...prev, 
+                            setQuestionForm(prev => ({
+                              ...prev,
                               correct_answer_index: index,
                               correct_answer: prev.options[index]
                             }));
@@ -864,11 +864,11 @@ const ExamManager = () => {
                         onChange={(e) => {
                           const newOptions = [...questionForm.options];
                           newOptions[index] = e.target.value;
-                          
+
                           // Update correct_answer if this is the selected option
                           if (questionForm.correct_answer_index === index) {
-                            setQuestionForm(prev => ({ 
-                              ...prev, 
+                            setQuestionForm(prev => ({
+                              ...prev,
                               options: newOptions,
                               correct_answer: e.target.value
                             }));
@@ -884,7 +884,7 @@ const ExamManager = () => {
                   ))}
                 </div>
               )}
-              
+
               {questionForm.question_type === 'short_answer' && (
                 <div className="space-y-2">
                   <Label htmlFor="correct_answer">الإجابة الصحيحة</Label>
@@ -897,7 +897,7 @@ const ExamManager = () => {
                   />
                 </div>
               )}
-              
+
               <div className="space-y-2">
                 <Label htmlFor="explanation">تفسير الإجابة (اختياري)</Label>
                 <Textarea
@@ -908,7 +908,7 @@ const ExamManager = () => {
                   rows={3}
                 />
               </div>
-              
+
               <div className="space-y-2">
                 <Label htmlFor="points">النقاط</Label>
                 <Input
@@ -920,7 +920,7 @@ const ExamManager = () => {
                   step="0.1"
                 />
               </div>
-              
+
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? (editingQuestion ? "جاري التحديث..." : "جاري الإضافة...") : (editingQuestion ? "تحديث السؤال" : "إضافة السؤال")}
               </Button>

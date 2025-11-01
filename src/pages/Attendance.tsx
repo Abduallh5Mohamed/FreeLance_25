@@ -249,7 +249,7 @@ const Attendance = () => {
                         <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-2 flex items-center justify-between">
                           <div className="flex items-center gap-3">
                             <Avatar className="h-10 w-10 border-2 border-white">
-                              <AvatarFallback className="text-xs bg-white text-cyan-600">{(record.students?.name || '').split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase()}</AvatarFallback>
+                              <AvatarFallback className="text-xs bg-white text-cyan-600">{(record.students?.name || '').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}</AvatarFallback>
                             </Avatar>
                             <div>
                               <h3 className="font-bold text-white text-lg">{record.students?.name}</h3>

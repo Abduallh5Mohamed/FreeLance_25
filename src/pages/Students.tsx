@@ -392,7 +392,7 @@ const Students = () => {
           <CardContent className="p-4">
             <div className="space-y-4">
               {filteredStudents.map((student, index) => (
-                <div 
+                <div
                   key={student.id}
                   className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
                 >
@@ -428,7 +428,7 @@ const Students = () => {
                       </Button>
                     </div>
                   </div>
-                  
+
                   <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     <div>
                       <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📱 رقم الهاتف</div>
@@ -437,17 +437,17 @@ const Students = () => {
                         {student.phone || '-'}
                       </div>
                     </div>
-                    
+
                     <div>
                       <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🎓 المرحلة</div>
                       <div className="text-sm font-medium">{student.grade}</div>
                     </div>
-                    
+
                     <div>
                       <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📅 تاريخ الانضمام</div>
                       <div className="text-sm font-medium">{new Date(student.enrollment_date).toLocaleDateString('ar-SA')}</div>
                     </div>
-                    
+
                     <div>
                       <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">💳 الاشتراك</div>
                       <div className="text-sm">
@@ -470,7 +470,7 @@ const Students = () => {
                         )}
                       </div>
                     </div>
-                    
+
                     <div>
                       <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📚 الكورسات</div>
                       <div className="flex flex-wrap gap-1">
@@ -481,14 +481,13 @@ const Students = () => {
                         ))}
                       </div>
                     </div>
-                    
+
                     <div>
                       <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">⚡ الحالة</div>
-                      <span className={`px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1 ${
-                        student.is_active 
-                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' 
+                      <span className={`px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1 ${student.is_active
+                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
                           : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
-                      }`}>
+                        }`}>
                         {student.is_active ? '✓ نشط' : '⚠ غير نشط'}
                       </span>
                     </div>

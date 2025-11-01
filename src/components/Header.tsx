@@ -2,12 +2,12 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
-import { 
-  BookOpen, 
-  Users, 
-  Calendar, 
-  DollarSign, 
-  FileText, 
+import {
+  BookOpen,
+  Users,
+  Calendar,
+  DollarSign,
+  FileText,
   Menu,
   X,
   LogOut,
@@ -85,18 +85,18 @@ const Header = () => {
     try {
       // Clear student session if exists
       localStorage.removeItem('student_session');
-      
+
       // Sign out from Supabase (for admin users)
       const { error } = await supabase.auth.signOut();
       if (error && error.message !== "No session found") {
         throw error;
       }
-      
+
       toast({
         title: "تم تسجيل الخروج بنجاح",
         description: "أراك لاحقاً!",
       });
-      
+
       navigate("/");
     } catch (error) {
       toast({
@@ -445,7 +445,7 @@ const Header = () => {
                     );
                   })}
                 </div>
-                
+
                 {/* Logout Button - Mobile */}
                 <button
                   onClick={() => {

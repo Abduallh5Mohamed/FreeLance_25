@@ -1,148 +1,148 @@
 /* Enhanced Table Styles - Turquoise Theme */
 
 .enhanced-table-container {
-  @apply rounded-lg overflow-hidden border border-cyan-200 dark:border-cyan-800;
-  background: linear-gradient(135deg, rgba(6, 182, 212, 0.03) 0%, rgba(20, 184, 166, 0.05) 100%);
+    @apply rounded-lg overflow-hidden border border-cyan-200 dark:border-cyan-800;
+    background: linear-gradient(135deg, rgba(6, 182, 212, 0.03) 0%, rgba(20, 184, 166, 0.05) 100%);
 }
 
 .enhanced-table {
-  @apply w-full;
+    @apply w-full;
 }
 
 /* Table Header */
 .enhanced-table thead {
-  @apply bg-gradient-to-r from-cyan-500 to-teal-500;
+    @apply bg-gradient-to-r from-cyan-500 to-teal-500;
 }
 
 .enhanced-table thead th {
-  @apply text-white font-semibold text-sm px-4 py-3;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    @apply text-white font-semibold text-sm px-4 py-3;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
 /* Table Body */
 .enhanced-table tbody {
-  @apply bg-white dark:bg-slate-900;
+    @apply bg-white dark:bg-slate-900;
 }
 
 .enhanced-table tbody tr {
-  @apply border-b border-cyan-100 dark:border-cyan-900/30;
-  transition: all 0.2s ease-in-out;
+    @apply border-b border-cyan-100 dark:border-cyan-900/30;
+    transition: all 0.2s ease-in-out;
 }
 
 /* Zebra Striping */
 .enhanced-table tbody tr:nth-child(even) {
-  @apply bg-cyan-50/30 dark:bg-cyan-950/10;
+    @apply bg-cyan-50/30 dark:bg-cyan-950/10;
 }
 
 /* Hover Effect */
 .enhanced-table tbody tr:hover {
-  @apply bg-cyan-100/50 dark:bg-cyan-900/20;
-  transform: scale(1.001);
-  box-shadow: 0 2px 8px rgba(6, 182, 212, 0.1);
+    @apply bg-cyan-100/50 dark:bg-cyan-900/20;
+    transform: scale(1.001);
+    box-shadow: 0 2px 8px rgba(6, 182, 212, 0.1);
 }
 
 /* Table Cells */
 .enhanced-table tbody td {
-  @apply px-4 py-3 text-sm text-slate-700 dark:text-slate-300;
+    @apply px-4 py-3 text-sm text-slate-700 dark:text-slate-300;
 }
 
 /* Expandable Row Indicator */
 .enhanced-table tbody tr.expandable {
-  cursor: pointer;
+    cursor: pointer;
 }
 
 .enhanced-table tbody tr.expandable:hover {
-  @apply bg-teal-50 dark:bg-teal-950/20;
+    @apply bg-teal-50 dark:bg-teal-950/20;
 }
 
 /* Expanded Content */
 .enhanced-table tbody tr.expanded-content {
-  @apply bg-gradient-to-r from-cyan-50/50 to-teal-50/50 dark:from-cyan-950/30 dark:to-teal-950/30;
+    @apply bg-gradient-to-r from-cyan-50/50 to-teal-50/50 dark:from-cyan-950/30 dark:to-teal-950/30;
 }
 
 .enhanced-table tbody tr.expanded-content td {
-  @apply py-4 px-6;
+    @apply py-4 px-6;
 }
 
 /* Action Buttons */
 .enhanced-table-actions {
-  @apply flex gap-2 justify-end;
+    @apply flex gap-2 justify-end;
 }
 
 .enhanced-table-actions button {
-  @apply transition-all duration-200 hover:scale-110;
+    @apply transition-all duration-200 hover:scale-110;
 }
 
 /* Empty State */
 .enhanced-table-empty {
-  @apply text-center py-12 text-muted-foreground;
+    @apply text-center py-12 text-muted-foreground;
 }
 
 /* Responsive */
 @media (max-width: 768px) {
-  .enhanced-table thead th {
-    @apply text-xs px-2 py-2;
-  }
-  
-  .enhanced-table tbody td {
-    @apply text-xs px-2 py-2;
-  }
+    .enhanced-table thead th {
+        @apply text-xs px-2 py-2;
+    }
+
+    .enhanced-table tbody td {
+        @apply text-xs px-2 py-2;
+    }
 }
 
 /* Loading State */
 .enhanced-table-loading {
-  @apply animate-pulse;
+    @apply animate-pulse;
 }
 
 .enhanced-table-loading tbody tr {
-  @apply bg-cyan-100/30 dark:bg-cyan-900/10;
+    @apply bg-cyan-100/30 dark:bg-cyan-900/10;
 }
 
 /* Status Badges */
 .status-badge {
-  @apply px-2 py-1 rounded-full text-xs font-medium inline-flex items-center gap-1;
+    @apply px-2 py-1 rounded-full text-xs font-medium inline-flex items-center gap-1;
 }
 
 .status-badge.active {
-  @apply bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300;
+    @apply bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300;
 }
 
 .status-badge.inactive {
-  @apply bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300;
+    @apply bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300;
 }
 
 .status-badge.pending {
-  @apply bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300;
+    @apply bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300;
 }
 
 .status-badge.approved {
-  @apply bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300;
+    @apply bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300;
 }
 
 .status-badge.rejected {
-  @apply bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300;
+    @apply bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300;
 }
 
 /* Compact Mode */
 .enhanced-table.compact thead th {
-  @apply py-2 text-xs;
+    @apply py-2 text-xs;
 }
 
 .enhanced-table.compact tbody td {
-  @apply py-2 text-xs;
+    @apply py-2 text-xs;
 }
 
 /* Sticky Header */
 .enhanced-table.sticky-header thead {
-  @apply sticky top-0 z-10;
+    @apply sticky top-0 z-10;
 }
 
 /* Gradient Header Alternative */
 .enhanced-table.gradient-header thead {
-  background: linear-gradient(135deg, #06b6d4 0%, #14b8a6 50%, #0891b2 100%);
+    background: linear-gradient(135deg, #06b6d4 0%, #14b8a6 50%, #0891b2 100%);
 }
 
 /* Glow Effect on Hover */
 .enhanced-table.glow tbody tr:hover {
-  box-shadow: 0 0 20px rgba(6, 182, 212, 0.2);
+    box-shadow: 0 0 20px rgba(6, 182, 212, 0.2);
 }

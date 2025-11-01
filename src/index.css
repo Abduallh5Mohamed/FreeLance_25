@@ -56,7 +56,7 @@ All colors MUST be HSL for consistency and theme support.
     /* Luxurious gradients */
     --gradient-primary: linear-gradient(135deg, hsl(38 92% 50%) 0%, hsl(43 100% 70%) 100%);
     --gradient-dark: linear-gradient(180deg, hsl(26 83.3% 14.1%) 0%, hsl(20 14.3% 4.1%) 100%);
-    --gradient-hero: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.8) 100%);
+    --gradient-hero: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.8) 100%);
     --gradient-gold-shine: linear-gradient(90deg, hsl(38 92% 50%), hsl(43 100% 70%), hsl(38 92% 50%));
     --gradient-card: linear-gradient(145deg, hsl(0 0% 100%) 0%, hsl(40 20% 98%) 100%);
 
@@ -159,7 +159,7 @@ All colors MUST be HSL for consistency and theme support.
     font-family: var(--font-arabic);
     direction: rtl;
   }
-  
+
   html {
     direction: rtl;
   }
@@ -196,13 +196,11 @@ All colors MUST be HSL for consistency and theme support.
 
 /* Cinematic overlay */
 .cinematic-overlay {
-  background: linear-gradient(
-    to bottom,
-    rgba(11, 19, 33, 0) 0%,
-    rgba(11, 19, 33, 0.3) 40%,
-    rgba(11, 19, 33, 0.8) 80%,
-    rgba(11, 19, 33, 0.95) 100%
-  );
+  background: linear-gradient(to bottom,
+      rgba(11, 19, 33, 0) 0%,
+      rgba(11, 19, 33, 0.3) 40%,
+      rgba(11, 19, 33, 0.8) 80%,
+      rgba(11, 19, 33, 0.95) 100%);
 }
 
 /* Golden gradient text */
@@ -215,8 +213,13 @@ All colors MUST be HSL for consistency and theme support.
 
 /* Animated golden shine */
 @keyframes golden-shine {
-  0% { background-position: -200% center; }
-  100% { background-position: 200% center; }
+  0% {
+    background-position: -200% center;
+  }
+
+  100% {
+    background-position: 200% center;
+  }
 }
 
 .golden-shine {

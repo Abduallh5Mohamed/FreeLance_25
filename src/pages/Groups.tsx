@@ -236,7 +236,7 @@ const Groups = () => {
             ) : (
               <div className="space-y-4">
                 {groups.map((group) => (
-                  <div 
+                  <div
                     key={group.id}
                     className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
                   >
@@ -275,23 +275,23 @@ const Groups = () => {
                         </Button>
                       </div>
                     </div>
-                    
+
                     <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📝 الوصف</div>
                         <div className="text-sm font-medium">{group.description || '-'}</div>
                       </div>
-                      
+
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🎓 الصف الدراسي</div>
                         <div className="text-sm font-medium">{group.grade_name || '-'}</div>
                       </div>
-                      
+
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">👥 النوع</div>
                         <Badge variant="secondary" className="text-xs">مجموعة دراسية</Badge>
                       </div>
-                      
+
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">👨‍🎓 عدد الطلاب</div>
                         <div className="text-sm font-medium">

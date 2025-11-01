@@ -90,12 +90,12 @@ const AccountStatement = () => {
             ) : (
               <div className="space-y-4">
                 {statements
-                  .filter(statement => 
-                    !searchTerm || 
+                  .filter(statement =>
+                    !searchTerm ||
                     statement.students?.name?.toLowerCase().includes(searchTerm.toLowerCase())
                   )
                   .map((statement, index) => (
-                    <div 
+                    <div
                       key={statement.id}
                       className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
                     >
@@ -116,7 +116,7 @@ const AccountStatement = () => {
                           <p className="text-white font-bold text-lg">{Number(statement.amount).toFixed(2)} ج.م</p>
                         </div>
                       </div>
-                      
+
                       <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
                           <div className="flex items-center gap-2 mb-2">
@@ -125,7 +125,7 @@ const AccountStatement = () => {
                           </div>
                           <p className="font-medium">{statement.students?.name || 'غير محدد'}</p>
                         </div>
-                        
+
                         <div>
                           <div className="flex items-center gap-2 mb-2">
                             <FileText className="w-4 h-4 text-cyan-600" />
@@ -133,7 +133,7 @@ const AccountStatement = () => {
                           </div>
                           <p className="font-medium">{statement.subscriptions?.name || "غير محدد"}</p>
                         </div>
-                        
+
                         <div>
                           <div className="flex items-center gap-2 mb-2">
                             <DollarSign className="w-4 h-4 text-cyan-600" />
@@ -141,7 +141,7 @@ const AccountStatement = () => {
                           </div>
                           <p className="font-bold text-green-600">{Number(statement.amount).toFixed(2)} ج.م</p>
                         </div>
-                        
+
                         <div>
                           <div className="flex items-center gap-2 mb-2">
                             <Calendar className="w-4 h-4 text-cyan-600" />
@@ -149,7 +149,7 @@ const AccountStatement = () => {
                           </div>
                           <p className="font-medium">{new Date(statement.payment_date).toLocaleDateString('ar-SA')}</p>
                         </div>
-                        
+
                         <div className="md:col-span-2">
                           <div className="flex items-center gap-2 mb-2">
                             <FileText className="w-4 h-4 text-cyan-600" />
