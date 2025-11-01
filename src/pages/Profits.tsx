@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TrendingUp, DollarSign, AlertTriangle } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import { getFees, getExpenses, getImports } from "@/lib/api-http";
 
 const Profits = () => {
   const [totalIncome, setTotalIncome] = useState(0);
@@ -12,43 +12,40 @@ const Profits = () => {
   const { toast } = useToast();
 
   useEffect(() => {
+    const fetchFinancialData = async () => {
+      try {
+        // Fetch total income from student fees (both online and offline)
+        const feesData = await getFees();
+        const income = feesData?.reduce((sum, fee) => sum + (Number(fee.paid_amount) || 0), 0) || 0;
+        setTotalIncome(income);
+
+        // Fetch total expenses
+        const expensesData = await getExpenses();
+        const expenses = expensesData?.reduce((sum, item) => sum + Number(item.amount || 0), 0) || 0;
+
+        // Fetch total imports paid
+        const importsData = await getImports();
+        const importsPaid = importsData?.reduce((sum, item) => sum + Number(item.paid_amount || 0), 0) || 0;
+
+        // Total expenses = center expenses + imports paid
+        const totalExpensesAmount = expenses + importsPaid;
+        setTotalExpenses(totalExpensesAmount);
+
+        // Calculate net profit (income - all expenses)
+        const profit = income - totalExpensesAmount;
+        setNetProfit(profit);
+      } catch (error) {
+        console.error('Error fetching financial data:', error);
+        toast({
+          title: "خطأ",
+          description: "حدث خطأ في تحميل البيانات المالية",
+          variant: "destructive",
+        });
+      }
+    };
+
     fetchFinancialData();
-  }, []);
-
-  const fetchFinancialData = async () => {
-    try {
-      // Fetch total income from account statements
-      const { data: incomeData, error: incomeError } = await supabase
-        .from('account_statement')
-        .select('amount');
-
-      if (incomeError) throw incomeError;
-
-      const income = incomeData?.reduce((sum, item) => sum + Number(item.amount), 0) || 0;
-      setTotalIncome(income);
-
-      // Fetch total expenses
-      const { data: expensesData, error: expensesError } = await supabase
-        .from('expenses')
-        .select('amount');
-
-      if (expensesError) throw expensesError;
-
-      const expenses = expensesData?.reduce((sum, item) => sum + Number(item.amount), 0) || 0;
-      setTotalExpenses(expenses);
-
-      // Calculate net profit
-      const profit = income - expenses;
-      setNetProfit(profit);
-    } catch (error) {
-      console.error('Error fetching financial data:', error);
-      toast({
-        title: "خطأ",
-        description: "حدث خطأ في تحميل البيانات المالية",
-        variant: "destructive",
-      });
-    }
-  };
+  }, [toast]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">

@@ -16,6 +16,11 @@ import materialsRoutes from './routes/materials';
 import lecturesRoutes from './routes/lectures';
 import registrationRequestsRoutes from './routes/registration-requests';
 import feesRoutes from './routes/fees';
+import paymentRequestsRoutes from './routes/payment-requests';
+import notificationsRoutes from './routes/notifications';
+import subscriptionRequestsRoutes from './routes/subscription-requests';
+import expensesRoutes from './routes/expenses';
+import importsRoutes from './routes/imports';
 
 dotenv.config();
 
@@ -34,8 +39,8 @@ app.use(cors({
     },
     credentials: true,
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Request logging middleware
 app.use((req: Request, res: Response, next: NextFunction) => {
@@ -61,6 +66,11 @@ app.use('/api/materials', materialsRoutes);
 app.use('/api/lectures', lecturesRoutes);
 app.use('/api/registration-requests', registrationRequestsRoutes);
 app.use('/api/fees', feesRoutes);
+app.use('/api/payment-requests', paymentRequestsRoutes);
+app.use('/api/notifications', notificationsRoutes);
+app.use('/api/subscription-requests', subscriptionRequestsRoutes);
+app.use('/api/expenses', expensesRoutes);
+app.use('/api/imports', importsRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {

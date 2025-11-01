@@ -34,7 +34,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
-import { getGrades, getGroups } from "@/lib/api-http";
+import { getGrades, getGroups, createSubscriptionRequest } from "@/lib/api-http";
 import alQaedLogo from "@/assets/Qaad_Logo.png";
 
 const StudentHeader = () => {
@@ -346,7 +346,7 @@ const StudentHeader = () => {
                   <Button 
                     type="button"
                     className="w-full bg-gradient-to-r from-green-500 to-emerald-600"
-                    onClick={() => {
+                    onClick={async () => {
                       if (!paymentImage) {
                         toast({
                           title: "يرجى رفع صورة الإيصال",
@@ -383,43 +383,42 @@ const StudentHeader = () => {
                         return;
                       }
 
-                      const selectedGradeData = grades.find(g => g.id === selectedGrade);
-                      const selectedGroupData = groups.find(g => g.id === selectedGroup);
+                      try {
+                        const selectedGradeData = grades.find(g => g.id === selectedGrade);
+                        const selectedGroupData = groups.find(g => g.id === selectedGroup);
 
-                      const subscriptionRequest = {
-                        id: Date.now(),
-                        studentName: studentName,
-                        phone: studentPhone,
-                        gradeId: selectedGrade,
-                        gradeName: selectedGradeData?.name || '',
-                        groupId: selectedGroup,
-                        groupName: selectedGroupData?.name || '',
-                        amount: parseFloat(paymentAmount),
-                        notes: notes,
-                        imagePreview: imagePreview,
-                        status: 'pending',
-                        createdAt: new Date().toISOString()
-                      };
-
-                      // Save to localStorage
-                      const existingRequests = localStorage.getItem('subscriptionRequests');
-                      const requests = existingRequests ? JSON.parse(existingRequests) : [];
-                      requests.push(subscriptionRequest);
-                      localStorage.setItem('subscriptionRequests', JSON.stringify(requests));
-                      
-                      toast({
-                        title: "تم إرسال الطلب بنجاح",
-                        description: "سيتم مراجعة طلبك والرد عليك قريباً",
-                      });
-                      
-                      setShowPaymentDialog(false);
-                      setStudentName("");
-                      setStudentPhone("");
-                      setPaymentAmount("");
-                      setSelectedGrade("");
-                      setSelectedGroup("");
-                      setNotes("");
-                      removeImage();
+                        await createSubscriptionRequest({
+                          student_name: studentName,
+                          phone: studentPhone,
+                          grade_id: parseInt(selectedGrade),
+                          grade_name: selectedGradeData?.name || '',
+                          group_id: parseInt(selectedGroup),
+                          group_name: selectedGroupData?.name || '',
+                          amount: parseFloat(paymentAmount),
+                          notes: notes || null,
+                          receipt_image_url: imagePreview || null,
+                        });
+                        
+                        toast({
+                          title: "✅ تم إرسال الطلب بنجاح",
+                          description: "سيتم مراجعة طلبك والرد عليك قريباً",
+                        });
+                        
+                        setShowPaymentDialog(false);
+                        setStudentName("");
+                        setStudentPhone("");
+                        setPaymentAmount("");
+                        setSelectedGrade("");
+                        setSelectedGroup("");
+                        setNotes("");
+                        removeImage();
+                      } catch (error) {
+                        toast({
+                          title: "خطأ في إرسال الطلب",
+                          description: error instanceof Error ? error.message : "حاول مرة أخرى",
+                          variant: "destructive",
+                        });
+                      }
                     }}
                   >
                     💳 دفع الآن

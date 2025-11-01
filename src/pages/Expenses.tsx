@@ -8,7 +8,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { DollarSign, Plus, Edit2, Trash2, TrendingDown, Calendar } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import { getExpenses, createExpense, updateExpense, deleteExpense, type Expense } from "@/lib/api-http";
 
 const Expenses = () => {
   const [expenses, setExpenses] = useState([]);
@@ -23,18 +23,9 @@ const Expenses = () => {
 
   const { toast } = useToast();
 
-  useEffect(() => {
-    fetchExpenses();
-  }, []);
-
   const fetchExpenses = async () => {
     try {
-      const { data, error } = await supabase
-        .from('expenses')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
+      const data = await getExpenses();
       setExpenses(data || []);
     } catch (error) {
       console.error('Error fetching expenses:', error);
@@ -45,6 +36,10 @@ const Expenses = () => {
       });
     }
   };
+
+  useEffect(() => {
+    fetchExpenses();
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -61,23 +56,14 @@ const Expenses = () => {
       };
 
       if (editingExpense) {
-        const { error } = await supabase
-          .from('expenses')
-          .update(expenseData)
-          .eq('id', editingExpense.id);
-
-        if (error) throw error;
+        await updateExpense(editingExpense.id, expenseData);
 
         toast({
           title: "تم التحديث بنجاح",
           description: "تم تحديث بيانات المصروف",
         });
       } else {
-        const { error } = await supabase
-          .from('expenses')
-          .insert(expenseData);
-
-        if (error) throw error;
+        await createExpense(expenseData);
 
         toast({
           title: "تم الإضافة بنجاح",
@@ -113,12 +99,7 @@ const Expenses = () => {
 
   const handleDelete = async (id) => {
     try {
-      const { error } = await supabase
-        .from('expenses')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
+      await deleteExpense(id);
 
       fetchExpenses();
       toast({

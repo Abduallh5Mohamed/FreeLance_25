@@ -10,7 +10,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { DollarSign, Plus, CreditCard, AlertTriangle, CheckCircle, Search, Upload, X, Eye, Check, XCircle, User, Calendar, Edit2, Trash2 } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-import { getGrades, getGroups, createFee, getFees, getStudentByPhone, getStudentById, getStudents, createRevenue } from "@/lib/api-http";
+import { getGrades, getGroups, createFee, getFees, getStudentByPhone, getStudentById, getStudents, getSubscriptionRequests, approveSubscriptionRequest, rejectSubscriptionRequest } from "@/lib/api-http";
 
 const Fees = () => {
   const [fees, setFees] = useState([]);
@@ -60,11 +60,12 @@ const Fees = () => {
     loadFeesFromDB();
   }, []);
 
-  const loadSubscriptionRequests = () => {
-    const requests = localStorage.getItem('subscriptionRequests');
-    if (requests) {
-      const parsedRequests = JSON.parse(requests);
-      setSubscriptionRequests(parsedRequests.filter(r => r.status === 'pending'));
+  const loadSubscriptionRequests = async () => {
+    try {
+      const requests = await getSubscriptionRequests({ status: 'pending' });
+      setSubscriptionRequests(requests || []);
+    } catch (error) {
+      console.error('Error loading subscription requests:', error);
     }
   };
 
@@ -74,8 +75,19 @@ const Fees = () => {
         getFees(false),
         getFees(true)
       ]);
-      setFees(onlineFees || []);
-      setOfflineFees(offlineFeesData || []);
+      
+      // Map API response to match expected format
+      const mapFeeData = (fee: any) => ({
+        ...fee,
+        studentName: fee.student_name || fee.studentName,
+        paidAmount: fee.paid_amount || fee.paidAmount || 0,
+        dueDate: fee.due_date || fee.dueDate,
+        course: fee.grade_name || fee.course || '',
+        status: fee.status === 'paid' ? 'مدفوع' : fee.status === 'partial' ? 'جزئي' : 'متأخر'
+      });
+      
+      setFees((onlineFees || []).map(mapFeeData));
+      setOfflineFees((offlineFeesData || []).map(mapFeeData));
     } catch (error) {
       console.error('Error loading fees:', error);
     }
@@ -221,11 +233,11 @@ const Fees = () => {
         return;
       }
 
-      setNewPaymentImage(file);
+      setPaymentImage(file);
 
       const reader = new FileReader();
       reader.onloadend = () => {
-        setNewImagePreview(reader.result as string);
+        setImagePreview(reader.result as string);
       };
       reader.readAsDataURL(file);
     }
@@ -233,44 +245,15 @@ const Fees = () => {
 
   const handleApproveRequest = async (request) => {
     try {
-      const amount = parseFloat(request.amount) || 0;
+      await approveSubscriptionRequest(request.id);
 
-      const feeData = {
-        student_name: request.studentName,
-        phone: request.phone,
-        grade_id: request.gradeId,
-        grade_name: request.gradeName,
-        group_id: request.groupId,
-        group_name: request.groupName,
-        amount: amount,
-        paid_amount: amount,
-        status: 'paid',
-        payment_method: 'online',
-        is_offline: false,
-        notes: request.notes,
-        due_date: new Date().toISOString().split('T')[0],
-        payment_date: new Date().toISOString().split('T')[0],
-        receipt_image_url: request.imagePreview
-      };
-
-      const createdFee = await createFee(feeData);
-
-      // Update local state
-      setFees([...fees, createdFee]);
-
-      // Update request status in localStorage
-      const requests = JSON.parse(localStorage.getItem('subscriptionRequests') || '[]');
-      const updatedRequests = requests.map(r =>
-        r.id === request.id ? { ...r, status: 'approved' } : r
-      );
-      localStorage.setItem('subscriptionRequests', JSON.stringify(updatedRequests));
-
-      // Remove from pending list
-      setSubscriptionRequests(subscriptionRequests.filter(r => r.id !== request.id));
+      // Reload data
+      await loadSubscriptionRequests();
+      await loadFeesFromDB();
 
       toast({
-        title: "تم قبول الطلب",
-        description: `تم قبول طلب الطالب ${request.studentName} وحفظه في قاعدة البيانات`,
+        title: "✅ تم قبول الطلب",
+        description: `تم قبول طلب الطالب ${request.student_name} وحفظه في قاعدة البيانات`,
       });
 
       setIsViewRequestOpen(false);
@@ -279,31 +262,38 @@ const Fees = () => {
       console.error('Error approving request:', error);
       toast({
         title: "خطأ",
-        description: "فشل حفظ البيانات في قاعدة البيانات",
+        description: error instanceof Error ? error.message : "فشل في قبول الطلب",
         variant: "destructive",
       });
     }
   };
 
-  const handleRejectRequest = (request) => {
-    // Update request status in localStorage
-    const requests = JSON.parse(localStorage.getItem('subscriptionRequests') || '[]');
-    const updatedRequests = requests.map(r =>
-      r.id === request.id ? { ...r, status: 'rejected' } : r
-    );
-    localStorage.setItem('subscriptionRequests', JSON.stringify(updatedRequests));
+  const handleRejectRequest = async (request) => {
+    const reason = prompt("سبب الرفض:");
+    if (!reason) return;
 
-    // Remove from pending list
-    setSubscriptionRequests(subscriptionRequests.filter(r => r.id !== request.id));
+    try {
+      await rejectSubscriptionRequest(request.id, reason);
 
-    toast({
-      title: "تم رفض الطلب",
-      description: `تم رفض طلب الطالب ${request.studentName}`,
-      variant: "destructive",
-    });
+      // Reload data
+      await loadSubscriptionRequests();
 
-    setIsViewRequestOpen(false);
-    setSelectedRequest(null);
+      toast({
+        title: "تم رفض الطلب",
+        description: `تم رفض طلب الطالب ${request.student_name}`,
+        variant: "destructive",
+      });
+
+      setIsViewRequestOpen(false);
+      setSelectedRequest(null);
+    } catch (error) {
+      console.error('Error rejecting request:', error);
+      toast({
+        title: "خطأ",
+        description: error instanceof Error ? error.message : "فشل في رفض الطلب",
+        variant: "destructive",
+      });
+    }
   };
 
   const processOfflinePayment = async (e: React.FormEvent) => {
@@ -354,29 +344,12 @@ const Fees = () => {
 
       const createdFee = await createFee(feeData);
 
-      // If payment was made, record it in revenues
-      if (paidAmount > 0) {
-        const revenueData = {
-          student_name: offlinePaymentData.studentName,
-          student_phone: offlinePaymentData.phone,
-          student_barcode: offlinePaymentData.barcode,
-          fee_id: createdFee.id,
-          amount: paidAmount,
-          payment_method: 'cash' as const,
-          payment_type: 'fee' as const,
-          description: `دفعة ${status === 'paid' ? 'كاملة' : 'جزئية'} للطالب ${offlinePaymentData.studentName}${remainingAmount > 0 ? ` - متبقي: ${remainingAmount} ج.م` : ''}`,
-          notes: offlinePaymentData.notes,
-          payment_date: new Date().toISOString().split('T')[0]
-        };
-
-        await createRevenue(revenueData);
-      }
-
+      // Add to offline fees list
       setOfflineFees([...offlineFees, createdFee]);
 
       toast({
         title: "تم إضافة الطالب بنجاح",
-        description: `تم تسجيل الطالب ${offlinePaymentData.studentName}${paidAmount > 0 ? ` وتسجيل دفعة ${paidAmount} ج.م في الإيرادات` : ''}${remainingAmount > 0 ? ` - المتبقي: ${remainingAmount} ج.م` : ''}`,
+        description: `تم تسجيل الطالب ${offlinePaymentData.studentName}${paidAmount > 0 ? ` بمبلغ ${paidAmount} ج.م` : ''}${remainingAmount > 0 ? ` - المتبقي: ${remainingAmount} ج.م` : ''}`,
       });
 
       setIsAddNewOpen(false);
@@ -400,41 +373,42 @@ const Fees = () => {
     }
   };
 
-  const processPayment = (e: React.FormEvent) => {
+  const processPayment = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!paymentImage) {
+    try {
+      const fee = fees.find(f => f.id === paymentData.feeId);
+      if (!fee) return;
+
+      const newPaidAmount = fee.paidAmount + parseFloat(paymentData.amount);
+      
+      // Update fee in database
+      await updateFee(fee.id, {
+        paid_amount: newPaidAmount,
+        status: newPaidAmount >= fee.amount ? 'paid' : 'partial',
+        payment_date: new Date().toISOString().split('T')[0],
+        payment_method: paymentData.paymentMethod,
+        notes: paymentData.notes
+      });
+
       toast({
-        title: "يرجى رفع صورة الإيصال",
-        description: "قم برفع صورة إيصال الدفع أولاً",
+        title: "تم تسجيل الدفع بنجاح",
+        description: "تم تحديث حالة المصروفات وحفظها في قاعدة البيانات",
+      });
+
+      // Refresh fees list
+      fetchFees();
+      
+      setIsOpen(false);
+      setPaymentData({ feeId: null, amount: "", paymentMethod: "cash", notes: "" });
+    } catch (error) {
+      console.error('Error processing payment:', error);
+      toast({
+        title: "خطأ",
+        description: "حدث خطأ أثناء معالجة الدفع",
         variant: "destructive",
       });
-      return;
     }
-
-    setFees(fees.map(fee => {
-      if (fee.id === paymentData.feeId) {
-        const newPaidAmount = fee.paidAmount + parseFloat(paymentData.amount);
-        const newStatus = newPaidAmount >= fee.amount ? "مدفوع" : "جزئي";
-
-        return {
-          ...fee,
-          paidAmount: newPaidAmount,
-          status: newStatus,
-          paymentDate: new Date().toISOString().split('T')[0]
-        };
-      }
-      return fee;
-    }));
-
-    toast({
-      title: "تم تسجيل الدفع بنجاح",
-      description: "تم تحديث حالة المصروفات وحفظ صورة الإيصال",
-    });
-
-    setIsOpen(false);
-    setPaymentData({ feeId: null, amount: "", paymentMethod: "cash", notes: "" });
-    removeImage();
   };
 
   const getStatusColor = (status: string) => {
@@ -463,8 +437,9 @@ const Fees = () => {
     }
   };
 
-  const totalFees = fees.reduce((sum, fee) => sum + fee.amount, 0);
-  const totalPaid = fees.reduce((sum, fee) => sum + fee.paidAmount, 0);
+  // Calculate totals from both online and offline fees
+  const totalFees = [...fees, ...offlineFees].reduce((sum, fee) => sum + (Number(fee.amount) || 0), 0);
+  const totalPaid = [...fees, ...offlineFees].reduce((sum, fee) => sum + (Number(fee.paidAmount) || 0), 0);
   const totalRemaining = totalFees - totalPaid;
 
   return (
@@ -493,7 +468,7 @@ const Fees = () => {
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">المبلغ المحصل</p>
-                  <p className="text-2xl font-bold text-green-600">{totalPaid} ج.م</p>
+                  <p className="text-2xl font-bold text-green-600">{totalPaid.toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ج.م</p>
                 </div>
               </div>
             </CardContent>
@@ -507,7 +482,7 @@ const Fees = () => {
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">المبلغ المتبقي</p>
-                  <p className="text-2xl font-bold text-red-600">{totalRemaining} ج.م</p>
+                  <p className="text-2xl font-bold text-red-600">{totalRemaining.toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ج.م</p>
                 </div>
               </div>
             </CardContent>
@@ -561,11 +536,11 @@ const Fees = () => {
                         <div className="flex items-center gap-3">
                           <Avatar className="h-8 w-8 border-2 border-white">
                             <AvatarFallback className="text-xs bg-white text-yellow-600">
-                              {request.studentName?.charAt(0) || 'ط'}
+                              {request.student_name?.charAt(0) || 'ط'}
                             </AvatarFallback>
                           </Avatar>
                           <div>
-                            <h4 className="font-bold text-white text-sm">{request.studentName}</h4>
+                            <h4 className="font-bold text-white text-sm">{request.student_name}</h4>
                           </div>
                         </div>
                         <Button
@@ -589,15 +564,15 @@ const Fees = () => {
                         </div>
                         <div>
                           <span className="text-xs text-muted-foreground">الصف:</span>
-                          <p className="font-medium">{request.gradeName}</p>
+                          <p className="font-medium">{request.grade_name}</p>
                         </div>
                         <div>
                           <span className="text-xs text-muted-foreground">المجموعة:</span>
-                          <p className="font-medium">{request.groupName}</p>
+                          <p className="font-medium">{request.group_name}</p>
                         </div>
                         <div>
                           <span className="text-xs text-muted-foreground">التاريخ:</span>
-                          <p className="font-medium">{new Date(request.createdAt).toLocaleDateString('ar-EG')}</p>
+                          <p className="font-medium">{new Date(request.created_at).toLocaleDateString('ar-EG')}</p>
                         </div>
                       </div>
                     </div>
@@ -1000,44 +975,7 @@ const Fees = () => {
                   placeholder="ملاحظات إضافية"
                 />
               </div>
-              <div className="space-y-2">
-                <Label>صورة إيصال الدفع *</Label>
-                <div className="mt-2">
-                  {!imagePreview ? (
-                    <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors">
-                      <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                        <Upload className="w-8 h-8 mb-2 text-gray-400" />
-                        <p className="text-sm text-gray-500">اضغط لرفع صورة الإيصال</p>
-                        <p className="text-xs text-gray-400 mt-1">PNG, JPG (حد أقصى 5MB)</p>
-                      </div>
-                      <input
-                        type="file"
-                        className="hidden"
-                        accept="image/*"
-                        onChange={handleImageChange}
-                      />
-                    </label>
-                  ) : (
-                    <div className="relative">
-                      <img
-                        src={imagePreview}
-                        alt="معاينة الإيصال"
-                        className="w-full h-48 object-cover rounded-lg border-2 border-gray-200"
-                      />
-                      <Button
-                        type="button"
-                        variant="destructive"
-                        size="sm"
-                        className="absolute top-2 left-2"
-                        onClick={removeImage}
-                      >
-                        <X className="w-4 h-4 ml-1" />
-                        حذف
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              </div>
+
               <Button type="submit" className="w-full">
                 تسجيل الدفعة
               </Button>
@@ -1056,7 +994,7 @@ const Fees = () => {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label className="text-muted-foreground">اسم الطالب</Label>
-                    <p className="font-medium">{selectedRequest.studentName}</p>
+                    <p className="font-medium">{selectedRequest.student_name}</p>
                   </div>
                   <div>
                     <Label className="text-muted-foreground">رقم الموبايل</Label>
@@ -1064,11 +1002,11 @@ const Fees = () => {
                   </div>
                   <div>
                     <Label className="text-muted-foreground">الصف الدراسي</Label>
-                    <p className="font-medium">{selectedRequest.gradeName}</p>
+                    <p className="font-medium">{selectedRequest.grade_name}</p>
                   </div>
                   <div>
                     <Label className="text-muted-foreground">المجموعة</Label>
-                    <p className="font-medium">{selectedRequest.groupName}</p>
+                    <p className="font-medium">{selectedRequest.group_name}</p>
                   </div>
                   <div>
                     <Label className="text-muted-foreground">المبلغ المدفوع</Label>
@@ -1083,11 +1021,11 @@ const Fees = () => {
                   </div>
                 )}
 
-                {selectedRequest.imagePreview && (
+                {selectedRequest.receipt_image_url && (
                   <div>
                     <Label className="text-muted-foreground">صورة إيصال الدفع</Label>
                     <img
-                      src={selectedRequest.imagePreview}
+                      src={selectedRequest.receipt_image_url}
                       alt="إيصال الدفع"
                       className="mt-2 w-full rounded-lg border-2 border-gray-200"
                     />
