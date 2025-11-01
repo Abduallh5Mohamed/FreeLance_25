@@ -1,3 +1,6 @@
+# robots.txt - منصة القائد للتاريخ
+# استاذ محمد رمضان - تاريخ اولى ثانوي تانية ثانوي تالتة ثانوي
+
 User-agent: Googlebot
 Allow: /
 
@@ -12,3 +15,8 @@ Allow: /
 
 User-agent: *
 Allow: /
+Disallow: /admin
+Disallow: /api
+
+# Sitemap
+Sitemap: https://nested.website/sitemap.xml

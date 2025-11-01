@@ -471,8 +471,8 @@ const Index = () => {
               },
               {
                 icon: Award,
-                title: "شهادات معتمدة",
-                description: "احصل على شهادات معترف بها عند إتمام الدورات"
+                title: "وجود AI شات بوت",
+                description: "مساعد ذكي متاح على مدار الساعة للإجابة على استفساراتك"
               }
             ].map((feature, index) => (
               <motion.div
@@ -646,22 +646,19 @@ const Index = () => {
             {[
               {
                 name: "أحمد محمد",
-                role: "طالب ثانوية",
-                comment: "منصة رائعة ساعدتني كثيراً في فهم الرياضيات. المعلمون محترفون والشرح واضح جداً!",
+                comment: "المنصة دي فادتني جدًا في التاريخ. الشرح مرتب وخلّاني أفهم الأحداث بسهولة!",
                 rating: 5,
                 image: "👨‍🎓"
               },
               {
                 name: "فاطمة علي",
-                role: "طالبة جامعية",
-                comment: "أفضل تجربة تعليمية مررت بها! الدورات منظمة والمحتوى غني بالمعلومات القيمة.",
+                comment: "أجمد تجربة في التاريخ شفتها! الكورسات منظمة والمحتوى مليان معلومات مهمة.",
                 rating: 5,
                 image: "👩‍🎓"
               },
               {
                 name: "خالد سعيد",
-                role: "ولي أمر",
-                comment: "شاهدت تحسناً كبيراً في مستوى أبنائي الدراسي. شكراً لكم على جهودكم الرائعة!",
+                comment: "بصيت على أولادي ولاحظت فرق كبير في فهمهم للتاريخ. متشكرين جدًا!",
                 rating: 5,
                 image: "👨‍💼"
               }
@@ -685,7 +682,6 @@ const Index = () => {
                 <p className="text-gray-700 text-lg mb-8 italic leading-relaxed">"{testimonial.comment}"</p>
                 <div>
                   <p className="font-black text-xl text-[#0d9488] mb-1">{testimonial.name}</p>
-                  <p className="text-base text-gray-600 font-semibold">{testimonial.role}</p>
                 </div>
                 <div className="absolute bottom-0 left-0 w-full h-2 bg-gradient-to-r from-[#0d9488] to-[#06b6d4] transform scale-x-0 group-hover:scale-x-100 transition-transform duration-500 rounded-b-3xl"></div>
               </motion.div>
@@ -709,8 +705,8 @@ const Index = () => {
             <h2 className="text-4xl md:text-5xl font-black mb-4 text-[#0d9488]">
               لماذا نحن الأفضل؟
             </h2>
-            <p className="text-sm text-[#0d9488] flex items-center gap-2">
-              © 2025 القائد. جميع الحقوق محفوظة
+            <p className="text-lg text-[#0d9488] font-semibold">
+              مميزات فريدة تجعلنا الخيار الأول للطلاب
             </p>
           </motion.div>
 
@@ -909,8 +905,8 @@ const Index = () => {
           <div className="border-t-2 border-[#0d9488]/20 pt-12 mt-8">
             <div className="flex flex-col md:flex-row items-center justify-between gap-8">
               <div className="flex items-center gap-6">
-                <img src={alQaedLogo} alt="Qa'ad Logo" className="h-14 object-contain drop-shadow-[0_0_15px_rgba(13,148,136,0.3)]" />
-                <p className="text-gray-700 text-lg font-semibold">© 2025 قاعد. جميع الحقوق محفوظة</p>
+                <img src={alQaedLogo} alt="القائد" className="h-14 object-contain drop-shadow-[0_0_15px_rgba(13,148,136,0.3)]" />
+                <p className="text-gray-700 text-lg font-semibold">© 2025 القائد. جميع الحقوق محفوظة</p>
               </div>
               <div className="flex gap-5">
                 {[Facebook, Twitter, Instagram, Youtube].map((Icon, index) => (
