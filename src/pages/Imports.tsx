@@ -10,7 +10,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Package, Plus, TrendingDown, Trash2, Edit2, User, Calendar, DollarSign, Phone, FileText, ShoppingCart } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import { getImports, createImport, deleteImport, getFees, type Import } from "@/lib/api-http";
 
 const Imports = () => {
   const [imports, setImports] = useState([]);
@@ -38,15 +38,23 @@ const Imports = () => {
 
   const fetchImports = async () => {
     try {
-      const { data, error } = await supabase
-        .from('imports')
-        .select('*')
-        .order('import_date', { ascending: false });
-
-      if (error) throw error;
-
-      setImports(data || []);
-      const total = data?.reduce((sum, item) => sum + Number(item.total_amount), 0) || 0;
+      console.log('🔄 Fetching imports...');
+      // Fetch imports data
+      const importsData = await getImports();
+      console.log('✅ Imports data received:', importsData);
+      setImports(importsData || []);
+      
+      // Fetch fees data to get total collected from students
+      const feesData = await getFees();
+      
+      // Calculate total collected from student fees (both online and offline)
+      const feesCollected = feesData?.reduce((sum, fee) => sum + (Number(fee.paid_amount) || 0), 0) || 0;
+      
+      // Calculate total paid for imports (subtract from total)
+      const importsPaid = importsData?.reduce((sum, item) => sum + Number(item.paid_amount || 0), 0) || 0;
+      
+      // Total = student fees collected - imports paid
+      const total = feesCollected - importsPaid;
       setTotalImports(total);
     } catch (error) {
       console.error('Error fetching imports:', error);
@@ -59,16 +67,8 @@ const Imports = () => {
   };
 
   const fetchItems = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('items')
-        .select('*');
-
-      if (error) throw error;
-      setItems(data || []);
-    } catch (error) {
-      console.error('Error fetching items:', error);
-    }
+    // Items fetching removed - can be added later if needed
+    setItems([]);
   };
 
   const handleAddItem = () => {
@@ -117,64 +117,23 @@ const Imports = () => {
         return;
       }
 
-      if (currentItems.length === 0 || !currentItems[0].item_name) {
-        toast({
-          title: "خطأ",
-          description: "الرجاء إضافة عنصر واحد على الأقل",
-          variant: "destructive"
-        });
-        setLoading(false);
-        return;
-      }
-
-      const totalAmount = calculateTotal();
       const paidAmount = Number(formData.paid_amount);
-      const remainingAmount = totalAmount - paidAmount;
 
       // Insert import record
-      const { error: importError } = await supabase
-        .from('imports')
-        .insert({
-          supplier_name: formData.supplier_name,
-          supplier_phone: formData.supplier_phone,
-          items: currentItems,
-          total_amount: totalAmount,
-          paid_amount: paidAmount,
-          remaining_amount: remainingAmount,
-          import_date: formData.import_date,
-          payment_method: formData.payment_method,
-          notes: formData.notes
-        });
-
-      if (importError) throw importError;
-
-      // Deduct from cash account (expense)
-      const { error: cashError } = await supabase
-        .from('cash_account')
-        .insert({
-          type: 'expense',
-          category: 'imports',
-          amount: paidAmount,
-          date: formData.import_date,
-          description: `مستوردات من ${formData.supplier_name} - ${currentItems.length} عنصر`
-        });
-
-      if (cashError) throw cashError;
-
-      // Add to expenses table
-      await supabase
-        .from('expenses')
-        .insert({
-          amount: paidAmount,
-          description: `مستوردات من ${formData.supplier_name}`,
-          category: 'imports',
-          date: formData.import_date,
-          time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
-        });
+      await createImport({
+        supplier_name: formData.supplier_name,
+        supplier_phone: formData.supplier_phone,
+        items: currentItems,
+        total_amount: paidAmount,
+        paid_amount: paidAmount,
+        import_date: formData.import_date,
+        payment_method: formData.payment_method,
+        notes: formData.notes
+      });
 
       toast({
         title: "تم التسجيل",
-        description: "تم إضافة المستوردات وخصمها من كشف الحساب بنجاح",
+        description: "تم إضافة المستوردات بنجاح",
       });
 
       fetchImports();
@@ -207,12 +166,7 @@ const Imports = () => {
   const handleDelete = async (id: string) => {
     if (window.confirm("هل أنت متأكد من حذف هذا السجل؟")) {
       try {
-        const { error } = await supabase
-          .from('imports')
-          .delete()
-          .eq('id', id);
-
-        if (error) throw error;
+        await deleteImport(id);
 
         toast({
           title: "تم الحذف",
@@ -315,30 +269,23 @@ const Imports = () => {
                 </div>
 
                 {/* Payment & Total */}
-                <div className="grid grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg">
-                  <div>
-                    <Label className="text-sm text-muted-foreground">الإجمالي</Label>
-                    <p className="text-2xl font-bold text-cyan-600">{calculateTotal().toFixed(2)} ج.م</p>
-                  </div>
-
+                <div className="grid grid-cols-1 gap-4 p-4 bg-muted/50 rounded-lg">
                   <div className="space-y-2">
                     <Label htmlFor="paid_amount">المبلغ المدفوع</Label>
                     <Input
                       id="paid_amount"
                       type="number"
-                      value={formData.paid_amount}
-                      onChange={(e) => setFormData({ ...formData, paid_amount: Number(e.target.value) })}
+                      value={formData.paid_amount || ""}
+                      onChange={(e) => setFormData({ ...formData, paid_amount: e.target.value === "" ? 0 : Number(e.target.value) })}
                       min="0"
                       step="0.01"
-                      max={calculateTotal()}
+                      placeholder="0.00"
                     />
                   </div>
 
-                  <div className="col-span-2">
-                    <Label className="text-sm text-muted-foreground">المتبقي</Label>
-                    <p className="text-xl font-bold text-primary">
-                      {(calculateTotal() - Number(formData.paid_amount)).toFixed(2)} ج.م
-                    </p>
+                  <div>
+                    <Label className="text-sm text-muted-foreground">الإجمالي</Label>
+                    <p className="text-2xl font-bold text-cyan-600">{(Number(formData.paid_amount) || 0).toFixed(2)} ج.م</p>
                   </div>
                 </div>
 

@@ -18,6 +18,7 @@ import {
   Wallet,
   ClipboardList,
   Video,
+  CreditCard,
   Upload,
   ClipboardCheck,
   Brain

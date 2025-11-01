@@ -104,12 +104,8 @@ router.get('/', async (req: Request, res: Response) => {
         await ensureFeesSchema();
         const { is_offline, status, phone, name } = req.query;
         
-        let sql = `
-            SELECT f.*, s.id AS student_id
-            FROM student_fees f
-            LEFT JOIN students s ON f.barcode = s.barcode
-            WHERE 1=1`;
-        const params: any[] = [];
+        let sql = `SELECT * FROM student_fees WHERE 1=1`;
+        const params: unknown[] = [];
         
         if (is_offline !== undefined) {
             sql += ' AND is_offline = ?';
@@ -122,16 +118,16 @@ router.get('/', async (req: Request, res: Response) => {
         }
 
         if (phone) {
-            sql += ' AND f.phone = ?';
+            sql += ' AND phone = ?';
             params.push(phone);
         }
 
         if (name) {
-            sql += ' AND f.student_name LIKE ?';
+            sql += ' AND student_name LIKE ?';
             params.push(`%${name}%`);
         }
         
-        sql += ' ORDER BY f.created_at DESC';
+        sql += ' ORDER BY created_at DESC';
         
         const fees = await query<Fee>(sql, params);
         res.json(fees);
@@ -224,17 +220,14 @@ router.post('/', async (req: Request, res: Response) => {
             );
         }
 
-        if (!linkedStudent) {
-            return res.status(404).json({ error: 'Student not found in database. Please register student first.' });
-        }
-
-        const resolvedStudentName = linkedStudent.name || student_name;
-        const resolvedPhone = linkedStudent.phone || phone;
-        const resolvedGradeId = linkedStudent.grade_id || grade_id;
-        const resolvedGradeName = linkedStudent.grade_name || grade_name;
-        const resolvedGroupId = linkedStudent.group_id || group_id;
-        const resolvedGroupName = linkedStudent.group_name || group_name;
-        const resolvedBarcode = linkedStudent.barcode || barcode;
+        // For offline students, allow direct creation without requiring student in database
+        const resolvedStudentName = linkedStudent?.name || student_name;
+        const resolvedPhone = linkedStudent?.phone || phone;
+        const resolvedGradeId = linkedStudent?.grade_id || grade_id;
+        const resolvedGradeName = linkedStudent?.grade_name || grade_name;
+        const resolvedGroupId = linkedStudent?.group_id || group_id;
+        const resolvedGroupName = linkedStudent?.group_name || group_name;
+        const resolvedBarcode = linkedStudent?.barcode || barcode;
 
         const result = await execute(
             `INSERT INTO student_fees (

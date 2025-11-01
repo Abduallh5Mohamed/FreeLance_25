@@ -996,3 +996,255 @@ export const deleteRevenue = async (id: string): Promise<void> => {
         method: 'DELETE',
     });
 };
+
+// ====================================
+// Payment Requests Functions
+// ====================================
+
+export interface PaymentRequest {
+    id?: number;
+    student_id: string;
+    grade_id: string;
+    group_id: string;
+    amount: number;
+    payment_method?: string;
+    status?: 'pending' | 'approved' | 'rejected';
+    receipt_image_url?: string;
+    notes?: string;
+    rejection_reason?: string;
+    student_name?: string;
+    student_phone?: string;
+    grade_name?: string;
+    group_name?: string;
+    created_at?: string;
+    updated_at?: string;
+}
+
+export const getPaymentRequests = async (filters?: {
+    status?: string;
+    student_id?: string;
+}): Promise<PaymentRequest[]> => {
+    const queryParams = new URLSearchParams();
+    if (filters?.status) queryParams.append('status', filters.status);
+    if (filters?.student_id) queryParams.append('student_id', filters.student_id);
+    
+    const queryString = queryParams.toString();
+    return request<PaymentRequest[]>(`/payment-requests${queryString ? `?${queryString}` : ''}`);
+};
+
+export const createPaymentRequest = async (data: Partial<PaymentRequest>): Promise<{ message: string; id: number }> => {
+    return request<{ message: string; id: number }>('/payment-requests', {
+        method: 'POST',
+        body: JSON.stringify(data),
+    });
+};
+
+export const approvePaymentRequest = async (id: number): Promise<{ message: string }> => {
+    return request<{ message: string }>(`/payment-requests/${id}/approve`, {
+        method: 'POST',
+    });
+};
+
+export const rejectPaymentRequest = async (id: number, rejection_reason: string): Promise<{ message: string }> => {
+    return request<{ message: string }>(`/payment-requests/${id}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ rejection_reason }),
+    });
+};
+
+export const getPaymentRequestsStats = async (): Promise<{
+    total: number;
+    pending: number;
+    approved: number;
+    rejected: number;
+    total_approved_amount: number;
+}> => {
+    return request('/payment-requests/stats/summary');
+};
+
+// ====================================
+// Notifications Functions
+// ====================================
+
+export interface Notification {
+    id: number;
+    user_id: number;
+    user_type: 'student' | 'admin' | 'teacher';
+    title: string;
+    message: string;
+    type: string;
+    is_read: boolean;
+    created_at: string;
+}
+
+export const getNotifications = async (filters?: {
+    user_id?: number;
+    user_type?: string;
+    is_read?: boolean;
+}): Promise<Notification[]> => {
+    const queryParams = new URLSearchParams();
+    if (filters?.user_id) queryParams.append('user_id', filters.user_id.toString());
+    if (filters?.user_type) queryParams.append('user_type', filters.user_type);
+    if (filters?.is_read !== undefined) queryParams.append('is_read', filters.is_read.toString());
+    
+    const queryString = queryParams.toString();
+    return request<Notification[]>(`/notifications${queryString ? `?${queryString}` : ''}`);
+};
+
+export const markNotificationAsRead = async (id: number): Promise<{ message: string }> => {
+    return request<{ message: string }>(`/notifications/${id}/read`, {
+        method: 'PUT',
+    });
+};
+
+export const markAllNotificationsAsRead = async (user_id: number, user_type: string): Promise<{ message: string }> => {
+    return request<{ message: string }>('/notifications/read-all', {
+        method: 'PUT',
+        body: JSON.stringify({ user_id, user_type }),
+    });
+};
+
+export const getUnreadNotificationsCount = async (user_id: number, user_type: string): Promise<{ count: number }> => {
+    return request<{ count: number }>(`/notifications/unread-count?user_id=${user_id}&user_type=${user_type}`);
+};
+
+// ====================================
+// Subscription Requests Functions
+// ====================================
+
+export interface SubscriptionRequest {
+    id?: number;
+    student_name: string;
+    phone: string;
+    grade_id?: number | null;
+    grade_name?: string | null;
+    group_id?: number | null;
+    group_name?: string | null;
+    amount?: number | null;
+    notes?: string | null;
+    receipt_image_url?: string | null;
+    status?: 'pending' | 'approved' | 'rejected';
+    rejection_reason?: string | null;
+    created_at?: string;
+    updated_at?: string;
+}
+
+export const getSubscriptionRequests = async (filters?: {
+    status?: string;
+}): Promise<SubscriptionRequest[]> => {
+    const queryParams = new URLSearchParams();
+    if (filters?.status) queryParams.append('status', filters.status);
+    
+    const queryString = queryParams.toString();
+    return request<SubscriptionRequest[]>(`/subscription-requests${queryString ? `?${queryString}` : ''}`);
+};
+
+export const createSubscriptionRequest = async (data: Omit<SubscriptionRequest, 'id' | 'status' | 'created_at' | 'updated_at'>): Promise<{ message: string }> => {
+    return request<{ message: string }>('/subscription-requests', {
+        method: 'POST',
+        body: JSON.stringify(data),
+    });
+};
+
+export const approveSubscriptionRequest = async (id: number): Promise<{ message: string }> => {
+    return request<{ message: string }>(`/subscription-requests/${id}/approve`, {
+        method: 'POST',
+    });
+};
+
+export const rejectSubscriptionRequest = async (id: number, rejection_reason: string): Promise<{ message: string }> => {
+    return request<{ message: string }>(`/subscription-requests/${id}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ rejection_reason }),
+    });
+};
+
+// ==================== Expenses ====================
+export interface Expense {
+    id: string;
+    description: string;
+    amount: number;
+    category: string;
+    date: string;
+    time: string;
+    created_at?: string;
+    updated_at?: string;
+}
+
+export const getExpenses = async (): Promise<Expense[]> => {
+    return request<Expense[]>('/expenses', {
+        method: 'GET',
+    });
+};
+
+export const createExpense = async (expense: Omit<Expense, 'id' | 'created_at' | 'updated_at'>): Promise<Expense> => {
+    return request<Expense>('/expenses', {
+        method: 'POST',
+        body: JSON.stringify(expense),
+    });
+};
+
+export const updateExpense = async (id: string, expense: Partial<Expense>): Promise<Expense> => {
+    return request<Expense>(`/expenses/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(expense),
+    });
+};
+
+export const deleteExpense = async (id: string): Promise<void> => {
+    await request<void>(`/expenses/${id}`, {
+        method: 'DELETE',
+    });
+};
+
+// ==================== Imports ====================
+export interface Import {
+    id: string;
+    supplier_name: string;
+    supplier_phone: string;
+    import_date: string;
+    payment_method: string;
+    total_amount: number;
+    paid_amount: number;
+    remaining_amount?: number;
+    notes?: string;
+    items?: ImportItem[];
+    created_at?: string;
+    updated_at?: string;
+}
+
+export interface ImportItem {
+    id?: string;
+    import_id?: string;
+    item_code: string;
+    item_name: string;
+    quantity: number;
+    unit_price: number;
+    total_price?: number;
+}
+
+export const getImports = async (): Promise<Import[]> => {
+    return request<Import[]>('/imports', {
+        method: 'GET',
+    });
+};
+
+export const createImport = async (importData: Omit<Import, 'id' | 'created_at' | 'updated_at'>): Promise<Import> => {
+    return request<Import>('/imports', {
+        method: 'POST',
+        body: JSON.stringify(importData),
+    });
+};
+
+export const updateImport = async (id: string, importData: Partial<Import>): Promise<Import> => {
+    return request<Import>(`/imports/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(importData),
+    });
+};
+
+export const deleteImport = async (id: string): Promise<void> => {
+    await request<void>(`/imports/${id}`, {
+        method: 'DELETE',
+    });
+};
