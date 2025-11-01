@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
-import { 
+import {
   Menu,
   X,
   LogOut,
@@ -96,7 +96,7 @@ const StudentHeader = () => {
       }
 
       setPaymentImage(file);
-      
+
       // Create preview
       const reader = new FileReader();
       reader.onloadend = () => {
@@ -149,6 +149,11 @@ const StudentHeader = () => {
       const offlineSession = localStorage.getItem('offlineStudentSession');
       if (offlineSession) {
         localStorage.removeItem('offlineStudentSession');
+        // Clear all authentication data
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('currentUser');
+        localStorage.removeItem('currentStudent');
+        localStorage.removeItem('supabaseUser');
         toast({
           title: "تم تسجيل الخروج بنجاح",
           description: "أراك لاحقاً!",
@@ -157,20 +162,24 @@ const StudentHeader = () => {
         return;
       }
 
-      // Clear student session if exists
+      // Clear student session and all authentication data
       localStorage.removeItem('student_session');
-      
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('currentUser');
+      localStorage.removeItem('currentStudent');
+      localStorage.removeItem('supabaseUser');
+
       // Sign out from Supabase (for online students and admin users)
       const { error } = await supabase.auth.signOut();
       if (error && error.message !== "No session found") {
         throw error;
       }
-      
+
       toast({
         title: "تم تسجيل الخروج بنجاح",
         description: "أراك لاحقاً!",
       });
-      
+
       navigate("/");
     } catch (error) {
       toast({
@@ -343,7 +352,7 @@ const StudentHeader = () => {
                     </div>
                   </div>
 
-                  <Button 
+                  <Button
                     type="button"
                     className="w-full bg-gradient-to-r from-green-500 to-emerald-600"
                     onClick={async () => {
@@ -398,12 +407,12 @@ const StudentHeader = () => {
                           notes: notes || null,
                           receipt_image_url: imagePreview || null,
                         });
-                        
+
                         toast({
                           title: "✅ تم إرسال الطلب بنجاح",
                           description: "سيتم مراجعة طلبك والرد عليك قريباً",
                         });
-                        
+
                         setShowPaymentDialog(false);
                         setStudentName("");
                         setStudentPhone("");
@@ -473,7 +482,7 @@ const StudentHeader = () => {
                     </button>
                   );
                 })}
-                
+
                 {/* Logout Button - Mobile */}
                 <button
                   onClick={() => {

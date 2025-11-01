@@ -38,9 +38,9 @@ import Grades from "./pages/Grades";
 import StudentRegistrationRequests from "./pages/StudentRegistrationRequests";
 import TeacherContentManager from "./pages/TeacherContentManager";
 import TeacherLectures from "./pages/TeacherLectures";
-import TeacherMaterials from "./pages/TeacherMaterials";
 import TeacherExams from "./pages/TeacherExams";
 import ChatAssistant from "./pages/ChatAssistant";
+import AuthGuard from "./components/AuthGuard";
 
 const queryClient = new QueryClient();
 
@@ -54,40 +54,43 @@ const App = () => (
           <Route path="/" element={<Index />} />
           <Route path="/promo" element={<PromoVideo />} />
           <Route path="/auth" element={<Auth />} />
-          <Route path="/teacher" element={<TeacherDashboard />} />
-          <Route path="/student" element={<StudentDashboard />} />
-          <Route path="/student-chat" element={<StudentChat />} />
-          <Route path="/student-content" element={<StudentContent />} />
-          <Route path="/student-lectures" element={<StudentLectures />} />
-          <Route path="/student-exams" element={<StudentExams />} />
-          <Route path="/courses" element={<Courses />} />
-          <Route path="/students" element={<Students />} />
-          <Route path="/offline-students" element={<OfflineStudents />} />
-          <Route path="/registration-requests" element={<StudentRegistrationRequests />} />
-          <Route path="/subscriptions" element={<Subscriptions />} />
-          <Route path="/groups" element={<Groups />} />
-          <Route path="/grades" element={<Grades />} />
-          <Route path="/attendance" element={<Attendance />} />
-          <Route path="/barcode-attendance" element={<QRAttendance />} />
-          <Route path="/fees" element={<Fees />} />
-          <Route path="/messages" element={<Messages />} />
-          <Route path="/reports" element={<Reports />} />
-          <Route path="/expenses" element={<Expenses />} />
-          <Route path="/account-statement" element={<AccountStatement />} />
-          <Route path="/imports" element={<Imports />} />
-          <Route path="/student-barcodes" element={<StudentBarcodes />} />
-          <Route path="/barcode-attendance" element={<BarcodeAttendance />} />
-          <Route path="/profits" element={<Profits />} />
-          <Route path="/staff" element={<Staff />} />
-          <Route path="/online-meeting" element={<OnlineMeeting />} />
-          <Route path="/course-content" element={<CourseContentManager />} />
-          <Route path="/teacher-content-manager" element={<TeacherContentManager />} />
-          <Route path="/teacher-lectures" element={<TeacherLectures />} />
-          <Route path="/teacher-materials" element={<TeacherMaterials />} />
-          <Route path="/teacher-exams" element={<TeacherExams />} />
-          <Route path="/chat-assistant" element={<ChatAssistant />} />
-          <Route path="/exam-access" element={<ExamAccess />} />
-          <Route path="/take-exam/:examId" element={<TakeExam />} />
+
+          {/* Teacher Routes - Protected */}
+          <Route path="/teacher" element={<AuthGuard requiredRole="teacher"><TeacherDashboard /></AuthGuard>} />
+          <Route path="/courses" element={<AuthGuard requiredRole="teacher"><Courses /></AuthGuard>} />
+          <Route path="/students" element={<AuthGuard requiredRole="teacher"><Students /></AuthGuard>} />
+          <Route path="/offline-students" element={<AuthGuard requiredRole="teacher"><OfflineStudents /></AuthGuard>} />
+          <Route path="/registration-requests" element={<AuthGuard requiredRole="teacher"><StudentRegistrationRequests /></AuthGuard>} />
+          <Route path="/subscriptions" element={<AuthGuard requiredRole="teacher"><Subscriptions /></AuthGuard>} />
+          <Route path="/groups" element={<AuthGuard requiredRole="teacher"><Groups /></AuthGuard>} />
+          <Route path="/grades" element={<AuthGuard requiredRole="teacher"><Grades /></AuthGuard>} />
+          <Route path="/attendance" element={<AuthGuard requiredRole="teacher"><Attendance /></AuthGuard>} />
+          <Route path="/barcode-attendance" element={<AuthGuard requiredRole="teacher"><QRAttendance /></AuthGuard>} />
+          <Route path="/fees" element={<AuthGuard requiredRole="teacher"><Fees /></AuthGuard>} />
+          <Route path="/messages" element={<AuthGuard requiredRole="teacher"><Messages /></AuthGuard>} />
+          <Route path="/reports" element={<AuthGuard requiredRole="teacher"><Reports /></AuthGuard>} />
+          <Route path="/expenses" element={<AuthGuard requiredRole="teacher"><Expenses /></AuthGuard>} />
+          <Route path="/account-statement" element={<AuthGuard requiredRole="teacher"><AccountStatement /></AuthGuard>} />
+          <Route path="/imports" element={<AuthGuard requiredRole="teacher"><Imports /></AuthGuard>} />
+          <Route path="/student-barcodes" element={<AuthGuard requiredRole="teacher"><StudentBarcodes /></AuthGuard>} />
+          <Route path="/profits" element={<AuthGuard requiredRole="teacher"><Profits /></AuthGuard>} />
+          <Route path="/staff" element={<AuthGuard requiredRole="teacher"><Staff /></AuthGuard>} />
+          <Route path="/online-meeting" element={<AuthGuard requiredRole="teacher"><OnlineMeeting /></AuthGuard>} />
+          <Route path="/course-content" element={<AuthGuard requiredRole="teacher"><CourseContentManager /></AuthGuard>} />
+          <Route path="/teacher-content-manager" element={<AuthGuard requiredRole="teacher"><TeacherContentManager /></AuthGuard>} />
+          <Route path="/teacher-lectures" element={<AuthGuard requiredRole="teacher"><TeacherLectures /></AuthGuard>} />
+          <Route path="/teacher-exams" element={<AuthGuard requiredRole="teacher"><TeacherExams /></AuthGuard>} />
+          <Route path="/chat-assistant" element={<AuthGuard requiredRole="teacher"><ChatAssistant /></AuthGuard>} />
+
+          {/* Student Routes - Protected */}
+          <Route path="/student" element={<AuthGuard requiredRole="student"><StudentDashboard /></AuthGuard>} />
+          <Route path="/student-chat" element={<AuthGuard requiredRole="student"><StudentChat /></AuthGuard>} />
+          <Route path="/student-content" element={<AuthGuard requiredRole="student"><StudentContent /></AuthGuard>} />
+          <Route path="/student-lectures" element={<AuthGuard requiredRole="student"><StudentLectures /></AuthGuard>} />
+          <Route path="/student-exams" element={<AuthGuard requiredRole="student"><StudentExams /></AuthGuard>} />
+          <Route path="/exam-access" element={<AuthGuard requiredRole="student"><ExamAccess /></AuthGuard>} />
+          <Route path="/take-exam/:examId" element={<AuthGuard requiredRole="student"><TakeExam /></AuthGuard>} />
+
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

@@ -7,17 +7,17 @@ const router = Router();
 router.get('/', async (req: Request, res: Response) => {
   try {
     const { status } = req.query;
-    
+
     let sql = 'SELECT * FROM subscription_requests WHERE 1=1';
     const params: unknown[] = [];
-    
+
     if (status) {
       sql += ' AND status = ?';
       params.push(status);
     }
-    
+
     sql += ' ORDER BY created_at DESC';
-    
+
     const requests = await query(sql, params);
     res.json(requests);
   } catch (error) {
@@ -45,14 +45,21 @@ router.post('/', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Student name and phone are required' });
     }
 
+    // Generate UUID for the new request
+    const { randomUUID } = await import('crypto');
+    const requestId = randomUUID();
+
     await execute(
       `INSERT INTO subscription_requests 
-       (student_name, phone, grade_id, grade_name, group_id, group_name, amount, notes, receipt_image_url, status) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-      [student_name, phone, grade_id || null, grade_name || null, group_id || null, group_name || null, amount || null, notes || null, receipt_image_url || null]
+       (id, student_name, phone, grade_id, grade_name, group_id, group_name, amount, notes, receipt_image_url, status) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      [requestId, student_name, phone, grade_id || null, grade_name || null, group_id || null, group_name || null, amount || null, notes || null, receipt_image_url || null]
     );
 
-    res.status(201).json({ message: 'Subscription request created successfully' });
+    res.status(201).json({
+      message: 'Subscription request created successfully',
+      id: requestId
+    });
   } catch (error) {
     console.error('Error creating subscription request:', error);
     res.status(500).json({ error: 'Failed to create subscription request' });
@@ -63,18 +70,18 @@ router.post('/', async (req: Request, res: Response) => {
 router.post('/:id/approve', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    
+
     const requests = await query(
       'SELECT * FROM subscription_requests WHERE id = ?',
       [id]
     ) as unknown[];
-    
+
     if (!Array.isArray(requests) || requests.length === 0) {
       return res.status(404).json({ error: 'Subscription request not found' });
     }
-    
+
     const request = requests[0] as Record<string, unknown>;
-    
+
     if (request.status !== 'pending') {
       return res.status(400).json({ error: 'Request already processed' });
     }
@@ -149,22 +156,22 @@ router.post('/:id/reject', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { rejection_reason } = req.body;
-    
+
     if (!rejection_reason) {
       return res.status(400).json({ error: 'Rejection reason is required' });
     }
-    
+
     const requests = await query(
       'SELECT * FROM subscription_requests WHERE id = ?',
       [id]
     ) as unknown[];
-    
+
     if (!Array.isArray(requests) || requests.length === 0) {
       return res.status(404).json({ error: 'Subscription request not found' });
     }
-    
+
     const request = requests[0] as Record<string, unknown>;
-    
+
     if (request.status !== 'pending') {
       return res.status(400).json({ error: 'Request already processed' });
     }

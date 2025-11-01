@@ -19,7 +19,6 @@ import {
   ClipboardList,
   Video,
   CreditCard,
-  Upload,
   ClipboardCheck,
   Brain
 } from "lucide-react";
@@ -45,7 +44,6 @@ const Header = () => {
 
   const teacherMenu = [
     { name: "رفع المحاضرات", href: "/teacher-lectures", icon: Video },
-    { name: "رفع المواد", href: "/teacher-materials", icon: Upload },
     { name: "إنشاء امتحانات", href: "/teacher-exams", icon: ClipboardCheck },
   ];
 
@@ -84,8 +82,12 @@ const Header = () => {
 
   const handleLogout = async () => {
     try {
-      // Clear student session if exists
+      // Clear all authentication data
       localStorage.removeItem('student_session');
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('currentUser');
+      localStorage.removeItem('currentStudent');
+      localStorage.removeItem('supabaseUser');
 
       // Sign out from Supabase (for admin users)
       const { error } = await supabase.auth.signOut();

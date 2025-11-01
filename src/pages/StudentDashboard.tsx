@@ -245,11 +245,22 @@ const StudentDashboard = () => {
                     مرحباً، {studentData.name} 👋
                   </motion.h1>
 
-                  {/* Badges - Stack vertically on mobile */}
-                  <div className="flex flex-col sm:flex-row gap-2 items-center justify-center flex-wrap">
-                    <Badge className="bg-gradient-to-r from-blue-500 to-cyan-500 text-white border-0 text-xs sm:text-sm px-3 py-1">
-                      {studentData.email}
-                    </Badge>
+                  {/* Barcode Image */}
+                  {studentData.barcode && (
+                    <div className="flex flex-col items-center gap-2 my-3">
+                      <img
+                        src={`https://barcode.tec-it.com/barcode.ashx?data=${studentData.barcode}&code=Code128&translate-esc=on`}
+                        alt="Student Barcode"
+                        className="h-16 sm:h-20 border-2 border-primary/20 rounded-lg p-2 bg-white"
+                      />
+                      <Badge className="bg-gradient-to-r from-blue-500 to-cyan-500 text-white border-0 text-xs sm:text-sm px-3 py-1">
+                        {studentData.barcode}
+                      </Badge>
+                    </div>
+                  )}
+
+                  {/* Grade Badge */}
+                  <div className="flex justify-center">
                     <Badge className="bg-gradient-to-r from-purple-500 to-pink-500 text-white border-0 text-xs sm:text-sm px-3 py-1">
                       {studentData.grade}
                     </Badge>
@@ -422,65 +433,6 @@ const StudentDashboard = () => {
 
           {/* Main Content */}
           <div className="md:col-span-2 lg:col-span-3 space-y-3 md:space-y-4 lg:space-y-6">
-            {/* Course Materials */}
-            <Card className="shadow-soft">
-              <CardHeader className="pb-3 md:pb-4">
-                <CardTitle className="flex items-center gap-2 text-base md:text-lg">
-                  <FileText className="w-4 h-4 md:w-5 md:h-5" />
-                  <span className="text-sm md:text-base">المحتوى التعليمي</span>
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2 md:space-y-3">
-                  {materials.length > 0 ? (
-                    materials.map((material) => (
-                      <Card key={material.id} className="p-3 md:p-4">
-                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                          <div className="flex items-start gap-2 md:gap-3 flex-1 min-w-0">
-                            <div className="flex-shrink-0 mt-0.5">
-                              {getMaterialIcon(material.material_type)}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <h4 className="font-medium text-sm md:text-base truncate">{material.title}</h4>
-                              <p className="text-xs md:text-sm text-muted-foreground truncate">
-                                {material.courses?.name} - {material.courses?.subject}
-                              </p>
-                              {material.description && (
-                                <p className="text-[10px] md:text-xs text-muted-foreground mt-1 line-clamp-2">
-                                  {material.description}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                          <div className="flex gap-2 w-full sm:w-auto">
-                            <Badge variant="secondary" className="text-[10px] md:text-xs">
-                              {material.material_type === 'pdf' ? 'PDF' :
-                                material.material_type === 'presentation' ? 'عرض' : 'فيديو'}
-                            </Badge>
-                            {material.file_url && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => window.open(material.file_url, '_blank')}
-                                className="text-xs md:text-sm"
-                              >
-                                <Eye className="w-3 h-3 md:w-4 md:h-4 ml-1" />
-                                عرض
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      </Card>
-                    ))
-                  ) : (
-                    <p className="text-center text-muted-foreground py-6 md:py-8 text-xs md:text-sm">
-                      لا يوجد محتوى تعليمي متاح حالياً
-                    </p>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-
             {/* Available Exams */}
             <Card className="shadow-soft">
               <CardHeader className="pb-3 md:pb-4">

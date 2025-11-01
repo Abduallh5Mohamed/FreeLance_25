@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { GraduationCap, BookOpen, Users, Award, ChevronDown, Mail, Phone, MapPin, Facebook, Twitter, Instagram, Youtube, Star, TrendingUp, Target, Zap, Shield, Clock, CheckCircle, Sparkles, Trophy, Rocket, X } from "lucide-react";
+import { GraduationCap, BookOpen, Users, Award, ChevronDown, Mail, Phone, MapPin, Facebook, Twitter, Instagram, Youtube, Star, TrendingUp, Target, Zap, Shield, Clock, CheckCircle, Sparkles, Trophy, Rocket, X, Music } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import alQaedLogo from "@/assets/Hero_Logo.png";
 import heroBgImage from "@/assets/Hero-bg.jpg";
@@ -174,21 +174,20 @@ const Index = () => {
 
   return (
     <div className="min-h-screen dark bg-white relative overflow-hidden" dir="rtl">
-      
+
       {/* Modern Navbar */}
       <motion.nav
         initial={{ y: -100 }}
         animate={{ y: 0 }}
-        className={`fixed top-0 left-0 right-0 z-50 transition-all duration-500 ${
-          scrolled ? 'bg-white/95 backdrop-blur-xl shadow-2xl border-b border-[#0d9488]/20' : 'bg-white/80'
-        }`}
+        className={`fixed top-0 left-0 right-0 z-50 transition-all duration-500 ${scrolled ? 'bg-white/95 backdrop-blur-xl shadow-2xl border-b border-[#0d9488]/20' : 'bg-white/80'
+          }`}
       >
         <div className="container mx-auto px-4 md:px-6 lg:px-12">
           <div className="flex items-center justify-between h-20">
             {/* Login Button on the left */}
             <div className="flex-shrink-0">
-              <Button 
-                onClick={() => navigate('/auth')} 
+              <Button
+                onClick={() => navigate('/auth')}
                 className="bg-gradient-to-r from-[#0d9488] to-[#06b6d4] hover:from-[#06b6d4] hover:to-[#0d9488] text-white font-bold py-2 px-6 rounded-full transition-all duration-300 hover:shadow-lg hover:scale-105"
               >
                 تسجيل الدخول
@@ -216,11 +215,11 @@ const Index = () => {
 
             {/* Logo on the right */}
             <div className="flex-shrink-0 relative mt-1" style={{ transform: 'scale(1.35)', transformOrigin: 'center' }}>
-              <img 
-                src={alQaedLogo} 
-                alt="Qaad Logo" 
-                className="h-24 w-auto cursor-pointer relative z-10 transform hover:scale-105 transition-transform duration-300 p-1" 
-                style={{ 
+              <img
+                src={alQaedLogo}
+                alt="Qaad Logo"
+                className="h-24 w-auto cursor-pointer relative z-10 transform hover:scale-105 transition-transform duration-300 p-1"
+                style={{
                   filter: 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1)) brightness(1.02) saturate(1.1)',
                   WebkitFilter: 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1)) brightness(1.02) saturate(1.1)'
                 }}
@@ -243,7 +242,7 @@ const Index = () => {
         className="fixed bottom-8 right-8 bg-gradient-to-r from-[#0d9488] to-[#06b6d4] p-4 rounded-full cursor-pointer shadow-2xl hover:shadow-[0_0_30px_rgba(13,148,136,0.45)] transition-all duration-300 z-50 group"
       >
         <svg className="w-8 h-8 text-white group-hover:scale-110 transition-transform duration-300" fill="currentColor" viewBox="0 0 24 24">
-          <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12h-8v-2h8v2zm0-4h-8V8h8v2z"/>
+          <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12h-8v-2h8v2zm0-4h-8V8h8v2z" />
         </svg>
       </motion.div>
 
@@ -273,11 +272,10 @@ const Index = () => {
                 {chatHistory.map((entry) => (
                   <div
                     key={entry.id}
-                    className={`rounded-2xl px-4 py-2 text-sm leading-relaxed shadow-sm border ${
-                      entry.sender === "user"
+                    className={`rounded-2xl px-4 py-2 text-sm leading-relaxed shadow-sm border ${entry.sender === "user"
                         ? "bg-[#0d9488]/10 border-[#0d9488]/30 text-[#0d9488] ml-auto max-w-[85%]"
                         : "bg-white border-[#06b6d4]/30 text-gray-700 mr-auto max-w-[90%]"
-                    }`}
+                      }`}
                   >
                     {entry.text}
                   </div>
@@ -315,7 +313,7 @@ const Index = () => {
       </AnimatePresence>
 
       {/* Hero Section with Background Image */}
-      <section 
+      <section
         id="hero"
         className="relative px-4 py-12 overflow-hidden bg-white flex flex-col"
       >
@@ -364,7 +362,7 @@ const Index = () => {
                 scale: [0.9, 1.05, 0.9],
               }}
               transition={{ duration: 12, repeat: Infinity, repeatType: "mirror" }}
-              className="absolute top-1/2 left-1/2 w-[440px] h-[440px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/10" 
+              className="absolute top-1/2 left-1/2 w-[440px] h-[440px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/10"
               style={{ boxShadow: "0 0 80px rgba(13, 148, 136, 0.3) inset" }}
             />
 
@@ -444,7 +442,7 @@ const Index = () => {
             viewport={{ once: true }}
             className="text-center mb-20"
           >
-            <motion.h2 
+            <motion.h2
               initial={{ opacity: 0, scale: 0.9 }}
               whileInView={{ opacity: 1, scale: 1 }}
               viewport={{ once: true }}
@@ -825,11 +823,11 @@ const Index = () => {
               transition={{ duration: 0.6 }}
             >
               <h2 className="text-5xl md:text-6xl font-black mb-6 text-[#0d9488]">تواصل معنا</h2>
-                <p className="text-gray-700 text-xl mb-12 font-medium leading-relaxed">
+              <p className="text-gray-700 text-xl mb-12 font-medium leading-relaxed">
                 نحن هنا للإجابة على استفساراتك ومساعدتك في رحلتك التعليمية
               </p>
               <div className="space-y-6">
-                <motion.div 
+                <motion.div
                   whileHover={{ x: 10 }}
                   className="flex items-center gap-5 group"
                 >
@@ -838,10 +836,10 @@ const Index = () => {
                   </div>
                   <div>
                     <p className="font-bold text-[#0d9488] text-lg mb-1">البريد الإلكتروني</p>
-                    <p className="text-gray-600 text-lg">info@qaad.edu</p>
+                    <p className="text-gray-600 text-lg">mohamed96ramadan1996@gmail.com</p>
                   </div>
                 </motion.div>
-                <motion.div 
+                <motion.div
                   whileHover={{ x: 10 }}
                   className="flex items-center gap-5 group"
                 >
@@ -850,10 +848,10 @@ const Index = () => {
                   </div>
                   <div>
                     <p className="font-bold text-[#0d9488] text-lg mb-1">الهاتف</p>
-                    <p className="text-gray-600 text-lg">+966 XX XXX XXXX</p>
+                    <p className="text-gray-600 text-lg">01024083057 / 01034067686</p>
                   </div>
                 </motion.div>
-                <motion.div 
+                <motion.div
                   whileHover={{ x: 10 }}
                   className="flex items-center gap-5 group"
                 >
@@ -862,7 +860,7 @@ const Index = () => {
                   </div>
                   <div>
                     <p className="font-bold text-[#0d9488] text-lg mb-1">العنوان</p>
-                    <p className="text-gray-600 text-lg">الرياض، المملكة العربية السعودية</p>
+                    <p className="text-gray-600 text-lg">مصر</p>
                   </div>
                 </motion.div>
               </div>
@@ -909,16 +907,48 @@ const Index = () => {
                 <p className="text-gray-700 text-lg font-semibold">© 2025 القائد. جميع الحقوق محفوظة</p>
               </div>
               <div className="flex gap-5">
-                {[Facebook, Twitter, Instagram, Youtube].map((Icon, index) => (
-                  <motion.div
-                    key={index}
-                    whileHover={{ scale: 1.25, rotate: 5 }}
-                    whileTap={{ scale: 0.9 }}
-                    className="bg-gradient-to-br from-[#0d9488] to-[#06b6d4] w-14 h-14 rounded-xl flex items-center justify-center cursor-pointer shadow-lg shadow-[#0d9488]/50 hover:shadow-[#06b6d4]/50 transition-all duration-300"
-                  >
-                    <Icon className="w-7 h-7 text-white font-black" />
-                  </motion.div>
-                ))}
+                <motion.a
+                  href="https://www.facebook.com/share/1DkCgcmuQr/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  whileHover={{ scale: 1.25, rotate: 5 }}
+                  whileTap={{ scale: 0.9 }}
+                  className="bg-gradient-to-br from-[#0d9488] to-[#06b6d4] w-14 h-14 rounded-xl flex items-center justify-center cursor-pointer shadow-lg shadow-[#0d9488]/50 hover:shadow-[#06b6d4]/50 transition-all duration-300"
+                >
+                  <Facebook className="w-7 h-7 text-white font-black" />
+                </motion.a>
+                <motion.a
+                  href="https://www.facebook.com/share/19tEtsDsTn/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  whileHover={{ scale: 1.25, rotate: 5 }}
+                  whileTap={{ scale: 0.9 }}
+                  className="bg-gradient-to-br from-[#0d9488] to-[#06b6d4] w-14 h-14 rounded-xl flex items-center justify-center cursor-pointer shadow-lg shadow-[#0d9488]/50 hover:shadow-[#06b6d4]/50 transition-all duration-300"
+                >
+                  <Facebook className="w-7 h-7 text-white font-black" />
+                </motion.a>
+                <motion.a
+                  href="https://www.tiktok.com/@mohamed_ramadan_96"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  whileHover={{ scale: 1.25, rotate: 5 }}
+                  whileTap={{ scale: 0.9 }}
+                  className="bg-gradient-to-br from-[#0d9488] to-[#06b6d4] w-14 h-14 rounded-xl flex items-center justify-center cursor-pointer shadow-lg shadow-[#0d9488]/50 hover:shadow-[#06b6d4]/50 transition-all duration-300"
+                >
+                  <svg className="w-7 h-7 text-white" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z" />
+                  </svg>
+                </motion.a>
+                <motion.a
+                  href="https://youtube.com/@moramadan96-history"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  whileHover={{ scale: 1.25, rotate: 5 }}
+                  whileTap={{ scale: 0.9 }}
+                  className="bg-gradient-to-br from-[#0d9488] to-[#06b6d4] w-14 h-14 rounded-xl flex items-center justify-center cursor-pointer shadow-lg shadow-[#0d9488]/50 hover:shadow-[#06b6d4]/50 transition-all duration-300"
+                >
+                  <Youtube className="w-7 h-7 text-white font-black" />
+                </motion.a>
               </div>
             </div>
           </div>

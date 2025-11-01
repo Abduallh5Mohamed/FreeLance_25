@@ -142,6 +142,7 @@ router.get('/barcode/:barcode', async (req: Request, res: Response) => {
 // Create new student
 router.post('/', async (req: Request, res: Response) => {
     try {
+        console.log('📝 Creating student with body:', JSON.stringify(req.body, null, 2));
         const { name, email, phone, grade, grade_id, group_id, password, barcode: incomingBarcode, is_offline = false, approval_status = 'approved' } = req.body;
 
         if (!name) {
@@ -150,11 +151,13 @@ router.post('/', async (req: Request, res: Response) => {
 
         // Generate UUID for new student
         const studentId = crypto.randomUUID();
+        console.log('📝 Generated student ID:', studentId);
 
         // Insert into students table
         let barcodeToStore: string;
         try {
             barcodeToStore = incomingBarcode ? sanitizeBarcode(incomingBarcode) : generateBarcode();
+            console.log('📝 Barcode to store:', barcodeToStore);
         } catch (validationError) {
             if ((validationError as Error).name === 'INVALID_BARCODE_LENGTH') {
                 return res.status(400).json({ error: 'Barcode must be exactly 25 alphanumeric characters.' });
@@ -162,6 +165,7 @@ router.post('/', async (req: Request, res: Response) => {
             throw validationError;
         }
 
+        console.log('📝 Inserting into students table...');
         await execute(
             `INSERT INTO students (id, name, email, phone, grade, grade_id, group_id, barcode, is_offline, approval_status) 
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -178,6 +182,7 @@ router.post('/', async (req: Request, res: Response) => {
                 approval_status,
             ]
         );
+        console.log('✅ Student inserted successfully');
 
         // Also insert into users table if it's an offline student
         if (is_offline && email) {
@@ -224,9 +229,9 @@ router.post('/', async (req: Request, res: Response) => {
             code: error.code,
             sqlMessage: error.sqlMessage
         });
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Failed to create student',
-            details: error.message 
+            details: error.message
         });
     }
 });

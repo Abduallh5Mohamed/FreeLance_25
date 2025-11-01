@@ -87,27 +87,39 @@ const Auth = () => {
         }
 
         if (result.user) {
+          console.log('✅ Login successful, user:', result.user);
+
           // Store user session in localStorage
           localStorage.setItem('currentUser', JSON.stringify(result.user));
+          console.log('✅ User stored in localStorage');
 
           // Redirect based on role
           if (result.user.role === 'admin' || result.user.role === 'teacher') {
-            navigate("/teacher");
             toast({
               title: "تم تسجيل الدخول بنجاح",
               description: `مرحباً بك ${result.user.name}`,
             });
+            console.log('✅ Navigating to /teacher...');
+            // Small delay to ensure localStorage is updated before navigation
+            setTimeout(() => {
+              navigate("/teacher");
+            }, 300);
           } else {
             // Student login - check if student exists
             const student = await getStudentByPhone(phone.trim());
 
             if (student && student.approval_status === 'approved') {
               localStorage.setItem('currentStudent', JSON.stringify(student));
-              navigate("/student");
+              console.log('✅ Student stored in localStorage');
               toast({
                 title: "تم تسجيل الدخول بنجاح",
                 description: `مرحباً بك ${student.name}`,
               });
+              console.log('✅ Navigating to /student...');
+              // Small delay to ensure localStorage is updated before navigation
+              setTimeout(() => {
+                navigate("/student");
+              }, 300);
             } else {
               throw new Error("حسابك في انتظار الموافقة من الإدارة");
             }
@@ -271,8 +283,8 @@ const Auth = () => {
                       type="button"
                       onClick={() => setStudentType("online")}
                       className={`py-3 px-4 rounded-xl font-semibold transition-all duration-300 flex items-center justify-center ${studentType === "online"
-                          ? "bg-gradient-to-r from-yellow-500 to-orange-500 text-white shadow-lg"
-                          : "bg-white/10 text-white hover:bg-white/20 border border-white/20"
+                        ? "bg-gradient-to-r from-yellow-500 to-orange-500 text-white shadow-lg"
+                        : "bg-white/10 text-white hover:bg-white/20 border border-white/20"
                         }`}
                     >
                       أونلاين
@@ -281,8 +293,8 @@ const Auth = () => {
                       type="button"
                       onClick={() => setStudentType("offline")}
                       className={`py-3 px-4 rounded-xl font-semibold transition-all duration-300 flex items-center justify-center ${studentType === "offline"
-                          ? "bg-gradient-to-r from-yellow-500 to-orange-500 text-white shadow-lg"
-                          : "bg-white/10 text-white hover:bg-white/20 border border-white/20"
+                        ? "bg-gradient-to-r from-yellow-500 to-orange-500 text-white shadow-lg"
+                        : "bg-white/10 text-white hover:bg-white/20 border border-white/20"
                         }`}
                     >
                       أوفلاين
@@ -439,8 +451,8 @@ const Auth = () => {
                       نوع الطالب
                     </Label>
                     <div className="relative">
-                      <Select 
-                        value={studentType} 
+                      <Select
+                        value={studentType}
                         onValueChange={(value: "online" | "offline") => setStudentType(value)}
                         required
                       >
