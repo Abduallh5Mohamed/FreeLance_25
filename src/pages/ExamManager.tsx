@@ -663,10 +663,11 @@ const ExamManager = () => {
           <CardHeader>
             <CardTitle>قائمة الامتحانات</CardTitle>
           </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
+          <CardContent className="p-0">
+            <div className="enhanced-table-container">
+              <Table className="enhanced-table">
+                <TableHeader>
+                  <TableRow>
                   <TableHead>الامتحان</TableHead>
                   <TableHead>الكورس</TableHead>
                   <TableHead>التاريخ</TableHead>
@@ -722,6 +723,7 @@ const ExamManager = () => {
                 ))}
               </TableBody>
             </Table>
+            </div>
           </CardContent>
         </Card>
 

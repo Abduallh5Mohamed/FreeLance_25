@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Calendar, Check, X, Users, Search } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
@@ -233,48 +233,45 @@ const Attendance = () => {
                 </Select>
               </div>
             </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>الطالب</TableHead>
-                    <TableHead>الكورس</TableHead>
-                    <TableHead>التاريخ</TableHead>
-                    <TableHead>الحالة</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {attendance.length > 0 ? (
-                    attendance
-                      .filter(record => {
-                        const matchesSearch = record.students?.name.toLowerCase().includes(searchTerm.toLowerCase());
-                        const matchesCourse = selectedCourse === "all" || record.courses?.name === selectedCourse;
-                        return matchesSearch && matchesCourse;
-                      })
-                      .map((record) => (
-                        <TableRow key={record.id}>
-                          <TableCell className="font-medium">{record.students?.name}</TableCell>
-                          <TableCell>{record.courses?.name}</TableCell>
-                          <TableCell>{record.attendance_date}</TableCell>
-                          <TableCell>
-                            <span className={`px-2 py-1 rounded-full text-xs ${record.status === 'present'
-                                ? 'bg-green-100 text-green-800'
-                                : 'bg-red-100 text-red-800'
-                              }`}>
+            <CardContent className="p-4">
+              {attendance.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">لا توجد سجلات حضور لهذا التاريخ</div>
+              ) : (
+                <div className="space-y-4">
+                  {attendance
+                    .filter(record => {
+                      const matchesSearch = record.students?.name.toLowerCase().includes(searchTerm.toLowerCase());
+                      const matchesCourse = selectedCourse === "all" || record.courses?.name === selectedCourse;
+                      return matchesSearch && matchesCourse;
+                    })
+                    .map((record) => (
+                      <div key={record.id} className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900">
+                        <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-2 flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <Avatar className="h-10 w-10 border-2 border-white">
+                              <AvatarFallback className="text-xs bg-white text-cyan-600">{(record.students?.name || '').split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase()}</AvatarFallback>
+                            </Avatar>
+                            <div>
+                              <h3 className="font-bold text-white text-lg">{record.students?.name}</h3>
+                              <div className="text-xs text-cyan-50">{record.courses?.name || '-'}</div>
+                            </div>
+                          </div>
+                          <div className="text-sm text-white">
+                            {record.attendance_date}
+                          </div>
+                        </div>
+                        <div className="p-4">
+                          <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">⚡ الحالة</div>
+                          <div>
+                            <span className={`px-3 py-1 rounded-full text-xs font-semibold ${record.status === 'present' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'}`}>
                               {record.status === 'present' ? 'حاضر' : 'غائب'}
                             </span>
-                          </TableCell>
-                        </TableRow>
-                      ))
-                  ) : (
-                    <TableRow>
-                      <TableCell colSpan={4} className="text-center py-8 text-muted-foreground">
-                        لا توجد سجلات حضور لهذا التاريخ
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

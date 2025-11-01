@@ -539,6 +539,11 @@ export interface Attendance {
     attendance_date: Date;
     status: 'present' | 'absent' | 'late' | 'excused';
     notes?: string;
+    barcode?: string;
+    attendance_time?: string;
+    method?: string;
+    student_name?: string;
+    student_barcode?: string;
 }
 
 export interface Exam {
@@ -885,6 +890,16 @@ export const getFees = async (isOffline?: boolean, status?: string): Promise<Fee
     return request<Fee[]>(url);
 };
 
+export const searchFeesByPhone = async (phone: string): Promise<Fee[]> => {
+    const params = new URLSearchParams({ phone });
+    return request<Fee[]>(`/fees?${params.toString()}`);
+};
+
+export const searchFeesByName = async (name: string): Promise<Fee[]> => {
+    const params = new URLSearchParams({ name });
+    return request<Fee[]>(`/fees?${params.toString()}`);
+};
+
 export const getFeeById = async (id: string): Promise<Fee | null> => {
     try {
         return await request<Fee>(`/fees/${id}`);
@@ -909,6 +924,75 @@ export const updateFee = async (id: string, fee: Partial<Fee>): Promise<Fee> => 
 
 export const deleteFee = async (id: string): Promise<void> => {
     await request<void>(`/fees/${id}`, {
+        method: 'DELETE',
+    });
+};
+
+// ============= Revenues API =============
+
+export interface Revenue {
+    id: string;
+    student_name: string;
+    student_phone?: string;
+    student_barcode?: string;
+    fee_id?: string;
+    amount: number;
+    payment_method: 'cash' | 'bank' | 'card' | 'online';
+    payment_type: 'fee' | 'subscription' | 'course' | 'other';
+    description?: string;
+    notes?: string;
+    payment_date: string;
+    receipt_image_url?: string;
+    created_at: string;
+}
+
+export const getRevenues = async (params?: {
+    start_date?: string;
+    end_date?: string;
+    payment_type?: string;
+    student_name?: string;
+}): Promise<Revenue[]> => {
+    const queryParams = new URLSearchParams();
+    if (params) {
+        Object.entries(params).forEach(([key, value]) => {
+            if (value) queryParams.append(key, value);
+        });
+    }
+    const queryString = queryParams.toString();
+    return request<Revenue[]>(`/revenues${queryString ? `?${queryString}` : ''}`);
+};
+
+export const getRevenueById = async (id: string): Promise<Revenue | null> => {
+    try {
+        return await request<Revenue>(`/revenues/${id}`);
+    } catch {
+        return null;
+    }
+};
+
+export const createRevenue = async (revenue: Partial<Revenue>): Promise<Revenue> => {
+    return request<Revenue>('/revenues', {
+        method: 'POST',
+        body: JSON.stringify(revenue),
+    });
+};
+
+export const getRevenueSummary = async (params?: {
+    start_date?: string;
+    end_date?: string;
+}): Promise<{ total: number }> => {
+    const queryParams = new URLSearchParams();
+    if (params) {
+        Object.entries(params).forEach(([key, value]) => {
+            if (value) queryParams.append(key, value);
+        });
+    }
+    const queryString = queryParams.toString();
+    return request<{ total: number }>(`/revenues/summary/total${queryString ? `?${queryString}` : ''}`);
+};
+
+export const deleteRevenue = async (id: string): Promise<void> => {
+    await request<void>(`/revenues/${id}`, {
         method: 'DELETE',
     });
 };

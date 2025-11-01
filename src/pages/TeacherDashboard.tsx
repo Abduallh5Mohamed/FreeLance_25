@@ -193,66 +193,7 @@ const TeacherDashboard = () => {
                 إليك ملخص سريع عن أنشطتك اليوم - منصة القائد
               </p>
             </div>
-            <div className="flex gap-2">
-              <Button
-                className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-700 hover:to-teal-700 shadow-lg hover:shadow-xl transition-all"
-                onClick={() => navigate('/teacher-content-manager')}
-              >
-                <Upload className="w-5 h-5 ml-2" />
-                إدارة المحتوى التعليمي
-              </Button>
-              <Dialog open={isExpenseDialogOpen} onOpenChange={setIsExpenseDialogOpen}>
-                <DialogTrigger asChild>
-                  <Button variant="outline" className="shadow-md border-cyan-600 text-cyan-600 hover:bg-cyan-50">
-                    <DollarSign className="w-4 h-4 ml-2" />
-                    إضافة مصروف
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="sm:max-w-[425px]" dir="rtl">
-                  <DialogHeader>
-                    <DialogTitle>إضافة مصروف جديد</DialogTitle>
-                  </DialogHeader>
-                  <div className="grid gap-4 py-4">
-                    <div className="grid gap-2">
-                      <Label htmlFor="description">وصف المصروف</Label>
-                      <Textarea
-                        id="description"
-                        placeholder="مثال: كتب دراسية، أدوات مكتبية..."
-                        value={expenseData.description}
-                        onChange={(e) => setExpenseData({ ...expenseData, description: e.target.value })}
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="amount">المبلغ (جنيه)</Label>
-                      <Input
-                        id="amount"
-                        type="number"
-                        placeholder="0.00"
-                        value={expenseData.amount}
-                        onChange={(e) => setExpenseData({ ...expenseData, amount: e.target.value })}
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="category">الفئة (اختياري)</Label>
-                      <Input
-                        id="category"
-                        placeholder="مثال: تعليمي، إداري، تقني..."
-                        value={expenseData.category}
-                        onChange={(e) => setExpenseData({ ...expenseData, category: e.target.value })}
-                      />
-                    </div>
-                  </div>
-                  <div className="flex justify-end gap-2">
-                    <Button variant="outline" onClick={() => setIsExpenseDialogOpen(false)}>
-                      إلغاء
-                    </Button>
-                    <Button onClick={handleAddExpense}>
-                      إضافة المصروف
-                    </Button>
-                  </div>
-                </DialogContent>
-              </Dialog>
-            </div>
+            {/* Removed buttons: إدارة المحتوى التعليمي and إضافة مصروف */}
           </div>
         </motion.div>
 

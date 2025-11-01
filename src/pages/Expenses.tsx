@@ -4,8 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { DollarSign, Plus, Edit2, Trash2, TrendingDown } from "lucide-react";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { DollarSign, Plus, Edit2, Trash2, TrendingDown, Calendar } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
 import { supabase } from "@/integrations/supabase/client";
@@ -240,59 +240,85 @@ const Expenses = () => {
           <CardHeader>
             <CardTitle>سجل المصروفات</CardTitle>
           </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>الوصف</TableHead>
-                  <TableHead>الفئة</TableHead>
-                  <TableHead>المبلغ</TableHead>
-                  <TableHead>التاريخ</TableHead>
-                  <TableHead>الإجراءات</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {expenses.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
-                      لا توجد مصروفات مسجلة
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  expenses.map((expense) => (
-                    <TableRow key={expense.id}>
-                      <TableCell className="font-medium">{expense.description}</TableCell>
-                      <TableCell>{expense.category || '-'}</TableCell>
-                      <TableCell className="font-medium text-red-600">
-                        {parseFloat(expense.amount).toFixed(2)} ج.م
-                      </TableCell>
-                      <TableCell>
-                        {expense.date ? new Date(expense.date).toLocaleDateString('ar-SA') : '-'}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleEdit(expense)}
-                          >
-                            <Edit2 className="w-4 h-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleDelete(expense.id)}
-                            className="text-destructive hover:text-destructive"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
+          <CardContent className="p-4">
+            {expenses.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground">
+                <DollarSign className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                <p className="text-lg font-medium">لا توجد مصروفات مسجلة</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {expenses.map((expense) => (
+                  <div 
+                    key={expense.id}
+                    className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
+                  >
+                    <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-2 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <Avatar className="h-10 w-10 border-2 border-white">
+                          <AvatarFallback className="text-xs bg-white text-cyan-600">
+                            <DollarSign className="w-5 h-5" />
+                          </AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <h3 className="font-bold text-white text-lg">{expense.description}</h3>
+                          <div className="flex items-center gap-2 text-xs text-cyan-50">
+                            {expense.category && (
+                              <span>🏷️ {expense.category}</span>
+                            )}
+                          </div>
                         </div>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleEdit(expense)}
+                          className="h-8 w-8 p-0 text-white hover:bg-white/20"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDelete(expense.id)}
+                          className="h-8 w-8 p-0 text-white hover:bg-red-500/30"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </div>
+                    
+                    <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📝 الوصف</div>
+                        <div className="text-sm font-medium">{expense.description}</div>
+                      </div>
+                      
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🏷️ الفئة</div>
+                        <div className="text-sm font-medium">{expense.category || '-'}</div>
+                      </div>
+                      
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">💰 المبلغ</div>
+                        <div className="text-sm font-bold text-red-600 dark:text-red-400">
+                          {parseFloat(expense.amount).toFixed(2)} ج.م
+                        </div>
+                      </div>
+                      
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📅 التاريخ</div>
+                        <div className="text-sm font-medium flex items-center gap-2">
+                          <Calendar className="w-3 h-3 text-muted-foreground" />
+                          {expense.date ? new Date(expense.date).toLocaleDateString('ar-SA') : '-'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

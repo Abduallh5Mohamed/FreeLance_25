@@ -1,14 +1,15 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { DollarSign, TrendingUp } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { DollarSign, TrendingUp, Search, Calendar, User, FileText } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
 
 const AccountStatement = () => {
   const [statements, setStatements] = useState([]);
   const [totalIncome, setTotalIncome] = useState(0);
+  const [searchTerm, setSearchTerm] = useState("");
   const { toast } = useToast();
 
   useEffect(() => {
@@ -68,39 +69,99 @@ const AccountStatement = () => {
         </Card>
 
         <Card className="shadow-soft">
-          <CardHeader>
+          <CardHeader className="space-y-3">
             <CardTitle>سجل المدفوعات</CardTitle>
+            <div className="flex items-center gap-2">
+              <Search className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+              <Input
+                placeholder="البحث عن طالب..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full"
+              />
+            </div>
           </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>الطالب</TableHead>
-                  <TableHead>نوع الاشتراك</TableHead>
-                  <TableHead>المبلغ</TableHead>
-                  <TableHead>تاريخ الدفع</TableHead>
-                  <TableHead>الوصف</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {statements.map((statement) => (
-                  <TableRow key={statement.id}>
-                    <TableCell className="font-medium">{statement.students?.name}</TableCell>
-                    <TableCell>{statement.subscriptions?.name || "غير محدد"}</TableCell>
-                    <TableCell className="text-green-600 font-medium">{Number(statement.amount).toFixed(2)} ج.م</TableCell>
-                    <TableCell>{new Date(statement.payment_date).toLocaleDateString('ar-SA')}</TableCell>
-                    <TableCell>{statement.description || "-"}</TableCell>
-                  </TableRow>
-                ))}
-                {statements.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
-                      لا توجد سجلات مدفوعات
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
+          <CardContent className="p-4">
+            {statements.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground">
+                <DollarSign className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                <p className="text-lg font-medium">لا توجد سجلات مدفوعات</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {statements
+                  .filter(statement => 
+                    !searchTerm || 
+                    statement.students?.name?.toLowerCase().includes(searchTerm.toLowerCase())
+                  )
+                  .map((statement, index) => (
+                    <div 
+                      key={statement.id}
+                      className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
+                    >
+                      <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-3 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center text-cyan-600 font-bold text-sm">
+                            {statement.students?.name?.charAt(0) || 'ط'}
+                          </div>
+                          <div>
+                            <h3 className="font-bold text-white text-lg">{statement.students?.name || 'غير محدد'}</h3>
+                            <div className="flex items-center gap-2 text-xs text-cyan-50">
+                              <span>{statement.subscriptions?.name || "غير محدد"}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-left">
+                          <p className="text-white text-xs opacity-90">المبلغ</p>
+                          <p className="text-white font-bold text-lg">{Number(statement.amount).toFixed(2)} ج.م</p>
+                        </div>
+                      </div>
+                      
+                      <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                          <div className="flex items-center gap-2 mb-2">
+                            <User className="w-4 h-4 text-cyan-600" />
+                            <span className="text-sm text-muted-foreground">الطالب</span>
+                          </div>
+                          <p className="font-medium">{statement.students?.name || 'غير محدد'}</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex items-center gap-2 mb-2">
+                            <FileText className="w-4 h-4 text-cyan-600" />
+                            <span className="text-sm text-muted-foreground">نوع الاشتراك</span>
+                          </div>
+                          <p className="font-medium">{statement.subscriptions?.name || "غير محدد"}</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex items-center gap-2 mb-2">
+                            <DollarSign className="w-4 h-4 text-cyan-600" />
+                            <span className="text-sm text-muted-foreground">المبلغ</span>
+                          </div>
+                          <p className="font-bold text-green-600">{Number(statement.amount).toFixed(2)} ج.م</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex items-center gap-2 mb-2">
+                            <Calendar className="w-4 h-4 text-cyan-600" />
+                            <span className="text-sm text-muted-foreground">تاريخ الدفع</span>
+                          </div>
+                          <p className="font-medium">{new Date(statement.payment_date).toLocaleDateString('ar-SA')}</p>
+                        </div>
+                        
+                        <div className="md:col-span-2">
+                          <div className="flex items-center gap-2 mb-2">
+                            <FileText className="w-4 h-4 text-cyan-600" />
+                            <span className="text-sm text-muted-foreground">الوصف</span>
+                          </div>
+                          <p className="font-medium">{statement.description || "-"}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

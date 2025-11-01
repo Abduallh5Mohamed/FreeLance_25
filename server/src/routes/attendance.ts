@@ -89,20 +89,63 @@ router.get('/:id', async (req: Request, res: Response) => {
 // Mark attendance
 router.post('/', async (req: Request, res: Response) => {
     try {
-        const { student_id, course_id, group_id, attendance_date, status, notes } = req.body;
+        const { barcode, student_id, attendance_date, status = 'present', course_id, group_id, notes } = req.body;
 
-        if (!student_id || !attendance_date || !status) {
-            return res.status(400).json({ error: 'Missing required fields' });
+        const normalizedDate = attendance_date ? new Date(attendance_date) : new Date();
+        if (Number.isNaN(normalizedDate.getTime())) {
+            return res.status(400).json({ error: 'Invalid attendance_date' });
         }
 
-        const result = await execute(
-            `INSERT INTO attendance (id, student_id, course_id, group_id, attendance_date, status, notes, created_at)
-             VALUES (UUID(), ?, ?, ?, ?, ?, ?, NOW())`,
-            [student_id, course_id ?? null, group_id ?? null, attendance_date, status, notes ?? null]
+        let studentId = student_id as string | undefined;
+        let resolvedGroupId = group_id as string | undefined;
+
+        if (!studentId && !barcode) {
+            return res.status(400).json({ error: 'barcode or student_id is required' });
+        }
+
+        if (barcode) {
+            const student = await queryOne(
+                `SELECT id, group_id FROM students WHERE barcode = ? AND is_active = TRUE`,
+                [barcode]
+            );
+
+            if (!student) {
+                return res.status(404).json({ error: 'Student not found for provided barcode' });
+            }
+
+            studentId = student.id;
+            resolvedGroupId = student.group_id ?? resolvedGroupId;
+        }
+
+        if (!studentId) {
+            return res.status(400).json({ error: 'Student not resolved' });
+        }
+
+        const dateStr = normalizedDate.toISOString().split('T')[0];
+
+        const existing = await queryOne(
+            `SELECT id FROM attendance WHERE student_id = ? AND DATE(attendance_date) = ?`,
+            [studentId, dateStr]
         );
 
-        const newAttendance = await queryOne<Attendance>(
-            'SELECT * FROM attendance WHERE id = (SELECT id FROM attendance ORDER BY created_at DESC LIMIT 1)'
+        if (existing) {
+            return res.status(409).json({ error: 'Attendance already recorded for this student on the selected date' });
+        }
+
+        await execute(
+            `INSERT INTO attendance (id, student_id, course_id, group_id, attendance_date, attendance_time, status, notes, method, created_at)
+             VALUES (UUID(), ?, ?, ?, ?, CURTIME(), ?, ?, 'barcode', NOW())`,
+            [studentId, course_id ?? null, resolvedGroupId ?? null, dateStr, status, notes ?? null]
+        );
+
+        const newAttendance = await queryOne(
+            `SELECT a.*, s.name AS student_name, s.group_id AS student_group_id
+             FROM attendance a
+             LEFT JOIN students s ON a.student_id = s.id
+             WHERE a.student_id = ? AND DATE(a.attendance_date) = ?
+             ORDER BY a.created_at DESC
+             LIMIT 1`,
+            [studentId, dateStr]
         );
 
         res.status(201).json(newAttendance);

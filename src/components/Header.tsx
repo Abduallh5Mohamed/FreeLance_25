@@ -39,7 +39,6 @@ const Header = () => {
   const mainNavigation = [
     { name: "لوحة التحكم", href: "/teacher", icon: LayoutDashboard },
     { name: "المحتوى التعليمي", href: "/course-content", icon: FileText },
-    { name: "المساعد الذكي", href: "/chat-assistant", icon: Brain },
     { name: "الرسائل", href: "/messages", icon: MessageCircle },
   ];
 
@@ -78,7 +77,6 @@ const Header = () => {
   ];
 
   const managementMenu = [
-    { name: "إدارة الامتحانات", href: "/exam-manager", icon: FileText },
     { name: "الموظفين", href: "/staff", icon: Users },
     { name: "التقارير", href: "/reports", icon: FileText },
   ];

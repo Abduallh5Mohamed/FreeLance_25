@@ -7,8 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Switch } from '@/components/ui/switch';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { getGroups, getGrades, createGroup, updateGroup, deleteGroup, type Group as APIGroup, type Grade as APIGrade } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -228,64 +227,82 @@ const Groups = () => {
           <CardHeader>
             <CardTitle>قائمة المجموعات</CardTitle>
           </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>اسم المجموعة</TableHead>
-                  <TableHead>الوصف</TableHead>
-                  <TableHead>الصف الدراسي</TableHead>
-                  <TableHead>النوع</TableHead>
-                  <TableHead>الطلاب</TableHead>
-                  <TableHead>الحالة</TableHead>
-                  <TableHead>الإجراءات</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+          <CardContent className="p-4">
+            {groups.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground">
+                <Users className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                <p className="text-lg font-medium">لا توجد مجموعات حالياً</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
                 {groups.map((group) => (
-                  <TableRow key={group.id}>
-                    <TableCell className="font-medium">{group.name}</TableCell>
-                    <TableCell>{group.description}</TableCell>
-                    <TableCell>{group.grade_name || '-'}</TableCell>
-                    <TableCell>
-                      <Badge variant="secondary">مجموعة دراسية</Badge>
-                    </TableCell>
-                    <TableCell>
-                      {group.current_students || 0} / {group.max_students || 50}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <Switch
-                          checked={group.is_active}
-                          onCheckedChange={() => toggleGroupStatus(group)}
-                        />
-                        <span className="text-sm">
-                          {group.is_active ? 'مفتوحة' : 'مغلقة'}
-                        </span>
+                  <div 
+                    key={group.id}
+                    className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
+                  >
+                    <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-2 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <Avatar className="h-10 w-10 border-2 border-white">
+                          <AvatarFallback className="text-xs bg-white text-cyan-600">
+                            <Users className="w-5 h-5" />
+                          </AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <h3 className="font-bold text-white text-lg">{group.name}</h3>
+                          <div className="flex items-center gap-2 text-xs text-cyan-50">
+                            {group.grade_name && (
+                              <span>📚 {group.grade_name}</span>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
+                      <div className="flex gap-2">
                         <Button
+                          variant="ghost"
                           size="sm"
-                          variant="outline"
                           onClick={() => handleEdit(group)}
+                          className="h-8 w-8 p-0 text-white hover:bg-white/20"
                         >
                           <Edit className="w-4 h-4" />
                         </Button>
                         <Button
+                          variant="ghost"
                           size="sm"
-                          variant="destructive"
                           onClick={() => handleDelete(group.id)}
+                          className="h-8 w-8 p-0 text-white hover:bg-red-500/30"
                         >
                           <Trash2 className="w-4 h-4" />
                         </Button>
                       </div>
-                    </TableCell>
-                  </TableRow>
+                    </div>
+                    
+                    <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📝 الوصف</div>
+                        <div className="text-sm font-medium">{group.description || '-'}</div>
+                      </div>
+                      
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🎓 الصف الدراسي</div>
+                        <div className="text-sm font-medium">{group.grade_name || '-'}</div>
+                      </div>
+                      
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">👥 النوع</div>
+                        <Badge variant="secondary" className="text-xs">مجموعة دراسية</Badge>
+                      </div>
+                      
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">👨‍🎓 عدد الطلاب</div>
+                        <div className="text-sm font-medium">
+                          {group.current_students || 0} / {group.max_students || 50}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 ))}
-              </TableBody>
-            </Table>
+              </div>
+            )}
           </CardContent>
         </Card>
 

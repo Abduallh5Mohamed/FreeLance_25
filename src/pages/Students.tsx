@@ -389,105 +389,112 @@ const Students = () => {
               />
             </div>
           </CardHeader>
-          <CardContent className="overflow-x-auto">
-            <div className="min-w-[800px]">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-xs md:text-sm">الطالب</TableHead>
-                    <TableHead className="text-xs md:text-sm">المرحلة</TableHead>
-                    <TableHead className="text-xs md:text-sm">الاشتراك</TableHead>
-                    <TableHead className="text-xs md:text-sm">الكورسات</TableHead>
-                    <TableHead className="text-xs md:text-sm">تاريخ الانضمام</TableHead>
-                    <TableHead className="text-xs md:text-sm">الحالة</TableHead>
-                    <TableHead className="text-xs md:text-sm">الإجراءات</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredStudents.map((student) => (
-                    <TableRow key={student.id}>
-                      <TableCell className="min-w-[200px]">
-                        <div className="flex items-center gap-2">
-                          <Avatar className="h-8 w-8">
-                            <AvatarFallback className="text-xs">{getInitials(student.name)}</AvatarFallback>
-                          </Avatar>
-                          <div className="min-w-0">
-                            <p className="font-medium text-sm truncate">{student.name}</p>
-                            <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
-                              <div className="flex items-center gap-1 truncate">
-                                <Mail className="w-3 h-3 flex-shrink-0" />
-                                <span className="truncate">{student.email}</span>
-                              </div>
-                              {student.phone && (
-                                <div className="flex items-center gap-1">
-                                  <Phone className="w-3 h-3 flex-shrink-0" />
-                                  <span>{student.phone}</span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
+          <CardContent className="p-4">
+            <div className="space-y-4">
+              {filteredStudents.map((student, index) => (
+                <div 
+                  key={student.id}
+                  className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
+                >
+                  <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-2 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <Avatar className="h-10 w-10 border-2 border-white">
+                        <AvatarFallback className="text-xs bg-white text-cyan-600">{getInitials(student.name)}</AvatarFallback>
+                      </Avatar>
+                      <div>
+                        <h3 className="font-bold text-white text-lg">{student.name}</h3>
+                        <div className="flex items-center gap-2 text-xs text-cyan-50">
+                          <Mail className="w-3 h-3" />
+                          <span>{student.email}</span>
                         </div>
-                      </TableCell>
-                      <TableCell className="text-xs md:text-sm">{student.grade}</TableCell>
-                      <TableCell className="min-w-[150px]">
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleEdit(student)}
+                        className="h-8 w-8 p-0 text-white hover:bg-white/20"
+                      >
+                        <Edit2 className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDelete(student.id)}
+                        className="h-8 w-8 p-0 text-white hover:bg-red-500/30"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  
+                  <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div>
+                      <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📱 رقم الهاتف</div>
+                      <div className="text-sm font-medium flex items-center gap-2">
+                        <Phone className="w-3 h-3 text-muted-foreground" />
+                        {student.phone || '-'}
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🎓 المرحلة</div>
+                      <div className="text-sm font-medium">{student.grade}</div>
+                    </div>
+                    
+                    <div>
+                      <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📅 تاريخ الانضمام</div>
+                      <div className="text-sm font-medium">{new Date(student.enrollment_date).toLocaleDateString('ar-SA')}</div>
+                    </div>
+                    
+                    <div>
+                      <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">💳 الاشتراك</div>
+                      <div className="text-sm">
                         {student.subscriptions ? (
                           <div className="space-y-1">
-                            <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-[10px] md:text-xs whitespace-nowrap">
+                            <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs font-medium">
                               {student.subscriptions.name}
                             </span>
-                            <div className="text-[10px] md:text-xs text-muted-foreground">
+                            <div className="text-xs text-muted-foreground">
                               {student.subscription_price} جنيه
                             </div>
                             {student.subscription_end_date && (
-                              <div className="text-[10px] md:text-xs text-muted-foreground">
+                              <div className="text-xs text-muted-foreground">
                                 ينتهي: {new Date(student.subscription_end_date).toLocaleDateString('ar-SA')}
                               </div>
                             )}
                           </div>
                         ) : (
-                          <span className="text-[10px] md:text-xs text-muted-foreground">لا يوجد اشتراك</span>
+                          <span className="text-xs text-muted-foreground">لا يوجد اشتراك</span>
                         )}
-                      </TableCell>
-                      <TableCell className="min-w-[120px]">
-                        <div className="flex flex-wrap gap-1">
-                          {student.student_courses?.map((enrollment) => (
-                            <span key={enrollment.courses.id} className="px-1.5 py-0.5 bg-primary/10 text-primary rounded text-[10px] md:text-xs whitespace-nowrap">
-                              {enrollment.courses.name}
-                            </span>
-                          ))}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-xs md:text-sm whitespace-nowrap">{new Date(student.enrollment_date).toLocaleDateString('ar-SA')}</TableCell>
-                      <TableCell>
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] md:text-xs whitespace-nowrap ${student.is_active ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
-                          }`}>
-                          {student.is_active ? 'نشط' : 'غير نشط'}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleEdit(student)}
-                            className="h-7 w-7 p-0"
-                          >
-                            <Edit2 className="w-3 h-3 md:w-4 md:h-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleDelete(student.id)}
-                            className="text-destructive hover:text-destructive h-7 w-7 p-0"
-                          >
-                            <Trash2 className="w-3 h-3 md:w-4 md:h-4" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📚 الكورسات</div>
+                      <div className="flex flex-wrap gap-1">
+                        {student.student_courses?.map((enrollment) => (
+                          <span key={enrollment.courses.id} className="px-2 py-1 bg-primary/10 text-primary rounded text-xs font-medium">
+                            {enrollment.courses.name}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">⚡ الحالة</div>
+                      <span className={`px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1 ${
+                        student.is_active 
+                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' 
+                          : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
+                      }`}>
+                        {student.is_active ? '✓ نشط' : '⚠ غير نشط'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>

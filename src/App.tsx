@@ -19,7 +19,6 @@ import Fees from "./pages/Fees";
 import Messages from "./pages/Messages";
 import Reports from "./pages/Reports";
 import CourseContentManager from "./pages/CourseContentManager";
-import ExamManager from "./pages/ExamManager";
 import TakeExam from "./pages/TakeExam";
 import ExamAccess from "./pages/ExamAccess";
 import Groups from "./pages/Groups";
@@ -87,7 +86,6 @@ const App = () => (
           <Route path="/teacher-materials" element={<TeacherMaterials />} />
           <Route path="/teacher-exams" element={<TeacherExams />} />
           <Route path="/chat-assistant" element={<ChatAssistant />} />
-          <Route path="/exam-manager" element={<ExamManager />} />
           <Route path="/exam-access" element={<ExamAccess />} />
           <Route path="/take-exam/:examId" element={<TakeExam />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

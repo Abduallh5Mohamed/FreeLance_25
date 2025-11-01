@@ -2,6 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Import Enhanced Table Styles */
+@import './components/ui/enhanced-table.css';
+
 /* Educational Platform Design System - Arabic Support
 All colors MUST be HSL for consistency and theme support.
 */

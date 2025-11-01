@@ -1,4 +1,4 @@
-﻿import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { getStudents, markAttendance, getAttendanceByDate, getGroups } from '@/lib/api-http';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,6 +9,17 @@ import Header from '@/components/Header';
 import { motion } from 'framer-motion';
 import { format } from 'date-fns';
 import { ar } from 'date-fns/locale';
+
+const BARCODE_LENGTH = 25;
+
+const sanitizeBarcode = (value: string) => value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+const formatLocalDate = (date: Date | string) => {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 export default function BarcodeAttendance() {
   const [barcodeInput, setBarcodeInput] = useState('');
@@ -41,7 +52,11 @@ export default function BarcodeAttendance() {
   const loadAttendanceByDate = async (date) => {
     try {
       const records = await getAttendanceByDate(date);
-      setAttendanceRecords(records || []);
+      const normalized = (records || []).map((record) => ({
+        ...record,
+        attendance_date: new Date(record.attendance_date),
+      }));
+      setAttendanceRecords(normalized);
     } catch (error) {
       console.error('Error loading attendance:', error);
     }
@@ -57,15 +72,23 @@ export default function BarcodeAttendance() {
 
   const filteredRecords = getFilteredRecords();
 
-  const processBarcode = async (barcode) => {
-    if (!barcode) {
+  const processBarcode = async (barcode: string) => {
+    const normalizedBarcode = sanitizeBarcode(barcode);
+
+    if (!normalizedBarcode) {
       setMessage({ type: 'error', text: 'أدخل الباركود' });
       return;
     }
+    if (normalizedBarcode.length !== BARCODE_LENGTH) {
+      setMessage({ type: 'error', text: `الباركود يجب أن يكون ${BARCODE_LENGTH} رمزًا` });
+      setBarcodeInput('');
+      return;
+    }
+
     setLoading(true);
     try {
       const students = await getStudents();
-      const student = students.find(s => s.barcode === barcode);
+      const student = students.find(s => sanitizeBarcode(s.barcode || '') === normalizedBarcode);
       
       if (!student) {
         setMessage({ type: 'error', text: 'باركود غير صحيح' });
@@ -74,10 +97,18 @@ export default function BarcodeAttendance() {
         return;
       }
 
-      const selectedDateStr = selectedDate.toISOString().split('T')[0];
-      const existingRecord = attendanceRecords.find(r => 
+      const selectedDateStr = formatLocalDate(selectedDate);
+      // Ensure local state is up to date before checking duplicates
+      await loadAttendanceByDate(selectedDate);
+      const updatedRecords = await getAttendanceByDate(selectedDate);
+      const normalizedRecords = (updatedRecords || []).map((record) => ({
+        ...record,
+        attendance_date: new Date(record.attendance_date),
+      }));
+      setAttendanceRecords(normalizedRecords);
+      const existingRecord = normalizedRecords.find(r => 
         r.student_id === student.id && 
-        new Date(r.attendance_date).toISOString().split('T')[0] === selectedDateStr
+        formatLocalDate(r.attendance_date) === selectedDateStr
       );
       
       if (existingRecord) {
@@ -87,18 +118,17 @@ export default function BarcodeAttendance() {
         return;
       }
 
-      const attendanceDateStr = selectedDate.toISOString().split('T')[0];
+      const attendanceDateStr = selectedDateStr;
       
       await markAttendance({ 
-        student_id: student.id,
-        group_id: student.group_id,
-        attendance_date: attendanceDateStr,
+        barcode: normalizedBarcode,
+        attendance_date: new Date(attendanceDateStr),
         status: 'present',
       });
       
       setMessage({ type: 'success', text: `✓ تم تسجيل حضور ${student.name}` });
       setBarcodeInput('');
-      setTimeout(() => loadAttendanceByDate(selectedDate), 500);
+      await loadAttendanceByDate(new Date(attendanceDateStr));
       setTimeout(() => setMessage(null), 3000);
     } catch (error) {
       console.error('Error:', error);
@@ -109,21 +139,23 @@ export default function BarcodeAttendance() {
     }
   };
 
-  const handleBarcodeScan = async (e) => {
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-    const barcode = barcodeInput.trim();
-    await processBarcode(barcode);
+  const handleBarcodeInput = async (value: string) => {
+    const sanitized = sanitizeBarcode(value);
+    setBarcodeInput(sanitized);
+
+    if (sanitized.length >= BARCODE_LENGTH) {
+      await processBarcode(sanitized);
+      setBarcodeInput('');
+    }
   };
 
   const handlePaste = async (e) => {
     e.preventDefault();
-    const pastedText = e.clipboardData.getData('text').trim();
-    setBarcodeInput(pastedText);
-    // تأخير بسيط للسماح بتحديث الـ state
-    setTimeout(() => {
-      processBarcode(pastedText);
-    }, 100);
+    const pastedText = sanitizeBarcode(e.clipboardData.getData('text'));
+    if (pastedText) {
+      await processBarcode(pastedText);
+      setBarcodeInput('');
+    }
   };
 
   return (
@@ -155,8 +187,7 @@ export default function BarcodeAttendance() {
                     ref={barcodeInputRef}
                     type="text"
                     value={barcodeInput}
-                    onChange={(e) => setBarcodeInput(e.target.value)}
-                    onKeyDown={handleBarcodeScan}
+                    onChange={(e) => { void handleBarcodeInput(e.target.value); }}
                     onPaste={handlePaste}
                     placeholder="ضع الماسح هنا..."
                     disabled={loading}

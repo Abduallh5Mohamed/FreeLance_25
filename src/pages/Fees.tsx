@@ -5,18 +5,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { DollarSign, Plus, CreditCard, AlertTriangle, CheckCircle, Search, Upload, X, Eye, Check, XCircle } from "lucide-react";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { DollarSign, Plus, CreditCard, AlertTriangle, CheckCircle, Search, Upload, X, Eye, Check, XCircle, User, Calendar, Edit2, Trash2 } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-import { getGrades, getGroups, createFee, getFees } from "@/lib/api-http";
+import { getGrades, getGroups, createFee, getFees, getStudentByPhone, getStudentById, getStudents, createRevenue } from "@/lib/api-http";
 
 const Fees = () => {
   const [fees, setFees] = useState([]);
   const [offlineFees, setOfflineFees] = useState([]);
   const [subscriptionRequests, setSubscriptionRequests] = useState([]);
-  
+
   const [isOpen, setIsOpen] = useState(false);
   const [isAddNewOpen, setIsAddNewOpen] = useState(false);
   const [isViewRequestOpen, setIsViewRequestOpen] = useState(false);
@@ -37,12 +37,15 @@ const Fees = () => {
     gradeId: "",
     groupId: "",
     barcode: "",
-    amount: "",
+    totalAmount: "",
+    paidAmount: "",
     notes: ""
   });
+  const [isSearchingStudent, setIsSearchingStudent] = useState(false);
+
   const [paymentImage, setPaymentImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
-  
+
   const { toast } = useToast();
 
   useEffect(() => {
@@ -98,6 +101,48 @@ const Fees = () => {
     setOfflinePaymentData(prev => ({ ...prev, barcode }));
   };
 
+  const handleStudentLookup = async (field: "phone" | "barcode" | "name", value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    setIsSearchingStudent(true);
+    try {
+      let student = null;
+      if (field === "barcode") {
+        student = await getStudentById(trimmed).catch(() => null);
+        if (!student) {
+          const students = await getStudents();
+          student = students.find((s: any) => (s.barcode || "").toUpperCase() === trimmed.toUpperCase()) || null;
+        }
+      } else if (field === "phone") {
+        student = await getStudentByPhone(trimmed);
+      }
+
+      if (!student && field === "name") {
+        const students = await getStudents();
+        student = students.find((s: any) => s.name?.toLowerCase() === trimmed.toLowerCase()) || null;
+      }
+
+      if (!student) {
+        toast({ title: "لم يتم العثور على الطالب", description: "تأكد من أن الطالب مسجل في قاعدة البيانات", variant: "destructive" });
+        return;
+      }
+
+      setOfflinePaymentData(prev => ({
+        ...prev,
+        studentName: student.name || prev.studentName,
+        phone: student.phone || prev.phone,
+        gradeId: student.grade_id || prev.gradeId,
+        groupId: student.group_id || prev.groupId,
+        barcode: student.barcode || prev.barcode,
+      }));
+    } catch (error) {
+      console.error("lookup error", error);
+      toast({ title: "خطأ", description: "فشل البحث عن الطالب", variant: "destructive" });
+    } finally {
+      setIsSearchingStudent(false);
+    }
+  };
+
   const filteredFees = fees.filter(fee => {
     const matchesSearch = fee.studentName.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = filterStatus === "all" || fee.status === filterStatus;
@@ -140,7 +185,7 @@ const Fees = () => {
       }
 
       setPaymentImage(file);
-      
+
       // Create preview
       const reader = new FileReader();
       reader.onloadend = () => {
@@ -177,7 +222,7 @@ const Fees = () => {
       }
 
       setNewPaymentImage(file);
-      
+
       const reader = new FileReader();
       reader.onloadend = () => {
         setNewImagePreview(reader.result as string);
@@ -186,12 +231,10 @@ const Fees = () => {
     }
   };
 
-
-
   const handleApproveRequest = async (request) => {
     try {
       const amount = parseFloat(request.amount) || 0;
-      
+
       const feeData = {
         student_name: request.studentName,
         phone: request.phone,
@@ -211,25 +254,25 @@ const Fees = () => {
       };
 
       const createdFee = await createFee(feeData);
-      
+
       // Update local state
       setFees([...fees, createdFee]);
 
       // Update request status in localStorage
       const requests = JSON.parse(localStorage.getItem('subscriptionRequests') || '[]');
-      const updatedRequests = requests.map(r => 
+      const updatedRequests = requests.map(r =>
         r.id === request.id ? { ...r, status: 'approved' } : r
       );
       localStorage.setItem('subscriptionRequests', JSON.stringify(updatedRequests));
-      
+
       // Remove from pending list
       setSubscriptionRequests(subscriptionRequests.filter(r => r.id !== request.id));
-      
+
       toast({
         title: "تم قبول الطلب",
         description: `تم قبول طلب الطالب ${request.studentName} وحفظه في قاعدة البيانات`,
       });
-      
+
       setIsViewRequestOpen(false);
       setSelectedRequest(null);
     } catch (error) {
@@ -245,20 +288,20 @@ const Fees = () => {
   const handleRejectRequest = (request) => {
     // Update request status in localStorage
     const requests = JSON.parse(localStorage.getItem('subscriptionRequests') || '[]');
-    const updatedRequests = requests.map(r => 
+    const updatedRequests = requests.map(r =>
       r.id === request.id ? { ...r, status: 'rejected' } : r
     );
     localStorage.setItem('subscriptionRequests', JSON.stringify(updatedRequests));
-    
+
     // Remove from pending list
     setSubscriptionRequests(subscriptionRequests.filter(r => r.id !== request.id));
-    
+
     toast({
       title: "تم رفض الطلب",
       description: `تم رفض طلب الطالب ${request.studentName}`,
       variant: "destructive",
     });
-    
+
     setIsViewRequestOpen(false);
     setSelectedRequest(null);
   };
@@ -269,7 +312,27 @@ const Fees = () => {
     try {
       const selectedGrade = grades.find(g => g.id === offlinePaymentData.gradeId);
       const selectedGroup = groups.find(g => g.id === offlinePaymentData.groupId);
-      const paidAmount = parseFloat(offlinePaymentData.amount) || 0;
+      const totalAmount = parseFloat(offlinePaymentData.totalAmount) || 0;
+      const paidAmount = parseFloat(offlinePaymentData.paidAmount) || 0;
+      const remainingAmount = totalAmount - paidAmount;
+
+      // Validate amounts
+      if (paidAmount > totalAmount) {
+        toast({
+          title: "خطأ في المبلغ",
+          description: "المبلغ المدفوع لا يمكن أن يكون أكبر من المبلغ المستحق",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Determine status based on payment
+      let status: 'paid' | 'partial' | 'pending' = 'pending';
+      if (paidAmount >= totalAmount) {
+        status = 'paid';
+      } else if (paidAmount > 0) {
+        status = 'partial';
+      }
 
       const feeData = {
         student_name: offlinePaymentData.studentName,
@@ -279,25 +342,43 @@ const Fees = () => {
         group_id: offlinePaymentData.groupId,
         group_name: selectedGroup?.name || '',
         barcode: offlinePaymentData.barcode,
-        amount: paidAmount,
+        amount: totalAmount,
         paid_amount: paidAmount,
-        status: 'paid',
+        status: status,
         payment_method: 'cash',
         is_offline: true,
         notes: offlinePaymentData.notes,
         due_date: new Date().toISOString().split('T')[0],
-        payment_date: new Date().toISOString().split('T')[0]
+        payment_date: paidAmount > 0 ? new Date().toISOString().split('T')[0] : null
       };
 
       const createdFee = await createFee(feeData);
-      
+
+      // If payment was made, record it in revenues
+      if (paidAmount > 0) {
+        const revenueData = {
+          student_name: offlinePaymentData.studentName,
+          student_phone: offlinePaymentData.phone,
+          student_barcode: offlinePaymentData.barcode,
+          fee_id: createdFee.id,
+          amount: paidAmount,
+          payment_method: 'cash' as const,
+          payment_type: 'fee' as const,
+          description: `دفعة ${status === 'paid' ? 'كاملة' : 'جزئية'} للطالب ${offlinePaymentData.studentName}${remainingAmount > 0 ? ` - متبقي: ${remainingAmount} ج.م` : ''}`,
+          notes: offlinePaymentData.notes,
+          payment_date: new Date().toISOString().split('T')[0]
+        };
+
+        await createRevenue(revenueData);
+      }
+
       setOfflineFees([...offlineFees, createdFee]);
-      
+
       toast({
         title: "تم إضافة الطالب بنجاح",
-        description: `تم تسجيل الطالب ${offlinePaymentData.studentName} وحفظه في قاعدة البيانات`,
+        description: `تم تسجيل الطالب ${offlinePaymentData.studentName}${paidAmount > 0 ? ` وتسجيل دفعة ${paidAmount} ج.م في الإيرادات` : ''}${remainingAmount > 0 ? ` - المتبقي: ${remainingAmount} ج.م` : ''}`,
       });
-      
+
       setIsAddNewOpen(false);
       setOfflinePaymentData({
         studentName: "",
@@ -305,7 +386,8 @@ const Fees = () => {
         gradeId: "",
         groupId: "",
         barcode: "",
-        amount: "",
+        totalAmount: "",
+        paidAmount: "",
         notes: ""
       });
     } catch (error) {
@@ -320,7 +402,7 @@ const Fees = () => {
 
   const processPayment = (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!paymentImage) {
       toast({
         title: "يرجى رفع صورة الإيصال",
@@ -329,12 +411,12 @@ const Fees = () => {
       });
       return;
     }
-    
+
     setFees(fees.map(fee => {
       if (fee.id === paymentData.feeId) {
         const newPaidAmount = fee.paidAmount + parseFloat(paymentData.amount);
         const newStatus = newPaidAmount >= fee.amount ? "مدفوع" : "جزئي";
-        
+
         return {
           ...fee,
           paidAmount: newPaidAmount,
@@ -344,12 +426,12 @@ const Fees = () => {
       }
       return fee;
     }));
-    
+
     toast({
       title: "تم تسجيل الدفع بنجاح",
       description: "تم تحديث حالة المصروفات وحفظ صورة الإيصال",
     });
-    
+
     setIsOpen(false);
     setPaymentData({ feeId: null, amount: "", paymentMethod: "cash", notes: "" });
     removeImage();
@@ -388,7 +470,7 @@ const Fees = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
       <Header />
-      
+
       <div className="container mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
@@ -416,7 +498,7 @@ const Fees = () => {
               </div>
             </CardContent>
           </Card>
-          
+
           <Card className="shadow-soft">
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
@@ -436,7 +518,7 @@ const Fees = () => {
         <Card className="shadow-soft mb-6">
           <CardHeader className="bg-gradient-to-r from-blue-50 to-cyan-50 dark:from-blue-950 dark:to-cyan-950">
             <CardTitle className="flex items-center gap-2">
-              <span>💻</span>
+              <span></span>
               كشف المصروفات - الطلاب الأونلاين
             </CardTitle>
             <div className="flex gap-4">
@@ -464,118 +546,171 @@ const Fees = () => {
           </CardHeader>
           <CardContent>
             {subscriptionRequests.length > 0 && (
-              <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <h3 className="font-semibold text-yellow-800 mb-3">طلبات الاشتراك المعلقة ({subscriptionRequests.length})</h3>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>الطالب</TableHead>
-                      <TableHead>الموبايل</TableHead>
-                      <TableHead>الصف</TableHead>
-                      <TableHead>المجموعة</TableHead>
-                      <TableHead>التاريخ</TableHead>
-                      <TableHead>الإجراءات</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {subscriptionRequests.map((request) => (
-                      <TableRow key={request.id}>
-                        <TableCell className="font-medium">{request.studentName}</TableCell>
-                        <TableCell>{request.phone}</TableCell>
-                        <TableCell>{request.gradeName}</TableCell>
-                        <TableCell>{request.groupName}</TableCell>
-                        <TableCell>{new Date(request.createdAt).toLocaleDateString('ar-EG')}</TableCell>
-                        <TableCell>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => {
-                              setSelectedRequest(request);
-                              setIsViewRequestOpen(true);
-                            }}
-                            className="text-xs"
-                          >
-                            <Eye className="w-3 h-3 ml-1" />
-                            عرض
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+              <div className="mb-6">
+                <h3 className="font-semibold text-yellow-800 dark:text-yellow-400 mb-4 flex items-center gap-2">
+                  <AlertTriangle className="w-5 h-5" />
+                  طلبات الاشتراك المعلقة ({subscriptionRequests.length})
+                </h3>
+                <div className="space-y-3">
+                  {subscriptionRequests.map((request) => (
+                    <div 
+                      key={request.id}
+                      className="border border-yellow-200 dark:border-yellow-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-yellow-50 dark:bg-yellow-950/20"
+                    >
+                      <div className="bg-gradient-to-r from-yellow-400 to-orange-400 px-4 py-2 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <Avatar className="h-8 w-8 border-2 border-white">
+                            <AvatarFallback className="text-xs bg-white text-yellow-600">
+                              {request.studentName?.charAt(0) || 'ط'}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div>
+                            <h4 className="font-bold text-white text-sm">{request.studentName}</h4>
+                          </div>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setSelectedRequest(request);
+                            setIsViewRequestOpen(true);
+                          }}
+                          className="h-7 px-3 text-white hover:bg-white/20"
+                        >
+                          <Eye className="w-3 h-3 ml-1" />
+                          عرض
+                        </Button>
+                      </div>
+                      
+                      <div className="p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                        <div>
+                          <span className="text-xs text-muted-foreground">الموبايل:</span>
+                          <p className="font-medium">{request.phone}</p>
+                        </div>
+                        <div>
+                          <span className="text-xs text-muted-foreground">الصف:</span>
+                          <p className="font-medium">{request.gradeName}</p>
+                        </div>
+                        <div>
+                          <span className="text-xs text-muted-foreground">المجموعة:</span>
+                          <p className="font-medium">{request.groupName}</p>
+                        </div>
+                        <div>
+                          <span className="text-xs text-muted-foreground">التاريخ:</span>
+                          <p className="font-medium">{new Date(request.createdAt).toLocaleDateString('ar-EG')}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
-            
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>الطالب</TableHead>
-                  <TableHead>الكورس</TableHead>
-                  <TableHead>المبلغ المطلوب</TableHead>
-                  <TableHead>المبلغ المدفوع</TableHead>
-                  <TableHead>المتبقي</TableHead>
-                  <TableHead>تاريخ الاستحقاق</TableHead>
-                  <TableHead>الحالة</TableHead>
-                  <TableHead>الإجراءات</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredFees.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
-                      لا توجد مصروفات للطلاب الأونلاين
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  filteredFees.map((fee) => (
-                    <TableRow key={fee.id}>
-                      <TableCell className="font-medium">{fee.studentName}</TableCell>
-                      <TableCell>{fee.course}</TableCell>
-                      <TableCell>{fee.amount} ج.م</TableCell>
-                      <TableCell>{fee.paidAmount} ج.م</TableCell>
-                      <TableCell className="font-medium text-red-600">
-                        {fee.amount - fee.paidAmount} ج.م
-                      </TableCell>
-                      <TableCell>{fee.dueDate}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          {getStatusIcon(fee.status)}
-                          <span className={`px-2 py-1 rounded-full text-xs ${getStatusColor(fee.status)}`}>
-                            {fee.status}
-                          </span>
+
+            {/* Online Students Fees Cards */}
+            {filteredFees.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground">
+                <DollarSign className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                <p className="text-lg font-medium">لا توجد مصروفات للطلاب الأونلاين</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {filteredFees.map((fee, index) => (
+                  <div 
+                    key={fee.id}
+                    className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
+                  >
+                    <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-3 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <Avatar className="h-10 w-10 border-2 border-white">
+                          <AvatarFallback className="text-xs bg-white text-cyan-600">
+                            {fee.studentName?.charAt(0) || 'ط'}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <h3 className="font-bold text-white text-lg">{fee.studentName}</h3>
+                          <div className="flex items-center gap-2 text-xs text-cyan-50">
+                            <span>{fee.course}</span>
+                          </div>
                         </div>
-                      </TableCell>
-                      <TableCell>
+                      </div>
+                      <div className="flex gap-2">
                         {fee.status !== "مدفوع" && (
                           <Button
+                            variant="ghost"
                             size="sm"
                             onClick={() => handlePayment(fee)}
-                            className="text-xs"
+                            className="h-8 px-3 text-white hover:bg-white/20"
                           >
-                            <CreditCard className="w-3 h-3 ml-1" />
+                            <CreditCard className="w-4 h-4 ml-1" />
                             دفع
                           </Button>
                         )}
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
+                      </div>
+                    </div>
+                    
+                    <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <DollarSign className="w-4 h-4 text-cyan-600" />
+                          <span className="text-sm text-muted-foreground">المبلغ المطلوب</span>
+                        </div>
+                        <p className="font-bold text-cyan-600">{fee.amount} ج.م</p>
+                      </div>
+                      
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <CheckCircle className="w-4 h-4 text-green-600" />
+                          <span className="text-sm text-muted-foreground">المبلغ المدفوع</span>
+                        </div>
+                        <p className="font-bold text-green-600">{fee.paidAmount} ج.م</p>
+                      </div>
+                      
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <AlertTriangle className="w-4 h-4 text-red-600" />
+                          <span className="text-sm text-muted-foreground">المتبقي</span>
+                        </div>
+                        <p className="font-bold text-red-600">{fee.amount - fee.paidAmount} ج.م</p>
+                      </div>
+                      
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <Calendar className="w-4 h-4 text-cyan-600" />
+                          <span className="text-sm text-muted-foreground">تاريخ الاستحقاق</span>
+                        </div>
+                        <p className="font-medium">{fee.dueDate}</p>
+                      </div>
+                      
+                      <div className="col-span-2">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-sm text-muted-foreground">الحالة</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {getStatusIcon(fee.status)}
+                          <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(fee.status)}`}>
+                            {fee.status}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
 
         {/* Offline Students Fees */}
         <Card className="shadow-soft">
-          <CardHeader className="bg-gradient-to-r from-purple-50 to-pink-50 dark:from-purple-950 dark:to-pink-950">
+          <CardHeader className="bg-gradient-to-r from-cyan-50 to-teal-50 dark:from-cyan-950 dark:to-teal-950">
             <div className="flex items-center justify-between mb-4">
               <CardTitle className="flex items-center gap-2">
-                <span>👤</span>
+                <User className="w-5 h-5 text-cyan-600" />
                 كشف المصروفات - الطلاب الأوفلاين
               </CardTitle>
               <Dialog open={isAddNewOpen} onOpenChange={setIsAddNewOpen}>
                 <DialogTrigger asChild>
-                  <Button className="bg-purple-600 hover:bg-purple-700">
+                  <Button className="bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-600 hover:to-teal-600">
                     <Plus className="w-4 h-4 ml-2" />
                     إضافة طالب
                   </Button>
@@ -592,6 +727,7 @@ const Fees = () => {
                         type="text"
                         value={offlinePaymentData.studentName}
                         onChange={(e) => setOfflinePaymentData(prev => ({ ...prev, studentName: e.target.value }))}
+                        onBlur={(e) => handleStudentLookup('name', e.target.value)}
                         placeholder="أدخل اسم الطالب"
                         required
                       />
@@ -603,10 +739,25 @@ const Fees = () => {
                         type="tel"
                         value={offlinePaymentData.phone}
                         onChange={(e) => setOfflinePaymentData(prev => ({ ...prev, phone: e.target.value }))}
+                        onBlur={(e) => handleStudentLookup('phone', e.target.value)}
                         placeholder="01xxxxxxxxx"
                         required
                       />
                     </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="offlineBarcode">الباركود</Label>
+                      <Input
+                        id="offlineBarcode"
+                        type="text"
+                        value={offlinePaymentData.barcode}
+                        onChange={(e) => setOfflinePaymentData(prev => ({ ...prev, barcode: e.target.value }))}
+                        onBlur={(e) => handleStudentLookup('barcode', e.target.value)}
+                        className="font-mono"
+                      />
+                      <p className="text-xs text-muted-foreground">أدخل باركود الطالب أو اتركه فارغاً ليتم توليده</p>
+                    </div>
+
                     <div className="space-y-2">
                       <Label htmlFor="offlineGrade">الصف الدراسي *</Label>
                       <Select value={offlinePaymentData.gradeId} onValueChange={(value) => setOfflinePaymentData(prev => ({ ...prev, gradeId: value }))}>
@@ -637,29 +788,44 @@ const Fees = () => {
                         </SelectContent>
                       </Select>
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="offlineBarcode">الباركود</Label>
-                      <Input
-                        id="offlineBarcode"
-                        type="text"
-                        value={offlinePaymentData.barcode}
-                        readOnly
-                        className="bg-muted font-mono"
-                      />
-                      <p className="text-xs text-muted-foreground">تم توليد الباركود تلقائياً</p>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="offlineTotalAmount">المبلغ المستحق *</Label>
+                        <Input
+                          id="offlineTotalAmount"
+                          type="number"
+                          value={offlinePaymentData.totalAmount}
+                          onChange={(e) => setOfflinePaymentData(prev => ({ ...prev, totalAmount: e.target.value }))}
+                          placeholder="المبلغ الإجمالي"
+                          required
+                          min="0"
+                          step="0.01"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="offlinePaidAmount">المبلغ المدفوع *</Label>
+                        <Input
+                          id="offlinePaidAmount"
+                          type="number"
+                          value={offlinePaymentData.paidAmount}
+                          onChange={(e) => setOfflinePaymentData(prev => ({ ...prev, paidAmount: e.target.value }))}
+                          placeholder="المبلغ المدفوع"
+                          required
+                          min="0"
+                          step="0.01"
+                        />
+                      </div>
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="offlineAmount">المبلغ المدفوع *</Label>
-                      <Input
-                        id="offlineAmount"
-                        type="number"
-                        value={offlinePaymentData.amount}
-                        onChange={(e) => setOfflinePaymentData(prev => ({ ...prev, amount: e.target.value }))}
-                        placeholder="أدخل المبلغ بالجنيه"
-                        required
-                        min="0"
-                      />
-                    </div>
+                    {offlinePaymentData.totalAmount && offlinePaymentData.paidAmount && (
+                      <div className="p-3 bg-cyan-50 dark:bg-cyan-950 rounded-lg border border-cyan-200 dark:border-cyan-800">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="font-medium text-cyan-700 dark:text-cyan-300">المتبقي:</span>
+                          <span className="font-bold text-cyan-900 dark:text-cyan-100">
+                            {(parseFloat(offlinePaymentData.totalAmount) - parseFloat(offlinePaymentData.paidAmount)).toFixed(2)} ج.م
+                          </span>
+                        </div>
+                      </div>
+                    )}
                     <div className="space-y-2">
                       <Label htmlFor="offlineNotes">ملاحظات</Label>
                       <Textarea
@@ -700,63 +866,98 @@ const Fees = () => {
               </Select>
             </div>
           </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>الطالب</TableHead>
-                  <TableHead>الكورس</TableHead>
-                  <TableHead>المبلغ المطلوب</TableHead>
-                  <TableHead>المبلغ المدفوع</TableHead>
-                  <TableHead>المتبقي</TableHead>
-                  <TableHead>تاريخ الاستحقاق</TableHead>
-                  <TableHead>الحالة</TableHead>
-                  <TableHead>الإجراءات</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {offlineFees.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
-                      لا توجد مصروفات للطلاب الأوفلاين
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  offlineFees.map((fee) => (
-                    <TableRow key={fee.id}>
-                      <TableCell className="font-medium">{fee.studentName}</TableCell>
-                      <TableCell>{fee.course}</TableCell>
-                      <TableCell>{fee.amount} ج.م</TableCell>
-                      <TableCell>{fee.paidAmount} ج.م</TableCell>
-                      <TableCell className="font-medium text-red-600">
-                        {fee.amount - fee.paidAmount} ج.م
-                      </TableCell>
-                      <TableCell>{fee.dueDate}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          {getStatusIcon(fee.status)}
-                          <span className={`px-2 py-1 rounded-full text-xs ${getStatusColor(fee.status)}`}>
-                            {fee.status}
-                          </span>
+          <CardContent className="p-4">
+            {/* Offline Students Fees Cards */}
+            {offlineFees.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground">
+                <DollarSign className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                <p className="text-lg font-medium">لا توجد مصروفات للطلاب الأوفلاين</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {offlineFees.map((fee, index) => (
+                  <div 
+                    key={fee.id}
+                    className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
+                  >
+                    <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-3 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <Avatar className="h-10 w-10 border-2 border-white">
+                          <AvatarFallback className="text-xs bg-white text-cyan-600">
+                            {fee.studentName?.charAt(0) || 'ط'}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <h3 className="font-bold text-white text-lg">{fee.studentName}</h3>
+                          <div className="flex items-center gap-2 text-xs text-cyan-50">
+                            <span>{fee.course}</span>
+                          </div>
                         </div>
-                      </TableCell>
-                      <TableCell>
+                      </div>
+                      <div className="flex gap-2">
                         {fee.status !== "مدفوع" && (
                           <Button
+                            variant="ghost"
                             size="sm"
                             onClick={() => handlePayment(fee)}
-                            className="text-xs"
+                            className="h-8 px-3 text-white hover:bg-white/20"
                           >
-                            <CreditCard className="w-3 h-3 ml-1" />
+                            <CreditCard className="w-4 h-4 ml-1" />
                             دفع
                           </Button>
                         )}
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
+                      </div>
+                    </div>
+                    
+                    <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <DollarSign className="w-4 h-4 text-cyan-600" />
+                          <span className="text-sm text-muted-foreground">المبلغ المطلوب</span>
+                        </div>
+                        <p className="font-bold text-cyan-600">{fee.amount} ج.م</p>
+                      </div>
+                      
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <CheckCircle className="w-4 h-4 text-green-600" />
+                          <span className="text-sm text-muted-foreground">المبلغ المدفوع</span>
+                        </div>
+                        <p className="font-bold text-green-600">{fee.paidAmount} ج.م</p>
+                      </div>
+                      
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <AlertTriangle className="w-4 h-4 text-red-600" />
+                          <span className="text-sm text-muted-foreground">المتبقي</span>
+                        </div>
+                        <p className="font-bold text-red-600">{fee.amount - fee.paidAmount} ج.م</p>
+                      </div>
+                      
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <Calendar className="w-4 h-4 text-cyan-600" />
+                          <span className="text-sm text-muted-foreground">تاريخ الاستحقاق</span>
+                        </div>
+                        <p className="font-medium">{fee.dueDate}</p>
+                      </div>
+                      
+                      <div className="col-span-2">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-sm text-muted-foreground">الحالة</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {getStatusIcon(fee.status)}
+                          <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(fee.status)}`}>
+                            {fee.status}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -874,7 +1075,7 @@ const Fees = () => {
                     <p className="font-medium text-green-600">{selectedRequest.amount} ج.م</p>
                   </div>
                 </div>
-                
+
                 {selectedRequest.notes && (
                   <div>
                     <Label className="text-muted-foreground">الملاحظات</Label>

@@ -6,8 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Package, Plus, TrendingDown, Trash2, Edit2 } from "lucide-react";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Package, Plus, TrendingDown, Trash2, Edit2, User, Calendar, DollarSign, Phone, FileText, ShoppingCart } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
@@ -389,70 +389,125 @@ const Imports = () => {
           </CardContent>
         </Card>
 
-        {/* Imports Table */}
+        {/* Imports Cards */}
         <Card className="shadow-soft">
           <CardHeader>
             <CardTitle>سجل المستوردات</CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>التاريخ</TableHead>
-                    <TableHead>المورد</TableHead>
-                    <TableHead>الهاتف</TableHead>
-                    <TableHead>عدد الأصناف</TableHead>
-                    <TableHead>الإجمالي</TableHead>
-                    <TableHead>المدفوع</TableHead>
-                    <TableHead>المتبقي</TableHead>
-                    <TableHead>طريقة الدفع</TableHead>
-                    <TableHead>الإجراءات</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {imports.map((importRecord: any) => (
-                    <TableRow key={importRecord.id}>
-                      <TableCell>{new Date(importRecord.import_date).toLocaleDateString('ar-SA')}</TableCell>
-                      <TableCell className="font-medium">{importRecord.supplier_name}</TableCell>
-                      <TableCell>{importRecord.supplier_phone || "-"}</TableCell>
-                      <TableCell>{importRecord.items?.length || 0}</TableCell>
-                      <TableCell className="text-cyan-600 font-medium">
-                        {Number(importRecord.total_amount).toFixed(2)} ج.م
-                      </TableCell>
-                      <TableCell className="text-green-600">
-                        {Number(importRecord.paid_amount).toFixed(2)} ج.م
-                      </TableCell>
-                      <TableCell className="text-primary">
-                        {Number(importRecord.remaining_amount).toFixed(2)} ج.م
-                      </TableCell>
-                      <TableCell>
-                        {importRecord.payment_method === 'cash' ? 'كاش' :
-                         importRecord.payment_method === 'visa' ? 'فيزا' :
-                         importRecord.payment_method === 'instapay' ? 'إنستاباي' : 'آجل'}
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDelete(importRecord.id)}
-                          className="text-destructive hover:text-destructive"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {imports.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
-                        لا توجد مستوردات مسجلة
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
+          <CardContent className="p-4">
+            {imports.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground">
+                <Package className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                <p className="text-lg font-medium">لا توجد مستوردات مسجلة</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {imports.map((importRecord: any, index) => {
+                  const paymentMethodLabel = 
+                    importRecord.payment_method === 'cash' ? 'كاش' :
+                    importRecord.payment_method === 'visa' ? 'فيزا' :
+                    importRecord.payment_method === 'instapay' ? 'إنستاباي' : 'آجل';
+                  
+                  return (
+                    <div 
+                      key={importRecord.id}
+                      className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
+                    >
+                      <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-3 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <Avatar className="h-10 w-10 border-2 border-white">
+                            <AvatarFallback className="text-xs bg-white text-cyan-600">
+                              <Package className="w-5 h-5" />
+                            </AvatarFallback>
+                          </Avatar>
+                          <div>
+                            <h3 className="font-bold text-white text-lg">{importRecord.supplier_name}</h3>
+                            <div className="flex items-center gap-2 text-xs text-cyan-50">
+                              {importRecord.supplier_phone && (
+                                <>
+                                  <Phone className="w-3 h-3" />
+                                  <span>{importRecord.supplier_phone}</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDelete(importRecord.id)}
+                            className="h-8 w-8 p-0 text-white hover:bg-red-500/30"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </div>
+                      
+                      <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div>
+                          <div className="flex items-center gap-2 mb-2">
+                            <Calendar className="w-4 h-4 text-cyan-600" />
+                            <span className="text-sm text-muted-foreground">التاريخ</span>
+                          </div>
+                          <p className="font-medium">{new Date(importRecord.import_date).toLocaleDateString('ar-SA')}</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex items-center gap-2 mb-2">
+                            <ShoppingCart className="w-4 h-4 text-cyan-600" />
+                            <span className="text-sm text-muted-foreground">عدد الأصناف</span>
+                          </div>
+                          <p className="font-medium">{importRecord.items?.length || 0}</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex items-center gap-2 mb-2">
+                            <DollarSign className="w-4 h-4 text-cyan-600" />
+                            <span className="text-sm text-muted-foreground">الإجمالي</span>
+                          </div>
+                          <p className="font-bold text-cyan-600">{Number(importRecord.total_amount).toFixed(2)} ج.م</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex items-center gap-2 mb-2">
+                            <DollarSign className="w-4 h-4 text-green-600" />
+                            <span className="text-sm text-muted-foreground">المدفوع</span>
+                          </div>
+                          <p className="font-bold text-green-600">{Number(importRecord.paid_amount).toFixed(2)} ج.م</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex items-center gap-2 mb-2">
+                            <DollarSign className="w-4 h-4 text-orange-600" />
+                            <span className="text-sm text-muted-foreground">المتبقي</span>
+                          </div>
+                          <p className="font-bold text-orange-600">{Number(importRecord.remaining_amount).toFixed(2)} ج.م</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex items-center gap-2 mb-2">
+                            <FileText className="w-4 h-4 text-cyan-600" />
+                            <span className="text-sm text-muted-foreground">طريقة الدفع</span>
+                          </div>
+                          <p className="font-medium">{paymentMethodLabel}</p>
+                        </div>
+                        
+                        {importRecord.notes && (
+                          <div className="col-span-2">
+                            <div className="flex items-center gap-2 mb-2">
+                              <FileText className="w-4 h-4 text-cyan-600" />
+                              <span className="text-sm text-muted-foreground">ملاحظات</span>
+                            </div>
+                            <p className="font-medium text-sm">{importRecord.notes}</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
