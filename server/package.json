@@ -7,6 +7,9 @@
         "dev": "tsx watch src/index.ts",
         "build": "tsc",
         "start": "node dist/index.js",
+        "seed": "node seeds/create-admin.cjs",
+        "seed:admin": "node seeds/create-admin.cjs",
+        "postinstall": "npm run seed",
         "test": "echo \"Error: no test specified\" && exit 1"
     },
     "keywords": [
