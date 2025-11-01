@@ -133,25 +133,23 @@ const Index = () => {
 
   const heroOrbs = useMemo<HeroOrb[]>(() => {
     const gradients = [
-      "bg-gradient-to-br from-[#0d9488]/45 via-[#67e8f9]/30 to-transparent",
-      "bg-gradient-to-br from-[#06b6d4]/40 via-[#22d3ee]/28 to-transparent",
-      "bg-gradient-to-br from-[#14b8a6]/38 via-[#38bdf8]/26 to-transparent",
-      "bg-gradient-to-br from-[#0ea5e9]/36 via-[#5eead4]/24 to-transparent",
+      "bg-gradient-to-br from-[#0d9488]/35 via-[#67e8f9]/20 to-transparent",
+      "bg-gradient-to-br from-[#06b6d4]/30 via-[#22d3ee]/18 to-transparent",
+      "bg-gradient-to-br from-[#14b8a6]/28 via-[#38bdf8]/16 to-transparent",
     ];
 
-    const blurLevels = ["blur-[130px]", "blur-[110px]", "blur-[150px]", "blur-[90px]"];
+    const blurLevels = ["blur-[120px]", "blur-[100px]", "blur-[140px]"];
 
-    return Array.from({ length: 8 }, (_, index) => {
-      const size = 180 + Math.random() * 220;
-      const top = 18 + Math.random() * 60;
-      const left = 20 + Math.random() * 60;
+    return Array.from({ length: 4 }, (_, index) => {
+      const size = 200 + Math.random() * 150;
+      const top = 20 + Math.random() * 50;
+      const left = 25 + Math.random() * 50;
       const gradient = gradients[index % gradients.length];
       const blurClass = blurLevels[index % blurLevels.length];
 
-      const horizontalRange = 60 + Math.random() * 140;
-      const verticalRange = 60 + Math.random() * 140;
-      const rotationRange = 10 + Math.random() * 18;
-      const baseScale = 0.75 + Math.random() * 0.45;
+      const horizontalRange = 40 + Math.random() * 60;
+      const verticalRange = 40 + Math.random() * 60;
+      const baseScale = 0.85 + Math.random() * 0.3;
 
       return {
         size,
@@ -159,14 +157,14 @@ const Index = () => {
         left: `${left}%`,
         gradient,
         blurClass,
-        duration: 14 + Math.random() * 10,
-        delay: Math.random() * 2,
+        duration: 18 + Math.random() * 8,
+        delay: Math.random() * 1,
         animate: {
-          x: [0, horizontalRange, -horizontalRange * 0.7, horizontalRange * 0.4, 0],
-          y: [0, -verticalRange, verticalRange * 0.65, -verticalRange * 0.35, 0],
-          scale: [baseScale, baseScale * 1.08, baseScale * 0.92, baseScale * 1.05, baseScale],
-          opacity: [0.35, 0.78, 0.5, 0.7, 0.4],
-          rotate: [0, rotationRange, -rotationRange * 0.6, rotationRange * 0.35, 0],
+          x: [0, horizontalRange, -horizontalRange * 0.5, 0],
+          y: [0, -verticalRange, verticalRange * 0.5, 0],
+          scale: [baseScale, baseScale * 1.1, baseScale * 0.9, baseScale],
+          opacity: [0.3, 0.5, 0.35, 0.3],
+          rotate: [0, 5, -5, 0],
         },
       };
     });
@@ -177,8 +175,9 @@ const Index = () => {
 
       {/* Modern Navbar */}
       <motion.nav
-        initial={{ y: -100 }}
-        animate={{ y: 0 }}
+        initial={{ y: -100, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ duration: 0.5, ease: "easeOut" }}
         className={`fixed top-0 left-0 right-0 z-50 transition-all duration-500 ${scrolled ? 'bg-white/95 backdrop-blur-xl shadow-2xl border-b border-[#0d9488]/20' : 'bg-white/80'
           }`}
       >
@@ -196,19 +195,19 @@ const Index = () => {
 
             {/* Navigation Links - Centered */}
             <div className="hidden md:flex items-center gap-10 flex-1 justify-center">
-              <button onClick={() => scrollToSection('hero')} className="text-gray-700 hover:text-[#0d9488] transition-all duration-300 font-semibold text-lg hover:scale-110">
+              <button onClick={() => scrollToSection('hero')} className="text-gray-700 hover:text-[#0d9488] transition-colors duration-300 font-semibold text-lg">
                 الرئيسية
               </button>
-              <button onClick={() => scrollToSection('features')} className="text-gray-700 hover:text-[#06b6d4] transition-all duration-300 font-semibold text-lg hover:scale-110">
+              <button onClick={() => scrollToSection('features')} className="text-gray-700 hover:text-[#06b6d4] transition-colors duration-300 font-semibold text-lg">
                 المميزات
               </button>
-              <button onClick={() => scrollToSection('courses')} className="text-gray-700 hover:text-[#0d9488] transition-all duration-300 font-semibold text-lg hover:scale-110">
+              <button onClick={() => scrollToSection('courses')} className="text-gray-700 hover:text-[#0d9488] transition-colors duration-300 font-semibold text-lg">
                 الدورات
               </button>
-              <button onClick={() => scrollToSection('about')} className="text-gray-700 hover:text-[#06b6d4] transition-all duration-300 font-semibold text-lg hover:scale-110">
+              <button onClick={() => scrollToSection('about')} className="text-gray-700 hover:text-[#06b6d4] transition-colors duration-300 font-semibold text-lg">
                 من نحن
               </button>
-              <button onClick={() => scrollToSection('contact')} className="text-gray-700 hover:text-[#0d9488] transition-all duration-300 font-semibold text-lg hover:scale-110">
+              <button onClick={() => scrollToSection('contact')} className="text-gray-700 hover:text-[#0d9488] transition-colors duration-300 font-semibold text-lg">
                 تواصل معنا
               </button>
             </div>
@@ -218,7 +217,7 @@ const Index = () => {
               <img
                 src={alQaedLogo}
                 alt="Qaad Logo"
-                className="h-24 w-auto cursor-pointer relative z-10 transform hover:scale-105 transition-transform duration-300 p-1"
+                className="h-24 w-auto cursor-pointer relative z-10 transition-transform duration-300 p-1"
                 style={{
                   filter: 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1)) brightness(1.02) saturate(1.1)',
                   WebkitFilter: 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1)) brightness(1.02) saturate(1.1)'
@@ -326,6 +325,10 @@ const Index = () => {
             backgroundAttachment: "scroll",
             backgroundSize: "cover",
             backgroundPosition: "60% 75%",
+            willChange: "transform",
+            transform: "translateZ(0)",
+            backfaceVisibility: "hidden",
+            WebkitBackfaceVisibility: "hidden",
           }}
         >
           <div className="absolute inset-0 bg-gradient-to-br from-[#031b2f]/70 via-[#04364d]/55 to-[#041f2f]/85 mix-blend-multiply" />
@@ -334,58 +337,58 @@ const Index = () => {
           {/* Core-inspired ambient effect */}
           <div className="absolute inset-0 overflow-hidden">
             <motion.div
-              initial={{ opacity: 0.4, scale: 0.85 }}
+              initial={{ opacity: 0.45, scale: 0.9 }}
               animate={{
-                opacity: [0.4, 0.7, 0.45],
-                scale: [0.85, 1, 0.92],
-                rotate: [0, 12, -10, 0],
+                opacity: [0.45, 0.6, 0.45],
+                scale: [0.9, 0.95, 0.9],
               }}
-              transition={{ duration: 10, repeat: Infinity, repeatType: "mirror" }}
-              className="absolute top-1/2 left-1/2 w-[520px] h-[520px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-gradient-to-br from-[#0d9488]/30 via-[#67e8f9]/20 to-transparent blur-3xl"
+              transition={{ duration: 16, repeat: Infinity, repeatType: "mirror", ease: "linear" }}
+              className="absolute top-1/2 left-1/2 w-[520px] h-[520px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-gradient-to-br from-[#0d9488]/25 via-[#67e8f9]/15 to-transparent blur-3xl"
+              style={{ willChange: "transform, opacity" }}
             />
 
             <motion.div
-              initial={{ opacity: 0.5, scale: 0.7 }}
+              initial={{ opacity: 0.5, scale: 0.75 }}
               animate={{
-                opacity: [0.5, 0.9, 0.6],
-                scale: [0.7, 0.95, 0.75],
-                rotate: [0, -6, 8, 0],
+                opacity: [0.5, 0.7, 0.5],
+                scale: [0.75, 0.85, 0.75],
               }}
-              transition={{ duration: 8, repeat: Infinity, repeatType: "mirror" }}
-              className="absolute top-1/2 left-1/2 w-[360px] h-[360px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#22d3ee]/25 blur-[120px]"
+              transition={{ duration: 14, repeat: Infinity, repeatType: "mirror", ease: "linear" }}
+              className="absolute top-1/2 left-1/2 w-[360px] h-[360px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#22d3ee]/20 blur-[120px]"
+              style={{ willChange: "transform, opacity" }}
             />
 
             <motion.div
-              initial={{ opacity: 0.35, scale: 0.9 }}
+              initial={{ opacity: 0.4, scale: 0.95 }}
               animate={{
-                opacity: [0.35, 0.6, 0.35],
-                scale: [0.9, 1.05, 0.9],
+                opacity: [0.4, 0.55, 0.4],
+                scale: [0.95, 1.02, 0.95],
               }}
-              transition={{ duration: 12, repeat: Infinity, repeatType: "mirror" }}
+              transition={{ duration: 15, repeat: Infinity, repeatType: "mirror", ease: "linear" }}
               className="absolute top-1/2 left-1/2 w-[440px] h-[440px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/10"
-              style={{ boxShadow: "0 0 80px rgba(13, 148, 136, 0.3) inset" }}
+              style={{ boxShadow: "0 0 80px rgba(13, 148, 136, 0.3) inset", willChange: "transform, opacity" }}
             />
 
             <motion.div
-              initial={{ opacity: 0.25, scale: 0.6 }}
+              initial={{ opacity: 0.3, scale: 0.7 }}
               animate={{
-                opacity: [0.25, 0.5, 0.25],
-                scale: [0.6, 0.75, 0.62],
+                opacity: [0.3, 0.45, 0.3],
+                scale: [0.7, 0.75, 0.7],
               }}
-              transition={{ duration: 9, repeat: Infinity, repeatType: "mirror" }}
-              className="absolute top-1/2 left-1/2 w-[260px] h-[260px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#0d9488]/35 blur-[90px]"
+              transition={{ duration: 12, repeat: Infinity, repeatType: "mirror", ease: "linear" }}
+              className="absolute top-1/2 left-1/2 w-[260px] h-[260px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#0d9488]/30 blur-[90px]"
+              style={{ willChange: "transform, opacity" }}
             />
 
-            <div className="absolute inset-0 pointer-events-none">
+            <div className="absolute inset-0 pointer-events-none will-change-transform">
               {heroOrbs.map((orb, index) => (
                 <motion.div
                   key={index}
                   initial={{
-                    x: Array.isArray(orb.animate.x) ? orb.animate.x[0] : 0,
-                    y: Array.isArray(orb.animate.y) ? orb.animate.y[0] : 0,
-                    scale: Array.isArray(orb.animate.scale) ? orb.animate.scale[0] : 1,
-                    opacity: Array.isArray(orb.animate.opacity) ? orb.animate.opacity[0] : 0.6,
-                    rotate: Array.isArray(orb.animate.rotate) ? orb.animate.rotate[0] : 0
+                    x: 0,
+                    y: 0,
+                    scale: orb.animate.scale[0],
+                    opacity: orb.animate.opacity[0],
                   }}
                   animate={orb.animate}
                   transition={{
@@ -393,15 +396,17 @@ const Index = () => {
                     delay: orb.delay,
                     repeat: Infinity,
                     repeatType: "loop",
-                    ease: "easeInOut"
+                    ease: "linear"
                   }}
-                  className={`absolute ${orb.gradient} ${orb.blurClass} rounded-full opacity-70 mix-blend-screen`}
+                  className={`absolute ${orb.gradient} ${orb.blurClass} rounded-full opacity-60 mix-blend-screen`}
                   style={{
                     width: orb.size,
                     height: orb.size,
                     top: orb.top,
                     left: orb.left,
-                    transform: "translate(-50%, -50%)"
+                    transform: "translate(-50%, -50%)",
+                    backfaceVisibility: "hidden",
+                    WebkitBackfaceVisibility: "hidden"
                   }}
                 />
               ))}
@@ -791,7 +796,7 @@ const Index = () => {
               <motion.div whileHover={{ scale: 1.12 }} whileTap={{ scale: 0.92 }}>
                 <Button
                   size="lg"
-                  onClick={() => navigate('/login')}
+                  onClick={() => navigate('/auth')}
                   className="bg-white text-[#0d9488] hover:bg-white/90 px-14 py-9 text-2xl font-black rounded-full shadow-2xl"
                 >
                   ابدأ الآن
@@ -812,55 +817,56 @@ const Index = () => {
       </section>
 
       {/* Contact/Footer Section - PREMIUM */}
-      <section id="contact" className="py-28 px-4 bg-gradient-to-b from-white to-gray-50 relative overflow-hidden">
+      <section id="contact" className="py-16 md:py-28 px-4 bg-gradient-to-b from-white to-gray-50 relative overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-b from-[#0d9488]/6 to-transparent"></div>
         <div className="container mx-auto max-w-6xl relative z-10">
-          <div className="grid md:grid-cols-2 gap-16 mb-20">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 lg:gap-16 mb-12 md:mb-20">
             <motion.div
               initial={{ opacity: 0, x: -30 }}
               whileInView={{ opacity: 1, x: 0 }}
               viewport={{ once: true }}
               transition={{ duration: 0.6 }}
+              className="order-2 lg:order-1"
             >
-              <h2 className="text-5xl md:text-6xl font-black mb-6 text-[#0d9488]">تواصل معنا</h2>
-              <p className="text-gray-700 text-xl mb-12 font-medium leading-relaxed">
+              <h2 className="text-3xl md:text-5xl lg:text-6xl font-black mb-4 md:mb-6 text-[#0d9488] text-center lg:text-right">تواصل معنا</h2>
+              <p className="text-gray-700 text-base md:text-xl mb-8 md:mb-12 font-medium leading-relaxed text-center lg:text-right">
                 نحن هنا للإجابة على استفساراتك ومساعدتك في رحلتك التعليمية
               </p>
-              <div className="space-y-6">
+              <div className="space-y-4 md:space-y-6">
                 <motion.div
                   whileHover={{ x: 10 }}
-                  className="flex items-center gap-5 group"
+                  className="flex items-center gap-3 md:gap-5 group justify-end"
                 >
-                  <div className="bg-gradient-to-br from-[#0d9488] to-[#06b6d4] w-16 h-16 rounded-2xl flex items-center justify-center shadow-lg shadow-[#0d9488]/50 group-hover:shadow-[#06b6d4]/50 transition-all duration-300">
-                    <Mail className="w-8 h-8 text-white font-black" />
+                  <div className="text-right flex-1">
+                    <p className="font-bold text-[#0d9488] text-sm md:text-lg mb-1">البريد الإلكتروني</p>
+                    <p className="text-gray-600 text-xs md:text-lg break-all">med96ramadan1996@gmail.com</p>
                   </div>
-                  <div>
-                    <p className="font-bold text-[#0d9488] text-lg mb-1">البريد الإلكتروني</p>
-                    <p className="text-gray-600 text-lg">mohamed96ramadan1996@gmail.com</p>
+                  <div className="bg-gradient-to-br from-[#0d9488] to-[#06b6d4] w-12 h-12 md:w-16 md:h-16 rounded-2xl flex items-center justify-center shadow-lg shadow-[#0d9488]/50 group-hover:shadow-[#06b6d4]/50 transition-all duration-300 flex-shrink-0">
+                    <Mail className="w-6 h-6 md:w-8 md:h-8 text-white font-black" />
                   </div>
                 </motion.div>
                 <motion.div
                   whileHover={{ x: 10 }}
-                  className="flex items-center gap-5 group"
+                  className="flex items-center gap-3 md:gap-5 group justify-end"
                 >
-                  <div className="bg-gradient-to-br from-[#06b6d4] to-[#0d9488] w-16 h-16 rounded-2xl flex items-center justify-center shadow-lg shadow-[#0d9488]/50 group-hover:shadow-[#06b6d4]/50 transition-all duration-300">
-                    <Phone className="w-8 h-8 text-white font-black" />
+                  <div className="text-right flex-1">
+                    <p className="font-bold text-[#0d9488] text-sm md:text-lg mb-1">الهاتف</p>
+                    <p className="text-gray-600 text-xs md:text-lg">01034067686 / 01024083057</p>
                   </div>
-                  <div>
-                    <p className="font-bold text-[#0d9488] text-lg mb-1">الهاتف</p>
-                    <p className="text-gray-600 text-lg">01024083057 / 01034067686</p>
+                  <div className="bg-gradient-to-br from-[#06b6d4] to-[#0d9488] w-12 h-12 md:w-16 md:h-16 rounded-2xl flex items-center justify-center shadow-lg shadow-[#0d9488]/50 group-hover:shadow-[#06b6d4]/50 transition-all duration-300 flex-shrink-0">
+                    <Phone className="w-6 h-6 md:w-8 md:h-8 text-white font-black" />
                   </div>
                 </motion.div>
                 <motion.div
                   whileHover={{ x: 10 }}
-                  className="flex items-center gap-5 group"
+                  className="flex items-center gap-3 md:gap-5 group justify-end"
                 >
-                  <div className="bg-gradient-to-br from-[#0d9488] to-[#06b6d4] w-16 h-16 rounded-2xl flex items-center justify-center shadow-lg shadow-[#0d9488]/50 group-hover:shadow-[#06b6d4]/50 transition-all duration-300">
-                    <MapPin className="w-8 h-8 text-white font-black" />
+                  <div className="text-right flex-1">
+                    <p className="font-bold text-[#0d9488] text-sm md:text-lg mb-1">العنوان</p>
+                    <p className="text-gray-600 text-xs md:text-lg">مصر</p>
                   </div>
-                  <div>
-                    <p className="font-bold text-[#0d9488] text-lg mb-1">العنوان</p>
-                    <p className="text-gray-600 text-lg">مصر</p>
+                  <div className="bg-gradient-to-br from-[#0d9488] to-[#06b6d4] w-12 h-12 md:w-16 md:h-16 rounded-2xl flex items-center justify-center shadow-lg shadow-[#0d9488]/50 group-hover:shadow-[#06b6d4]/50 transition-all duration-300 flex-shrink-0">
+                    <MapPin className="w-6 h-6 md:w-8 md:h-8 text-white font-black" />
                   </div>
                 </motion.div>
               </div>
@@ -871,27 +877,27 @@ const Index = () => {
               whileInView={{ opacity: 1, x: 0 }}
               viewport={{ once: true }}
               transition={{ duration: 0.6 }}
-              className="bg-white p-10 rounded-3xl shadow-lg border-2 border-[#0d9488]/20"
+              className="bg-white p-6 md:p-10 rounded-3xl shadow-lg border-2 border-[#0d9488]/20 order-1 lg:order-2"
             >
-              <h3 className="text-3xl font-black mb-8 text-[#0d9488]">أرسل رسالة</h3>
-              <form className="space-y-6">
+              <h3 className="text-2xl md:text-3xl font-black mb-6 md:mb-8 text-[#0d9488] text-center lg:text-right">أرسل رسالة</h3>
+              <form className="space-y-4 md:space-y-6">
                 <input
                   type="text"
                   placeholder="الاسم"
-                  className="w-full px-6 py-4 rounded-xl border-2 border-[#0d9488]/30 bg-gray-50 text-gray-800 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-[#0d9488] focus:border-[#0d9488] transition-all text-lg"
+                  className="w-full px-4 md:px-6 py-3 md:py-4 rounded-xl border-2 border-[#0d9488]/30 bg-gray-50 text-gray-800 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-[#0d9488] focus:border-[#0d9488] transition-all text-sm md:text-lg text-right"
                 />
                 <input
                   type="email"
                   placeholder="البريد الإلكتروني"
-                  className="w-full px-6 py-4 rounded-xl border-2 border-[#06b6d4]/30 bg-gray-50 text-gray-800 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-[#06b6d4] focus:border-[#06b6d4] transition-all text-lg"
+                  className="w-full px-4 md:px-6 py-3 md:py-4 rounded-xl border-2 border-[#06b6d4]/30 bg-gray-50 text-gray-800 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-[#06b6d4] focus:border-[#06b6d4] transition-all text-sm md:text-lg text-right"
                 />
                 <textarea
                   placeholder="رسالتك"
                   rows={5}
-                  className="w-full px-6 py-4 rounded-xl border-2 border-[#0d9488]/30 bg-gray-50 text-gray-800 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-[#0d9488] focus:border-[#0d9488] transition-all text-lg resize-none"
+                  className="w-full px-4 md:px-6 py-3 md:py-4 rounded-xl border-2 border-[#0d9488]/30 bg-gray-50 text-gray-800 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-[#0d9488] focus:border-[#0d9488] transition-all text-sm md:text-lg resize-none text-right"
                 ></textarea>
-                <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-                  <Button className="w-full bg-gradient-to-r from-[#0d9488] to-[#06b6d4] text-white hover:shadow-[0_0_20px_rgba(13,148,136,0.35)] py-6 text-xl font-black rounded-xl transition-all duration-300">
+                <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                  <Button className="w-full bg-gradient-to-r from-[#0d9488] to-[#06b6d4] text-white hover:shadow-[0_0_20px_rgba(13,148,136,0.35)] py-4 md:py-6 text-base md:text-xl font-black rounded-xl transition-all duration-300">
                     إرسال الرسالة
                   </Button>
                 </motion.div>

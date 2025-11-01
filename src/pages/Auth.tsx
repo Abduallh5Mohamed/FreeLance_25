@@ -362,27 +362,9 @@ const Auth = () => {
                 </div>
               )}
 
-              {/* Email, Password & Grade - 3 fields side by side on desktop (for registration) */}
+              {/* Password & Grade - 2 fields side by side on desktop (for registration) */}
               {!isLogin ? (
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                  {/* Email Input (required) */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="email" className="text-white text-right block text-sm">
-                      البريد الإلكتروني
-                    </Label>
-                    <div className="relative">
-                      <Input
-                        id="email"
-                        type="email"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        placeholder="example@email.com"
-                        required
-                        className="bg-white/10 border-white/20 text-white placeholder:text-gray-400 h-11 rounded-xl text-right"
-                      />
-                    </div>
-                  </div>
-
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {/* Password Input */}
                   <div className="space-y-1.5">
                     <Label htmlFor="password" className="text-white text-right block text-sm">
