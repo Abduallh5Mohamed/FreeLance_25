@@ -318,13 +318,13 @@ const Index = () => {
       >
         {/* Hero Container with rounded borders */}
         <div
-          className="relative w-full mt-4 sm:mt-8 md:mt-12 rounded-2xl sm:rounded-3xl overflow-hidden shadow-2xl mx-auto max-w-7xl"
+          className="relative w-full mt-16 sm:mt-8 md:mt-12 rounded-2xl sm:rounded-3xl overflow-hidden shadow-2xl mx-auto max-w-7xl"
           style={{
-            height: window.innerWidth < 640 ? "500px" : window.innerWidth < 768 ? "600px" : "720px",
+            height: "600px",
             backgroundImage: `url(${heroBgImage})`,
             backgroundAttachment: "scroll",
             backgroundSize: "cover",
-            backgroundPosition: "60% 75%",
+            backgroundPosition: window.innerWidth < 768 ? "20% 75%" : "0% 75%",
             willChange: "transform",
             transform: "translateZ(0)",
             backfaceVisibility: "hidden",
@@ -333,6 +333,19 @@ const Index = () => {
         >
           <div className="absolute inset-0 bg-gradient-to-br from-[#031b2f]/70 via-[#04364d]/55 to-[#041f2f]/85 mix-blend-multiply" />
           <div className="absolute inset-0 bg-gradient-to-br from-[#0ea5e9]/18 via-[#22d3ee]/14 to-transparent" />
+
+          {/* Teacher Name - Top Right */}
+          <div className="absolute top-4 right-4 sm:top-6 sm:right-6 md:top-8 md:right-8 z-30">
+            <motion.p
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.8, delay: 0.6 }}
+              className="text-white font-bold drop-shadow-[0_4px_8px_rgba(0,0,0,0.3)]"
+            >
+              <span className="text-sm sm:text-base md:text-lg lg:text-xl">أ/</span>
+              <span className="text-base sm:text-lg md:text-xl lg:text-2xl">محمد رمضان</span>
+            </motion.p>
+          </div>
 
           {/* Core-inspired ambient effect */}
           <div className="absolute inset-0 overflow-hidden">
