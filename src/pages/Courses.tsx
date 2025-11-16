@@ -40,7 +40,7 @@ const Courses = () => {
     subscription_id: "",
     price: ""
   });
-  
+
   const { toast } = useToast();
 
   useEffect(() => {
@@ -85,12 +85,12 @@ const Courses = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    
+
     try {
       // Get the selected grade name
       const selectedGrade = grades.find(g => g.id === formData.grade_id);
       const gradeName = selectedGrade ? selectedGrade.name : null;
-      
+
       if (editingCourse) {
         await updateCourse(editingCourse.id, {
           name: formData.name,
@@ -99,7 +99,7 @@ const Courses = () => {
           grade: gradeName,
           price: parseFloat(formData.price) || 0
         });
-        
+
         toast({
           title: "تم التحديث بنجاح",
           description: "تم تحديث بيانات الكورس",
@@ -113,13 +113,13 @@ const Courses = () => {
           price: parseFloat(formData.price) || 0,
           is_active: true
         });
-        
+
         toast({
           title: "تم الإضافة بنجاح",
           description: "تم إنشاء كورس جديد",
         });
       }
-      
+
       fetchCourses();
       setIsOpen(false);
       setEditingCourse(null);
@@ -138,7 +138,7 @@ const Courses = () => {
 
   const handleEdit = async (course) => {
     setEditingCourse(course);
-    
+
     setFormData({
       name: course.name,
       description: course.description,
@@ -152,10 +152,10 @@ const Courses = () => {
 
   const confirmDelete = async () => {
     if (!courseToDelete) return;
-    
+
     try {
       await deleteCourse(courseToDelete.id);
-      
+
       fetchCourses();
       toast({
         title: "تم الحذف بنجاح",
@@ -187,7 +187,7 @@ const Courses = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
       <Header />
-      
+
       <div className="container mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
@@ -199,7 +199,7 @@ const Courses = () => {
               <p className="text-muted-foreground">إضافة وإدارة الكورسات التعليمية</p>
             </div>
           </div>
-          
+
           <Dialog open={isOpen} onOpenChange={setIsOpen}>
             <DialogTrigger asChild>
               <Button className="shadow-medium">
@@ -254,11 +254,17 @@ const Courses = () => {
                       <SelectValue placeholder="اختر الصف الدراسي" />
                     </SelectTrigger>
                     <SelectContent>
-                      {grades.map((grade) => (
-                        <SelectItem key={grade.id} value={grade.id}>
-                          {grade.name}
+                      {grades.length > 0 ? (
+                        grades.map((grade) => (
+                          <SelectItem key={grade.id} value={grade.id || 'unknown'}>
+                            {grade.name}
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <SelectItem value="no-grade" disabled>
+                          لا توجد صفوف دراسية - أضف صف أولاً
                         </SelectItem>
-                      ))}
+                      )}
                     </SelectContent>
                   </Select>
                 </div>
@@ -272,11 +278,17 @@ const Courses = () => {
                       <SelectValue placeholder="اختر خطة الاشتراك" />
                     </SelectTrigger>
                     <SelectContent>
-                      {subscriptions.map((sub) => (
-                        <SelectItem key={sub.id} value={sub.id}>
-                          {sub.name} - {sub.price} جنيه
+                      {subscriptions.length > 0 ? (
+                        subscriptions.map((sub) => (
+                          <SelectItem key={sub.id} value={sub.id || 'unknown'}>
+                            {sub.name} - {sub.price} جنيه
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <SelectItem value="no-subscription" disabled>
+                          لا توجد خطط اشتراك
                         </SelectItem>
-                      ))}
+                      )}
                     </SelectContent>
                   </Select>
                 </div>
@@ -337,7 +349,7 @@ const Courses = () => {
                   {course.description && (
                     <p className="text-muted-foreground text-sm">{course.description}</p>
                   )}
-                  
+
                   <div className="space-y-2">
                     {course.grade && (
                       <div className="flex items-center gap-2 text-sm">
@@ -345,7 +357,7 @@ const Courses = () => {
                         <span className="text-muted-foreground">{course.grade}</span>
                       </div>
                     )}
-                    
+
                     {course.price !== undefined && course.price !== null && (
                       <div className="flex items-center gap-2 text-sm">
                         <span className="font-medium">السعر:</span>
@@ -353,7 +365,7 @@ const Courses = () => {
                       </div>
                     )}
                   </div>
-                  
+
                   <Button variant="outline" className="w-full" onClick={() => handleViewDetails(course)}>
                     عرض التفاصيل
                   </Button>
@@ -376,28 +388,28 @@ const Courses = () => {
                     <span className="font-semibold text-primary">اسم الكورس:</span>
                     <span>{selectedCourse.name}</span>
                   </div>
-                  
+
                   {selectedCourse.subject && (
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-primary">المادة:</span>
                       <span>{selectedCourse.subject}</span>
                     </div>
                   )}
-                  
+
                   {selectedCourse.description && (
                     <div className="space-y-1">
                       <span className="font-semibold text-primary">الوصف:</span>
                       <p className="text-muted-foreground text-sm">{selectedCourse.description}</p>
                     </div>
                   )}
-                  
+
                   {selectedCourse.grade && (
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-primary">الصف الدراسي:</span>
                       <span>{selectedCourse.grade}</span>
                     </div>
                   )}
-                  
+
                   {selectedCourse.price !== undefined && selectedCourse.price !== null && (
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-primary">السعر:</span>
@@ -405,10 +417,10 @@ const Courses = () => {
                     </div>
                   )}
                 </div>
-                
-                <Button 
-                  variant="outline" 
-                  className="w-full" 
+
+                <Button
+                  variant="outline"
+                  className="w-full"
                   onClick={() => setDetailsDialogOpen(false)}
                 >
                   إغلاق

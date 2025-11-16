@@ -10,7 +10,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { getExamById, getExamQuestions } from "@/lib/api";
+import { getExamById, getExamQuestions, canAttemptExam, startExamAttempt, submitExamAttempt } from "@/lib/api";
 
 interface Question {
   id: string;
@@ -52,6 +52,10 @@ const TakeExam = () => {
   const [loading, setLoading] = useState(true);
   const [result, setResult] = useState<{ score: number; total: number; percentage: number; passed: boolean } | null>(null);
   const [currentQuestion, setCurrentQuestion] = useState(0);
+  const [canAttempt, setCanAttempt] = useState(true);
+  const [attemptMessage, setAttemptMessage] = useState('');
+  const [examStartTime, setExamStartTime] = useState<Date | null>(null);
+  const [studentId, setStudentId] = useState<string>('');
 
   // Sample exam data - replace with real API call
   const sampleExam: ExamData = {
@@ -130,6 +134,61 @@ const TakeExam = () => {
     const loadExamData = async () => {
       try {
         if (!examId) return;
+
+        // Get student ID from localStorage
+        const userStr = localStorage.getItem('currentUser');
+        if (!userStr) {
+          toast({
+            title: 'خطأ',
+            description: 'يجب تسجيل الدخول أولاً',
+            variant: 'destructive'
+          });
+          navigate('/auth');
+          return;
+        }
+
+        const user = JSON.parse(userStr);
+
+        // Check if user has a valid student_id
+        if (!user.student_id) {
+          toast({
+            title: 'خطأ',
+            description: 'لا يمكنك دخول الامتحانات. يرجى التواصل مع الإدارة.',
+            variant: 'destructive'
+          });
+          navigate('/student-exams');
+          return;
+        }
+
+        const currentStudentId = user.student_id;
+        setStudentId(currentStudentId);
+
+        // Check if student can attempt this exam
+        const attemptCheck = await canAttemptExam(examId, currentStudentId);
+        console.log('🔍 Can attempt check:', attemptCheck);
+
+        if (!attemptCheck.canAttempt) {
+          setCanAttempt(false);
+          setAttemptMessage(attemptCheck.message || 'لا يمكنك دخول هذا الامتحان');
+
+          // If already attempted, show score
+          if (attemptCheck.reason === 'already_attempted' && attemptCheck.score !== undefined) {
+            setShowResults(true);
+            setScore(attemptCheck.score);
+            setTotalMarks(attemptCheck.totalMarks || 0);
+            setPassed(attemptCheck.passed || false);
+          }
+
+          if (attemptCheck.reason === 'not_started' && attemptCheck.startTime) {
+            setExamStartTime(new Date(attemptCheck.startTime));
+          }
+
+          setLoading(false);
+          return;
+        }
+
+        // Start exam attempt
+        await startExamAttempt(examId, currentStudentId);
 
         // Load exam details
         console.log('🔍 Loading exam with ID:', examId);
@@ -286,10 +345,20 @@ const TakeExam = () => {
     return { score, total: totalMarks, percentage, passed };
   }, [exam, answers]);
 
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
     const examResult = calculateScore();
     setResult(examResult);
     setIsSubmitted(true);
+
+    // Submit attempt to backend
+    if (examId && studentId) {
+      try {
+        await submitExamAttempt(examId, studentId, answers, examResult.score);
+        console.log('✅ Exam attempt submitted successfully');
+      } catch (error) {
+        console.error('❌ Failed to submit exam attempt:', error);
+      }
+    }
 
     toast({
       title: examResult.passed ? "تهانينا! 🎉" : "للأسف",
@@ -298,7 +367,7 @@ const TakeExam = () => {
         : `لم تحصل على درجة النجاح. حصلت على ${examResult.score}/${examResult.total}`,
       variant: examResult.passed ? "default" : "destructive"
     });
-  }, [calculateScore, toast]);
+  }, [calculateScore, toast, examId, studentId, answers]);
 
   // Timer countdown
   useEffect(() => {
@@ -336,6 +405,59 @@ const TakeExam = () => {
         >
           <Clock className="w-16 h-16 mx-auto mb-4 text-primary animate-spin" />
           <p className="text-lg font-medium">جاري تحميل الامتحان...</p>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Show message if student can't attempt exam
+  if (!canAttempt) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 flex items-center justify-center p-4">
+        <FloatingParticles />
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="max-w-md w-full"
+        >
+          <Card className="shadow-2xl border-2">
+            <CardHeader className="text-center pb-4">
+              <div className="mx-auto w-16 h-16 bg-yellow-100 dark:bg-yellow-900/20 rounded-full flex items-center justify-center mb-4">
+                <AlertCircle className="w-8 h-8 text-yellow-600 dark:text-yellow-500" />
+              </div>
+              <CardTitle className="text-2xl">غير متاح</CardTitle>
+            </CardHeader>
+            <CardContent className="text-center space-y-4">
+              <p className="text-lg text-muted-foreground">{attemptMessage}</p>
+
+              {examStartTime && (
+                <div className="bg-primary/5 p-4 rounded-lg">
+                  <p className="text-sm font-medium mb-2">الامتحان يبدأ في:</p>
+                  <p className="text-lg font-bold text-primary">
+                    {examStartTime.toLocaleDateString('ar-EG', {
+                      weekday: 'long',
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric'
+                    })}
+                  </p>
+                  <p className="text-xl font-bold text-primary mt-2">
+                    {examStartTime.toLocaleTimeString('ar-EG', {
+                      hour: '2-digit',
+                      minute: '2-digit'
+                    })}
+                  </p>
+                </div>
+              )}
+
+              <Button
+                onClick={() => navigate('/student-exams')}
+                className="w-full"
+              >
+                العودة للامتحانات
+              </Button>
+            </CardContent>
+          </Card>
         </motion.div>
       </div>
     );
@@ -631,8 +753,8 @@ const TakeExam = () => {
                         <Label
                           htmlFor={`option-${idx}`}
                           className={`flex items-center gap-3 p-4 rounded-lg border-2 cursor-pointer transition-all hover:bg-accent ${answers[exam.questions[currentQuestion].id] === idx
-                              ? 'border-primary bg-primary/10'
-                              : 'border-border'
+                            ? 'border-primary bg-primary/10'
+                            : 'border-border'
                             }`}
                         >
                           <RadioGroupItem value={idx.toString()} id={`option-${idx}`} />
@@ -662,10 +784,10 @@ const TakeExam = () => {
                     key={idx}
                     onClick={() => setCurrentQuestion(idx)}
                     className={`w-10 h-10 rounded-lg font-medium transition-all ${idx === currentQuestion
-                        ? 'bg-primary text-white scale-110'
-                        : answers[exam.questions[idx].id] !== undefined
-                          ? 'bg-green-500 text-white'
-                          : 'bg-muted hover:bg-muted-foreground/20'
+                      ? 'bg-primary text-white scale-110'
+                      : answers[exam.questions[idx].id] !== undefined
+                        ? 'bg-green-500 text-white'
+                        : 'bg-muted hover:bg-muted-foreground/20'
                       }`}
                   >
                     {idx + 1}

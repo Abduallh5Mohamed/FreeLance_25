@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query, execute } from '../db';
+import { sendSubscriptionApprovalNotification } from '../services/whatsapp-free';
 
 const router = Router();
 
@@ -32,6 +33,7 @@ router.post('/', async (req: Request, res: Response) => {
     const {
       student_name,
       phone,
+      guardian_phone,
       grade_id,
       grade_name,
       group_id,
@@ -51,9 +53,9 @@ router.post('/', async (req: Request, res: Response) => {
 
     await execute(
       `INSERT INTO subscription_requests 
-       (id, student_name, phone, grade_id, grade_name, group_id, group_name, amount, notes, receipt_image_url, status) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-      [requestId, student_name, phone, grade_id || null, grade_name || null, group_id || null, group_name || null, amount || null, notes || null, receipt_image_url || null]
+       (id, student_name, phone, guardian_phone, grade_id, grade_name, group_id, group_name, amount, notes, receipt_image_url, status) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      [requestId, student_name, phone, guardian_phone || null, grade_id || null, grade_name || null, group_id || null, group_name || null, amount || null, notes || null, receipt_image_url || null]
     );
 
     res.status(201).json({
@@ -144,7 +146,38 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
       ['approved', id]
     );
 
-    res.json({ message: 'Subscription request approved successfully' });
+    // Send WhatsApp message to guardian if guardian_phone exists
+    let whatsappSent = false;
+    let whatsappLink = '';
+    if (request.guardian_phone) {
+      try {
+        const result = await sendSubscriptionApprovalNotification(
+          String(request.guardian_phone),
+          String(request.student_name),
+          Number(request.amount),
+          String(request.grade_name || 'غير محدد'),
+          String(request.group_name || 'غير محدد')
+        );
+        whatsappSent = result.success;
+        whatsappLink = result.whatsappLink || '';
+
+        if (result.success) {
+          console.log(`✅ WhatsApp link generated for ${request.guardian_phone}`);
+          console.log(`🔗 Link: ${result.whatsappLink}`);
+        } else {
+          console.error(`❌ Failed to generate WhatsApp link: ${result.error}`);
+        }
+      } catch (whatsappError) {
+        console.error('Error sending WhatsApp message:', whatsappError);
+        // Don't fail the approval if WhatsApp fails
+      }
+    }
+
+    res.json({
+      message: 'Subscription request approved successfully',
+      whatsapp_sent: whatsappSent,
+      whatsapp_link: whatsappLink
+    });
   } catch (error) {
     console.error('Error approving subscription request:', error);
     res.status(500).json({ error: 'Failed to approve subscription request' });

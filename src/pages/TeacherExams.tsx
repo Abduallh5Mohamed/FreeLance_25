@@ -8,7 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { getCourses, getExams, Course, Exam, User } from '@/lib/api';
+import { getCourses, getExams as getExamsHttp, Course, Exam } from '@/lib/api-http';
 import { ClipboardCheck, Plus, Trash2, BookOpen, Clock, Edit } from 'lucide-react';
 import Header from '@/components/Header';
 import { motion } from 'framer-motion';
@@ -82,9 +82,9 @@ export default function TeacherExams() {
 
   const loadExams = async () => {
     try {
-      console.log('📚 Loading exams...');
-      const data = await getExams();
-      console.log('✅ Exams loaded:', data);
+      console.log('📚 Loading exams from MySQL...');
+      const data = await getExamsHttp();
+      console.log('✅ Exams loaded from MySQL:', data);
       setExams(data || []);
     } catch (error) {
       console.error('❌ Error loading exams:', error);

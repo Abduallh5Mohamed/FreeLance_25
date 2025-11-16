@@ -39,6 +39,7 @@ import StudentRegistrationRequests from "./pages/StudentRegistrationRequests";
 import TeacherContentManager from "./pages/TeacherContentManager";
 import TeacherLectures from "./pages/TeacherLectures";
 import TeacherExams from "./pages/TeacherExams";
+import ExamReports from "./pages/ExamReports";
 import ChatAssistant from "./pages/ChatAssistant";
 import AuthGuard from "./components/AuthGuard";
 
@@ -65,7 +66,7 @@ const App = () => (
           <Route path="/groups" element={<AuthGuard requiredRole="teacher"><Groups /></AuthGuard>} />
           <Route path="/grades" element={<AuthGuard requiredRole="teacher"><Grades /></AuthGuard>} />
           <Route path="/attendance" element={<AuthGuard requiredRole="teacher"><Attendance /></AuthGuard>} />
-          <Route path="/barcode-attendance" element={<AuthGuard requiredRole="teacher"><QRAttendance /></AuthGuard>} />
+          <Route path="/barcode-attendance" element={<AuthGuard requiredRole="teacher"><BarcodeAttendance /></AuthGuard>} />
           <Route path="/fees" element={<AuthGuard requiredRole="teacher"><Fees /></AuthGuard>} />
           <Route path="/messages" element={<AuthGuard requiredRole="teacher"><Messages /></AuthGuard>} />
           <Route path="/reports" element={<AuthGuard requiredRole="teacher"><Reports /></AuthGuard>} />
@@ -80,6 +81,7 @@ const App = () => (
           <Route path="/teacher-content-manager" element={<AuthGuard requiredRole="teacher"><TeacherContentManager /></AuthGuard>} />
           <Route path="/teacher-lectures" element={<AuthGuard requiredRole="teacher"><TeacherLectures /></AuthGuard>} />
           <Route path="/teacher-exams" element={<AuthGuard requiredRole="teacher"><TeacherExams /></AuthGuard>} />
+          <Route path="/exam-reports/:examId" element={<AuthGuard requiredRole="teacher"><ExamReports /></AuthGuard>} />
           <Route path="/chat-assistant" element={<AuthGuard requiredRole="teacher"><ChatAssistant /></AuthGuard>} />
 
           {/* Student Routes - Protected */}
