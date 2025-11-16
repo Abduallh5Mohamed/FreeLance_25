@@ -1,0 +1,9 @@
+bun.lockb
+node_modules
+.env.local
+dist
+build
+.git
+.gitignore
+*.md
+

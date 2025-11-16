@@ -314,17 +314,17 @@ const Index = () => {
       {/* Hero Section with Background Image */}
       <section
         id="hero"
-        className="relative px-4 py-12 overflow-hidden bg-white flex flex-col"
+        className="relative px-2 sm:px-4 py-6 sm:py-12 overflow-hidden bg-white flex flex-col"
       >
         {/* Hero Container with rounded borders */}
         <div
-          className="relative w-full mt-8 md:mt-12 rounded-3xl overflow-hidden shadow-2xl mx-auto max-w-7xl"
+          className="relative w-full mt-16 sm:mt-8 md:mt-12 rounded-2xl sm:rounded-3xl overflow-hidden shadow-2xl mx-auto max-w-7xl"
           style={{
-            height: "720px",
+            height: "600px",
             backgroundImage: `url(${heroBgImage})`,
             backgroundAttachment: "scroll",
             backgroundSize: "cover",
-            backgroundPosition: "60% 75%",
+            backgroundPosition: window.innerWidth < 768 ? "20% 75%" : "0% 75%",
             willChange: "transform",
             transform: "translateZ(0)",
             backfaceVisibility: "hidden",
@@ -333,6 +333,19 @@ const Index = () => {
         >
           <div className="absolute inset-0 bg-gradient-to-br from-[#031b2f]/70 via-[#04364d]/55 to-[#041f2f]/85 mix-blend-multiply" />
           <div className="absolute inset-0 bg-gradient-to-br from-[#0ea5e9]/18 via-[#22d3ee]/14 to-transparent" />
+
+          {/* Teacher Name - Top Right */}
+          <div className="absolute top-4 right-4 sm:top-6 sm:right-6 md:top-8 md:right-8 z-30">
+            <motion.p
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.8, delay: 0.6 }}
+              className="text-white font-bold drop-shadow-[0_4px_8px_rgba(0,0,0,0.3)]"
+            >
+              <span className="text-sm sm:text-base md:text-lg lg:text-xl">أ/</span>
+              <span className="text-base sm:text-lg md:text-xl lg:text-2xl">محمد رمضان</span>
+            </motion.p>
+          </div>
 
           {/* Core-inspired ambient effect */}
           <div className="absolute inset-0 overflow-hidden">
@@ -414,19 +427,19 @@ const Index = () => {
           </div>
 
           {/* Hero Text Overlay */}
-          <div className="absolute inset-0 z-20 flex items-center justify-start px-6 sm:px-10 lg:px-16">
+          <div className="absolute inset-0 z-20 flex items-center justify-start px-4 sm:px-6 md:px-10 lg:px-16">
             <motion.div
               initial={{ opacity: 0, x: 60 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 1.2, delay: 0.4 }}
-              className="max-w-xl text-right space-y-6"
+              className="w-full sm:max-w-xl text-right space-y-3 sm:space-y-4 md:space-y-6"
             >
-              <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black text-white leading-snug drop-shadow-[0_8px_30px_rgba(6,182,212,0.4)]">
+              <h1 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-black text-white leading-tight sm:leading-snug drop-shadow-[0_8px_30px_rgba(6,182,212,0.4)]">
                 مش بس بنحكي التاريخ…
                 <br />
                 بنخليك تعيشه
               </h1>
-              <p className="text-lg sm:text-xl text-white/80 font-medium leading-relaxed drop-shadow-[0_4px_16px_rgba(15,118,110,0.35)]">
+              <p className="text-base sm:text-lg md:text-xl text-white/80 font-medium leading-relaxed drop-shadow-[0_4px_16px_rgba(15,118,110,0.35)]">
                 رحلة تعليمية تفاعلية تغمرك في التفاصيل وتبني لك فهمًا عميقًا لأحداث الماضي بطريقة حديثة وملهمة.
               </p>
             </motion.div>

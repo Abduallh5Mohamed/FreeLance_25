@@ -30,11 +30,20 @@ const PORT = process.env.PORT || 3001;
 // Middleware
 app.use(cors({
     origin: (origin, callback) => {
+        const allowedOrigins = [
+            'http://localhost:8080',
+            'http://localhost:3000',
+            'http://127.0.0.1:8080',
+            'http://127.0.0.1:3000',
+            process.env.CORS_ORIGIN,
+            process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined,
+        ].filter(Boolean);
+
         // Allow requests from localhost on any port (development)
-        if (!origin || origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+        if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1') || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
-            callback(null, process.env.CORS_ORIGIN || 'http://localhost:8080');
+            callback(null, true); // Allow all in production (Vercel will handle it)
         }
     },
     credentials: true,
