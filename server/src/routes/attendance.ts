@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query, queryOne, execute } from '../db';
+import { sendWhatsAppMessage, formatEgyptianPhone } from '../services/whatsapp-free';
 
 const router = Router();
 
@@ -201,6 +202,124 @@ router.delete('/:id', async (req: Request, res: Response) => {
     } catch (error) {
         console.error('Delete attendance error:', error);
         res.status(500).json({ error: 'Failed to delete attendance record' });
+    }
+});
+
+// Send WhatsApp notification for absent students in a group
+router.post('/notify-absent', async (req: Request, res: Response) => {
+    try {
+        const { group_id, date } = req.body;
+
+        if (!group_id || !date) {
+            return res.status(400).json({ error: 'group_id and date are required' });
+        }
+
+        // Get all students in the group
+        const allStudents = await query(
+            `SELECT id, name, phone, guardian_phone, barcode 
+             FROM students 
+             WHERE group_id = ? AND is_active = TRUE`,
+            [group_id]
+        );
+
+        if (!Array.isArray(allStudents) || allStudents.length === 0) {
+            return res.status(404).json({ error: 'No students found in this group' });
+        }
+
+        // Get students who attended today
+        const attendedStudents = await query(
+            `SELECT student_id 
+             FROM attendance 
+             WHERE DATE(attendance_date) = ? AND status = 'present'`,
+            [date]
+        );
+
+        const attendedIds = Array.isArray(attendedStudents)
+            ? attendedStudents.map((a: any) => a.student_id)
+            : [];
+
+        // Find absent students
+        const absentStudents = allStudents.filter((student: any) =>
+            !attendedIds.includes(student.id)
+        );
+
+        if (absentStudents.length === 0) {
+            return res.json({
+                message: 'No absent students found',
+                total_students: allStudents.length,
+                attended: attendedIds.length,
+                absent: 0,
+                notifications_sent: 0,
+                whatsapp_links: []
+            });
+        }
+
+        // Send WhatsApp notifications
+        const results = [];
+        const whatsappLinks = [];
+
+        for (const student of absentStudents) {
+            const phone = student.guardian_phone || student.phone;
+
+            if (!phone) {
+                results.push({
+                    student_name: student.name,
+                    success: false,
+                    error: 'No phone number available'
+                });
+                continue;
+            }
+
+            const message =
+                `⚠️ *إشعار غياب*\n\n` +
+                `عزيزي ولي أمر الطالب/ة:\n` +
+                `👤 *${student.name}*\n\n` +
+                `نفيدكم بأن الطالب/ة لم يحضر/تحضر اليوم:\n` +
+                `📅 *${new Date(date).toLocaleDateString('ar-EG')}*\n\n` +
+                `يرجى التواصل معنا لمعرفة السبب.\n\n` +
+                `مركز القائد التعليمي 📚`;
+
+            try {
+                const result = await sendWhatsAppMessage(phone, message);
+
+                results.push({
+                    student_name: student.name,
+                    phone: phone,
+                    success: result.success,
+                    whatsapp_link: result.whatsappLink
+                });
+
+                if (result.whatsappLink) {
+                    whatsappLinks.push({
+                        student_name: student.name,
+                        phone: phone,
+                        link: result.whatsappLink
+                    });
+                }
+            } catch (error) {
+                results.push({
+                    student_name: student.name,
+                    phone: phone,
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Unknown error'
+                });
+            }
+        }
+
+        const successCount = results.filter(r => r.success).length;
+
+        res.json({
+            message: `WhatsApp links generated for ${successCount} absent students`,
+            total_students: allStudents.length,
+            attended: attendedIds.length,
+            absent: absentStudents.length,
+            notifications_sent: successCount,
+            results: results,
+            whatsapp_links: whatsappLinks
+        });
+    } catch (error) {
+        console.error('Send absent notifications error:', error);
+        res.status(500).json({ error: 'Failed to send absent notifications' });
     }
 });
 

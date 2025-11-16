@@ -143,7 +143,7 @@ router.get('/barcode/:barcode', async (req: Request, res: Response) => {
 router.post('/', async (req: Request, res: Response) => {
     try {
         console.log('📝 Creating student with body:', JSON.stringify(req.body, null, 2));
-        const { name, email, phone, grade, grade_id, group_id, password, barcode: incomingBarcode, is_offline = false, approval_status = 'approved' } = req.body;
+        const { name, email, phone, guardian_phone, grade, grade_id, group_id, password, barcode: incomingBarcode, is_offline = false, approval_status = 'approved' } = req.body;
 
         if (!name) {
             return res.status(400).json({ error: 'Student name is required' });
@@ -167,13 +167,14 @@ router.post('/', async (req: Request, res: Response) => {
 
         console.log('📝 Inserting into students table...');
         await execute(
-            `INSERT INTO students (id, name, email, phone, grade, grade_id, group_id, barcode, is_offline, approval_status) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO students (id, name, email, phone, guardian_phone, grade, grade_id, group_id, barcode, is_offline, approval_status) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 studentId,
                 name,
                 email || null,
                 phone || null,
+                guardian_phone || null,
                 grade || null,
                 grade_id || null,
                 group_id || null,
@@ -239,7 +240,7 @@ router.post('/', async (req: Request, res: Response) => {
 // Update student
 router.put('/:id', async (req: Request, res: Response) => {
     try {
-        const { name, email, phone, grade, grade_id, group_id, barcode, password } = req.body;
+        const { name, email, phone, guardian_phone, grade, grade_id, group_id, barcode, password } = req.body;
 
         const fields: string[] = [];
         const params: any[] = [];
@@ -255,6 +256,10 @@ router.put('/:id', async (req: Request, res: Response) => {
         if (phone !== undefined) {
             fields.push('phone = ?');
             params.push(phone ?? null);
+        }
+        if (guardian_phone !== undefined) {
+            fields.push('guardian_phone = ?');
+            params.push(guardian_phone ?? null);
         }
         if (grade !== undefined) {
             fields.push('grade = ?');

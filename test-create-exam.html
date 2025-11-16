@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Create Exam with Timing</title>
+    <style>
+        body {
+            font-family: Arial;
+            padding: 20px;
+        }
+
+        input,
+        select {
+            margin: 10px 0;
+            padding: 8px;
+            width: 300px;
+            display: block;
+        }
+
+        button {
+            padding: 10px 20px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f0f0f0;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>إضافة امتحان مع التوقيت</h1>
+
+    <label>عنوان الامتحان:</label>
+    <input type="text" id="title" value="امتحان تجريبي مع توقيت">
+
+    <label>الوصف:</label>
+    <input type="text" id="description" value="امتحان للاختبار">
+
+    <label>Course ID:</label>
+    <select id="course_id">
+        <option value="">-- اختر الكورس --</option>
+    </select>
+
+    <label>تاريخ البدء:</label>
+    <input type="date" id="start_date">
+
+    <label>وقت البدء:</label>
+    <input type="time" id="start_time">
+
+    <label>المدة (بالدقائق):</label>
+    <input type="number" id="duration_minutes" value="30">
+
+    <label>إجمالي الدرجات:</label>
+    <input type="number" id="total_marks" value="10">
+
+    <button onclick="createExam()">إنشاء الامتحان</button>
+
+    <div id="result"></div>
+
+    <script>
+        // Load courses on page load
+        fetch('http://localhost:3001/api/courses')
+            .then(res => res.json())
+            .then(courses => {
+                const select = document.getElementById('course_id');
+                courses.forEach(course => {
+                    const option = document.createElement('option');
+                    option.value = course.id;
+                    option.textContent = course.name;
+                    select.appendChild(option);
+                });
+            });
+
+        async function createExam() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '⏳ جاري الإنشاء...';
+
+            try {
+                const title = document.getElementById('title').value;
+                const description = document.getElementById('description').value;
+                const course_id = document.getElementById('course_id').value;
+                const start_date = document.getElementById('start_date').value;
+                const start_time = document.getElementById('start_time').value;
+                const duration_minutes = parseInt(document.getElementById('duration_minutes').value);
+                const total_marks = parseInt(document.getElementById('total_marks').value);
+
+                if (!course_id) {
+                    alert('اختر الكورس أولاً');
+                    return;
+                }
+
+                // Create start_time and end_time
+                let startDateTime = null;
+                let endDateTime = null;
+
+                if (start_date && start_time) {
+                    startDateTime = new Date(`${start_date}T${start_time}:00`);
+                    endDateTime = new Date(startDateTime);
+                    endDateTime.setMinutes(endDateTime.getMinutes() + duration_minutes);
+                }
+
+                const examData = {
+                    title,
+                    description,
+                    course_id,
+                    duration_minutes,
+                    total_marks,
+                    start_time: startDateTime ? startDateTime.toISOString() : null,
+                    end_time: endDateTime ? endDateTime.toISOString() : null,
+                    is_active: true
+                };
+
+                console.log('Sending exam data:', examData);
+
+                const response = await fetch('http://localhost:3001/api/exams', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(examData)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const result = await response.json();
+
+                resultDiv.innerHTML = `
+                    <h3 style="color: green;">✅ تم إنشاء الامتحان بنجاح!</h3>
+                    <p><strong>ID:</strong> ${result.id}</p>
+                    <p><strong>العنوان:</strong> ${result.title}</p>
+                    <p><strong>وقت البدء:</strong> ${result.start_time ? new Date(result.start_time).toLocaleString('ar-EG') : 'غير محدد'}</p>
+                    <p><strong>وقت الانتهاء:</strong> ${result.end_time ? new Date(result.end_time).toLocaleString('ar-EG') : 'غير محدد'}</p>
+                    <pre>${JSON.stringify(result, null, 2)}</pre>
+                `;
+
+            } catch (error) {
+                resultDiv.innerHTML = `<p style="color: red;">❌ خطأ: ${error.message}</p>`;
+                console.error('Error:', error);
+            }
+        }
+    </script>
+</body>
+
+</html>

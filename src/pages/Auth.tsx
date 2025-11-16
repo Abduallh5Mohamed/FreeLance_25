@@ -24,6 +24,7 @@ const Auth = () => {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState(""); // Optional, now for registration only
+  const [guardianPhone, setGuardianPhone] = useState(""); // رقم ولي الأمر
   const [grade, setGrade] = useState("");
   const [gradeId, setGradeId] = useState("");
   const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
@@ -145,6 +146,7 @@ const Auth = () => {
           name: name.trim(),
           phone: phone.trim(),
           password,
+          guardian_phone: guardianPhone.trim(), // رقم ولي الأمر
           grade_id: gradeId,
           group_id: selectedGroup || null,
           requested_courses: selectedCourses.length > 0 ? selectedCourses : undefined,
@@ -156,6 +158,7 @@ const Auth = () => {
         setPassword("");
         setName("");
         setEmail("");
+        setGuardianPhone(""); // Clear guardian phone
         setGrade("");
         setGradeId("");
         setSelectedCourses([]);
@@ -364,46 +367,66 @@ const Auth = () => {
 
               {/* Password & Grade - 2 fields side by side on desktop (for registration) */}
               {!isLogin ? (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {/* Password Input */}
+                <>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {/* Password Input */}
+                    <div className="space-y-1.5">
+                      <Label htmlFor="password" className="text-white text-right block text-sm">
+                        كلمة المرور
+                      </Label>
+                      <div className="relative">
+                        <Input
+                          id="password"
+                          type="password"
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          placeholder="••••••••"
+                          required
+                          className="bg-white/10 border-white/20 text-white placeholder:text-gray-400 h-11 rounded-xl text-right"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Grade Select */}
+                    <div className="space-y-1.5">
+                      <Label htmlFor="grade" className="text-white text-right block text-sm">
+                        الصف الدراسي
+                      </Label>
+                      <div className="relative">
+                        <Select value={gradeId} onValueChange={setGradeId} required>
+                          <SelectTrigger className="bg-white/10 border-white/20 text-white h-11 rounded-xl text-right">
+                            <SelectValue placeholder="اختر الصف الدراسي" />
+                          </SelectTrigger>
+                          <SelectContent className="bg-gray-900 border-white/20">
+                            {grades.map((gradeItem) => (
+                              <SelectItem key={gradeItem.id} value={gradeItem.id} className="text-white">
+                                {gradeItem.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Guardian Phone - Full width */}
                   <div className="space-y-1.5">
-                    <Label htmlFor="password" className="text-white text-right block text-sm">
-                      كلمة المرور
+                    <Label htmlFor="guardianPhone" className="text-white text-right block text-sm">
+                      رقم هاتف ولي الأمر
                     </Label>
                     <div className="relative">
                       <Input
-                        id="password"
-                        type="password"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        placeholder="••••••••"
+                        id="guardianPhone"
+                        type="tel"
+                        value={guardianPhone}
+                        onChange={(e) => setGuardianPhone(e.target.value)}
+                        placeholder="01234567890"
                         required
                         className="bg-white/10 border-white/20 text-white placeholder:text-gray-400 h-11 rounded-xl text-right"
                       />
                     </div>
                   </div>
-
-                  {/* Grade Select */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="grade" className="text-white text-right block text-sm">
-                      الصف الدراسي
-                    </Label>
-                    <div className="relative">
-                      <Select value={gradeId} onValueChange={setGradeId} required>
-                        <SelectTrigger className="bg-white/10 border-white/20 text-white h-11 rounded-xl text-right">
-                          <SelectValue placeholder="اختر الصف الدراسي" />
-                        </SelectTrigger>
-                        <SelectContent className="bg-gray-900 border-white/20">
-                          {grades.map((gradeItem) => (
-                            <SelectItem key={gradeItem.id} value={gradeItem.id} className="text-white">
-                              {gradeItem.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                </div>
+                </>
               ) : (
                 /* Password only for login */
                 <div className="space-y-2">

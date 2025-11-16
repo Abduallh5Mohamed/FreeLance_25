@@ -46,6 +46,7 @@ const StudentHeader = () => {
   const [selectedGroup, setSelectedGroup] = useState("");
   const [studentName, setStudentName] = useState("");
   const [studentPhone, setStudentPhone] = useState("");
+  const [guardianPhone, setGuardianPhone] = useState("");
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentImage, setPaymentImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
@@ -260,6 +261,20 @@ const StudentHeader = () => {
                   </div>
 
                   <div>
+                    <Label>رقم هاتف ولي الأمر *</Label>
+                    <Input
+                      type="tel"
+                      value={guardianPhone}
+                      onChange={(e) => setGuardianPhone(e.target.value)}
+                      placeholder="01xxxxxxxxx"
+                      required
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      سيتم إرسال إشعار واتساب لهذا الرقم عند الموافقة على الدفع
+                    </p>
+                  </div>
+
+                  <div>
                     <Label>الصف الدراسي *</Label>
                     <Select value={selectedGrade} onValueChange={setSelectedGrade}>
                       <SelectTrigger>
@@ -374,6 +389,15 @@ const StudentHeader = () => {
                         return;
                       }
 
+                      if (!guardianPhone || guardianPhone.length < 11) {
+                        toast({
+                          title: "بيانات ناقصة",
+                          description: "يرجى إدخال رقم هاتف ولي الأمر صحيح (11 رقم)",
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+
                       if (!selectedGrade || !selectedGroup) {
                         toast({
                           title: "بيانات ناقصة",
@@ -399,6 +423,7 @@ const StudentHeader = () => {
                         await createSubscriptionRequest({
                           student_name: studentName,
                           phone: studentPhone,
+                          guardian_phone: guardianPhone,
                           grade_id: parseInt(selectedGrade),
                           grade_name: selectedGradeData?.name || '',
                           group_id: parseInt(selectedGroup),
@@ -416,6 +441,7 @@ const StudentHeader = () => {
                         setShowPaymentDialog(false);
                         setStudentName("");
                         setStudentPhone("");
+                        setGuardianPhone("");
                         setPaymentAmount("");
                         setSelectedGrade("");
                         setSelectedGroup("");

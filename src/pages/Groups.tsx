@@ -9,9 +9,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
-import { getGroups, getGrades, createGroup, updateGroup, deleteGroup, type Group as APIGroup, type Grade as APIGrade } from '@/lib/api';
+import { getGroups, getGrades, createGroup, updateGroup, deleteGroup, getStudents, type Group as APIGroup, type Grade as APIGrade } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
-import { Plus, Edit, Trash2, Users } from 'lucide-react';
+import { Plus, Edit, Trash2, Users, Search, Phone, Mail, Eye } from 'lucide-react';
 
 interface Group {
   id: string;
@@ -32,12 +32,30 @@ interface Grade {
   is_active: boolean;
 }
 
+interface Student {
+  id: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  grade?: string;
+  grade_id?: string;
+  group_id?: string;
+  grade_name?: string;
+  group_name?: string;
+  barcode?: string;
+  is_active?: boolean;
+}
+
 const Groups = () => {
   const [groups, setGroups] = useState<Group[]>([]);
+  const [students, setStudents] = useState<Student[]>([]);
   const [grades, setGrades] = useState<Grade[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isStudentsDialogOpen, setIsStudentsDialogOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [currentGroup, setCurrentGroup] = useState<Group | null>(null);
+  const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
 
@@ -51,6 +69,8 @@ const Groups = () => {
   useEffect(() => {
     fetchGroups();
     fetchGrades();
+    fetchStudents();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchGroups = async () => {
@@ -82,6 +102,38 @@ const Groups = () => {
     } catch (error) {
       console.error('Error fetching grades:', error);
     }
+  };
+
+  const fetchStudents = async () => {
+    try {
+      const data = await getStudents();
+      setStudents(data || []);
+    } catch (error) {
+      console.error('Error fetching students:', error);
+    }
+  };
+
+  const handleViewStudents = (group: Group) => {
+    setSelectedGroup(group);
+    setSearchTerm('');
+    setIsStudentsDialogOpen(true);
+  };
+
+  const getGroupStudents = () => {
+    if (!selectedGroup) return [];
+    return students.filter(s => s.group_id === selectedGroup.id);
+  };
+
+  const getFilteredStudents = () => {
+    const groupStudents = getGroupStudents();
+    if (!searchTerm.trim()) return groupStudents;
+
+    const search = searchTerm.toLowerCase().trim();
+    return groupStudents.filter(student =>
+      student.name?.toLowerCase().includes(search) ||
+      student.phone?.toLowerCase().includes(search) ||
+      student.email?.toLowerCase().includes(search)
+    );
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -276,7 +328,7 @@ const Groups = () => {
                       </div>
                     </div>
 
-                    <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📝 الوصف</div>
                         <div className="text-sm font-medium">{group.description || '-'}</div>
@@ -294,8 +346,19 @@ const Groups = () => {
 
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">👨‍🎓 عدد الطلاب</div>
-                        <div className="text-sm font-medium">
-                          {group.current_students || 0} / {group.max_students || 50}
+                        <div className="flex items-center gap-2">
+                          <div className="text-sm font-medium">
+                            {students.filter(s => s.group_id === group.id).length} / {group.max_students || 50}
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleViewStudents(group)}
+                            className="h-7 text-xs"
+                          >
+                            <Eye className="w-3 h-3 ml-1" />
+                            عرض الطلاب
+                          </Button>
                         </div>
                       </div>
                     </div>
@@ -379,6 +442,127 @@ const Groups = () => {
                 </Button>
               </div>
             </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Students Dialog */}
+        <Dialog open={isStudentsDialogOpen} onOpenChange={setIsStudentsDialogOpen}>
+          <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Users className="w-5 h-5 text-primary" />
+                طلاب مجموعة: {selectedGroup?.name}
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              {/* Search Box */}
+              <div className="flex items-center gap-2 bg-muted/50 rounded-lg px-3 py-2">
+                <Search className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                <Input
+                  placeholder="ابحث بالاسم أو رقم الهاتف..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0"
+                />
+              </div>
+
+              {/* Students Count */}
+              <div className="flex items-center justify-between px-2">
+                <div className="text-sm text-muted-foreground">
+                  عدد الطلاب: <span className="font-bold text-foreground">{getFilteredStudents().length}</span>
+                  {searchTerm && ` من أصل ${getGroupStudents().length}`}
+                </div>
+                <Badge variant="secondary">
+                  {getGroupStudents().length} / {selectedGroup?.max_students || 50}
+                </Badge>
+              </div>
+
+              {/* Students List */}
+              <div className="space-y-3">
+                {getFilteredStudents().length === 0 ? (
+                  <div className="text-center py-12 text-muted-foreground">
+                    <Users className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                    <p className="text-lg font-medium">
+                      {searchTerm ? 'لا توجد نتائج للبحث' : 'لا يوجد طلاب في هذه المجموعة'}
+                    </p>
+                  </div>
+                ) : (
+                  getFilteredStudents().map((student) => (
+                    <div
+                      key={student.id}
+                      className="border border-cyan-200 dark:border-cyan-800 rounded-lg p-4 hover:shadow-md transition-shadow bg-card"
+                    >
+                      <div className="flex items-start gap-4">
+                        <Avatar className="h-12 w-12 border-2 border-primary/20">
+                          <AvatarFallback className="bg-gradient-to-br from-cyan-500 to-teal-500 text-white font-bold">
+                            {student.name?.charAt(0) || '؟'}
+                          </AvatarFallback>
+                        </Avatar>
+
+                        <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-3">
+                          <div>
+                            <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1 flex items-center gap-1">
+                              <Users className="w-3 h-3" />
+                              الاسم
+                            </div>
+                            <div className="text-sm font-medium">{student.name}</div>
+                          </div>
+
+                          {student.phone && (
+                            <div>
+                              <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1 flex items-center gap-1">
+                                <Phone className="w-3 h-3" />
+                                رقم الهاتف
+                              </div>
+                              <div className="text-sm font-medium" dir="ltr">{student.phone}</div>
+                            </div>
+                          )}
+
+                          {student.email && (
+                            <div>
+                              <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1 flex items-center gap-1">
+                                <Mail className="w-3 h-3" />
+                                البريد الإلكتروني
+                              </div>
+                              <div className="text-sm font-medium truncate">{student.email}</div>
+                            </div>
+                          )}
+
+                          {student.grade_name && (
+                            <div>
+                              <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🎓 الصف</div>
+                              <div className="text-sm font-medium">{student.grade_name}</div>
+                            </div>
+                          )}
+
+                          {student.barcode && (
+                            <div>
+                              <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🔖 الباركود</div>
+                              <div className="text-sm font-mono font-medium">{student.barcode}</div>
+                            </div>
+                          )}
+
+                          <div>
+                            <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📊 الحالة</div>
+                            <Badge variant={student.is_active ? "default" : "secondary"} className="text-xs">
+                              {student.is_active ? '✓ نشط' : '⚠ غير نشط'}
+                            </Badge>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="flex justify-end pt-4 border-t">
+                <Button variant="outline" onClick={() => setIsStudentsDialogOpen(false)}>
+                  إغلاق
+                </Button>
+              </div>
+            </div>
           </DialogContent>
         </Dialog>
       </div>

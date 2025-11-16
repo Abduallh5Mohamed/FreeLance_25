@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Users, Plus, Edit2, Trash2, Search, Phone, Mail } from "lucide-react";
+import { Users, Plus, Edit2, Trash2, Search, Phone } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
 import { getStudents, getGrades, getGroups, getCourses, createStudent, updateStudent, deleteStudent, type Student } from "@/lib/api-http";
@@ -24,8 +24,8 @@ const OfflineStudents = () => {
   const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
   const [formData, setFormData] = useState({
     name: "",
-    email: "",
     phone: "",
+    guardian_phone: "",
     grade: "",
     grade_id: "",
     group_id: "",
@@ -82,8 +82,8 @@ const OfflineStudents = () => {
 
   const filteredStudents = students.filter(student =>
     student.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    student.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    student.phone?.includes(searchTerm)
+    student.phone?.includes(searchTerm) ||
+    student.guardian_phone?.includes(searchTerm)
   );
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -105,8 +105,8 @@ const OfflineStudents = () => {
         // Update student via Backend API
         const updateData: Record<string, unknown> = {
           name: formData.name,
-          email: formData.email,
           phone: formData.phone,
+          guardian_phone: formData.guardian_phone,
           grade: formData.grade,
           grade_id: formData.grade_id || null,
           group_id: formData.group_id || null,
@@ -131,8 +131,8 @@ const OfflineStudents = () => {
         // Create new offline student via Backend API
         const newStudent: Partial<Student> = {
           name: formData.name,
-          email: formData.email,
           phone: formData.phone,
+          guardian_phone: formData.guardian_phone,
           grade: formData.grade,
           grade_id: formData.grade_id || null,
           group_id: formData.group_id || null,
@@ -158,7 +158,7 @@ const OfflineStudents = () => {
       setIsOpen(false);
       setEditingStudent(null);
       setSelectedCourses([]);
-      setFormData({ name: "", email: "", phone: "", grade: "", grade_id: "", group_id: "", password: "" });
+      setFormData({ name: "", phone: "", guardian_phone: "", grade: "", grade_id: "", group_id: "", password: "" });
     } catch (error: unknown) {
       console.error('Error:', error);
       toast({
@@ -175,8 +175,8 @@ const OfflineStudents = () => {
     setEditingStudent(student);
     setFormData({
       name: student.name,
-      email: student.email || "",
       phone: student.phone || "",
+      guardian_phone: student.guardian_phone || "",
       grade: student.grade || "",
       grade_id: student.grade_id || "",
       group_id: student.group_id || "",
@@ -232,7 +232,7 @@ const OfflineStudents = () => {
           <Dialog open={isOpen} onOpenChange={setIsOpen}>
             <Button onClick={() => {
               setEditingStudent(null);
-              setFormData({ name: "", email: "", phone: "", grade: "", grade_id: "", group_id: "", password: "" });
+              setFormData({ name: "", phone: "", guardian_phone: "", grade: "", grade_id: "", group_id: "", password: "" });
               setSelectedCourses([]);
               setIsOpen(true);
             }}>
@@ -255,17 +255,6 @@ const OfflineStudents = () => {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="email">البريد الإلكتروني</Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    value={formData.email}
-                    onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
-                    placeholder="example@email.com"
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
                   <Label htmlFor="phone">رقم الهاتف</Label>
                   <Input
                     id="phone"
@@ -273,6 +262,15 @@ const OfflineStudents = () => {
                     onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
                     placeholder="01234567890"
                     required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="guardian_phone">رقم ولي الأمر</Label>
+                  <Input
+                    id="guardian_phone"
+                    value={formData.guardian_phone}
+                    onChange={(e) => setFormData(prev => ({ ...prev, guardian_phone: e.target.value }))}
+                    placeholder="01234567890"
                   />
                 </div>
                 <div className="space-y-2">
@@ -397,10 +395,10 @@ const OfflineStudents = () => {
                         <div>
                           <h3 className="font-bold text-white text-lg">{student.name}</h3>
                           <div className="flex items-center gap-2 text-xs text-cyan-50">
-                            {student.email && (
+                            {student.guardian_phone && (
                               <>
-                                <Mail className="w-3 h-3" />
-                                <span>{student.email}</span>
+                                <Phone className="w-3 h-3" />
+                                <span>ولي الأمر: {student.guardian_phone}</span>
                               </>
                             )}
                           </div>
@@ -432,6 +430,14 @@ const OfflineStudents = () => {
                         <div className="text-sm font-medium flex items-center gap-2">
                           <Phone className="w-3 h-3 text-muted-foreground" />
                           {student.phone || '-'}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">👨‍👩‍👦 رقم ولي الأمر</div>
+                        <div className="text-sm font-medium flex items-center gap-2">
+                          <Phone className="w-3 h-3 text-muted-foreground" />
+                          {student.guardian_phone || '-'}
                         </div>
                       </div>
 
@@ -470,8 +476,8 @@ const OfflineStudents = () => {
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">⚡ الحالة</div>
                         <span className={`px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1 ${student.is_active
-                            ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
-                            : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
+                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                          : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
                           }`}>
                           {student.is_active ? '✓ نشط' : '⚠ غير نشط'}
                         </span>

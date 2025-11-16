@@ -3,7 +3,7 @@
  * Replaces the mock localStorage database with real HTTP requests
  */
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://deeppink-woodpecker-473963.hostingersite.com/api';
 
 // Helper to get auth token from localStorage
 const getAuthToken = (): string | null => {
@@ -157,6 +157,7 @@ export interface Student {
     name: string;
     email?: string;
     phone?: string;
+    guardian_phone?: string;
     grade?: string;
     grade_id?: string;
     group_id?: string;
@@ -439,6 +440,7 @@ export const createRegistrationRequest = async (data: {
     name: string;
     phone: string;
     password: string;
+    guardian_phone?: string; // رقم ولي الأمر
     grade_id?: string | null;
     group_id?: string | null;
     requested_courses?: string[];
@@ -669,9 +671,12 @@ export const getAttendance = async (filters?: {
 };
 
 // Exam functions
-export const getExams = async (courseId?: string): Promise<Exam[]> => {
-    const params = courseId ? `?course_id=${courseId}` : '';
-    return request<Exam[]>(`/exams${params}`);
+export const getExams = async (courseId?: string, studentId?: string): Promise<Exam[]> => {
+    const params = new URLSearchParams();
+    if (courseId) params.append('course_id', courseId);
+    if (studentId) params.append('student_id', studentId);
+    const queryString = params.toString() ? `?${params.toString()}` : '';
+    return request<Exam[]>(`/exams${queryString}`);
 };
 
 export const getExamById = async (id: string): Promise<Exam | null> => {
@@ -723,6 +728,36 @@ export const getExamQuestions = async (examId: string) => {
         console.error('❌ Error fetching exam questions:', error);
         return [];
     }
+};
+
+// Check if student can attempt exam
+export const canAttemptExam = async (examId: string, studentId: string) => {
+    return await request(`/exams/${examId}/can-attempt/${studentId}`);
+};
+
+// Start exam attempt
+export const startExamAttempt = async (examId: string, studentId: string) => {
+    return await request(`/exams/${examId}/start/${studentId}`, {
+        method: 'POST'
+    });
+};
+
+// Submit exam attempt
+export const submitExamAttempt = async (examId: string, studentId: string, answers: Record<string, unknown>, score: number) => {
+    return await request(`/exams/${examId}/submit/${studentId}`, {
+        method: 'POST',
+        body: JSON.stringify({ answers, score })
+    });
+};
+
+// Get exam attempts (admin)
+export const getExamAttempts = async (examId: string) => {
+    return await request(`/exams/${examId}/attempts`);
+};
+
+// Get students who haven't attempted exam (admin)
+export const getNotAttemptedStudents = async (examId: string) => {
+    return await request(`/exams/${examId}/not-attempted`);
 };
 
 // ====================================
@@ -1060,6 +1095,7 @@ export interface SubscriptionRequest {
     id?: number;
     student_name: string;
     phone: string;
+    guardian_phone?: string;
     grade_id?: number | null;
     grade_name?: string | null;
     group_id?: number | null;

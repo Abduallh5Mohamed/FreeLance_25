@@ -1,0 +1,214 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const db_1 = require("../db");
+const router = (0, express_1.Router)();
+// ===== EXAMS =====
+// Get all exams
+router.get('/', async (req, res) => {
+    try {
+        const { course_id, is_active } = req.query;
+        let sql = 'SELECT * FROM exams WHERE 1=1';
+        const params = [];
+        // Default to active exams only (soft delete)
+        if (is_active === undefined) {
+            sql += ' AND is_active = ?';
+            params.push('1');
+        }
+        else if (is_active !== undefined) {
+            sql += ' AND is_active = ?';
+            params.push(is_active);
+        }
+        if (course_id) {
+            sql += ' AND course_id = ?';
+            params.push(course_id);
+        }
+        sql += ' ORDER BY created_at DESC';
+        const exams = await (0, db_1.query)(sql, params);
+        res.json(exams);
+    }
+    catch (error) {
+        console.error('Get exams error:', error);
+        res.status(500).json({ error: 'Failed to fetch exams' });
+    }
+});
+// Get exam by ID
+router.get('/:id', async (req, res) => {
+    try {
+        const exam = await (0, db_1.queryOne)('SELECT * FROM exams WHERE id = ?', [req.params.id]);
+        if (!exam) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
+        res.json(exam);
+    }
+    catch (error) {
+        console.error('Get exam by ID error:', error);
+        res.status(500).json({ error: 'Failed to fetch exam' });
+    }
+});
+// Create exam
+router.post('/', async (req, res) => {
+    try {
+        const { title, description, course_id, duration_minutes, total_marks, passing_marks, start_time, end_time, is_active = true } = req.body;
+        if (!title || !course_id || !duration_minutes || !total_marks) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+        const result = await (0, db_1.execute)(`INSERT INTO exams (id, title, description, course_id, duration_minutes, total_marks, passing_marks, start_time, end_time, is_active, created_at, updated_at)
+             VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`, [
+            title,
+            description ?? null,
+            course_id,
+            duration_minutes,
+            total_marks,
+            passing_marks ?? null,
+            start_time ?? null,
+            end_time ?? null,
+            is_active
+        ]);
+        const newExam = await (0, db_1.queryOne)('SELECT * FROM exams WHERE id = (SELECT id FROM exams ORDER BY created_at DESC LIMIT 1)');
+        res.status(201).json(newExam);
+    }
+    catch (error) {
+        console.error('Create exam error:', error);
+        res.status(500).json({ error: 'Failed to create exam' });
+    }
+});
+// Update exam
+router.put('/:id', async (req, res) => {
+    try {
+        const { title, description, duration_minutes, total_marks, passing_marks, start_time, end_time, is_active } = req.body;
+        const result = await (0, db_1.execute)(`UPDATE exams 
+             SET title = COALESCE(?, title),
+                 description = COALESCE(?, description),
+                 duration_minutes = COALESCE(?, duration_minutes),
+                 total_marks = COALESCE(?, total_marks),
+                 passing_marks = COALESCE(?, passing_marks),
+                 start_time = COALESCE(?, start_time),
+                 end_time = COALESCE(?, end_time),
+                 is_active = COALESCE(?, is_active),
+                 updated_at = NOW()
+             WHERE id = ?`, [
+            title ?? null,
+            description ?? null,
+            duration_minutes ?? null,
+            total_marks ?? null,
+            passing_marks ?? null,
+            start_time ?? null,
+            end_time ?? null,
+            is_active ?? null,
+            req.params.id
+        ]);
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
+        const updatedExam = await (0, db_1.queryOne)('SELECT * FROM exams WHERE id = ?', [req.params.id]);
+        res.json(updatedExam);
+    }
+    catch (error) {
+        console.error('Update exam error:', error);
+        res.status(500).json({ error: 'Failed to update exam' });
+    }
+});
+// Delete exam (soft delete)
+router.delete('/:id', async (req, res) => {
+    try {
+        const result = await (0, db_1.execute)('UPDATE exams SET is_active = FALSE WHERE id = ?', [req.params.id]);
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
+        res.json({ message: 'Exam deleted successfully' });
+    }
+    catch (error) {
+        console.error('Delete exam error:', error);
+        res.status(500).json({ error: 'Failed to delete exam' });
+    }
+});
+// ===== EXAM QUESTIONS =====
+// Get questions for an exam
+router.get('/:examId/questions', async (req, res) => {
+    try {
+        const examId = req.params.examId;
+        console.log(`📝 Fetching questions for exam: ${examId}`);
+        const questions = await (0, db_1.query)('SELECT * FROM exam_questions WHERE exam_id = ? ORDER BY display_order', [examId]);
+        console.log(`✅ Found ${questions.length} questions for exam ${examId}`);
+        console.log('Questions:', JSON.stringify(questions, null, 2));
+        res.json(questions);
+    }
+    catch (error) {
+        console.error('❌ Get exam questions error:', error);
+        res.status(500).json({ error: 'Failed to fetch exam questions' });
+    }
+});
+// Add question to exam
+router.post('/:examId/questions', async (req, res) => {
+    try {
+        const { question_text, question_type, options, correct_answer, marks, display_order } = req.body;
+        if (!question_text || !question_type || !marks) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+        await (0, db_1.execute)(`INSERT INTO exam_questions (id, exam_id, question_text, question_type, options, correct_answer, points, display_order, created_at)
+             VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, NOW())`, [
+            req.params.examId,
+            question_text,
+            question_type,
+            options ?? null,
+            correct_answer ?? null,
+            marks,
+            display_order ?? 0
+        ]);
+        const newQuestion = await (0, db_1.queryOne)('SELECT * FROM exam_questions WHERE id = (SELECT id FROM exam_questions ORDER BY created_at DESC LIMIT 1)');
+        res.status(201).json(newQuestion);
+    }
+    catch (error) {
+        console.error('Add exam question error:', error);
+        res.status(500).json({ error: 'Failed to add exam question' });
+    }
+});
+// ===== EXAM RESULTS =====
+// Get all results for an exam
+router.get('/:examId/results', async (req, res) => {
+    try {
+        const results = await (0, db_1.query)(`SELECT r.*, s.name as student_name, s.email as student_email
+             FROM exam_results r
+             LEFT JOIN students s ON r.student_id = s.id
+             WHERE r.exam_id = ?
+             ORDER BY r.submitted_at DESC`, [req.params.examId]);
+        res.json(results);
+    }
+    catch (error) {
+        console.error('Get exam results error:', error);
+        res.status(500).json({ error: 'Failed to fetch exam results' });
+    }
+});
+// Get student's result for an exam
+router.get('/:examId/results/student/:studentId', async (req, res) => {
+    try {
+        const result = await (0, db_1.queryOne)('SELECT * FROM exam_results WHERE exam_id = ? AND student_id = ?', [req.params.examId, req.params.studentId]);
+        if (!result) {
+            return res.status(404).json({ error: 'Exam result not found' });
+        }
+        res.json(result);
+    }
+    catch (error) {
+        console.error('Get student exam result error:', error);
+        res.status(500).json({ error: 'Failed to fetch exam result' });
+    }
+});
+// Submit exam result
+router.post('/:examId/results', async (req, res) => {
+    try {
+        const { student_id, score, total_marks, status = 'submitted' } = req.body;
+        if (!student_id || score === undefined || !total_marks) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+        await (0, db_1.execute)(`INSERT INTO exam_results (id, exam_id, student_id, score, total_marks, status, submitted_at, created_at)
+             VALUES (UUID(), ?, ?, ?, ?, ?, NOW(), NOW())`, [req.params.examId, student_id, score, total_marks, status]);
+        const newResult = await (0, db_1.queryOne)('SELECT * FROM exam_results WHERE id = (SELECT id FROM exam_results ORDER BY created_at DESC LIMIT 1)');
+        res.status(201).json(newResult);
+    }
+    catch (error) {
+        console.error('Submit exam result error:', error);
+        res.status(500).json({ error: 'Failed to submit exam result' });
+    }
+});
+exports.default = router;

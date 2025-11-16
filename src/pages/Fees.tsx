@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { DollarSign, Plus, CreditCard, AlertTriangle, CheckCircle, Search, Upload, X, Eye, Check, XCircle, User, Calendar, Edit2, Trash2 } from "lucide-react";
+import { DollarSign, Plus, CreditCard, AlertTriangle, CheckCircle, Search, Upload, X, Eye, Check, XCircle, User, Calendar, Edit2, Trash2, MessageCircle } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
 import { getGrades, getGroups, createFee, getFees, getStudentByPhone, getStudentById, getStudents, getSubscriptionRequests, approveSubscriptionRequest, rejectSubscriptionRequest } from "@/lib/api-http";
@@ -16,6 +16,7 @@ const Fees = () => {
   const [fees, setFees] = useState([]);
   const [offlineFees, setOfflineFees] = useState([]);
   const [subscriptionRequests, setSubscriptionRequests] = useState([]);
+  const [approvedRequests, setApprovedRequests] = useState([]);
 
   const [isOpen, setIsOpen] = useState(false);
   const [isAddNewOpen, setIsAddNewOpen] = useState(false);
@@ -62,8 +63,12 @@ const Fees = () => {
 
   const loadSubscriptionRequests = async () => {
     try {
-      const requests = await getSubscriptionRequests({ status: 'pending' });
-      setSubscriptionRequests(requests || []);
+      const [pendingRequests, approvedReqs] = await Promise.all([
+        getSubscriptionRequests({ status: 'pending' }),
+        getSubscriptionRequests({ status: 'approved' })
+      ]);
+      setSubscriptionRequests(pendingRequests || []);
+      setApprovedRequests(approvedReqs || []);
     } catch (error) {
       console.error('Error loading subscription requests:', error);
     }
@@ -75,7 +80,7 @@ const Fees = () => {
         getFees(false),
         getFees(true)
       ]);
-      
+
       // Map API response to match expected format
       const mapFeeData = (fee: any) => ({
         ...fee,
@@ -85,7 +90,7 @@ const Fees = () => {
         course: fee.grade_name || fee.course || '',
         status: fee.status === 'paid' ? 'مدفوع' : fee.status === 'partial' ? 'جزئي' : 'متأخر'
       });
-      
+
       setFees((onlineFees || []).map(mapFeeData));
       setOfflineFees((offlineFeesData || []).map(mapFeeData));
     } catch (error) {
@@ -268,6 +273,43 @@ const Fees = () => {
     }
   };
 
+  const handleSendWhatsApp = (request) => {
+    // Format phone number (remove leading 0 and add 20)
+    const phone = request.guardian_phone || request.phone;
+    if (!phone) {
+      toast({
+        title: "خطأ",
+        description: "لا يوجد رقم WhatsApp لولي الأمر",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const cleanPhone = phone.replace(/\D/g, ''); // Remove non-digits
+    const formattedPhone = cleanPhone.startsWith('0') ? '2' + cleanPhone : cleanPhone;
+
+    // Create message
+    const message =
+      `✅ تم قبول طلب دفع الاشتراك\n\n` +
+      `👤 اسم الطالب: ${request.student_name}\n` +
+      `💰 المبلغ المدفوع: ${request.amount} جنيه\n` +
+      `📚 الصف: ${request.grade_name || 'غير محدد'}\n` +
+      `👥 المجموعة: ${request.group_name || 'غير محدد'}\n\n` +
+      `شكراً لثقتكم بنا 🙏\n` +
+      `مركز القائد التعليمي`;
+
+    // Generate WhatsApp link
+    const whatsappLink = `https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`;
+
+    // Open WhatsApp in new tab
+    window.open(whatsappLink, '_blank');
+
+    toast({
+      title: "✅ تم فتح WhatsApp",
+      description: `تم فتح WhatsApp لإرسال رسالة إلى ${phone}`,
+    });
+  };
+
   const handleRejectRequest = async (request) => {
     const reason = prompt("سبب الرفض:");
     if (!reason) return;
@@ -381,7 +423,7 @@ const Fees = () => {
       if (!fee) return;
 
       const newPaidAmount = fee.paidAmount + parseFloat(paymentData.amount);
-      
+
       // Update fee in database
       await updateFee(fee.id, {
         paid_amount: newPaidAmount,
@@ -398,7 +440,7 @@ const Fees = () => {
 
       // Refresh fees list
       fetchFees();
-      
+
       setIsOpen(false);
       setPaymentData({ feeId: null, amount: "", paymentMethod: "cash", notes: "" });
     } catch (error) {
@@ -573,6 +615,81 @@ const Fees = () => {
                         <div>
                           <span className="text-xs text-muted-foreground">التاريخ:</span>
                           <p className="font-medium">{new Date(request.created_at).toLocaleDateString('ar-EG')}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Approved Subscription Requests with WhatsApp */}
+            {approvedRequests.length > 0 && (
+              <div className="mb-6">
+                <h3 className="font-semibold text-green-800 dark:text-green-400 mb-4 flex items-center gap-2">
+                  <CheckCircle className="w-5 h-5" />
+                  طلبات تم قبولها ({approvedRequests.length})
+                </h3>
+                <div className="space-y-3">
+                  {approvedRequests.map((request) => (
+                    <div
+                      key={request.id}
+                      className="border border-green-200 dark:border-green-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-green-50 dark:bg-green-950/20"
+                    >
+                      <div className="bg-gradient-to-r from-green-500 to-emerald-500 px-4 py-2 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <Avatar className="h-8 w-8 border-2 border-white">
+                            <AvatarFallback className="text-xs bg-white text-green-600">
+                              {request.student_name?.charAt(0) || 'ط'}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div>
+                            <h4 className="font-bold text-white text-sm">{request.student_name}</h4>
+                            <span className="text-xs text-green-50">✅ تم القبول</span>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          {request.guardian_phone && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleSendWhatsApp(request)}
+                              className="h-7 px-3 text-white hover:bg-white/20 bg-white/10 hover:bg-white/30"
+                              title="إرسال WhatsApp"
+                            >
+                              <MessageCircle className="w-3 h-3 ml-1" />
+                              WhatsApp
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                        <div>
+                          <span className="text-xs text-muted-foreground">الموبايل:</span>
+                          <p className="font-medium">{request.phone}</p>
+                        </div>
+                        {request.guardian_phone && (
+                          <div>
+                            <span className="text-xs text-muted-foreground">WhatsApp ولي الأمر:</span>
+                            <p className="font-medium text-green-600">{request.guardian_phone}</p>
+                          </div>
+                        )}
+                        <div>
+                          <span className="text-xs text-muted-foreground">المبلغ:</span>
+                          <p className="font-medium text-green-600">{request.amount} ج.م</p>
+                        </div>
+                        <div>
+                          <span className="text-xs text-muted-foreground">الصف:</span>
+                          <p className="font-medium">{request.grade_name}</p>
+                        </div>
+                        <div>
+                          <span className="text-xs text-muted-foreground">المجموعة:</span>
+                          <p className="font-medium">{request.group_name}</p>
+                        </div>
+                        <div>
+                          <span className="text-xs text-muted-foreground">تاريخ القبول:</span>
+                          <p className="font-medium">{new Date(request.updated_at || request.created_at).toLocaleDateString('ar-EG')}</p>
                         </div>
                       </div>
                     </div>

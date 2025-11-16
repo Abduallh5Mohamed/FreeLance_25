@@ -11,7 +11,12 @@ interface User {
     phone?: string;
     name: string;
     role: 'admin' | 'teacher' | 'student';
+    student_id?: string;
     is_active: boolean;
+    email_verified?: number;
+    phone_verified?: number;
+    created_at?: string;
+    updated_at?: string;
     password_hash?: string;
 }
 
@@ -41,7 +46,8 @@ router.post('/login', async (req: Request, res: Response) => {
         const where = phone ? 'phone = ?' : 'email = ?';
 
         const user = await queryOne<User>(
-            `SELECT * FROM users WHERE ${where} AND is_active = TRUE`,
+            `SELECT id, email, phone, name, role, student_id, is_active, email_verified, phone_verified, created_at, updated_at, password_hash 
+             FROM users WHERE ${where} AND is_active = TRUE`,
             [identifier]
         );
 
