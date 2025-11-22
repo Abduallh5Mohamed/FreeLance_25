@@ -16,6 +16,8 @@ import { ar } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://72.62.35.177:3001/api';
 import {
   getCourses,
   getGroups,
@@ -204,7 +206,7 @@ const ExamManager = () => {
 
       console.log('📝 Creating exam with MySQL API:', examData);
 
-      const response = await fetch('http://localhost:3001/api/exams', {
+      const response = await fetch(`${API_BASE_URL}/exams`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

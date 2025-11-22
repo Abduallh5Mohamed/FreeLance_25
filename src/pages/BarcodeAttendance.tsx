@@ -10,7 +10,7 @@ import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
 import axios from 'axios';
 
-const API_URL = 'http://localhost:3001/api';
+const API_URL = import.meta.env.VITE_API_URL || 'http://72.62.35.177:3001/api';
 
 const BarcodeAttendance = () => {
   const [groups, setGroups] = useState([]);

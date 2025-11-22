@@ -384,33 +384,33 @@ export interface Subscription {
 }
 
 export const getSubscriptions = async (): Promise<Subscription[]> => {
-    return request<Subscription[]>('/subscriptions');
+    return request<Subscription[]>('/subscription-plans');
 };
 
 export const getSubscriptionById = async (id: string): Promise<Subscription | null> => {
     try {
-        return await request<Subscription>(`/subscriptions/${id}`);
+        return await request<Subscription>(`/subscription-plans/${id}`);
     } catch {
         return null;
     }
 };
 
 export const createSubscription = async (subscription: Partial<Subscription>): Promise<Subscription> => {
-    return request<Subscription>('/subscriptions', {
+    return request<Subscription>('/subscription-plans', {
         method: 'POST',
         body: JSON.stringify(subscription),
     });
 };
 
 export const updateSubscription = async (id: string, subscription: Partial<Subscription>): Promise<Subscription> => {
-    return request<Subscription>(`/subscriptions/${id}`, {
+    return request<Subscription>(`/subscription-plans/${id}`, {
         method: 'PUT',
         body: JSON.stringify(subscription),
     });
 };
 
 export const deleteSubscription = async (id: string): Promise<void> => {
-    await request<void>(`/subscriptions/${id}`, {
+    await request<void>(`/subscription-plans/${id}`, {
         method: 'DELETE',
     });
 };
@@ -450,7 +450,8 @@ export const createRegistrationRequest = async (data: {
         method: 'POST',
         body: JSON.stringify({
             ...data,
-            requested_courses: data.requested_courses ? JSON.stringify(data.requested_courses) : null,
+            // send array directly; backend will JSON.stringify as needed
+            requested_courses: data.requested_courses && data.requested_courses.length > 0 ? data.requested_courses : null,
         }),
     });
 };

@@ -3,6 +3,22 @@ import { query, queryOne, execute } from '../db';
 
 const router = Router();
 
+// Helper: parse 'YYYY-MM-DD HH:MM:SS[.fraction]' or 'YYYY-MM-DDTHH:MM:SS' as local Date
+function parseLocalDateTime(dt: any): Date | null {
+    if (!dt) return null;
+    try {
+        let s = String(dt).trim();
+        s = s.replace(' ', 'T');
+        const dot = s.indexOf('.');
+        if (dot > -1) s = s.substring(0, dot);
+        const d = new Date(s);
+        if (isNaN(d.getTime())) return null;
+        return d;
+    } catch {
+        return null;
+    }
+}
+
 interface Exam {
     id: string;
     title: string;
@@ -48,7 +64,10 @@ router.get('/', async (req: Request, res: Response) => {
     try {
         const { course_id, is_active, student_id } = req.query;
 
-        let sql = 'SELECT * FROM exams WHERE 1=1';
+        let sql = `SELECT *, 
+                   CONCAT(exam_date, ' ', start_time) as start_time,
+                   CONCAT(exam_date, ' ', end_time) as end_time
+                   FROM exams WHERE 1=1`;
         const params: string[] = [];
 
         // Default to active exams only (soft delete)
@@ -58,6 +77,12 @@ router.get('/', async (req: Request, res: Response) => {
         } else if (is_active !== undefined) {
             sql += ' AND is_active = ?';
             params.push(is_active as string);
+        }
+
+        // If student_id provided, only show published exams
+        if (student_id) {
+            sql += ' AND is_published = ?';
+            params.push('1');
         }
 
         if (course_id) {
@@ -128,17 +153,9 @@ router.post('/', async (req: Request, res: Response) => {
             is_active = true
         } = req.body;
 
-        // ✅ Use start_date/end_date if start_time/end_time not provided
-        let finalStartTime = start_time || start_date || null;
-        let finalEndTime = end_time || end_date || null;
-
-        // ✅ Convert ISO format to MySQL DATETIME format
-        if (finalStartTime) {
-            finalStartTime = new Date(finalStartTime).toISOString().slice(0, 19).replace('T', ' ');
-        }
-        if (finalEndTime) {
-            finalEndTime = new Date(finalEndTime).toISOString().slice(0, 19).replace('T', ' ');
-        }
+        // ✅ Use start_date/end_date if start_time/end_time not provided (store as provided, no UTC conversion)
+        const finalStartTime = start_time || start_date || null;
+        const finalEndTime = end_time || end_date || null;
 
         console.log('⏰ Parsed times:');
         console.log('  start_time:', start_time);
@@ -153,8 +170,8 @@ router.post('/', async (req: Request, res: Response) => {
         }
 
         const result = await execute(
-            `INSERT INTO exams (id, title, description, course_id, duration_minutes, total_marks, passing_marks, start_time, end_time, is_active, created_at, updated_at)
-             VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+            `INSERT INTO exams (id, title, description, course_id, duration_minutes, total_marks, passing_marks, exam_date, start_time, end_time, is_active, is_published, created_at, updated_at)
+             VALUES (UUID(), ?, ?, ?, ?, ?, ?, DATE(?), TIME(?), TIME(?), ?, 1, NOW(), NOW())`,
             [
                 title,
                 description ?? null,
@@ -162,6 +179,7 @@ router.post('/', async (req: Request, res: Response) => {
                 duration_minutes,
                 total_marks,
                 passing_marks ?? null,
+                finalStartTime,
                 finalStartTime,
                 finalEndTime,
                 is_active
@@ -192,8 +210,14 @@ router.put('/:id', async (req: Request, res: Response) => {
             passing_marks,
             start_time,
             end_time,
+            start_date, // optional ISO
+            end_date,   // optional ISO
             is_active
         } = req.body;
+
+        // Normalize incoming date/time (support start_date/end_date from UI) — keep local values as provided
+        const finalStart = start_time || start_date || null;
+        const finalEnd   = end_time || end_date || null;
 
         const result = await execute(
             `UPDATE exams 
@@ -202,8 +226,9 @@ router.put('/:id', async (req: Request, res: Response) => {
                  duration_minutes = COALESCE(?, duration_minutes),
                  total_marks = COALESCE(?, total_marks),
                  passing_marks = COALESCE(?, passing_marks),
-                 start_time = COALESCE(?, start_time),
-                 end_time = COALESCE(?, end_time),
+                 exam_date = COALESCE(DATE(?), exam_date),
+                 start_time = COALESCE(TIME(?), start_time),
+                 end_time = COALESCE(TIME(?), end_time),
                  is_active = COALESCE(?, is_active),
                  updated_at = NOW()
              WHERE id = ?`,
@@ -213,8 +238,9 @@ router.put('/:id', async (req: Request, res: Response) => {
                 duration_minutes ?? null,
                 total_marks ?? null,
                 passing_marks ?? null,
-                start_time ?? null,
-                end_time ?? null,
+                finalStart ?? null,
+                finalStart ?? null,
+                finalEnd ?? null,
                 is_active ?? null,
                 req.params.id
             ]
@@ -386,10 +412,40 @@ router.post('/:examId/results', async (req: Request, res: Response) => {
 
 // ===== EXAM ATTEMPTS =====
 
-// Check if student can take exam (not attempted before + exam is open)
+// Check if student can take exam (enrolled + not attempted + within schedule)
 router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response) => {
     try {
         const { examId, studentId } = req.params;
+
+        // Fetch exam with concatenated date-times for reliable parsing
+        const exam = await queryOne<any>(
+            `SELECT e.*, 
+                    CONCAT(e.exam_date, ' ', e.start_time) AS start_dt,
+                    CONCAT(e.exam_date, ' ', e.end_time)   AS end_dt
+             FROM exams e
+             WHERE e.id = ?`,
+            [examId]
+        );
+
+        if (!exam) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
+
+        // Check if student is enrolled in the course
+        if (exam.course_id) {
+            const enrollment = await queryOne(
+                'SELECT * FROM student_courses WHERE student_id = ? AND course_id = ?',
+                [studentId, exam.course_id]
+            );
+
+            if (!enrollment) {
+                return res.json({
+                    canAttempt: false,
+                    reason: 'not_enrolled',
+                    message: 'يجب التسجيل في الدورة أولاً',
+                });
+            }
+        }
 
         // Check if already attempted
         const attempt = await queryOne(
@@ -408,33 +464,35 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
             });
         }
 
-        // Check exam timing
-        const exam = await queryOne<Exam>(
-            'SELECT * FROM exams WHERE id = ?',
-            [examId]
-        );
-
-        if (!exam) {
-            return res.status(404).json({ error: 'Exam not found' });
-        }
-
         const now = new Date();
-        const startTime = exam.start_time ? new Date(exam.start_time) : null;
-        const endTime = exam.end_time ? new Date(exam.end_time) : null;
+
+        // Build Date objects from start_dt/end_dt when available (robust parsing)
+        const startTime = parseLocalDateTime(exam?.start_dt);
+        const endTime   = parseLocalDateTime(exam?.end_dt);
 
         console.log('🕐 Time Check:');
         console.log('  Current time:', now.toISOString(), '(Local:', now.toLocaleString('ar-EG'), ')');
-        console.log('  Start time:', startTime?.toISOString(), '(Local:', startTime?.toLocaleString('ar-EG'), ')');
-        console.log('  End time:', endTime?.toISOString(), '(Local:', endTime?.toLocaleString('ar-EG'), ')');
-        console.log('  Now < Start?', startTime && now < startTime);
-        console.log('  Now > End?', endTime && now > endTime);
+        console.log('  Start time:', startTime ? startTime.toISOString() : 'N/A', startTime ? `(Local: ${startTime.toLocaleString('ar-EG')})` : '');
+        console.log('  End time:', endTime ? endTime.toISOString() : 'N/A', endTime ? `(Local: ${endTime.toLocaleString('ar-EG')})` : '');
+        console.log('  Now < Start?', !!(startTime && now < startTime));
+        console.log('  Now > End?', !!(endTime && now > endTime));
+
+        // If schedule missing/invalid, block by default (require explicit scheduling)
+        if (!startTime || !endTime) {
+            return res.json({
+                canAttempt: false,
+                reason: 'not_scheduled',
+                message: 'الامتحان لم يبدأ بعد'
+            });
+        }
 
         if (startTime && now < startTime) {
             return res.json({
                 canAttempt: false,
                 reason: 'not_started',
                 message: 'الامتحان لم يبدأ بعد',
-                startTime: startTime
+                // Return start time as local-friendly string (no timezone shift)
+                startTime: String(exam.start_dt).replace(' ', 'T')
             });
         }
 
@@ -457,6 +515,46 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
 router.post('/:examId/start/:studentId', async (req: Request, res: Response) => {
     try {
         const { examId, studentId } = req.params;
+
+        // Get exam info with concatenated datetime for validation
+        const exam = await queryOne<any>(
+            `SELECT e.*, 
+                    CONCAT(e.exam_date, ' ', e.start_time) AS start_dt,
+                    CONCAT(e.exam_date, ' ', e.end_time)   AS end_dt
+             FROM exams e WHERE e.id = ?`,
+            [examId]
+        );
+
+        if (!exam) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
+
+        // Check if student is enrolled in the course
+        if (exam.course_id) {
+            const enrollment = await queryOne(
+                'SELECT * FROM student_courses WHERE student_id = ? AND course_id = ?',
+                [studentId, exam.course_id]
+            );
+
+            if (!enrollment) {
+                return res.status(403).json({ error: 'يجب التسجيل في الدورة أولاً' });
+            }
+        }
+
+        // Enforce schedule window strictly
+        const now = new Date();
+        const startTime = parseLocalDateTime(exam?.start_dt);
+        const endTime   = parseLocalDateTime(exam?.end_dt);
+
+        if (!startTime || !endTime) {
+            return res.status(400).json({ error: 'الامتحان لم يبدأ بعد' });
+        }
+        if (now < startTime) {
+            return res.status(400).json({ error: 'الامتحان لم يبدأ بعد' });
+        }
+        if (now > endTime) {
+            return res.status(400).json({ error: 'انتهى وقت الامتحان' });
+        }
 
         // Check if already attempted
         const existingAttempt = await queryOne(
