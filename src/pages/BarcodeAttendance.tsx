@@ -453,7 +453,7 @@ const BarcodeAttendance = () => {
 
     } catch (error: any) {
       console.error('Error processing quick payment:', error);
-      
+
       if (error.response?.status === 400 && error.response?.data?.error?.includes('تم الدفع مسبقاً')) {
         toast({
           title: "تم الدفع مسبقاً",
@@ -777,7 +777,7 @@ const BarcodeAttendance = () => {
               <Label>اسم الطالب</Label>
               <Input value={selectedStudentForPayment?.name || ''} disabled />
             </div>
-            
+
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>رقم التلفون</Label>
