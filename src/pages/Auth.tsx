@@ -371,12 +371,12 @@ const Auth = () => {
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                     {/* Password Input */}
                     <div className="space-y-1.5">
-                      <Label htmlFor="password" className="text-white text-right block text-sm">
+                      <Label htmlFor="password-register" className="text-white text-right block text-sm">
                         كلمة المرور
                       </Label>
                       <div className="relative">
                         <Input
-                          id="password"
+                          id="password-register"
                           type="password"
                           value={password}
                           onChange={(e) => setPassword(e.target.value)}
@@ -430,12 +430,12 @@ const Auth = () => {
               ) : (
                 /* Password only for login */
                 <div className="space-y-2">
-                  <Label htmlFor="password" className="text-white text-right block">
+                  <Label htmlFor="password-login" className="text-white text-right block">
                     كلمة المرور
                   </Label>
                   <div className="relative">
                     <Input
-                      id="password"
+                      id="password-login"
                       type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}

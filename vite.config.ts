@@ -17,4 +17,13 @@ export default defineConfig(({ mode }) => ({
   optimizeDeps: {
     include: ['react-intersection-observer'],
   },
+  build: {
+    rollupOptions: {
+      output: {
+        entryFileNames: `assets/[name]-${Date.now()}.js`,
+        chunkFileNames: `assets/[name]-${Date.now()}.js`,
+        assetFileNames: `assets/[name]-[hash].[ext]`
+      }
+    }
+  }
 }));

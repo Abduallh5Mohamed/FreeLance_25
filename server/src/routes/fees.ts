@@ -12,8 +12,10 @@ const ensureFeesSchema = async () => {
     await execute(`
         CREATE TABLE IF NOT EXISTS student_fees (
             id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+            student_id CHAR(36),
             student_name VARCHAR(255) NOT NULL,
             phone VARCHAR(50),
+            guardian_phone VARCHAR(50),
             grade_id CHAR(36),
             grade_name VARCHAR(255),
             group_id CHAR(36),
@@ -28,21 +30,29 @@ const ensureFeesSchema = async () => {
             notes TEXT,
             due_date DATE,
             payment_date DATE,
+            payment_year INT,
+            payment_month INT,
             receipt_image_url TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_student_id (student_id),
             INDEX idx_student_name (student_name),
             INDEX idx_phone (phone),
+            INDEX idx_guardian_phone (guardian_phone),
             INDEX idx_status (status),
             INDEX idx_is_offline (is_offline),
-            INDEX idx_payment_date (payment_date)
+            INDEX idx_payment_date (payment_date),
+            INDEX idx_payment_year_month (payment_year, payment_month),
+            UNIQUE KEY unique_student_month (student_id, payment_year, payment_month)
         ) ENGINE=InnoDB;
     `);
 
     // Ensure optional columns exist when table was previously created with a limited schema
     const requiredColumns: Record<string, string> = {
+        student_id: 'ADD COLUMN student_id CHAR(36) NULL',
         student_name: 'ADD COLUMN student_name VARCHAR(255) NULL',
         phone: 'ADD COLUMN phone VARCHAR(50) NULL',
+        guardian_phone: 'ADD COLUMN guardian_phone VARCHAR(50) NULL',
         grade_id: 'ADD COLUMN grade_id CHAR(36) NULL',
         grade_name: 'ADD COLUMN grade_name VARCHAR(255) NULL',
         group_id: 'ADD COLUMN group_id CHAR(36) NULL',
@@ -57,6 +67,8 @@ const ensureFeesSchema = async () => {
         notes: 'ADD COLUMN notes TEXT NULL',
         due_date: 'ADD COLUMN due_date DATE NULL',
         payment_date: 'ADD COLUMN payment_date DATE NULL',
+        payment_year: 'ADD COLUMN payment_year INT NULL',
+        payment_month: 'ADD COLUMN payment_month INT NULL',
         receipt_image_url: 'ADD COLUMN receipt_image_url TEXT NULL',
         created_at: 'ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
         updated_at: 'ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'
@@ -73,6 +85,36 @@ const ensureFeesSchema = async () => {
         }
     }
 
+    // Backfill payment_year and payment_month from payment_date for existing records
+    await execute(`
+        UPDATE student_fees 
+        SET payment_year = YEAR(payment_date),
+            payment_month = MONTH(payment_date)
+        WHERE payment_date IS NOT NULL 
+          AND (payment_year IS NULL OR payment_month IS NULL)
+    `);
+
+    // Ensure unique index exists
+    const indexExists = await queryOne<{ INDEX_NAME: string }>(
+        `SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS 
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'student_fees' AND INDEX_NAME = 'unique_student_month'`,
+        [DATABASE_NAME]
+    );
+
+    if (!indexExists) {
+        try {
+            await execute(`
+                ALTER TABLE student_fees 
+                ADD UNIQUE KEY unique_student_month (student_id, payment_year, payment_month)
+            `);
+        } catch (err: any) {
+            // Ignore duplicate key error if index already exists
+            if (err.code !== 'ER_DUP_KEYNAME') {
+                console.error('Error creating unique index:', err);
+            }
+        }
+    }
+
     feesSchemaEnsured = true;
 };
 
@@ -80,8 +122,10 @@ const router = Router();
 
 interface Fee {
     id: string;
+    student_id?: string;
     student_name: string;
     phone?: string;
+    guardian_phone?: string;
     grade_id?: string;
     grade_name?: string;
     group_id?: string;
@@ -95,6 +139,8 @@ interface Fee {
     notes?: string;
     due_date?: string;
     payment_date?: string;
+    payment_year?: number;
+    payment_month?: number;
     receipt_image_url?: string;
 }
 
@@ -103,15 +149,15 @@ router.get('/', async (req: Request, res: Response) => {
     try {
         await ensureFeesSchema();
         const { is_offline, status, phone, name } = req.query;
-        
+
         let sql = `SELECT * FROM student_fees WHERE 1=1`;
         const params: unknown[] = [];
-        
+
         if (is_offline !== undefined) {
             sql += ' AND is_offline = ?';
             params.push(is_offline === 'true');
         }
-        
+
         if (status) {
             sql += ' AND status = ?';
             params.push(status);
@@ -126,9 +172,9 @@ router.get('/', async (req: Request, res: Response) => {
             sql += ' AND student_name LIKE ?';
             params.push(`%${name}%`);
         }
-        
+
         sql += ' ORDER BY created_at DESC';
-        
+
         const fees = await query<Fee>(sql, params);
         res.json(fees);
     } catch (error) {
@@ -163,6 +209,7 @@ router.post('/', async (req: Request, res: Response) => {
         const {
             student_name,
             phone,
+            guardian_phone,
             grade_id,
             grade_name,
             group_id,
@@ -176,6 +223,8 @@ router.post('/', async (req: Request, res: Response) => {
             notes,
             due_date,
             payment_date,
+            payment_year,
+            payment_month,
             receipt_image_url
         } = req.body;
 
@@ -221,23 +270,49 @@ router.post('/', async (req: Request, res: Response) => {
         }
 
         // For offline students, allow direct creation without requiring student in database
+        const resolvedStudentId = linkedStudent?.id || null;
         const resolvedStudentName = linkedStudent?.name || student_name;
         const resolvedPhone = linkedStudent?.phone || phone;
+        const resolvedGuardianPhone = linkedStudent?.guardian_phone || guardian_phone;
         const resolvedGradeId = linkedStudent?.grade_id || grade_id;
         const resolvedGradeName = linkedStudent?.grade_name || grade_name;
         const resolvedGroupId = linkedStudent?.group_id || group_id;
         const resolvedGroupName = linkedStudent?.group_name || group_name;
         const resolvedBarcode = linkedStudent?.barcode || barcode;
 
+        // Determine payment year and month
+        const paymentDateObj = payment_date ? new Date(payment_date) : new Date();
+        const finalPaymentYear = payment_year || paymentDateObj.getFullYear();
+        const finalPaymentMonth = payment_month || (paymentDateObj.getMonth() + 1);
+
+        // Check if student already paid for this month (only if student_id exists)
+        if (resolvedStudentId) {
+            const existingPayment = await queryOne<Fee>(
+                `SELECT * FROM student_fees 
+                 WHERE student_id = ? AND payment_year = ? AND payment_month = ? AND status = 'paid'`,
+                [resolvedStudentId, finalPaymentYear, finalPaymentMonth]
+            );
+
+            if (existingPayment) {
+                return res.status(400).json({
+                    error: 'تم الدفع مسبقاً',
+                    message: `الطالب ${resolvedStudentName} قام بالدفع بالفعل لشهر ${finalPaymentMonth}/${finalPaymentYear}`,
+                    existing_payment: existingPayment
+                });
+            }
+        }
+
         const result = await execute(
             `INSERT INTO student_fees (
-                student_name, phone, grade_id, grade_name, group_id, group_name,
+                student_id, student_name, phone, guardian_phone, grade_id, grade_name, group_id, group_name,
                 barcode, amount, paid_amount, status, payment_method, is_offline,
-                notes, due_date, payment_date, receipt_image_url
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                notes, due_date, payment_date, payment_year, payment_month, receipt_image_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
+                resolvedStudentId,
                 resolvedStudentName,
                 resolvedPhone || null,
+                resolvedGuardianPhone || null,
                 resolvedGradeId || null,
                 resolvedGradeName || null,
                 resolvedGroupId || null,
@@ -251,6 +326,8 @@ router.post('/', async (req: Request, res: Response) => {
                 notes || null,
                 due_date || new Date().toISOString().split('T')[0],
                 payment_date || new Date().toISOString().split('T')[0],
+                finalPaymentYear,
+                finalPaymentMonth,
                 receipt_image_url || null
             ]
         );
@@ -286,8 +363,10 @@ router.put('/:id', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
         const {
+            student_id,
             student_name,
             phone,
+            guardian_phone,
             grade_id,
             grade_name,
             group_id,
@@ -299,13 +378,26 @@ router.put('/:id', async (req: Request, res: Response) => {
             notes,
             due_date,
             payment_date,
+            payment_year,
+            payment_month,
             receipt_image_url
         } = req.body;
 
+        // If payment_date is updated, recalculate year/month
+        let finalPaymentYear = payment_year;
+        let finalPaymentMonth = payment_month;
+        if (payment_date && (!payment_year || !payment_month)) {
+            const paymentDateObj = new Date(payment_date);
+            finalPaymentYear = paymentDateObj.getFullYear();
+            finalPaymentMonth = paymentDateObj.getMonth() + 1;
+        }
+
         await execute(
             `UPDATE student_fees SET
+                student_id = COALESCE(?, student_id),
                 student_name = COALESCE(?, student_name),
                 phone = COALESCE(?, phone),
+                guardian_phone = COALESCE(?, guardian_phone),
                 grade_id = COALESCE(?, grade_id),
                 grade_name = COALESCE(?, grade_name),
                 group_id = COALESCE(?, group_id),
@@ -317,12 +409,16 @@ router.put('/:id', async (req: Request, res: Response) => {
                 notes = COALESCE(?, notes),
                 due_date = COALESCE(?, due_date),
                 payment_date = COALESCE(?, payment_date),
+                payment_year = COALESCE(?, payment_year),
+                payment_month = COALESCE(?, payment_month),
                 receipt_image_url = COALESCE(?, receipt_image_url),
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?`,
             [
+                student_id || null,
                 student_name || null,
                 phone || null,
+                guardian_phone || null,
                 grade_id || null,
                 grade_name || null,
                 group_id || null,
@@ -334,6 +430,8 @@ router.put('/:id', async (req: Request, res: Response) => {
                 notes || null,
                 due_date || null,
                 payment_date || null,
+                finalPaymentYear || null,
+                finalPaymentMonth || null,
                 receipt_image_url || null,
                 id
             ]

@@ -28,6 +28,7 @@ const Students = () => {
     name: "",
     email: "",
     phone: "",
+    guardian_phone: "",
     grade: "",
     grade_id: "",
     subscription_id: "",
@@ -97,7 +98,8 @@ const Students = () => {
   const filteredStudents = students.filter(student =>
     student.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     student.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    student.phone?.includes(searchTerm)
+    student.phone?.includes(searchTerm) ||
+    student.guardian_phone?.includes(searchTerm)
   );
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -124,6 +126,7 @@ const Students = () => {
         name: formData.name,
         email: formData.email,
         phone: formData.phone,
+        guardian_phone: formData.guardian_phone,
         grade: formData.grade,
         grade_id: formData.grade_id || null,
         group_id: formData.group_id || null,
@@ -144,7 +147,7 @@ const Students = () => {
       setIsOpen(false);
       setEditingStudent(null);
       setSelectedCourses([]);
-      setFormData({ name: "", email: "", phone: "", grade: "", grade_id: "", subscription_id: "", subscription_price: "", group_id: "", password: "" });
+      setFormData({ name: "", email: "", phone: "", guardian_phone: "", grade: "", grade_id: "", subscription_id: "", subscription_price: "", group_id: "", password: "" });
     } catch (error: unknown) {
       console.error('Error:', error);
       toast({
@@ -163,6 +166,7 @@ const Students = () => {
       name: student.name,
       email: student.email,
       phone: student.phone,
+      guardian_phone: student.guardian_phone || "",
       grade: student.grade,
       grade_id: student.grade_id || "",
       subscription_id: student.subscription_id || "",
@@ -252,6 +256,15 @@ const Students = () => {
                     onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
                     placeholder="01234567890"
                     required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="guardian_phone">رقم ولي الأمر</Label>
+                  <Input
+                    id="guardian_phone"
+                    value={formData.guardian_phone}
+                    onChange={(e) => setFormData(prev => ({ ...prev, guardian_phone: e.target.value }))}
+                    placeholder="01234567890"
                   />
                 </div>
                 <div className="space-y-2">
@@ -439,6 +452,14 @@ const Students = () => {
                     </div>
 
                     <div>
+                      <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">👨‍👩‍👦 رقم ولي الأمر</div>
+                      <div className="text-sm font-medium flex items-center gap-2">
+                        <Phone className="w-3 h-3 text-muted-foreground" />
+                        {student.guardian_phone || '-'}
+                      </div>
+                    </div>
+
+                    <div>
                       <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🎓 المرحلة</div>
                       <div className="text-sm font-medium">{student.grade}</div>
                     </div>
@@ -485,8 +506,8 @@ const Students = () => {
                     <div>
                       <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">⚡ الحالة</div>
                       <span className={`px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1 ${student.is_active
-                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
-                          : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
+                        ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                        : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
                         }`}>
                         {student.is_active ? '✓ نشط' : '⚠ غير نشط'}
                       </span>

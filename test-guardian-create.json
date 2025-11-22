@@ -1,0 +1,10 @@
+{
+    "name": "Test Guardian Phone",
+    "phone": "15615",
+    "guardian_phone": "99999",
+    "grade": "الصف الأول الثانوي",
+    "grade_id": "47ffe875-c2fe-11f0-a978-94e8d4b653c4",
+    "group_id": "e847d13f-c31b-11f0-a978-94e8d4b653c4",
+    "is_offline": 1,
+    "approval_status": "approved"
+}

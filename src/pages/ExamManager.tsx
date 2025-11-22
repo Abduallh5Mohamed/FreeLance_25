@@ -31,6 +31,8 @@ import {
   deleteExamQuestion,
   Exam,
   ExamQuestion
+
+const API_URL = import.meta.env.VITE_API_URL || '/api';
 } from "@/lib/api-http";
 
 interface Group {
@@ -206,7 +208,7 @@ const ExamManager = () => {
 
       console.log('📝 Creating exam with MySQL API:', examData);
 
-      const response = await fetch(`${API_BASE_URL}/exams`, {
+      const response = await fetch(`${API_URL}/exams`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

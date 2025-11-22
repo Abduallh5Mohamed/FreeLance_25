@@ -18,7 +18,7 @@ interface Attendance {
 // Get all attendance records
 router.get('/', async (req: Request, res: Response) => {
     try {
-        const { date, student_id, group_id, course_id } = req.query;
+        const { date, student_id, group_id, course_id, limit, order } = req.query;
 
         let sql = `
             SELECT 
@@ -58,7 +58,15 @@ router.get('/', async (req: Request, res: Response) => {
             params.push(course_id);
         }
 
-        sql += ' ORDER BY a.attendance_date DESC, a.created_at DESC';
+        sql += ` ORDER BY a.attendance_date ${order === 'asc' ? 'ASC' : 'DESC'}, a.created_at DESC`;
+
+        if (limit) {
+            const limitNum = parseInt(limit as string);
+            if (!isNaN(limitNum) && limitNum > 0 && limitNum <= 1000) {
+                // LIMIT cannot be a placeholder in MySQL prepared statements
+                sql += ` LIMIT ${limitNum}`;
+            }
+        }
 
         const attendance = await query<Attendance>(sql, params);
         res.json(attendance);

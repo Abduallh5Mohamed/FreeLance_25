@@ -22,6 +22,7 @@ import notificationsRoutes from './routes/notifications';
 import subscriptionRequestsRoutes from './routes/subscription-requests';
 import expensesRoutes from './routes/expenses';
 import importsRoutes from './routes/imports';
+import migrationsRoutes from './routes/migrations';
 
 dotenv.config();
 
@@ -82,6 +83,7 @@ app.use('/api/notifications', notificationsRoutes);
 app.use('/api/subscription-requests', subscriptionRequestsRoutes);
 app.use('/api/expenses', expensesRoutes);
 app.use('/api/imports', importsRoutes);
+app.use('/api/migrations', migrationsRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {
@@ -97,12 +99,19 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 // Start server
 const startServer = async () => {
     try {
-        // Test database connection
-        const dbConnected = await testConnection();
+        // Optionally skip DB connection on start for local development
+        const skipDb = process.env.SKIP_DB_ON_START === 'true';
+        let dbConnected = false;
+        if (!skipDb) {
+            // Test database connection
+            dbConnected = await testConnection();
 
-        if (!dbConnected) {
-            console.error('❌ Failed to connect to database. Server will not start.');
-            process.exit(1);
+            if (!dbConnected) {
+                console.error('❌ Failed to connect to database. Server will not start.');
+                process.exit(1);
+            }
+        } else {
+            console.warn('⚠️ SKIP_DB_ON_START is set — skipping DB connectivity check (dev only)');
         }
 
         const server = app.listen(PORT, () => {
