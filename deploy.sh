@@ -1,13 +1,19 @@
 #!/bin/bash
 
-# ═══════════════════════════════════════════════════════════════
-# Deployment Script for Al-Qaed Educational Platform
-# ═══════════════════════════════════════════════════════════════
+# سكريبت رفع المشروع على VPS
+# استخدام: ./deploy.sh your-vps-ip your-username
 
-echo "🚀 Starting deployment process..."
-echo ""
+VPS_IP=$1
+VPS_USER=$2
+PROJECT_PATH="/var/www/alqaed-platform"
 
-# Colors for output
+if [ -z "$VPS_IP" ] || [ -z "$VPS_USER" ]; then
+    echo "الاستخدام: ./deploy.sh <VPS_IP> <VPS_USER>"
+    echo "مثال: ./deploy.sh 192.168.1.100 ubuntu"
+    exit 1
+fi
+
+echo "🚀 بدء عملية النشر..."
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
