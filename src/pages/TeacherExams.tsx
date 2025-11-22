@@ -13,6 +13,8 @@ import { ClipboardCheck, Plus, Trash2, BookOpen, Clock, Edit } from 'lucide-reac
 import Header from '@/components/Header';
 import { motion } from 'framer-motion';
 
+const API_URL = import.meta.env.VITE_API_URL || '/api';
+
 interface Question {
   question_text: string;
   option_a: string;
@@ -139,7 +141,7 @@ export default function TeacherExams() {
       const totalMarks = questions.reduce((sum, q) => sum + q.marks, 0);
 
       // Create exam via Backend API
-      const response = await fetch('http://localhost:3001/api/exams', {
+      const response = await fetch(`${API_URL}/exams`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -171,7 +173,7 @@ export default function TeacherExams() {
           d: question.option_d
         });
 
-        const response = await fetch(`http://localhost:3001/api/exams/${examResult.id}/questions`, {
+        const response = await fetch(`${API_URL}/exams/${examResult.id}/questions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -227,7 +229,7 @@ export default function TeacherExams() {
     try {
       console.log('🗑️ Deleting exam:', id);
       // Delete exam via Backend API (should cascade delete questions)
-      const response = await fetch(`http://localhost:3001/api/exams/${id}`, {
+      const response = await fetch(`${API_URL}/exams/${id}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token') || ''}`

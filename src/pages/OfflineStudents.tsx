@@ -100,6 +100,16 @@ const OfflineStudents = () => {
       return;
     }
 
+    if (!formData.guardian_phone || formData.guardian_phone.trim() === "") {
+      toast({
+        title: "خطأ",
+        description: "يجب إدخال رقم ولي الأمر",
+        variant: "destructive",
+      });
+      setLoading(false);
+      return;
+    }
+
     try {
       if (editingStudent) {
         // Update student via Backend API
@@ -182,7 +192,8 @@ const OfflineStudents = () => {
       group_id: student.group_id || "",
       password: "" // Don't show existing password
     });
-    setSelectedCourses(student.student_courses?.map((sc: any) => sc.courses.id) || []);
+    // Use courses array from API response
+    setSelectedCourses(student.courses?.map((course: any) => course.id) || []);
     setIsOpen(true);
   };
 
@@ -265,12 +276,13 @@ const OfflineStudents = () => {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="guardian_phone">رقم ولي الأمر</Label>
+                  <Label htmlFor="guardian_phone">رقم ولي الأمر *</Label>
                   <Input
                     id="guardian_phone"
                     value={formData.guardian_phone}
                     onChange={(e) => setFormData(prev => ({ ...prev, guardian_phone: e.target.value }))}
                     placeholder="01234567890"
+                    required
                   />
                 </div>
                 <div className="space-y-2">
@@ -394,12 +406,21 @@ const OfflineStudents = () => {
                         </Avatar>
                         <div>
                           <h3 className="font-bold text-white text-lg">{student.name}</h3>
-                          <div className="flex items-center gap-2 text-xs text-cyan-50">
+                          <div className="flex items-center gap-4 text-xs text-cyan-50">
+                            {student.phone && (
+                              <div className="flex items-center gap-1">
+                                <Phone className="w-3 h-3" />
+                                <span>رقم الطالب: {student.phone}</span>
+                              </div>
+                            )}
                             {student.guardian_phone && (
-                              <>
+                              <div className="flex items-center gap-1">
                                 <Phone className="w-3 h-3" />
                                 <span>ولي الأمر: {student.guardian_phone}</span>
-                              </>
+                              </div>
+                            )}
+                            {!student.phone && !student.guardian_phone && (
+                              <span className="text-red-200">⚠ لا يوجد رقم هاتف</span>
                             )}
                           </div>
                         </div>
@@ -448,23 +469,23 @@ const OfflineStudents = () => {
 
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">👥 المجموعة</div>
-                        <div className="text-sm font-medium">{student.groups ? student.groups.name : '-'}</div>
+                        <div className="text-sm font-medium">{student.group_name || '-'}</div>
                       </div>
 
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📅 تاريخ الانضمام</div>
                         <div className="text-sm font-medium">
-                          {student.enrollment_date ? new Date(student.enrollment_date).toLocaleDateString('ar-SA') : '-'}
+                          {student.created_at ? new Date(student.created_at).toLocaleDateString('ar-EG') : '-'}
                         </div>
                       </div>
 
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📚 الكورسات</div>
                         <div className="flex flex-wrap gap-1">
-                          {student.student_courses && student.student_courses.length > 0 ? (
-                            student.student_courses.map((enrollment: any) => (
-                              <span key={enrollment.courses.id} className="px-2 py-1 bg-primary/10 text-primary rounded text-xs font-medium">
-                                {enrollment.courses.name}
+                          {student.courses && student.courses.length > 0 ? (
+                            student.courses.map((course: any) => (
+                              <span key={course.id} className="px-2 py-1 bg-primary/10 text-primary rounded text-xs font-medium">
+                                {course.name}
                               </span>
                             ))
                           ) : (

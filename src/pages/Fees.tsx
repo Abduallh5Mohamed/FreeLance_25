@@ -35,6 +35,7 @@ const Fees = () => {
   const [offlinePaymentData, setOfflinePaymentData] = useState({
     studentName: "",
     phone: "",
+    guardianPhone: "",
     gradeId: "",
     groupId: "",
     barcode: "",
@@ -369,6 +370,7 @@ const Fees = () => {
       const feeData = {
         student_name: offlinePaymentData.studentName,
         phone: offlinePaymentData.phone,
+        guardian_phone: offlinePaymentData.guardianPhone || null,
         grade_id: offlinePaymentData.gradeId,
         grade_name: selectedGrade?.name || '',
         group_id: offlinePaymentData.groupId,
@@ -381,7 +383,9 @@ const Fees = () => {
         is_offline: true,
         notes: offlinePaymentData.notes,
         due_date: new Date().toISOString().split('T')[0],
-        payment_date: paidAmount > 0 ? new Date().toISOString().split('T')[0] : null
+        payment_date: paidAmount > 0 ? new Date().toISOString().split('T')[0] : null,
+        payment_year: new Date().getFullYear(),
+        payment_month: new Date().getMonth() + 1
       };
 
       const createdFee = await createFee(feeData);
@@ -398,6 +402,7 @@ const Fees = () => {
       setOfflinePaymentData({
         studentName: "",
         phone: "",
+        guardianPhone: "",
         gradeId: "",
         groupId: "",
         barcode: "",
@@ -834,6 +839,17 @@ const Fees = () => {
                         onBlur={(e) => handleStudentLookup('phone', e.target.value)}
                         placeholder="01xxxxxxxxx"
                         required
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="offlineGuardianPhone">رقم ولي الأمر</Label>
+                      <Input
+                        id="offlineGuardianPhone"
+                        type="tel"
+                        value={offlinePaymentData.guardianPhone}
+                        onChange={(e) => setOfflinePaymentData(prev => ({ ...prev, guardianPhone: e.target.value }))}
+                        placeholder="01xxxxxxxxx"
                       />
                     </div>
 
