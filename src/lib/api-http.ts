@@ -278,6 +278,8 @@ export interface Group {
     max_students?: number;
     current_students?: number;
     is_active: boolean;
+    schedule_days?: string[] | string | null;
+    schedule_time?: string | null;
 }
 
 export const getGroups = async (): Promise<Group[]> => {
@@ -384,33 +386,33 @@ export interface Subscription {
 }
 
 export const getSubscriptions = async (): Promise<Subscription[]> => {
-    return request<Subscription[]>('/subscriptions');
+    return request<Subscription[]>('/subscription-plans');
 };
 
 export const getSubscriptionById = async (id: string): Promise<Subscription | null> => {
     try {
-        return await request<Subscription>(`/subscriptions/${id}`);
+        return await request<Subscription>(`/subscription-plans/${id}`);
     } catch {
         return null;
     }
 };
 
 export const createSubscription = async (subscription: Partial<Subscription>): Promise<Subscription> => {
-    return request<Subscription>('/subscriptions', {
+    return request<Subscription>('/subscription-plans', {
         method: 'POST',
         body: JSON.stringify(subscription),
     });
 };
 
 export const updateSubscription = async (id: string, subscription: Partial<Subscription>): Promise<Subscription> => {
-    return request<Subscription>(`/subscriptions/${id}`, {
+    return request<Subscription>(`/subscription-plans/${id}`, {
         method: 'PUT',
         body: JSON.stringify(subscription),
     });
 };
 
 export const deleteSubscription = async (id: string): Promise<void> => {
-    await request<void>(`/subscriptions/${id}`, {
+    await request<void>(`/subscription-plans/${id}`, {
         method: 'DELETE',
     });
 };
@@ -450,7 +452,8 @@ export const createRegistrationRequest = async (data: {
         method: 'POST',
         body: JSON.stringify({
             ...data,
-            requested_courses: data.requested_courses ? JSON.stringify(data.requested_courses) : null,
+            // send array directly; backend will JSON.stringify as needed
+            requested_courses: data.requested_courses && data.requested_courses.length > 0 ? data.requested_courses : null,
         }),
     });
 };
@@ -659,15 +662,23 @@ export const getAttendanceByDate = async (date: Date, groupId?: string): Promise
 
 export const getAttendance = async (filters?: {
     date?: string;
+    start_date?: string;
+    end_date?: string;
     student_id?: string;
     group_id?: string;
     course_id?: string;
+    order?: 'asc' | 'desc';
+    limit?: number;
 }): Promise<Attendance[]> => {
     const params = new URLSearchParams();
     if (filters?.date) params.append('date', filters.date);
+    if (filters?.start_date) params.append('start_date', filters.start_date);
+    if (filters?.end_date) params.append('end_date', filters.end_date);
     if (filters?.student_id) params.append('student_id', filters.student_id);
     if (filters?.group_id) params.append('group_id', filters.group_id);
     if (filters?.course_id) params.append('course_id', filters.course_id);
+    if (filters?.order) params.append('order', filters.order);
+    if (filters?.limit) params.append('limit', String(filters.limit));
 
     return request<Attendance[]>(`/attendance?${params.toString()}`);
 };

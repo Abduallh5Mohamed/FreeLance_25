@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { query, queryOne, execute } from '../db';
 
 const router = Router();
@@ -52,6 +53,10 @@ router.post('/', async (req: Request, res: Response) => {
         const { name, description, max_students, is_active = true, grade_id } = req.body;
         let course_id = (req.body && req.body.course_id) ?? null;
 
+        // New: schedule fields
+        let schedule_days = (req.body && (req.body.schedule_days ?? null)) as any;
+        const schedule_time = (req.body && (req.body.schedule_time ?? null)) as string | null;
+
         if (!name) {
             return res.status(400).json({ error: 'Group name is required' });
         }
@@ -74,14 +79,35 @@ router.post('/', async (req: Request, res: Response) => {
             finalGradeId = null;
         }
 
-        const result = await execute(
-            'INSERT INTO `groups` (name, description, course_id, grade_id, max_students, is_active) VALUES (?, ?, ?, ?, ?, ?)',
-            [name, description || null, course_id, finalGradeId, max_students || 30, is_active]
+        // Normalize schedule_days to JSON string or null
+        if (Array.isArray(schedule_days)) {
+            schedule_days = JSON.stringify(schedule_days);
+        } else if (typeof schedule_days === 'string') {
+            // if it's already a JSON array string, keep as is; otherwise wrap single day to array
+            try {
+                const parsed = JSON.parse(schedule_days);
+                if (Array.isArray(parsed)) {
+                    schedule_days = JSON.stringify(parsed);
+                } else {
+                    schedule_days = JSON.stringify([schedule_days]);
+                }
+            } catch {
+                schedule_days = JSON.stringify([schedule_days]);
+            }
+        } else if (schedule_days == null) {
+            schedule_days = null;
+        }
+
+        // groups.id is CHAR(36) (UUID) in schema. Generate id client-side for reliable fetch.
+        const newId = randomUUID();
+        await execute(
+            'INSERT INTO `groups` (id, name, description, course_id, grade_id, max_students, is_active, schedule_days, schedule_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [newId, name, description || null, course_id, finalGradeId, max_students || 30, is_active, schedule_days, schedule_time ?? null]
         );
 
         const newGroup = await queryOne<Group>(
             'SELECT * FROM `groups` WHERE id = ?',
-            [result.insertId]
+            [newId]
         );
 
         res.status(201).json(newGroup);
@@ -96,6 +122,8 @@ router.put('/:id', async (req: Request, res: Response) => {
     try {
         const { name, description, max_students, is_active, grade_id } = req.body;
         let course_id = (req.body && req.body.course_id) ?? null;
+        let schedule_days = (req.body && (req.body.schedule_days ?? null)) as any;
+        const schedule_time = (req.body && (req.body.schedule_time ?? null)) as string | null;
 
         // Normalize course_id: treat empty string or undefined as null
         if (course_id === '' || course_id === undefined) {
@@ -115,6 +143,20 @@ router.put('/:id', async (req: Request, res: Response) => {
             finalGradeId = null;
         }
 
+        // Normalize schedule_days
+        if (Array.isArray(schedule_days)) {
+            schedule_days = JSON.stringify(schedule_days);
+        } else if (typeof schedule_days === 'string') {
+            try {
+                const parsed = JSON.parse(schedule_days);
+                schedule_days = Array.isArray(parsed) ? JSON.stringify(parsed) : JSON.stringify([schedule_days]);
+            } catch {
+                schedule_days = JSON.stringify([schedule_days]);
+            }
+        } else if (schedule_days === undefined) {
+            schedule_days = null; // COALESCE will keep existing if null is passed
+        }
+
         const result = await execute(
             `UPDATE \`groups\` 
              SET name = COALESCE(?, name),
@@ -123,6 +165,8 @@ router.put('/:id', async (req: Request, res: Response) => {
                  grade_id = COALESCE(?, grade_id),
                  max_students = COALESCE(?, max_students),
                  is_active = COALESCE(?, is_active),
+                 schedule_days = COALESCE(?, schedule_days),
+                 schedule_time = COALESCE(?, schedule_time),
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = ?`,
             [
@@ -132,6 +176,8 @@ router.put('/:id', async (req: Request, res: Response) => {
                 finalGradeId ?? null,
                 max_students ?? null,
                 is_active ?? null,
+                schedule_days ?? null,
+                schedule_time ?? null,
                 req.params.id
             ]
         );

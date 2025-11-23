@@ -15,6 +15,7 @@ import Students from "./pages/Students";
 import OfflineStudents from "./pages/OfflineStudents";
 import Subscriptions from "./pages/Subscriptions";
 import Attendance from "./pages/Attendance";
+import AttendanceLog from "./pages/AttendanceLog";
 import Fees from "./pages/Fees";
 import Messages from "./pages/Messages";
 import Reports from "./pages/Reports";

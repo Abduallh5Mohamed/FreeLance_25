@@ -1,35 +1,24 @@
-import express, { Request, Response, NextFunction } from 'express';
-import { getPool } from '../db';
-import { RowDataPacket, ResultSetHeader } from 'mysql2';
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
-import { randomUUID } from 'crypto';
-
-const router = express.Router();
-const pool = getPool();
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = __importDefault(require("express"));
+const db_1 = require("../db");
+const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
+const crypto_1 = require("crypto");
+const router = express_1.default.Router();
+const pool = (0, db_1.getPool)();
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
-
-// ====================================
-// Middleware - Authentication
-// ====================================
-
-interface AuthRequest extends Request {
-    user?: {
-        id: string;
-        role: string;
-    };
-}
-
-const authenticateToken = (req: AuthRequest, res: Response, next: NextFunction) => {
+const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
-
     if (!token) {
         return res.status(401).json({ error: 'Authentication required' });
     }
-
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
+    jsonwebtoken_1.default.verify(token, JWT_SECRET, (err, user) => {
         if (err) {
             return res.status(403).json({ error: 'Invalid or expired token' });
         }
@@ -37,123 +26,69 @@ const authenticateToken = (req: AuthRequest, res: Response, next: NextFunction) 
         next();
     });
 };
-
-const requireAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
+const requireAdmin = (req, res, next) => {
     if (req.user?.role !== 'admin') {
         return res.status(403).json({ error: 'Admin access required' });
     }
     next();
 };
-
 // ====================================
 // POST /api/registration-requests
 // Create a new registration request
 // ====================================
-
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', async (req, res) => {
     try {
         const { name, phone, password, guardian_phone, grade_id, group_id, requested_courses, is_offline } = req.body;
-
         // Validation
         if (!name || !phone || !password) {
             return res.status(400).json({ error: 'Name, phone, and password are required' });
         }
-
         // Check if phone already exists in users table
-        const [existingUsers] = await pool.query<RowDataPacket[]>(
-            'SELECT id FROM users WHERE phone = ?',
-            [phone]
-        );
-
+        const [existingUsers] = await pool.query('SELECT id FROM users WHERE phone = ?', [phone]);
         if (existingUsers.length > 0) {
             return res.status(400).json({ error: 'رقم الهاتف مسجل بالفعل' });
         }
-
         // Check if phone already has a pending request
-        const [existingRequests] = await pool.query<RowDataPacket[]>(
-            'SELECT id FROM student_registration_requests WHERE phone = ? AND status = ?',
-            [phone, 'pending']
-        );
-
+        const [existingRequests] = await pool.query('SELECT id FROM student_registration_requests WHERE phone = ? AND status = ?', [phone, 'pending']);
         if (existingRequests.length > 0) {
             return res.status(400).json({ error: 'لديك طلب تسجيل قيد المراجعة بالفعل' });
         }
-
-        // Guardian phone required uniqueness (if provided)
-        if (guardian_phone) {
-            // Check guardian phone in existing students
-            const [existingGuardianStudents] = await pool.query<RowDataPacket[]>(
-                'SELECT id FROM students WHERE guardian_phone = ?',
-                [guardian_phone]
-            );
-            if (existingGuardianStudents.length > 0) {
-                return res.status(400).json({ error: 'رقم ولي الأمر مستخدم بالفعل مع طالب آخر' });
-            }
-
-            // Check guardian phone in pending registration requests
-            const [existingGuardianRequests] = await pool.query<RowDataPacket[]>(
-                'SELECT id FROM student_registration_requests WHERE guardian_phone = ? AND status = ? AND phone <> ?',
-                [guardian_phone, 'pending', phone]
-            );
-            if (existingGuardianRequests.length > 0) {
-                return res.status(400).json({ error: 'رقم ولي الأمر لديه طلب تسجيل آخر قيد المراجعة' });
-            }
-        }
-
         // Hash password
-        const hashedPassword = await bcrypt.hash(password, 10);
-
-        // Normalize requested_courses into valid JSON for MySQL JSON column
-        // Accepts: array -> JSON string, string (already JSON) -> keep as-is, otherwise null
-        let coursesJson: string | null = null;
-        if (Array.isArray(requested_courses)) {
-            coursesJson = JSON.stringify(requested_courses);
-        } else if (typeof requested_courses === 'string') {
-            coursesJson = requested_courses;
-        } else {
-            coursesJson = null;
-        }
-
+        const hashedPassword = await bcryptjs_1.default.hash(password, 10);
+        // Convert requested_courses array to JSON string if provided
+        const coursesJson = requested_courses ? JSON.stringify(requested_courses) : null;
         // Insert registration request with UUID (without email)
-        const requestId = randomUUID();
-        // Table student_registration_requests does NOT have guardian_phone column.
-        // Insert only supported columns.
-        await pool.query(
-            `INSERT INTO student_registration_requests 
+        const requestId = (0, crypto_1.randomUUID)();
+        await pool.query(`INSERT INTO student_registration_requests 
             (id, name, phone, password_hash, grade_id, group_id, requested_courses, status, is_offline, created_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-            [
-                requestId,
-                name,
-                phone,
-                hashedPassword,
-                grade_id || null,
-                group_id || null,
-                coursesJson,
-                'pending',
-                is_offline || false,
-            ]
-        );
-
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`, [
+            requestId,
+            name,
+            phone,
+            hashedPassword,
+            grade_id || null,
+            group_id || null,
+            coursesJson,
+            'pending',
+            is_offline || false,
+        ]);
         res.status(201).json({
             id: requestId,
             message: 'تم إرسال طلب التسجيل بنجاح. سيتم مراجعته من قبل الإدارة.'
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error creating registration request:', error);
         res.status(500).json({ error: 'Failed to create registration request' });
     }
 });
-
 // ====================================
 // GET /api/registration-requests
 // Get all registration requests (admin only)
 // ====================================
-
-router.get('/', authenticateToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+router.get('/', authenticateToken, requireAdmin, async (req, res) => {
     try {
         const { status, is_offline } = req.query;
-
         let query = `
             SELECT 
                 rr.*,
@@ -163,158 +98,108 @@ router.get('/', authenticateToken, requireAdmin, async (req: AuthRequest, res: R
             LEFT JOIN grades g ON rr.grade_id = g.id
             LEFT JOIN \`groups\` gr ON rr.group_id = gr.id
         `;
-
-        const params: (string | number | boolean)[] = [];
-        const conditions: string[] = [];
-
-        if (status && ['pending', 'approved', 'rejected'].includes(status as string)) {
+        const params = [];
+        const conditions = [];
+        if (status && ['pending', 'approved', 'rejected'].includes(status)) {
             conditions.push('rr.status = ?');
-            params.push(status as string);
+            params.push(status);
         }
-
         if (is_offline !== undefined) {
             conditions.push('rr.is_offline = ?');
             params.push(is_offline === 'true' ? 1 : 0);
         }
-
         if (conditions.length > 0) {
             query += ' WHERE ' + conditions.join(' AND ');
         }
-
         query += ' ORDER BY rr.created_at DESC';
-
-        const [requests] = await pool.query<RowDataPacket[]>(query, params);
-
+        const [requests] = await pool.query(query, params);
         res.json(requests);
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error fetching registration requests:', error);
         res.status(500).json({ error: 'Failed to fetch registration requests' });
     }
 });
-
 // ====================================
 // POST /api/registration-requests/:id/approve
 // Approve a registration request (admin only)
 // ====================================
-
-router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+router.post('/:id/approve', authenticateToken, requireAdmin, async (req, res) => {
     const connection = await pool.getConnection();
-
     try {
         const { id } = req.params;
-
         await connection.beginTransaction();
-
         // Get the request
-        const [requests] = await connection.query<RowDataPacket[]>(
-            'SELECT * FROM student_registration_requests WHERE id = ? AND status = ?',
-            [id, 'pending']
-        );
-
+        const [requests] = await connection.query('SELECT * FROM student_registration_requests WHERE id = ? AND status = ?', [id, 'pending']);
         if (requests.length === 0) {
             await connection.rollback();
             return res.status(404).json({ error: 'طلب التسجيل غير موجود أو تم معالجته بالفعل' });
         }
-
         const request = requests[0];
-
         // Check if user already exists (phone only)
-        const [existingUser] = await connection.query<RowDataPacket[]>(
-            'SELECT id FROM users WHERE phone = ?',
-            [request.phone]
-        );
-
+        const [existingUser] = await connection.query('SELECT id FROM users WHERE phone = ?', [request.phone]);
         if (existingUser.length > 0) {
             await connection.rollback();
             return res.status(400).json({
                 error: 'مستخدم بهذا الهاتف موجود بالفعل'
             });
         }
-
-        // Ensure guardian phone still unique before approval (race-condition safety)
-        if (request.guardian_phone) {
-            const [guardianConflict] = await connection.query<RowDataPacket[]>(
-                'SELECT id FROM students WHERE guardian_phone = ?',
-                [request.guardian_phone]
-            );
-            if (guardianConflict.length > 0) {
-                await connection.rollback();
-                return res.status(400).json({ error: 'رقم ولي الأمر مستخدم بالفعل مع طالب آخر، لا يمكن قبول الطلب' });
-            }
-        }
-
         // Create user account with UUID (without email)
-        const userId = randomUUID();
-        await connection.query(
-            `INSERT INTO users (id, phone, password_hash, name, role, is_active, phone_verified, created_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
-            [userId, request.phone, request.password_hash, request.name, 'student', true, true]
-        );
-
+        const userId = (0, crypto_1.randomUUID)();
+        await connection.query(`INSERT INTO users (id, phone, password_hash, name, role, is_active, phone_verified, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`, [userId, request.phone, request.password_hash, request.name, 'student', true, true]);
         // Generate unique barcode for the student
         const barcode = `STU${Date.now()}${Math.random().toString(36).substr(2, 9)}`.toUpperCase();
-
         // Create student record with UUID and barcode
-        const studentId = randomUUID();
-        await connection.query(
-            `INSERT INTO students (id, name, phone, parent_phone, grade_id, group_id, password_hash, approval_status, is_offline, created_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-            [studentId, request.name, request.phone, request.guardian_phone || null, request.grade_id, request.group_id, request.password_hash, 'approved', request.is_offline || false]
-        );
-
+        const studentId = (0, crypto_1.randomUUID)();
+        await connection.query(`INSERT INTO students (id, name, phone, guardian_phone, grade_id, group_id, password_hash, approval_status, is_offline, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`, [studentId, request.name, request.phone, request.guardian_phone || null, request.grade_id, request.group_id, request.password_hash, 'approved', request.is_offline || false]);
         // If requested courses, create student_courses entries
         if (request.requested_courses) {
             try {
                 let courseIds;
                 console.log('Raw requested_courses:', request.requested_courses);
                 console.log('Type:', typeof request.requested_courses);
-
                 // Handle both JSON string and array
                 if (typeof request.requested_courses === 'string') {
                     // Try to parse JSON string
                     try {
                         courseIds = JSON.parse(request.requested_courses);
-                    } catch (parseErr) {
+                    }
+                    catch (parseErr) {
                         console.error('Failed to parse requested_courses as JSON:', parseErr);
                         courseIds = [];
                     }
-                } else if (Array.isArray(request.requested_courses)) {
+                }
+                else if (Array.isArray(request.requested_courses)) {
                     courseIds = request.requested_courses;
-                } else {
+                }
+                else {
                     console.warn('Unexpected requested_courses type, skipping');
                     courseIds = [];
                 }
-
                 console.log('Parsed courseIds:', courseIds);
-
                 if (Array.isArray(courseIds) && courseIds.length > 0) {
                     for (const courseId of courseIds) {
                         console.log('Inserting course:', courseId);
-                        await connection.query(
-                            'INSERT INTO student_courses (id, student_id, course_id) VALUES (?, ?, ?)',
-                            [randomUUID(), studentId, courseId]
-                        );
+                        await connection.query('INSERT INTO student_courses (id, student_id, course_id) VALUES (?, ?, ?)', [(0, crypto_1.randomUUID)(), studentId, courseId]);
                     }
                 }
-            } catch (parseError) {
+            }
+            catch (parseError) {
                 console.error('Error processing requested courses:', parseError);
                 if (parseError instanceof Error) {
                     console.error('Parse error details:', parseError.message);
                 }
                 // Continue anyway - don't fail the whole approval
             }
-        } else {
+        }
+        else {
             console.log('No requested_courses to process');
         }
-
         // Update request status
-        await connection.query(
-            'UPDATE student_registration_requests SET status = ?, updated_at = NOW() WHERE id = ?',
-            ['approved', id]
-        );
-
+        await connection.query('UPDATE student_registration_requests SET status = ?, updated_at = NOW() WHERE id = ?', ['approved', id]);
         await connection.commit();
-
         res.json({
             message: 'تم قبول الطلب وإنشاء حساب الطالب بنجاح',
             user: {
@@ -331,7 +216,8 @@ router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthReq
                 group_id: request.group_id
             }
         });
-    } catch (error) {
+    }
+    catch (error) {
         await connection.rollback();
         console.error('Error approving registration request:', error);
         // Log detailed error information
@@ -343,42 +229,31 @@ router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthReq
             error: 'Failed to approve registration request',
             details: error instanceof Error ? error.message : 'Unknown error'
         });
-    } finally {
+    }
+    finally {
         connection.release();
     }
 });
-
 // ====================================
 // POST /api/registration-requests/:id/reject
 // Reject a registration request (admin only)
 // ====================================
-
-router.post('/:id/reject', authenticateToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+router.post('/:id/reject', authenticateToken, requireAdmin, async (req, res) => {
     try {
         const { id } = req.params;
         const { reason } = req.body;
-
         // Check if request exists and is pending
-        const [requests] = await pool.query<RowDataPacket[]>(
-            'SELECT id FROM student_registration_requests WHERE id = ? AND status = ?',
-            [id, 'pending']
-        );
-
+        const [requests] = await pool.query('SELECT id FROM student_registration_requests WHERE id = ? AND status = ?', [id, 'pending']);
         if (requests.length === 0) {
             return res.status(404).json({ error: 'طلب التسجيل غير موجود أو تم معالجته بالفعل' });
         }
-
         // Update request status
-        await pool.query(
-            'UPDATE student_registration_requests SET status = ?, rejection_reason = ?, updated_at = NOW() WHERE id = ?',
-            ['rejected', reason || null, id]
-        );
-
+        await pool.query('UPDATE student_registration_requests SET status = ?, rejection_reason = ?, updated_at = NOW() WHERE id = ?', ['rejected', reason || null, id]);
         res.json({ message: 'تم رفض الطلب بنجاح' });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error rejecting registration request:', error);
         res.status(500).json({ error: 'Failed to reject registration request' });
     }
 });
-
-export default router;
+exports.default = router;

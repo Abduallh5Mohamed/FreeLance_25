@@ -14,6 +14,38 @@ import axios from 'axios';
 
 const API_URL = import.meta.env.VITE_API_URL || '/api';
 
+// Helper: given schedule_days JSON and a reference date, return the previous scheduled day as YYYY-MM-DD
+const getPreviousScheduledDay = (referenceDate: string, schedule_days: any): string | null => {
+  let days: string[] = [];
+  if (schedule_days) {
+    if (typeof schedule_days === 'string') {
+      try {
+        days = JSON.parse(schedule_days);
+      } catch {
+        days = [];
+      }
+    } else if (Array.isArray(schedule_days)) {
+      days = schedule_days;
+    }
+  }
+  if (days.length === 0) return null;
+
+  const dayMap: { [k: string]: number } = {
+    sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6
+  };
+  const dayNums = days.map(d => dayMap[d.toLowerCase()]).filter(n => n !== undefined);
+  const refDate = new Date(referenceDate);
+  // Walk backwards up to 14 days
+  for (let i = 1; i <= 14; i++) {
+    const candidate = new Date(refDate);
+    candidate.setDate(candidate.getDate() - i);
+    if (dayNums.includes(candidate.getDay())) {
+      return candidate.toISOString().split('T')[0];
+    }
+  }
+  return null;
+};
+
 const BarcodeAttendance = () => {
   const [groups, setGroups] = useState([]);
   const [grades, setGrades] = useState([]);
@@ -38,9 +70,15 @@ const BarcodeAttendance = () => {
   useEffect(() => {
     if (selectedGroupId) {
       fetchTodayAttendance();
-      fetchAbsentStudents();
     }
   }, [selectedGroupId]);
+
+  // تحديث الغائبين تلقائياً عند تغيير الحضور أو الطلاب أو المجموعة
+  useEffect(() => {
+    if (selectedGroupId) {
+      fetchAbsentStudents();
+    }
+  }, [todayAttendance, selectedGroupId, students]);
 
   const fetchGroups = async () => {
     try {
@@ -103,33 +141,61 @@ const BarcodeAttendance = () => {
 
       setTodayAttendance(response.data || []);
 
-      // Update payment status for all students who attended (merge with existing cache)
+      // Update payment status and last attendance for all students who attended
       const paymentsData: Record<string, boolean> = { ...monthlyPayments };
+      const lastAttendanceData: Record<string, any> = { ...lastAttendance };
       const currentYear = new Date().getFullYear();
       const currentMonth = new Date().getMonth() + 1;
+      // استخدم تعريف today في أعلى الدالة وتجنب إعادة تعريفه لتفادي الخطأ
+      
       for (const record of response.data || []) {
         const student = students.find((s: any) => s.id === record.student_id);
-        if (student && !paymentsData[student.id]) {
+        if (student) {
+          // Fetch payment status
+          if (!paymentsData[student.id]) {
+            try {
+              const feeResponse = await axios.get(`${API_URL}/fees`, {
+                headers: { Authorization: `Bearer ${token}` },
+                params: {
+                  phone: student.phone,
+                  status: 'paid'
+                }
+              });
+              const hasMonthlyPayment = feeResponse.data.some((fee: any) => {
+                return fee.payment_year === currentYear && fee.payment_month === currentMonth;
+              });
+              paymentsData[student.id] = hasMonthlyPayment;
+            } catch (err) {
+              console.error('Error fetching payment:', err);
+              paymentsData[student.id] = false;
+            }
+          }
+
+          // Fetch last scheduled session attendance
           try {
-            const feeResponse = await axios.get(`${API_URL}/fees`, {
-              headers: { Authorization: `Bearer ${token}` },
-              params: {
-                phone: student.phone,
-                status: 'paid'
+            const group = groups.find((g: any) => g.id === student.group_id);
+            const lastScheduledDate = getPreviousScheduledDay(today, group?.schedule_days);
+            if (lastScheduledDate) {
+              const attResponse = await axios.get(`${API_URL}/attendance`, {
+                headers: { Authorization: `Bearer ${token}` },
+                params: {
+                  student_id: student.id,
+                  date: lastScheduledDate
+                }
+              });
+              if (attResponse.data && attResponse.data.length > 0) {
+                lastAttendanceData[student.id] = attResponse.data[0];
               }
-            });
-            const hasMonthlyPayment = feeResponse.data.some((fee: any) => {
-              return fee.payment_year === currentYear && fee.payment_month === currentMonth;
-            });
-            paymentsData[student.id] = hasMonthlyPayment;
+            }
           } catch (err) {
-            console.error('Error fetching payment:', err);
-            paymentsData[student.id] = false;
+            console.error('Error fetching last attendance:', err);
           }
         }
       }
       console.log('[Attendance] monthlyPayments (today) =>', paymentsData);
+      console.log('[Attendance] lastAttendance (today) =>', lastAttendanceData);
       setMonthlyPayments(paymentsData);
+      setLastAttendance(lastAttendanceData);
     } catch (error) {
       console.error('Error fetching attendance:', error);
       toast({
@@ -152,13 +218,11 @@ const BarcodeAttendance = () => {
         s.group_id === selectedGroupId && s.is_active
       );
 
-      // Get students who attended today
-      const attendedIds = todayAttendance
-        .filter((a: any) => a.status === 'present')
-        .map((a: any) => a.student_id);
+      // كل السجلات المسجلة (حضور أو غياب أو أى حالة) لهذا اليوم
+      const recordedIds = todayAttendance.map((a: any) => a.student_id);
 
-      // Filter absent students
-      const absent = groupStudents.filter((s: any) => !attendedIds.includes(s.id));
+      // الطلاب الذين لم يُسجل لهم أى سجل اليوم (لم يتم مرور باركودهم بعد)
+      const absent = groupStudents.filter((s: any) => !recordedIds.includes(s.id));
 
       // Fetch last attendance for each absent student
       const lastAttendanceData: Record<string, any> = {};
@@ -166,21 +230,24 @@ const BarcodeAttendance = () => {
       const paymentsData: Record<string, boolean> = { ...monthlyPayments };
 
       for (const student of absent) {
-        // Get last attendance
-        try {
-          const attResponse = await axios.get(`${API_URL}/attendance`, {
-            headers: { Authorization: `Bearer ${token}` },
-            params: {
-              student_id: student.id,
-              limit: 1,
-              order: 'desc'
+        // Get last scheduled session attendance
+        const group = groups.find((g: any) => g.id === student.group_id);
+        const lastScheduledDate = getPreviousScheduledDay(today, group?.schedule_days);
+        if (lastScheduledDate) {
+          try {
+            const attResponse = await axios.get(`${API_URL}/attendance`, {
+              headers: { Authorization: `Bearer ${token}` },
+              params: {
+                student_id: student.id,
+                date: lastScheduledDate
+              }
+            });
+            if (attResponse.data && attResponse.data.length > 0) {
+              lastAttendanceData[student.id] = attResponse.data[0];
             }
-          });
-          if (attResponse.data && attResponse.data.length > 0) {
-            lastAttendanceData[student.id] = attResponse.data[0];
+          } catch (err) {
+            console.error('Error fetching last attendance:', err);
           }
-        } catch (err) {
-          console.error('Error fetching last attendance:', err);
         }
 
         // Check monthly payment
@@ -600,6 +667,7 @@ const BarcodeAttendance = () => {
                   <TableHead>رقم ولي الأمر</TableHead>
                   <TableHead>الباركود</TableHead>
                   <TableHead>الحالة</TableHead>
+                  <TableHead>حضر آخر حصة؟</TableHead>
                   <TableHead>حالة الدفع</TableHead>
                   <TableHead>الوقت</TableHead>
                   <TableHead>الإجراءات</TableHead>
@@ -610,12 +678,14 @@ const BarcodeAttendance = () => {
                   const student = students.find((s: any) => s.id === record.student_id);
                   const currentMonth = new Date().toISOString().slice(0, 7);
                   const hasPaid = monthlyPayments[student?.id] || false;
+                  const lastAtt = lastAttendance[student?.id];
+                  const attendedLastSession = lastAtt?.status === 'present';
 
                   return (
                     <TableRow key={record.id}>
                       <TableCell className="font-medium">{student?.name || 'غير معروف'}</TableCell>
                       <TableCell className="font-mono text-sm">{student?.phone || '-'}</TableCell>
-                      <TableCell className="font-mono text-sm">{student?.guardian_phone || '-'}</TableCell>
+                      <TableCell className="font-mono text-sm">{student?.parent_phone || '-'}</TableCell>
                       <TableCell className="font-mono text-sm">{student?.barcode || student?.barcode_id || '-'}</TableCell>
                       <TableCell>
                         <Badge variant={record.status === 'present' ? 'default' : 'destructive'}>
@@ -625,6 +695,19 @@ const BarcodeAttendance = () => {
                             <><XCircle className="ml-1 h-3 w-3" /> غائب</>
                           )}
                         </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {lastAtt ? (
+                          <Badge variant={attendedLastSession ? 'default' : 'destructive'}>
+                            {attendedLastSession ? (
+                              <><CheckCircle className="ml-1 h-3 w-3" /> حضر</>
+                            ) : (
+                              <><XCircle className="ml-1 h-3 w-3" /> غاب</>
+                            )}
+                          </Badge>
+                        ) : (
+                          <Badge variant="secondary">لا يوجد</Badge>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Badge variant={hasPaid ? 'default' : 'destructive'} className={!hasPaid ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' : ''}>
@@ -666,7 +749,7 @@ const BarcodeAttendance = () => {
                 })}
                 {todayAttendance.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
                       لم يتم تسجيل أي حضور اليوم بعد
                     </TableCell>
                   </TableRow>
@@ -704,7 +787,7 @@ const BarcodeAttendance = () => {
                       <TableRow key={student.id}>
                         <TableCell className="font-medium">{student.name}</TableCell>
                         <TableCell className="font-mono text-sm">{student.phone || '-'}</TableCell>
-                        <TableCell className="font-mono text-sm">{student.guardian_phone || '-'}</TableCell>
+                        <TableCell className="font-mono text-sm">{student.parent_phone || '-'}</TableCell>
                         <TableCell className="text-sm">
                           {lastAtt ? (
                             <div>

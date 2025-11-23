@@ -16,7 +16,7 @@ interface Subscription {
 router.get('/', async (req: Request, res: Response) => {
     try {
         const subscriptions = await query<Subscription>(
-            'SELECT * FROM subscription_plans WHERE is_active = TRUE ORDER BY price'
+            'SELECT * FROM subscriptions ORDER BY created_at DESC'
         );
         res.json(subscriptions);
     } catch (error) {
@@ -29,7 +29,7 @@ router.get('/', async (req: Request, res: Response) => {
 router.get('/:id', async (req: Request, res: Response) => {
     try {
         const subscription = await queryOne<Subscription>(
-            'SELECT * FROM subscription_plans WHERE id = ? AND is_active = TRUE',
+            'SELECT * FROM subscriptions WHERE id = ?',
             [req.params.id]
         );
 
@@ -47,20 +47,20 @@ router.get('/:id', async (req: Request, res: Response) => {
 // Create new subscription
 router.post('/', async (req: Request, res: Response) => {
     try {
-        const { name, duration_months, price, description } = req.body;
+        const { student_id, course_id, amount, payment_date, due_date, status = 'pending', payment_method, notes } = req.body;
 
-        if (!name || !duration_months || !price) {
-            return res.status(400).json({ error: 'Name, duration, and price are required' });
+        if (!student_id || !course_id || !amount) {
+            return res.status(400).json({ error: 'Student ID, course ID, and amount are required' });
         }
 
         const result = await execute(
-            'INSERT INTO subscription_plans (name, duration_months, price, description, is_active) VALUES (?, ?, ?, ?, TRUE)',
-            [name, parseInt(duration_months), parseFloat(price), description || null]
+            `INSERT INTO subscriptions (id, student_id, course_id, amount, payment_date, due_date, status, payment_method, notes, created_at, updated_at)
+             VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+            [student_id, course_id, parseFloat(amount), payment_date || null, due_date || null, status, payment_method || null, notes || null]
         );
 
         const newSubscription = await queryOne<Subscription>(
-            'SELECT * FROM subscription_plans WHERE id = ?',
-            [result.insertId]
+            'SELECT * FROM subscriptions WHERE id = (SELECT id FROM subscriptions ORDER BY created_at DESC LIMIT 1)'
         );
 
         res.status(201).json(newSubscription);
