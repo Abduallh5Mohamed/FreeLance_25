@@ -18,7 +18,7 @@ interface Attendance {
 // Get all attendance records
 router.get('/', async (req: Request, res: Response) => {
     try {
-        const { date, student_id, group_id, course_id, limit, order } = req.query;
+        const { date, start_date, end_date, student_id, group_id, course_id, limit, order } = req.query as any;
 
         let sql = `
             SELECT 
@@ -44,13 +44,23 @@ router.get('/', async (req: Request, res: Response) => {
         if (date) {
             sql += ' AND DATE(a.attendance_date) = ?';
             params.push(date);
+        } else if (start_date && end_date) {
+            sql += ' AND DATE(a.attendance_date) BETWEEN ? AND ?';
+            params.push(start_date, end_date);
+        } else if (start_date) {
+            sql += ' AND DATE(a.attendance_date) >= ?';
+            params.push(start_date);
+        } else if (end_date) {
+            sql += ' AND DATE(a.attendance_date) <= ?';
+            params.push(end_date);
         }
         if (student_id) {
             sql += ' AND a.student_id = ?';
             params.push(student_id);
         }
         if (group_id) {
-            sql += ' AND a.group_id = ?';
+            // Use COALESCE to match either explicit attendance group_id or fallback to student's group_id
+            sql += ' AND COALESCE(a.group_id, s.group_id) = ?';
             params.push(group_id);
         }
         if (course_id) {

@@ -64,6 +64,7 @@ const Header = () => {
   const attendanceMenu = [
     { name: "إدارة الباركود", href: "/student-barcodes", icon: Calendar },
     { name: "تسجيل الحضور", href: "/barcode-attendance", icon: Calendar },
+    { name: "سجل الحضور", href: "/attendance-log", icon: Calendar },
     { name: "الاجتماعات", href: "/online-meeting", icon: Calendar },
   ];
 

@@ -15,6 +15,7 @@ import Students from "./pages/Students";
 import OfflineStudents from "./pages/OfflineStudents";
 import Subscriptions from "./pages/Subscriptions";
 import Attendance from "./pages/Attendance";
+import AttendanceLog from "./pages/AttendanceLog";
 import Fees from "./pages/Fees";
 import Messages from "./pages/Messages";
 import Reports from "./pages/Reports";
@@ -67,6 +68,7 @@ const App = () => (
           <Route path="/grades" element={<AuthGuard requiredRole="teacher"><Grades /></AuthGuard>} />
           <Route path="/attendance" element={<AuthGuard requiredRole="teacher"><Attendance /></AuthGuard>} />
           <Route path="/barcode-attendance" element={<AuthGuard requiredRole="teacher"><BarcodeAttendance /></AuthGuard>} />
+          <Route path="/attendance-log" element={<AuthGuard requiredRole="teacher"><AttendanceLog /></AuthGuard>} />
           <Route path="/fees" element={<AuthGuard requiredRole="teacher"><Fees /></AuthGuard>} />
           <Route path="/messages" element={<AuthGuard requiredRole="teacher"><Messages /></AuthGuard>} />
           <Route path="/reports" element={<AuthGuard requiredRole="teacher"><Reports /></AuthGuard>} />

@@ -23,6 +23,8 @@ interface Group {
   course_id?: string;
   grade_id?: string;
   grade_name?: string;
+  schedule_days?: string[] | string | null;
+  schedule_time?: string | null;
 }
 
 interface Grade {
@@ -63,7 +65,9 @@ const Groups = () => {
     name: '',
     description: '',
     grade_id: '',
-    max_students: 50
+    max_students: 50,
+    schedule_days: [] as string[],
+    schedule_time: '' as string
   });
 
   useEffect(() => {
@@ -146,7 +150,9 @@ const Groups = () => {
         description: formData.description,
         grade_id: formData.grade_id || undefined,
         max_students: formData.max_students,
-        is_active: true
+        is_active: true,
+        schedule_days: formData.schedule_days.length > 0 ? formData.schedule_days : undefined,
+        schedule_time: formData.schedule_time || undefined
       };
 
       if (isEditing && currentGroup) {
@@ -177,11 +183,25 @@ const Groups = () => {
 
   const handleEdit = (group: Group) => {
     setCurrentGroup(group);
+    let parsedDays: string[] = [];
+    if (group.schedule_days) {
+      if (typeof group.schedule_days === 'string') {
+        try {
+          parsedDays = JSON.parse(group.schedule_days);
+        } catch {
+          parsedDays = [];
+        }
+      } else if (Array.isArray(group.schedule_days)) {
+        parsedDays = group.schedule_days;
+      }
+    }
     setFormData({
       name: group.name,
       description: group.description || '',
       grade_id: group.grade_id || '',
-      max_students: group.max_students || 50
+      max_students: group.max_students || 50,
+      schedule_days: parsedDays,
+      schedule_time: group.schedule_time || ''
     });
     setIsEditing(true);
     setIsDialogOpen(true);
@@ -233,7 +253,9 @@ const Groups = () => {
       name: '',
       description: '',
       grade_id: '',
-      max_students: 50
+      max_students: 50,
+      schedule_days: [],
+      schedule_time: ''
     });
     setIsEditing(false);
     setCurrentGroup(null);
@@ -430,6 +452,50 @@ const Groups = () => {
                     min="1"
                     required
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="schedule_time">وقت المجموعة (اختياري)</Label>
+                  <Input
+                    id="schedule_time"
+                    type="time"
+                    value={formData.schedule_time}
+                    onChange={(e) => setFormData(prev => ({ ...prev, schedule_time: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>أيام الأسبوع (اختياري)</Label>
+                <div className="grid grid-cols-4 gap-2">
+                  {['sat', 'sun', 'mon', 'tue', 'wed', 'thu', 'fri'].map((day) => {
+                    const label = {
+                      sat: 'السبت',
+                      sun: 'الأحد',
+                      mon: 'الاثنين',
+                      tue: 'الثلاثاء',
+                      wed: 'الأربعاء',
+                      thu: 'الخميس',
+                      fri: 'الجمعة'
+                    }[day];
+                    const checked = formData.schedule_days.includes(day);
+                    return (
+                      <label key={day} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            const newDays = e.target.checked
+                              ? [...formData.schedule_days, day]
+                              : formData.schedule_days.filter(d => d !== day);
+                            setFormData(prev => ({ ...prev, schedule_days: newDays }));
+                          }}
+                          className="w-4 h-4"
+                        />
+                        <span className="text-sm">{label}</span>
+                      </label>
+                    );
+                  })}
                 </div>
               </div>
 

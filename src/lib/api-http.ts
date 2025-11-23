@@ -278,6 +278,8 @@ export interface Group {
     max_students?: number;
     current_students?: number;
     is_active: boolean;
+    schedule_days?: string[] | string | null;
+    schedule_time?: string | null;
 }
 
 export const getGroups = async (): Promise<Group[]> => {
@@ -658,15 +660,23 @@ export const getAttendanceByDate = async (date: Date, groupId?: string): Promise
 
 export const getAttendance = async (filters?: {
     date?: string;
+    start_date?: string;
+    end_date?: string;
     student_id?: string;
     group_id?: string;
     course_id?: string;
+    order?: 'asc' | 'desc';
+    limit?: number;
 }): Promise<Attendance[]> => {
     const params = new URLSearchParams();
     if (filters?.date) params.append('date', filters.date);
+    if (filters?.start_date) params.append('start_date', filters.start_date);
+    if (filters?.end_date) params.append('end_date', filters.end_date);
     if (filters?.student_id) params.append('student_id', filters.student_id);
     if (filters?.group_id) params.append('group_id', filters.group_id);
     if (filters?.course_id) params.append('course_id', filters.course_id);
+    if (filters?.order) params.append('order', filters.order);
+    if (filters?.limit) params.append('limit', String(filters.limit));
 
     return request<Attendance[]>(`/attendance?${params.toString()}`);
 };
