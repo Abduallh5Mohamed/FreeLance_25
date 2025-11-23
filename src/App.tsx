@@ -69,6 +69,7 @@ const App = () => (
           <Route path="/grades" element={<AuthGuard requiredRole="teacher"><Grades /></AuthGuard>} />
           <Route path="/attendance" element={<AuthGuard requiredRole="teacher"><Attendance /></AuthGuard>} />
           <Route path="/barcode-attendance" element={<AuthGuard requiredRole="teacher"><BarcodeAttendance /></AuthGuard>} />
+          <Route path="/attendance-log" element={<AuthGuard requiredRole="teacher"><AttendanceLog /></AuthGuard>} />
           <Route path="/student-payments" element={<AuthGuard requiredRole="teacher"><StudentPayments /></AuthGuard>} />
           <Route path="/fees" element={<AuthGuard requiredRole="teacher"><Fees /></AuthGuard>} />
           <Route path="/messages" element={<AuthGuard requiredRole="teacher"><Messages /></AuthGuard>} />
