@@ -135,6 +135,7 @@ export default function TeacherLectures() {
     try {
       await createLecture({
         course_id: selectedCourse,
+        grade_id: formData.grade_id || null,
         group_id: formData.group_id || null,
         title: formData.title,
         description: formData.description || null,
@@ -217,9 +218,9 @@ export default function TeacherLectures() {
             </div>
           </motion.div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 lg:gap-6">
+          <div className="grid grid-cols-1 gap-4 lg:gap-6">
             {/* Upload Form */}
-            <Card className="lg:col-span-3 shadow-lg border-t-4 border-t-cyan-500">
+            <Card className="shadow-lg border-t-4 border-t-cyan-500">
               <CardHeader className="bg-gradient-to-r from-cyan-50 to-teal-50 dark:from-gray-800 dark:to-gray-700">
                 <CardTitle className="flex items-center gap-2">
                   <Upload className="h-5 w-5 text-cyan-600" />
@@ -265,8 +266,8 @@ export default function TeacherLectures() {
 
                   <div>
                     <Label>المجموعة *</Label>
-                    <Select 
-                      value={formData.group_id} 
+                    <Select
+                      value={formData.group_id}
                       onValueChange={(value) => setFormData({ ...formData, group_id: value })}
                       disabled={!formData.grade_id}
                     >
@@ -356,7 +357,7 @@ export default function TeacherLectures() {
             </Card>
 
             {/* Lectures List */}
-            <Card className="lg:col-span-2 shadow-lg border-t-4 border-t-cyan-500">
+            <Card className="lg:col-span-4 shadow-lg border-t-4 border-t-cyan-500">
               <CardHeader className="bg-gradient-to-r from-cyan-50 to-teal-50 dark:from-gray-800 dark:to-gray-700">
                 <CardTitle className="flex items-center justify-between">
                   <span className="flex items-center gap-2">
@@ -376,62 +377,89 @@ export default function TeacherLectures() {
                     <p className="text-sm text-muted-foreground mt-2">ابدأ برفع أول محاضرة</p>
                   </div>
                 ) : (
-                  <div className="space-y-3">
-                    {lectures.map((lecture) => (
-                      <motion.div
-                        key={lecture.id}
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="group flex items-center justify-between p-5 border rounded-xl hover:shadow-md hover:border-cyan-300 transition-all duration-200 bg-white dark:bg-gray-800"
-                      >
-                        <div className="flex items-start gap-4 flex-1">
-                          <div className="p-3 bg-gradient-to-br from-cyan-100 to-teal-100 dark:from-cyan-900 dark:to-teal-900 rounded-lg">
-                            <Video className="h-5 w-5 text-cyan-600" />
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {lectures.map((lecture) => {
+                      const lectureGrade = grades.find(g => g.id === lecture.grade_id);
+                      const lectureGroup = groups.find(g => g.id === lecture.group_id);
+
+                      return (
+                        <motion.div
+                          key={lecture.id}
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="group relative border rounded-xl hover:shadow-lg hover:border-cyan-400 transition-all duration-200 bg-white dark:bg-gray-800 overflow-hidden"
+                        >
+                          {/* Header with Course Badge */}
+                          <div className="bg-gradient-to-r from-cyan-500 to-teal-600 p-3 text-white">
+                            <div className="flex items-center justify-between mb-2">
+                              <Badge className="bg-white/20 text-white border-white/30 text-xs">
+                                <BookOpen className="h-3 w-3 ml-1" />
+                                {lecture.course_name || 'دورة غير محددة'}
+                              </Badge>
+                              {lecture.is_free && (
+                                <Badge className="bg-green-500 text-white text-xs">مجانية</Badge>
+                              )}
+                            </div>
+                            <h4 className="font-bold text-base line-clamp-2">{lecture.title}</h4>
                           </div>
-                          <div className="flex-1">
-                            <h4 className="font-bold text-lg mb-1">{lecture.title}</h4>
+
+                          {/* Content */}
+                          <div className="p-4 space-y-3">
+                            {/* Grade and Group - Prominent Display */}
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg border border-blue-200 dark:border-blue-800">
+                                <p className="text-xs text-blue-600 dark:text-blue-400 font-medium mb-1">الصف</p>
+                                <p className="font-bold text-blue-900 dark:text-blue-100">
+                                  {lectureGrade?.name || 'غير محدد'}
+                                </p>
+                              </div>
+                              <div className="bg-purple-50 dark:bg-purple-900/20 p-3 rounded-lg border border-purple-200 dark:border-purple-800">
+                                <p className="text-xs text-purple-600 dark:text-purple-400 font-medium mb-1">المجموعة</p>
+                                <p className="font-bold text-purple-900 dark:text-purple-100">
+                                  {lectureGroup?.name || 'غير محددة'}
+                                </p>
+                              </div>
+                            </div>
+
+                            {/* Description */}
                             {lecture.description && (
-                              <p className="text-sm text-muted-foreground line-clamp-2 mb-2">
+                              <p className="text-sm text-muted-foreground line-clamp-3">
                                 {lecture.description}
                               </p>
                             )}
-                            <div className="flex flex-wrap gap-2">
-                              <Badge variant="outline" className="text-xs">
-                                {lecture.course_name || 'دورة غير محددة'}
-                              </Badge>
-                              {lecture.duration_minutes && (
-                                <Badge variant="secondary" className="text-xs flex items-center gap-1">
-                                  <Clock className="h-3 w-3" />
-                                  {lecture.duration_minutes} دقيقة
-                                </Badge>
-                              )}
-                              {lecture.is_free && (
-                                <Badge className="text-xs bg-green-600">مجانية</Badge>
-                              )}
-                            </div>
-                          </div>
-                        </div>
 
-                        <div className="flex gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => window.open(lecture.video_url, '_blank')}
-                            className="border-cyan-600 text-cyan-600 hover:bg-cyan-50"
-                          >
-                            <Eye className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            onClick={() => handleDelete(lecture.id)}
-                            className="opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </motion.div>
-                    ))}
+                            {/* Duration */}
+                            {lecture.duration_minutes && (
+                              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                <Clock className="h-4 w-4 text-cyan-600" />
+                                <span>{lecture.duration_minutes} دقيقة</span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Actions */}
+                          <div className="border-t p-3 bg-gray-50 dark:bg-gray-900/50 flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => window.open(lecture.video_url, '_blank')}
+                              className="flex-1 border-cyan-600 text-cyan-600 hover:bg-cyan-50"
+                            >
+                              <Play className="h-4 w-4 ml-1" />
+                              مشاهدة
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => handleDelete(lecture.id)}
+                              className="opacity-70 group-hover:opacity-100 transition-opacity"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
                   </div>
                 )}
               </CardContent>

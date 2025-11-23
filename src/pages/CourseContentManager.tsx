@@ -37,15 +37,25 @@ export default function CourseContentManager() {
     e.preventDefault();
     if (!selectedCourse) return toast({ title: 'خطأ', description: 'يرجى اختيار دورة', variant: 'destructive' });
     if (!formData.title) return toast({ title: 'خطأ', description: 'يرجى إدخال عنوان المحتوى', variant: 'destructive' });
-    if (formData.material_type === 'video' && !formData.file_url) return toast({ title: 'خطأ', description: 'يرجى إدخال رابط الفيديو من Google Drive', variant: 'destructive' });
+    if (!formData.file_url) return toast({ title: 'خطأ', description: 'يرجى إدخال رابط الملف من Google Drive', variant: 'destructive' });
     if (!formData.grade_id) return toast({ title: 'خطأ', description: 'يرجى اختيار الصف الدراسي', variant: 'destructive' });
     if (formData.group_ids.length === 0) return toast({ title: 'خطأ', description: 'يرجى اختيار مجموعة واحدة على الأقل', variant: 'destructive' });
     try {
       setLoading(true);
       let finalUrl = formData.file_url;
-      if (formData.material_type === 'video' && formData.file_url) {
-        try { const conv = await convertDriveUrl(formData.file_url); finalUrl = conv.embedUrl; } catch { toast({ title: 'تحذير', description: 'تأكد من أن الرابط من Google Drive', variant: 'destructive' }); }
+
+      // Convert Google Drive URLs (same embed URL works for video/pdf/presentation)
+      if (formData.file_url && formData.file_url.includes('drive.google.com')) {
+        try {
+          const conv = await convertDriveUrl(formData.file_url);
+          finalUrl = conv.embedUrl; // embedUrl returns /preview which renders PDF/Video/PPT داخل الصفحة
+        } catch (error) {
+          console.error('Drive URL conversion error:', error);
+          toast({ title: 'تحذير', description: 'تعذر تحويل رابط Google Drive. تأكد أنه بصيغة المشاركة العامة', variant: 'destructive' });
+          return;
+        }
       }
+
       await createMaterial({ course_id: selectedCourse, title: formData.title, description: formData.description || undefined, material_type: formData.material_type, file_url: finalUrl || undefined, duration_minutes: formData.duration_minutes ? parseInt(formData.duration_minutes) : undefined, is_free: formData.is_free, is_published: true, display_order: materials.length, grade_id: formData.grade_id, group_ids: formData.group_ids });
       toast({ title: 'نجح', description: 'تم إضافة المحتوى بنجاح' });
       setFormData({ title: '', description: '', material_type: 'video', file_url: '', duration_minutes: '', is_free: false, grade_id: '', group_ids: [] });
@@ -273,45 +283,35 @@ export default function CourseContentManager() {
 
                   {formData.material_type === 'pdf' && (
                     <div>
-                      <Label className="text-sm font-semibold">رفع ملف PDF *</Label>
-                      <div className="mt-1">
-                        <Input
-                          type="file"
-                          accept=".pdf"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            if (file) {
-                              setFormData({ ...formData, file_url: file.name });
-                            }
-                          }}
-                          className="cursor-pointer"
-                        />
-                        <p className="text-xs text-muted-foreground mt-1.5 flex items-center gap-1">
-                          📄 اختر ملف PDF من جهازك
-                        </p>
-                      </div>
+                      <Label className="text-sm font-semibold">رابط ملف PDF (Google Drive) *</Label>
+                      <Input
+                        value={formData.file_url}
+                        onChange={e => setFormData({ ...formData, file_url: e.target.value })}
+                        placeholder="https://drive.google.com/file/d/..."
+                        type="url"
+                        required
+                        className="mt-1"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1.5 flex items-center gap-1">
+                        💡 الصق رابط المشاركة من Google Drive
+                      </p>
                     </div>
                   )}
 
                   {formData.material_type === 'presentation' && (
                     <div>
-                      <Label className="text-sm font-semibold">رفع عرض تقديمي (PowerPoint) *</Label>
-                      <div className="mt-1">
-                        <Input
-                          type="file"
-                          accept=".ppt,.pptx"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            if (file) {
-                              setFormData({ ...formData, file_url: file.name });
-                            }
-                          }}
-                          className="cursor-pointer"
-                        />
-                        <p className="text-xs text-muted-foreground mt-1.5 flex items-center gap-1">
-                          📊 اختر ملف PowerPoint من جهازك
-                        </p>
-                      </div>
+                      <Label className="text-sm font-semibold">رابط العرض التقديمي (Google Drive) *</Label>
+                      <Input
+                        value={formData.file_url}
+                        onChange={e => setFormData({ ...formData, file_url: e.target.value })}
+                        placeholder="https://drive.google.com/file/d/..."
+                        type="url"
+                        required
+                        className="mt-1"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1.5 flex items-center gap-1">
+                        💡 الصق رابط المشاركة من Google Drive
+                      </p>
                     </div>
                   )}
 

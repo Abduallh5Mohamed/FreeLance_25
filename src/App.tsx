@@ -28,6 +28,7 @@ import AccountStatement from "./pages/AccountStatement";
 import Imports from "./pages/Imports";
 import StudentBarcodes from "./pages/StudentBarcodes";
 import BarcodeAttendance from "./pages/BarcodeAttendance";
+import StudentPayments from "./pages/StudentPayments";
 import Profits from "./pages/Profits";
 import Staff from "./pages/Staff";
 import OnlineMeeting from "./pages/OnlineMeeting";
@@ -67,6 +68,7 @@ const App = () => (
           <Route path="/grades" element={<AuthGuard requiredRole="teacher"><Grades /></AuthGuard>} />
           <Route path="/attendance" element={<AuthGuard requiredRole="teacher"><Attendance /></AuthGuard>} />
           <Route path="/barcode-attendance" element={<AuthGuard requiredRole="teacher"><BarcodeAttendance /></AuthGuard>} />
+          <Route path="/student-payments" element={<AuthGuard requiredRole="teacher"><StudentPayments /></AuthGuard>} />
           <Route path="/fees" element={<AuthGuard requiredRole="teacher"><Fees /></AuthGuard>} />
           <Route path="/messages" element={<AuthGuard requiredRole="teacher"><Messages /></AuthGuard>} />
           <Route path="/reports" element={<AuthGuard requiredRole="teacher"><Reports /></AuthGuard>} />

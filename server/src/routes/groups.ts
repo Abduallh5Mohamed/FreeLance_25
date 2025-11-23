@@ -8,6 +8,7 @@ interface Group {
     name: string;
     description?: string;
     course_id?: string;
+    grade_id?: string;
     max_students?: number;
     current_students?: number;
     is_active: boolean;
@@ -17,7 +18,7 @@ interface Group {
 router.get('/', async (req: Request, res: Response) => {
     try {
         const groups = await query<Group>(
-            'SELECT * FROM `groups` WHERE is_active = TRUE ORDER BY name'
+            'SELECT id, name, description, course_id, grade_id, max_students, current_students, is_active FROM `groups` WHERE is_active = TRUE ORDER BY name'
         );
         res.json(groups);
     } catch (error) {

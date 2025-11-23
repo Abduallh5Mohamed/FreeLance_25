@@ -69,6 +69,7 @@ const Header = () => {
 
   const financeMenu = [
     { name: "مصروفات الطلاب", href: "/fees", icon: DollarSign },
+    { name: "سجل الدفعات", href: "/student-payments", icon: CreditCard },
     { name: "مصروفات السنتر", href: "/expenses", icon: DollarSign },
     { name: "المستوردات", href: "/imports", icon: DollarSign },
     { name: "كشف الحساب", href: "/account-statement", icon: Wallet },

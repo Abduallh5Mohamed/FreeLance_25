@@ -46,7 +46,7 @@ router.get('/', async (req: Request, res: Response) => {
         sql += ' ORDER BY cm.display_order ASC, cm.created_at DESC';
 
         const materials = await query(sql, params);
-        
+
         // Fetch group_ids for each material
         for (const material of materials) {
             const groups = await query(
@@ -55,7 +55,7 @@ router.get('/', async (req: Request, res: Response) => {
             );
             material.group_ids = groups.map((g: any) => g.group_id);
         }
-        
+
         res.json(materials);
     } catch (error) {
         console.error('Get materials error:', error);
@@ -67,39 +67,40 @@ router.get('/', async (req: Request, res: Response) => {
 router.get('/student/:userId', async (req: Request, res: Response) => {
     try {
         const { userId } = req.params;
-        
-        // First check if there's a student record with this user_id
-        // or if this is directly a student id
-        let student = await queryOne(
-            'SELECT id, group_id FROM students WHERE id = ? AND is_active = TRUE',
+
+        console.log(`[Materials] Looking up student for userId: ${userId}`);
+
+        // First, get user info to find their phone
+        const userRecord = await queryOne(
+            'SELECT id, phone, role FROM users WHERE id = ? AND role = "student"',
             [userId]
         );
-        
-        // If not found by id, try to find by user_id from users table
-        if (!student) {
-            const userRecord = await queryOne(
-                'SELECT student_id FROM users WHERE id = ? AND role = "student"',
-                [userId]
-            );
-            
-            if (userRecord && userRecord.student_id) {
-                student = await queryOne(
-                    'SELECT id, group_id FROM students WHERE id = ? AND is_active = TRUE',
-                    [userRecord.student_id]
-                );
-            }
-        }
-        
-        if (!student) {
-            console.log(`Student not found for user/student id: ${userId}`);
+
+        if (!userRecord || !userRecord.phone) {
+            console.log(`[Materials] User not found or has no phone: ${userId}`);
             return res.json([]);
         }
-        
+
+        console.log(`[Materials] Found user with phone: ${userRecord.phone}`);
+
+        // Find student by phone (students table has phone directly)
+        const student = await queryOne(
+            'SELECT id, name, phone, group_id, grade_id FROM students WHERE phone = ? AND is_active = TRUE',
+            [userRecord.phone]
+        );
+
+        if (!student) {
+            console.log(`[Materials] Student not found for phone: ${userRecord.phone}`);
+            return res.json([]);
+        }
+
+        console.log(`[Materials] Found student: ${student.name} (group: ${student.group_id})`);
+
         if (!student.group_id) {
-            console.log(`Student ${userId} has no group assigned`);
+            console.log(`[Materials] Student ${student.name} has no group assigned`);
             return res.json([]);
         }
-        
+
         // Get all materials assigned to the student's group
         let sql = `
             SELECT DISTINCT
@@ -113,9 +114,9 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
                 AND mg.group_id = ?
             ORDER BY cm.display_order ASC, cm.created_at DESC
         `;
-        
+
         const materials = await query(sql, [student.group_id]);
-        
+
         // Add group_ids to each material
         for (const material of materials) {
             const groups = await query(
@@ -124,7 +125,7 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
             );
             material.group_ids = groups.map((g: any) => g.group_id);
         }
-        
+
         res.json(materials);
     } catch (error) {
         console.error('Get student materials error:', error);
@@ -190,7 +191,7 @@ router.post('/', async (req: Request, res: Response) => {
 
         // Generate UUID for the new material
         const materialId = crypto.randomUUID();
-        
+
         const result = await execute(
             `INSERT INTO course_materials 
             (id, course_id, title, description, material_type, file_url, file_size, 
@@ -219,12 +220,12 @@ router.post('/', async (req: Request, res: Response) => {
                     'SELECT id FROM `groups` WHERE id = ? AND is_active = TRUE',
                     [groupId]
                 );
-                
+
                 if (!groupExists) {
                     console.warn(`Group ${groupId} not found or inactive, skipping...`);
                     continue;
                 }
-                
+
                 await execute(
                     'INSERT INTO material_groups (material_id, group_id) VALUES (?, ?)',
                     [materialId, groupId]
@@ -253,9 +254,9 @@ router.post('/', async (req: Request, res: Response) => {
             sqlMessage: error.sqlMessage,
             sql: error.sql
         });
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Failed to create material',
-            details: error.message 
+            details: error.message
         });
     }
 });

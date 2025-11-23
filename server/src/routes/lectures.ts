@@ -6,6 +6,8 @@ const router = Router();
 interface Lecture {
     id: string;
     course_id: string;
+    grade_id?: string;
+    group_id?: string;
     title: string;
     description?: string;
     video_url: string;
@@ -17,21 +19,25 @@ interface Lecture {
     updated_at?: Date;
     course_name?: string;
     course_subject?: string;
+    grade_name?: string;
+    group_name?: string;
 }
 
 // Get all lectures (published by default)
 router.get('/', async (req: Request, res: Response) => {
     try {
-        const { course_id, group_id } = req.query;
+        const { course_id, group_id, grade_id } = req.query;
 
         let sql = `
             SELECT 
                 l.*,
                 c.name as course_name,
                 c.subject as course_subject,
+                gr.name as grade_name,
                 g.name as group_name
             FROM lectures l
             LEFT JOIN courses c ON l.course_id = c.id
+            LEFT JOIN grades gr ON l.grade_id = gr.id
             LEFT JOIN \`groups\` g ON l.group_id = g.id
             WHERE l.is_published = TRUE
         `;
@@ -40,6 +46,11 @@ router.get('/', async (req: Request, res: Response) => {
         if (course_id && typeof course_id === 'string') {
             sql += ' AND l.course_id = ?';
             params.push(course_id);
+        }
+
+        if (grade_id && typeof grade_id === 'string') {
+            sql += ' AND l.grade_id = ?';
+            params.push(grade_id);
         }
 
         if (group_id && typeof group_id === 'string') {
@@ -62,56 +73,74 @@ router.get('/', async (req: Request, res: Response) => {
 router.get('/student/:userId', async (req: Request, res: Response) => {
     try {
         const { userId } = req.params;
-        
-        // Find student's group_id (similar to materials endpoint)
-        let student = await queryOne(
-            'SELECT id, group_id FROM students WHERE id = ? AND is_active = TRUE',
+
+        console.log(`[Lectures] Looking up student for userId: ${userId}`);
+
+        // First, get user info to find their phone
+        const userRecord = await queryOne(
+            'SELECT id, phone, role FROM users WHERE id = ? AND role = "student"',
             [userId]
         );
-        
-        // If not found by id, try to find by user_id from users table
-        if (!student) {
-            const userRecord = await queryOne(
-                'SELECT student_id FROM users WHERE id = ? AND role = "student"',
-                [userId]
-            );
-            
-            if (userRecord && userRecord.student_id) {
-                student = await queryOne(
-                    'SELECT id, group_id FROM students WHERE id = ? AND is_active = TRUE',
-                    [userRecord.student_id]
-                );
-            }
-        }
-        
-        if (!student) {
-            console.log(`Student not found for user/student id: ${userId}`);
+
+        if (!userRecord || !userRecord.phone) {
+            console.log(`[Lectures] User not found or has no phone: ${userId}`);
             return res.json([]);
         }
-        
-        if (!student.group_id) {
-            console.log(`Student ${userId} has no group assigned`);
+
+        console.log(`[Lectures] Found user with phone: ${userRecord.phone}`);
+
+        // Find student by phone (students table has phone directly)
+        const student = await queryOne(
+            'SELECT id, name, phone, group_id, grade_id FROM students WHERE phone = ? AND is_active = TRUE',
+            [userRecord.phone]
+        );
+
+        if (!student) {
+            console.log(`[Lectures] Student not found for phone: ${userRecord.phone}`);
             return res.json([]);
         }
-        
-        // Get lectures assigned to the student's specific group
+
+        console.log(`[Lectures] Found student: ${student.name} (grade: ${student.grade_id}, group: ${student.group_id})`);
+
+        // Get lectures for student's grade and group
         let sql = `
             SELECT 
                 l.*,
                 c.name as course_name,
                 c.subject as course_subject,
+                gr.name as grade_name,
                 g.name as group_name
             FROM lectures l
             LEFT JOIN courses c ON l.course_id = c.id
+            LEFT JOIN grades gr ON l.grade_id = gr.id
             LEFT JOIN \`groups\` g ON l.group_id = g.id
             WHERE l.is_published = TRUE
-                AND l.group_id = ?
-            ORDER BY l.display_order ASC, l.created_at DESC
         `;
-        
-        const lectures = await query(sql, [student.group_id]);
-        
-        console.log(`[Lectures] Student ${userId} in group ${student.group_id} - Found ${lectures?.length || 0} lectures`);
+
+        const params: any[] = [];
+        const conditions: string[] = [];
+
+        // Filter by grade if student has one
+        if (student.grade_id) {
+            conditions.push('l.grade_id = ?');
+            params.push(student.grade_id);
+        }
+
+        // Filter by group if student has one
+        if (student.group_id) {
+            conditions.push('l.group_id = ?');
+            params.push(student.group_id);
+        }
+
+        if (conditions.length > 0) {
+            sql += ' AND (' + conditions.join(' OR ') + ')';
+        }
+
+        sql += ' ORDER BY l.display_order ASC, l.created_at DESC';
+
+        const lectures = await query(sql, params);
+
+        console.log(`[Lectures] Student ${userId} (grade: ${student.grade_id}, group: ${student.group_id}) - Found ${lectures?.length || 0} lectures`);
         res.json(lectures);
     } catch (error) {
         console.error('Get student lectures error:', error);
@@ -127,9 +156,11 @@ router.get('/:id', async (req: Request, res: Response) => {
                 l.*,
                 c.name as course_name,
                 c.subject as course_subject,
+                gr.name as grade_name,
                 g.name as group_name
             FROM lectures l
             LEFT JOIN courses c ON l.course_id = c.id
+            LEFT JOIN grades gr ON l.grade_id = gr.id
             LEFT JOIN \`groups\` g ON l.group_id = g.id
             WHERE l.id = ?`,
             [req.params.id]
@@ -151,6 +182,7 @@ router.post('/', async (req: Request, res: Response) => {
     try {
         const {
             course_id,
+            grade_id,
             group_id,
             title,
             description,
@@ -167,14 +199,15 @@ router.post('/', async (req: Request, res: Response) => {
             });
         }
 
-        console.log('[Lectures] Creating lecture:', { course_id, group_id, title, video_url });
+        console.log('[Lectures] Creating lecture:', { course_id, grade_id, group_id, title, video_url });
 
         const result = await execute(
             `INSERT INTO lectures 
-            (course_id, group_id, title, description, video_url, duration_minutes, display_order, is_free, is_published) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (course_id, grade_id, group_id, title, description, video_url, duration_minutes, display_order, is_free, is_published) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 course_id,
+                grade_id || null,
                 group_id || null,
                 title,
                 description || null,

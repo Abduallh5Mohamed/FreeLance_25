@@ -144,19 +144,45 @@ const StudentContent = () => {
   const handleView = (material: Material) => {
     if (material.material_type === 'video') {
       setSelectedMaterial(material);
-    } else {
+    } else if (material.file_url) {
+      // Open PDF or other files in new tab
+      window.open(material.file_url, '_blank');
       toast({
         title: "جاري فتح الملف",
         description: material.title
+      });
+    } else {
+      toast({
+        title: "خطأ",
+        description: "رابط الملف غير متوفر",
+        variant: "destructive"
       });
     }
   };
 
   const handleDownload = (material: Material) => {
-    toast({
-      title: "جاري تحميل الملف",
-      description: material.title
-    });
+    if (material.file_url) {
+      // For Google Drive files, convert to download link
+      let downloadUrl = material.file_url;
+      if (material.file_url.includes('drive.google.com')) {
+        const fileId = material.file_url.match(/\/d\/([a-zA-Z0-9-_]+)/)?.[1] ||
+          material.file_url.match(/id=([a-zA-Z0-9-_]+)/)?.[1];
+        if (fileId) {
+          downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+        }
+      }
+      window.open(downloadUrl, '_blank');
+      toast({
+        title: "جاري تحميل الملف",
+        description: material.title
+      });
+    } else {
+      toast({
+        title: "خطأ",
+        description: "رابط التحميل غير متوفر",
+        variant: "destructive"
+      });
+    }
   };
 
   return (

@@ -508,6 +508,7 @@ export interface Exam {
 export interface Lecture {
     id: string;
     course_id: string;
+    grade_id?: string | null;
     group_id?: string | null;
     title: string;
     description?: string;
@@ -520,6 +521,7 @@ export interface Lecture {
     updated_at?: Date;
     course_name?: string;
     course_subject?: string;
+    grade_name?: string;
     group_name?: string;
 }
 

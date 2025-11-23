@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox";
 import { GraduationCap, LogIn, UserPlus, Sparkles, Lock, Mail, User, Phone as PhoneIcon, BookOpen, Users } from "lucide-react";
 import { useNavigate, Link } from "react-router-dom";
-import { signIn, signUp, getStudentByPhone, getCourses, getGrades, getGroups, createRegistrationRequest } from "@/lib/api";
+import { signIn, signUp, getStudentByPhone, getCourses, getGrades, getGroups, createRegistrationRequest, getStudents } from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast";
 import alQaedLogo from "@/assets/Qaad_Logo.png";
 import logBackground from "@/assets/Log_Background.jpg";
@@ -33,7 +33,7 @@ const Auth = () => {
   const [error, setError] = useState("");
   const [courses, setCourses] = useState<Array<{ id: string; name: string }>>([]);
   const [grades, setGrades] = useState<Array<{ id: string; name: string }>>([]);
-  const [groups, setGroups] = useState<Array<{ id: string; name: string }>>([]);
+  const [groups, setGroups] = useState<Array<{ id: string; name: string; grade_id?: string }>>([]);
   const [studentType, setStudentType] = useState<"online" | "offline">("online"); // Online or Offline
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -47,6 +47,7 @@ const Auth = () => {
   const fetchGroups = async () => {
     try {
       const data = await getGroups();
+      console.log('📦 Fetched groups:', data);
       setGroups(data || []);
     } catch (error) {
       console.error('Error fetching groups:', error);
@@ -56,6 +57,7 @@ const Auth = () => {
   const fetchGrades = async () => {
     try {
       const data = await getGrades();
+      console.log('🎓 Fetched grades:', data);
       setGrades(data || []);
     } catch (error) {
       console.error('Error fetching grades:', error);
@@ -65,6 +67,7 @@ const Auth = () => {
   const fetchCourses = async () => {
     try {
       const data = await getCourses();
+      console.log('📚 Fetched courses:', data);
       setCourses(data || []);
     } catch (error) {
       console.error('Error fetching courses:', error);
@@ -139,6 +142,25 @@ const Auth = () => {
         }
         if (!gradeId) {
           throw new Error("يجب اختيار الصف الدراسي");
+        }
+        if (!guardianPhone.trim()) {
+          throw new Error("يجب إدخال رقم ولي الأمر");
+        }
+
+        // Client-side duplicate checks (students list)
+        try {
+          const allStudents = await getStudents();
+          if (allStudents.some(s => s.phone === phone.trim())) {
+            throw new Error('رقم الهاتف مسجل بالفعل');
+          }
+          if (allStudents.some(s => s.guardian_phone === guardianPhone.trim())) {
+            throw new Error('رقم ولي الأمر مستخدم مع طالب آخر');
+          }
+        } catch (dupErr) {
+          // If fetching students fails, continue; server will still validate
+          if (dupErr instanceof Error && dupErr.message.includes('رقم')) {
+            throw dupErr; // rethrow duplicate error
+          }
         }
 
         // Create registration request with student type (online/offline)
@@ -393,7 +415,14 @@ const Auth = () => {
                         الصف الدراسي
                       </Label>
                       <div className="relative">
-                        <Select value={gradeId} onValueChange={setGradeId} required>
+                        <Select value={gradeId} onValueChange={(value) => {
+                          console.log('✅ Selected grade:', value);
+                          console.log('📋 All groups:', groups);
+                          const filtered = groups.filter(g => g.grade_id === value);
+                          console.log('📋 Filtered groups for grade:', filtered);
+                          setGradeId(value);
+                          setSelectedGroup(''); // Reset group when grade changes
+                        }} required>
                           <SelectTrigger className="bg-white/10 border-white/20 text-white h-11 rounded-xl text-right">
                             <SelectValue placeholder="اختر الصف الدراسي" />
                           </SelectTrigger>
@@ -472,22 +501,34 @@ const Auth = () => {
                     </div>
                   </div>
 
-                  {/* Group Select */}
+                  {/* Group Select filtered by selected grade */}
                   <div className="space-y-1.5">
                     <Label htmlFor="group" className="text-white text-right block text-sm">
                       المجموعة
                     </Label>
                     <div className="relative">
-                      <Select value={selectedGroup} onValueChange={setSelectedGroup} required>
+                      <Select
+                        value={selectedGroup}
+                        onValueChange={setSelectedGroup}
+                        required
+                        disabled={!gradeId}
+                      >
                         <SelectTrigger className="bg-white/10 border-white/20 text-white h-11 rounded-xl text-right">
-                          <SelectValue placeholder="اختر المجموعة" />
+                          <SelectValue placeholder={gradeId ? "اختر المجموعة" : "اختر الصف أولاً"} />
                         </SelectTrigger>
                         <SelectContent className="bg-gray-900 border-white/20">
-                          {groups.map((group) => (
-                            <SelectItem key={group.id} value={group.id} className="text-white">
-                              {group.name}
-                            </SelectItem>
-                          ))}
+                          {groups
+                            .filter(g => !gradeId || g.grade_id === gradeId)
+                            .map((group) => (
+                              <SelectItem key={group.id} value={group.id} className="text-white">
+                                {group.name}
+                              </SelectItem>
+                            ))}
+                          {gradeId && groups.filter(g => g.grade_id === gradeId).length === 0 && (
+                            <div className="p-2 text-sm text-gray-400 text-center">
+                              لا توجد مجموعات لهذا الصف
+                            </div>
+                          )}
                         </SelectContent>
                       </Select>
                     </div>
@@ -741,16 +782,22 @@ const Auth = () => {
 
                   <div className="space-y-2">
                     <Label htmlFor="group">المجموعة (اختياري)</Label>
-                    <Select value={selectedGroup} onValueChange={setSelectedGroup}>
+                    <Select
+                      value={selectedGroup}
+                      onValueChange={setSelectedGroup}
+                      disabled={!gradeId}
+                    >
                       <SelectTrigger>
-                        <SelectValue placeholder="اختر المجموعة" />
+                        <SelectValue placeholder={gradeId ? "اختر المجموعة" : "اختر الصف أولاً"} />
                       </SelectTrigger>
                       <SelectContent>
-                        {groups.map((group) => (
-                          <SelectItem key={group.id} value={group.id}>
-                            {group.name}
-                          </SelectItem>
-                        ))}
+                        {groups
+                          .filter(g => !gradeId || g.grade_id === gradeId)
+                          .map((group) => (
+                            <SelectItem key={group.id} value={group.id}>
+                              {group.name}
+                            </SelectItem>
+                          ))}
                       </SelectContent>
                     </Select>
                   </div>

@@ -79,6 +79,27 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'لديك طلب تسجيل قيد المراجعة بالفعل' });
         }
 
+        // Guardian phone required uniqueness (if provided)
+        if (guardian_phone) {
+            // Check guardian phone in existing students
+            const [existingGuardianStudents] = await pool.query<RowDataPacket[]>(
+                'SELECT id FROM students WHERE guardian_phone = ?',
+                [guardian_phone]
+            );
+            if (existingGuardianStudents.length > 0) {
+                return res.status(400).json({ error: 'رقم ولي الأمر مستخدم بالفعل مع طالب آخر' });
+            }
+
+            // Check guardian phone in pending registration requests
+            const [existingGuardianRequests] = await pool.query<RowDataPacket[]>(
+                'SELECT id FROM student_registration_requests WHERE guardian_phone = ? AND status = ? AND phone <> ?',
+                [guardian_phone, 'pending', phone]
+            );
+            if (existingGuardianRequests.length > 0) {
+                return res.status(400).json({ error: 'رقم ولي الأمر لديه طلب تسجيل آخر قيد المراجعة' });
+            }
+        }
+
         // Hash password
         const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -199,6 +220,18 @@ router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthReq
             return res.status(400).json({
                 error: 'مستخدم بهذا الهاتف موجود بالفعل'
             });
+        }
+
+        // Ensure guardian phone still unique before approval (race-condition safety)
+        if (request.guardian_phone) {
+            const [guardianConflict] = await connection.query<RowDataPacket[]>(
+                'SELECT id FROM students WHERE guardian_phone = ?',
+                [request.guardian_phone]
+            );
+            if (guardianConflict.length > 0) {
+                await connection.rollback();
+                return res.status(400).json({ error: 'رقم ولي الأمر مستخدم بالفعل مع طالب آخر، لا يمكن قبول الطلب' });
+            }
         }
 
         // Create user account with UUID (without email)
