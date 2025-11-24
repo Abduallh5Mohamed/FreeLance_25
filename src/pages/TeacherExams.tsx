@@ -38,7 +38,7 @@ export default function TeacherExams() {
     title: '',
     description: '',
     duration_minutes: '60',
-    passing_score: '50',
+    passing_score: '60',
     start_date: '',
     end_date: '',
   });
@@ -138,25 +138,54 @@ export default function TeacherExams() {
 
     setLoading(true);
     try {
-      const totalMarks = questions.reduce((sum, q) => sum + q.marks, 0);
+      // Calculate totals and passing from percentage
+      const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+      const rawPercent = parseInt(examData.passing_score || '0');
+      const passingPercent = Math.max(0, Math.min(100, isNaN(rawPercent) ? 0 : rawPercent));
+      const passingMarksCalc = Math.ceil((passingPercent / 100) * totalMarks);
 
       // Create exam via Backend API
+      // Normalize date/time for backend (expects exam_date + start_time/end_time derived)
+      const formatDateTime = (value: string | undefined) => {
+        if (!value) return null;
+        // value from <input type="datetime-local"> like 2025-11-24T13:30
+        if (/T/.test(value) && !/Z$/.test(value)) {
+          const [d, t] = value.split('T');
+          return `${d} ${t}:00`; // ensure seconds component
+        }
+        try {
+          const d = new Date(value);
+          if (isNaN(d.getTime())) return null;
+          const pad = (n: number) => String(n).padStart(2, '0');
+          return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+        } catch {
+          return null;
+        }
+      };
+
+      const startDateTime = formatDateTime(examData.start_date) || new Date().toISOString().replace('T', ' ').substring(0, 19);
+      const endDateTime = formatDateTime(examData.end_date) || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+
       const response = await fetch(`${API_URL}/exams`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+          'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
         },
         body: JSON.stringify({
           course_id: selectedCourse,
           title: examData.title,
           description: examData.description || null,
           duration_minutes: parseInt(examData.duration_minutes),
-          passing_score: parseInt(examData.passing_score),
           total_marks: totalMarks,
+          passing_marks: passingMarksCalc, // computed from percentage
+          passing_percentage: passingPercent,
           is_active: true,
-          start_date: examData.start_date || new Date().toISOString(),
-          end_date: examData.end_date || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+          // Provide both unified ISO strings; backend will extract DATE() and TIME()
+          start_date: startDateTime,
+          end_date: endDateTime,
+          start_time: startDateTime,
+          end_time: endDateTime
         })
       });
 
@@ -204,7 +233,7 @@ export default function TeacherExams() {
         title: '',
         description: '',
         duration_minutes: '60',
-        passing_score: '50',
+        passing_score: '60',
         start_date: '',
         end_date: '',
       });
@@ -343,9 +372,11 @@ export default function TeacherExams() {
                     </div>
 
                     <div>
-                      <Label>درجة النجاح *</Label>
+                      <Label>نسبة النجاح (%) *</Label>
                       <Input
                         type="number"
+                        min={0}
+                        max={100}
                         value={examData.passing_score}
                         onChange={(e) => setExamData({ ...examData, passing_score: e.target.value })}
                       />
@@ -369,6 +400,19 @@ export default function TeacherExams() {
                       />
                     </div>
                   </div>
+
+                  {/* Live Summary */}
+                  {(() => {
+                    const totalMarksPreview = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+                    const p = Math.max(0, Math.min(100, parseInt(examData.passing_score || '0') || 0));
+                    const passingMarksPreview = Math.ceil((p / 100) * totalMarksPreview);
+                    return (
+                      <div className="rounded-md bg-primary/5 p-4 text-sm flex flex-wrap gap-4">
+                        <span>الدرجة الكلية المتوقعة: <b>{totalMarksPreview}</b></span>
+                        <span>درجة النجاح: <b>{passingMarksPreview}</b> ({p}%)</span>
+                      </div>
+                    );
+                  })()}
 
                   {/* Add Question Section */}
                   <div className="border-t pt-6">

@@ -64,24 +64,12 @@ router.get('/', async (req: Request, res: Response) => {
     try {
         const { course_id, is_active, student_id } = req.query;
 
-        let sql: string;
+        // Preserve raw time fields; expose combined datetime as start_dt/end_dt
+        let sql = `SELECT e.*, 
+                   CONCAT(e.exam_date, ' ', e.start_time) AS start_dt,
+                   CONCAT(e.exam_date, ' ', e.end_time)   AS end_dt
+                   FROM exams e WHERE 1=1`;
         const params: string[] = [];
-
-        // If student_id provided, join with student_courses to get enrolled courses
-        if (student_id) {
-            sql = `SELECT DISTINCT e.*, 
-                   CONCAT(e.exam_date, ' ', e.start_time) as start_time,
-                   CONCAT(e.exam_date, ' ', e.end_time) as end_time
-                   FROM exams e
-                   INNER JOIN student_courses sc ON sc.course_id = e.course_id AND sc.student_id = ?
-                   WHERE e.is_active = 1
-                   AND e.is_published = 1`;
-            params.push(student_id as string);
-        } else {
-            sql = `SELECT *, 
-                   CONCAT(exam_date, ' ', start_time) as start_time,
-                   CONCAT(exam_date, ' ', end_time) as end_time
-                   FROM exams WHERE 1=1`;
 
             // Default to active exams only (soft delete)
             if (is_active === undefined) {
@@ -100,7 +88,7 @@ router.get('/', async (req: Request, res: Response) => {
 
         sql += ' ORDER BY created_at DESC';
 
-        let exams = await query<Exam>(sql, params);
+        let exams = await query<any>(sql, params);
 
         // If student_id provided, add attempt count for each exam
         if (student_id) {
@@ -112,7 +100,12 @@ router.get('/', async (req: Request, res: Response) => {
             }));
         }
 
-        res.json(exams);
+        res.json(exams.map((e: any) => ({
+            ...e,
+            // Frontend expects start_time/end_time sometimes as combined; keep backwards compatibility
+            start_time: e.start_dt || (e.exam_date && e.start_time ? `${e.exam_date} ${e.start_time}` : e.start_time),
+            end_time: e.end_dt || (e.exam_date && e.end_time ? `${e.exam_date} ${e.end_time}` : e.end_time),
+        })));
     } catch (error) {
         console.error('Get exams error:', error);
         res.status(500).json({ error: 'Failed to fetch exams' });
@@ -221,7 +214,7 @@ router.put('/:id', async (req: Request, res: Response) => {
 
         // Normalize incoming date/time (support start_date/end_date from UI) — keep local values as provided
         const finalStart = start_time || start_date || null;
-        const finalEnd   = end_time || end_date || null;
+        const finalEnd = end_time || end_date || null;
 
         const result = await execute(
             `UPDATE exams 
@@ -472,7 +465,7 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
 
         // Build Date objects from start_dt/end_dt when available (robust parsing)
         const startTime = parseLocalDateTime(exam?.start_dt);
-        const endTime   = parseLocalDateTime(exam?.end_dt);
+        const endTime = parseLocalDateTime(exam?.end_dt);
 
         console.log('🕐 Time Check:');
         console.log('  Current time:', now.toISOString(), '(Local:', now.toLocaleString('ar-EG'), ')');
@@ -481,12 +474,12 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
         console.log('  Now < Start?', !!(startTime && now < startTime));
         console.log('  Now > End?', !!(endTime && now > endTime));
 
-        // If schedule missing/invalid, block by default (require explicit scheduling)
+        // If schedule missing/invalid, allow attempt (treat as always-open exam)
         if (!startTime || !endTime) {
             return res.json({
-                canAttempt: false,
-                reason: 'not_scheduled',
-                message: 'الامتحان لم يبدأ بعد'
+                canAttempt: true,
+                reason: 'no_schedule',
+                message: 'الامتحان بدون جدول زمني؛ الدخول متاح'
             });
         }
 
@@ -548,16 +541,18 @@ router.post('/:examId/start/:studentId', async (req: Request, res: Response) => 
         // Enforce schedule window strictly
         const now = new Date();
         const startTime = parseLocalDateTime(exam?.start_dt);
-        const endTime   = parseLocalDateTime(exam?.end_dt);
+        const endTime = parseLocalDateTime(exam?.end_dt);
 
         if (!startTime || !endTime) {
-            return res.status(400).json({ error: 'الامتحان لم يبدأ بعد' });
-        }
-        if (now < startTime) {
-            return res.status(400).json({ error: 'الامتحان لم يبدأ بعد' });
-        }
-        if (now > endTime) {
-            return res.status(400).json({ error: 'انتهى وقت الامتحان' });
+            // Allow starting when schedule is not set
+            console.warn('⚠️ Exam has no valid schedule; allowing start:', examId);
+        } else {
+            if (now < startTime) {
+                return res.status(400).json({ error: 'الامتحان لم يبدأ بعد' });
+            }
+            if (now > endTime) {
+                return res.status(400).json({ error: 'انتهى وقت الامتحان' });
+            }
         }
 
         // Check if already attempted
