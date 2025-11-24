@@ -286,17 +286,24 @@ const BarcodeAttendance = () => {
     }
   };
 
+  // ارسال واتساب إلى رقم ولي الأمر (أولوية) ثم رقم الطالب إن لم يتوفر
   const sendWhatsAppNotification = (student: any, status: string) => {
     const message = status === 'present'
-      ? `السلام عليكم،\n\nنفيدكم بأن الطالب/ة ${student.name} قد حضر/ت اليوم ${new Date().toLocaleDateString('ar-SA')}.\n\nشكراً لتعاونكم.`
-      : `السلام عليكم،\n\nنفيدكم بأن الطالب/ة ${student.name} لم يحضر/تحضر اليوم ${new Date().toLocaleDateString('ar-SA')}.\n\nيرجى التواصل معنا لمعرفة السبب.`;
+      ? `السلام عليكم،\n\nنفيدكم بأن الطالب/ة ${student.name} حضر اليوم ${new Date().toLocaleDateString('ar-EG')}\n\nشكراً لتعاونكم.`
+      : `السلام عليكم،\n\nنفيدكم بأن الطالب/ة ${student.name} لم يحضر اليوم ${new Date().toLocaleDateString('ar-EG')}\n\nيرجى متابعة السبب.`;
 
-    const phoneNumber = student.phone?.replace(/^0/, '2'); // Convert to international format
+    const rawPhone = student.guardian_phone || student.phone || '';
+    if (!rawPhone) {
+      toast({ title: 'لا يوجد رقم', description: 'لا يتوفر رقم لولي الأمر أو الطالب', variant: 'destructive' });
+      return;
+    }
+    const phoneNumber = rawPhone.replace(/[^0-9]/g, '').replace(/^0/, '2');
     const encodedMessage = encodeURIComponent(message);
     window.open(`https://wa.me/${phoneNumber}?text=${encodedMessage}`, '_blank');
   };
 
-  const recordAttendance = async (barcodeId: string, status: 'present' | 'absent') => {
+  // تسجيل حضور فقط (لم نعد ندعم إدخال غياب يدوي من الواجهة)
+  const recordAttendance = async (barcodeId: string) => {
     try {
       const student = students.find((s: any) => s.barcode_id === barcodeId || s.barcode === barcodeId);
 
@@ -317,7 +324,7 @@ const BarcodeAttendance = () => {
         student_id: student.id,
         group_id: selectedGroupId || student.group_id,
         attendance_date: today,
-        status: status
+        status: 'present'
       }, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -325,7 +332,7 @@ const BarcodeAttendance = () => {
       if (response.data) {
         toast({
           title: "تم التسجيل",
-          description: `تم تسجيل ${status === 'present' ? 'حضور' : 'غياب'} ${student.name} بنجاح`,
+          description: `تم تسجيل حضور ${student.name} بنجاح`,
         });
 
         // Don't send WhatsApp automatically
@@ -360,7 +367,7 @@ const BarcodeAttendance = () => {
   const handleBarcodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (barcodeInput.trim()) {
-      recordAttendance(barcodeInput.trim(), 'present');
+      recordAttendance(barcodeInput.trim());
     }
   };
 
@@ -370,39 +377,7 @@ const BarcodeAttendance = () => {
 
     // Auto-submit when barcode is exactly 25 characters
     if (value.length === 25) {
-      recordAttendance(value, 'present');
-    }
-  };
-
-  const markAbsent = async (student: any) => {
-    const today = new Date().toISOString().split('T')[0];
-    const token = localStorage.getItem('token');
-
-    try {
-      await axios.post(`${API_URL}/attendance`, {
-        student_id: student.id,
-        group_id: selectedGroupId || student.group_id,
-        attendance_date: today,
-        status: 'absent'
-      }, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      toast({
-        title: "تم التسجيل",
-        description: `تم تسجيل غياب ${student.name}`,
-      });
-
-      // Don't send WhatsApp automatically
-      // sendWhatsAppNotification(student, 'absent');
-      fetchTodayAttendance();
-    } catch (error: any) {
-      console.error('Error marking absent:', error);
-      toast({
-        title: "خطأ",
-        description: error.response?.data?.message || "حدث خطأ أثناء تسجيل الغياب",
-        variant: "destructive",
-      });
+      recordAttendance(value);
     }
   };
 
@@ -661,207 +636,195 @@ const BarcodeAttendance = () => {
           </Card>
         </div>
 
-        <Card className="shadow-soft">
-          <CardHeader>
-            <CardTitle>سجل الحضور اليوم</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>الطالب</TableHead>
-                  <TableHead>رقم التلفون</TableHead>
-                  <TableHead>رقم ولي الأمر</TableHead>
-                  <TableHead>الباركود</TableHead>
-                  <TableHead>الحالة</TableHead>
-                  <TableHead>حضر آخر حصة؟</TableHead>
-                  <TableHead>حالة الدفع</TableHead>
-                  <TableHead>الوقت</TableHead>
-                  <TableHead>الإجراءات</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {todayAttendance.map((record: any) => {
-                  const student = students.find((s: any) => s.id === record.student_id);
-                  const currentMonth = new Date().toISOString().slice(0, 7);
-                  const hasPaid = monthlyPayments[student?.id] || false;
-                  const lastAtt = lastAttendance[student?.id];
-                  const attendedLastSession = lastAtt?.status === 'present';
-
-                  return (
-                    <TableRow key={record.id}>
-                      <TableCell className="font-medium">{student?.name || 'غير معروف'}</TableCell>
-                      <TableCell className="font-mono text-sm">{student?.phone || '-'}</TableCell>
-                      <TableCell className="font-mono text-sm">{student?.guardian_phone || '-'}</TableCell>
-                      <TableCell className="font-mono text-sm">{student?.barcode || student?.barcode_id || '-'}</TableCell>
-                      <TableCell>
-                        <Badge variant={record.status === 'present' ? 'default' : 'destructive'}>
-                          {record.status === 'present' ? (
-                            <><CheckCircle className="ml-1 h-3 w-3" /> حاضر</>
-                          ) : (
-                            <><XCircle className="ml-1 h-3 w-3" /> غائب</>
-                          )}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        {lastAtt ? (
-                          <Badge variant={attendedLastSession ? 'default' : 'destructive'}>
-                            {attendedLastSession ? (
-                              <><CheckCircle className="ml-1 h-3 w-3" /> حضر</>
-                            ) : (
-                              <><XCircle className="ml-1 h-3 w-3" /> غاب</>
-                            )}
-                          </Badge>
-                        ) : (
-                          <Badge variant="secondary">لا يوجد</Badge>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={hasPaid ? 'default' : 'destructive'} className={!hasPaid ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' : ''}>
-                          {hasPaid ? (
-                            <><CheckCircle className="ml-1 h-3 w-3" /> مدفوع</>
-                          ) : (
-                            <><XCircle className="ml-1 h-3 w-3" /> غير مدفوع</>
-                          )}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>{new Date(record.created_at).toLocaleTimeString('ar-SA')}</TableCell>
-                      <TableCell>
-                        <div className="flex gap-2">
-                          {student && (
-                            <Button
-                              variant={hasPaid ? "secondary" : "default"}
-                              size="sm"
-                              onClick={() => handleQuickPayment(student)}
-                              className={hasPaid ? "bg-green-500 hover:bg-green-600 text-white" : "bg-green-600 hover:bg-green-700"}
-                            >
-                              <DollarSign className="ml-1 h-3 w-3" />
-                              {hasPaid ? 'دفع إضافي' : 'دفع'}
-                            </Button>
-                          )}
-                          {student && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => sendWhatsAppNotification(student, record.status)}
-                            >
-                              <MessageCircle className="ml-1 h-3 w-3" />
-                              واتساب
-                            </Button>
-                          )}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-                {todayAttendance.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
-                      لم يتم تسجيل أي حضور اليوم بعد
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-
-        {selectedGroupId && absentStudents.length > 0 && (
-          <Card className="shadow-soft mt-6">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <XCircle className="h-5 w-5 text-red-600" />
-                الطلاب الغائبين ({absentStudents.length})
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>الطالب</TableHead>
-                    <TableHead>رقم التلفون</TableHead>
-                    <TableHead>رقم ولي الأمر</TableHead>
-                    <TableHead>آخر حصة</TableHead>
-                    <TableHead>حالة الدفع</TableHead>
-                    <TableHead>الإجراءات</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {absentStudents
-                    .filter((student: any) => {
-                      // تأكيد مزدوج: استثناء أي طالب موجود في سجل الحضور اليوم
-                      const isPresentToday = todayAttendance.some(
-                        (a: any) => a.student_id === student.id && a.status === 'present'
-                      );
-                      return !isPresentToday;
-                    })
-                    .map((student: any) => {
-                      const lastAtt = lastAttendance[student.id];
-                      const hasPaid = monthlyPayments[student.id];
-                      return (
-                        <TableRow key={student.id}>
-                          <TableCell className="font-medium">{student.name}</TableCell>
-                          <TableCell className="font-mono text-sm">{student.phone || '-'}</TableCell>
-                          <TableCell className="font-mono text-sm">{student.guardian_phone || '-'}</TableCell>
-                          <TableCell className="text-sm">
-                            {lastAtt ? (
-                              <div>
-                                <div>{new Date(lastAtt.attendance_date).toLocaleDateString('ar-SA')}</div>
-                                <div className="text-xs text-muted-foreground">
-                                  {lastAtt.notes || 'لا يوجد ملاحظات'}
-                                </div>
-                              </div>
-                            ) : (
-                              <span className="text-muted-foreground">لم يحضر من قبل</span>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={hasPaid ? 'default' : 'destructive'}>
-                              {hasPaid ? (
-                                <><CheckCircle className="ml-1 h-3 w-3" /> مدفوع</>
+        {/* حسابات مشتقة للحضور والغياب لتجنب التكرار */}
+        {(() => {
+          const presentRecords = todayAttendance.filter((r: any) => r.status === 'present');
+          const presentIds = new Set(presentRecords.map((r: any) => r.student_id));
+          const filteredAbsentStudents = selectedGroupId
+            ? students.filter((s: any) => s.group_id === selectedGroupId && s.is_active && !presentIds.has(s.id))
+            : [];
+          return (
+            <>
+              <Card className="shadow-soft">
+                <CardHeader>
+                  <CardTitle>سجل الحضور اليوم</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>الطالب</TableHead>
+                        <TableHead>رقم التلفون</TableHead>
+                        <TableHead>رقم ولي الأمر</TableHead>
+                        <TableHead>الباركود</TableHead>
+                        <TableHead>الحالة</TableHead>
+                        <TableHead>حضر آخر حصة؟</TableHead>
+                        <TableHead>حالة الدفع</TableHead>
+                        <TableHead>الوقت</TableHead>
+                        <TableHead>الإجراءات</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {presentRecords.map((record: any) => {
+                        const student = students.find((s: any) => s.id === record.student_id);
+                        const hasPaid = monthlyPayments[student?.id] || false;
+                        const lastAtt = lastAttendance[student?.id];
+                        const attendedLastSession = lastAtt?.status === 'present';
+                        return (
+                          <TableRow key={record.id}>
+                            <TableCell className="font-medium">{student?.name || 'غير معروف'}</TableCell>
+                            <TableCell className="font-mono text-sm">{student?.phone || '-'}</TableCell>
+                            <TableCell className="font-mono text-sm">{student?.guardian_phone || '-'}</TableCell>
+                            <TableCell className="font-mono text-sm">{student?.barcode || student?.barcode_id || '-'}</TableCell>
+                            <TableCell>
+                              <Badge variant="default">
+                                <CheckCircle className="ml-1 h-3 w-3" /> حاضر
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              {lastAtt ? (
+                                <Badge variant={attendedLastSession ? 'default' : 'secondary'}>
+                                  {attendedLastSession ? 'نعم' : 'لا يوجد'}
+                                </Badge>
                               ) : (
-                                <><XCircle className="ml-1 h-3 w-3" /> غير مدفوع</>
+                                <Badge variant="secondary">لا يوجد</Badge>
                               )}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex gap-2">
-                              {!hasPaid && (
-                                <Button
-                                  variant="default"
-                                  size="sm"
-                                  onClick={() => handleQuickPayment(student)}
-                                  className="bg-green-600 hover:bg-green-700"
-                                >
-                                  <DollarSign className="ml-1 h-3 w-3" />
-                                  دفع
-                                </Button>
-                              )}
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => markAbsent(student)}
-                              >
-                                تسجيل غياب
-                              </Button>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => sendWhatsAppNotification(student, 'absent')}
-                              >
-                                <MessageCircle className="ml-1 h-3 w-3" />
-                                واتساب
-                              </Button>
-                            </div>
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant={hasPaid ? 'default' : 'destructive'}>
+                                {hasPaid ? (
+                                  <><CheckCircle className="ml-1 h-3 w-3" /> مدفوع</>
+                                ) : (
+                                  <><XCircle className="ml-1 h-3 w-3" /> غير مدفوع</>
+                                )}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-sm">
+                              {new Date(record.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex gap-2">
+                                {!hasPaid && (
+                                  <Button
+                                    variant="default"
+                                    size="sm"
+                                    onClick={() => student && handleQuickPayment(student)}
+                                    className="bg-green-600 hover:bg-green-700"
+                                  >
+                                    <DollarSign className="ml-1 h-3 w-3" />
+                                    دفع
+                                  </Button>
+                                )}
+                                {student && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => sendWhatsAppNotification(student, 'present')}
+                                  >
+                                    <MessageCircle className="ml-1 h-3 w-3" />
+                                    واتساب
+                                  </Button>
+                                )}
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                      {presentRecords.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                            لم يتم تسجيل أي حضور اليوم بعد
                           </TableCell>
                         </TableRow>
-                      );
-                    })}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        )}
+                      )}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+              {selectedGroupId && filteredAbsentStudents.length > 0 && (
+                <Card className="shadow-soft mt-6">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <XCircle className="h-5 w-5 text-red-600" />
+                      الطلاب الغائبين ({filteredAbsentStudents.length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>الطالب</TableHead>
+                          <TableHead>رقم التلفون</TableHead>
+                          <TableHead>رقم ولي الأمر</TableHead>
+                          <TableHead>آخر حصة</TableHead>
+                          <TableHead>حالة الدفع</TableHead>
+                          <TableHead>الإجراءات</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {filteredAbsentStudents.map((student: any) => {
+                          const lastAtt = lastAttendance[student.id];
+                          const hasPaid = monthlyPayments[student.id];
+                          return (
+                            <TableRow key={student.id}>
+                              <TableCell className="font-medium">{student.name}</TableCell>
+                              <TableCell className="font-mono text-sm">{student.phone || '-'}</TableCell>
+                              <TableCell className="font-mono text-sm">{student.guardian_phone || '-'}</TableCell>
+                              <TableCell className="text-sm">
+                                {lastAtt ? (
+                                  <div>
+                                    <div>{new Date(lastAtt.attendance_date).toLocaleDateString('ar-SA')}</div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {lastAtt.notes || 'لا يوجد ملاحظات'}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <span className="text-muted-foreground">لم يحضر من قبل</span>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant={hasPaid ? 'default' : 'destructive'}>
+                                  {hasPaid ? (
+                                    <><CheckCircle className="ml-1 h-3 w-3" /> مدفوع</>
+                                  ) : (
+                                    <><XCircle className="ml-1 h-3 w-3" /> غير مدفوع</>
+                                  )}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex gap-2">
+                                  {!hasPaid && (
+                                    <Button
+                                      variant="default"
+                                      size="sm"
+                                      onClick={() => handleQuickPayment(student)}
+                                      className="bg-green-600 hover:bg-green-700"
+                                    >
+                                      <DollarSign className="ml-1 h-3 w-3" />
+                                      دفع
+                                    </Button>
+                                  )}
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => sendWhatsAppNotification(student, 'absent')}
+                                  >
+                                    <MessageCircle className="ml-1 h-3 w-3" />
+                                    واتساب
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
+              )}
+            </>
+          );
+        })()}
       </div>
 
       {/* Payment Dialog */}

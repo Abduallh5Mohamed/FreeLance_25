@@ -221,4 +221,49 @@ router.post('/:id/reject', async (req: Request, res: Response) => {
   }
 });
 
+// Delete subscription request (cleanup)
+router.delete('/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const result = await execute(
+      'DELETE FROM subscription_requests WHERE id = ?',
+      [id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Subscription request not found' });
+    }
+
+    res.json({ message: 'Subscription request deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting subscription request:', error);
+    res.status(500).json({ error: 'Failed to delete subscription request' });
+  }
+});
+
+// Bulk delete approved requests by month
+router.delete('/cleanup/month', async (req: Request, res: Response) => {
+  try {
+    const { month, year } = req.query;
+
+    if (!month || !year) {
+      return res.status(400).json({ error: 'Month and year are required' });
+    }
+
+    const result = await execute(
+      'DELETE FROM subscription_requests WHERE status = ? AND MONTH(updated_at) = ? AND YEAR(updated_at) = ?',
+      ['approved', month, year]
+    );
+
+    res.json({
+      message: 'Approved requests cleaned up successfully',
+      deletedCount: result.affectedRows
+    });
+  } catch (error) {
+    console.error('Error cleaning up requests:', error);
+    res.status(500).json({ error: 'Failed to cleanup requests' });
+  }
+});
+
 export default router;

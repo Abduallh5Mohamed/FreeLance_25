@@ -10,10 +10,11 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { DollarSign, Plus, CreditCard, AlertTriangle, CheckCircle, Search, Upload, X, Eye, Check, XCircle, User, Calendar, Edit2, Trash2, MessageCircle } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-import { getGrades, getGroups, createFee, getFees, getStudentByPhone, getStudentById, getStudents, getSubscriptionRequests, approveSubscriptionRequest, rejectSubscriptionRequest } from "@/lib/api-http";
+import { getGrades, getGroups, createFee, getFees, getStudentByPhone, getStudentById, getStudents, getSubscriptionRequests, approveSubscriptionRequest, rejectSubscriptionRequest, deleteFee, cleanupApprovedRequestsByMonth } from "@/lib/api-http";
 
 const Fees = () => {
   const [fees, setFees] = useState([]);
+  // تمت إزالة عرض الأوفلاين من الواجهة؛ نحافظ على الحالة إن احتجنا لاحقاً
   const [offlineFees, setOfflineFees] = useState([]);
   const [subscriptionRequests, setSubscriptionRequests] = useState([]);
   const [approvedRequests, setApprovedRequests] = useState([]);
@@ -24,6 +25,8 @@ const Fees = () => {
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
+  const [filterMonth, setFilterMonth] = useState(new Date().getMonth() + 1);
+  const [filterYear, setFilterYear] = useState(new Date().getFullYear());
   const [grades, setGrades] = useState([]);
   const [groups, setGroups] = useState([]);
   const [paymentData, setPaymentData] = useState({
@@ -32,6 +35,7 @@ const Fees = () => {
     paymentMethod: "cash",
     notes: ""
   });
+  // إزالة نموذج الدفع الأوفلاين من الواجهة
   const [offlinePaymentData, setOfflinePaymentData] = useState({
     studentName: "",
     phone: "",
@@ -339,6 +343,52 @@ const Fees = () => {
     }
   };
 
+  const handleDeleteFee = async (feeId: string, studentName: string) => {
+    if (!confirm(`هل أنت متأكد من حذف عملية دفع الطالب ${studentName}؟`)) return;
+
+    try {
+      await deleteFee(feeId);
+
+      // Reload data
+      await loadFeesFromDB();
+      await loadSubscriptionRequests();
+
+      toast({
+        title: "تم الحذف بنجاح",
+        description: `تم حذف عملية دفع الطالب ${studentName}`,
+      });
+    } catch (error) {
+      console.error('Error deleting fee:', error);
+      toast({
+        title: "خطأ",
+        description: "فشل في حذف العملية",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleCleanupMonth = async () => {
+    if (!confirm(`هل أنت متأكد من حذف جميع الطلبات المقبولة في شهر ${new Date(filterYear, filterMonth - 1).toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' })}؟\n\nهذا الإجراء لا يمكن التراجع عنه!`)) return;
+
+    try {
+      const result = await cleanupApprovedRequestsByMonth(filterMonth, filterYear);
+
+      await loadSubscriptionRequests();
+
+      toast({
+        title: "تم التنظيف بنجاح",
+        description: `تم حذف ${result.deletedCount} طلب مقبول من قاعدة البيانات`,
+      });
+    } catch (error) {
+      console.error('Error cleaning up:', error);
+      toast({
+        title: "خطأ",
+        description: "فشل في تنظيف البيانات",
+        variant: "destructive",
+      });
+    }
+  };
+
   const processOfflinePayment = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -485,8 +535,9 @@ const Fees = () => {
   };
 
   // Calculate totals from both online and offline fees
-  const totalFees = [...fees, ...offlineFees].reduce((sum, fee) => sum + (Number(fee.amount) || 0), 0);
-  const totalPaid = [...fees, ...offlineFees].reduce((sum, fee) => sum + (Number(fee.paidAmount) || 0), 0);
+  // حساب الإجماليات للأونلاين فقط بعد إزالة عرض الأوفلاين
+  const totalFees = fees.reduce((sum, fee) => sum + (Number(fee.amount) || 0), 0);
+  const totalPaid = fees.reduce((sum, fee) => sum + (Number(fee.paidAmount) || 0), 0);
   const totalRemaining = totalFees - totalPaid;
 
   return (
@@ -629,79 +680,137 @@ const Fees = () => {
             )}
 
             {/* Approved Subscription Requests with WhatsApp */}
-            {approvedRequests.length > 0 && (
-              <div className="mb-6">
-                <h3 className="font-semibold text-green-800 dark:text-green-400 mb-4 flex items-center gap-2">
-                  <CheckCircle className="w-5 h-5" />
-                  طلبات تم قبولها ({approvedRequests.length})
-                </h3>
-                <div className="space-y-3">
-                  {approvedRequests.map((request) => (
-                    <div
-                      key={request.id}
-                      className="border border-green-200 dark:border-green-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-green-50 dark:bg-green-950/20"
-                    >
-                      <div className="bg-gradient-to-r from-green-500 to-emerald-500 px-4 py-2 flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <Avatar className="h-8 w-8 border-2 border-white">
-                            <AvatarFallback className="text-xs bg-white text-green-600">
-                              {request.student_name?.charAt(0) || 'ط'}
-                            </AvatarFallback>
-                          </Avatar>
-                          <div>
-                            <h4 className="font-bold text-white text-sm">{request.student_name}</h4>
-                            <span className="text-xs text-green-50">✅ تم القبول</span>
+            {(() => {
+              const filteredApproved = approvedRequests.filter((req: any) => {
+                const reqDate = new Date(req.updated_at || req.created_at);
+                return reqDate.getMonth() + 1 === filterMonth && reqDate.getFullYear() === filterYear;
+              });
+              return (
+                <div className="mb-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="font-semibold text-green-800 dark:text-green-400 flex items-center gap-2">
+                      <CheckCircle className="w-5 h-5" />
+                      طلبات تم قبولها ({filteredApproved.length})
+                    </h3>
+                    <div className="flex gap-2">
+                      <Select value={filterMonth.toString()} onValueChange={(v) => setFilterMonth(parseInt(v))}>
+                        <SelectTrigger className="w-32">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                            <SelectItem key={m} value={m.toString()}>
+                              {new Date(2025, m - 1).toLocaleDateString('ar-EG', { month: 'long' })}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select value={filterYear.toString()} onValueChange={(v) => setFilterYear(parseInt(v))}>
+                        <SelectTrigger className="w-24">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - i).map((y) => (
+                            <SelectItem key={y} value={y.toString()}>{y}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={handleCleanupMonth}
+                        disabled={filteredApproved.length === 0}
+                        title="حذف جميع طلبات هذا الشهر من قاعدة البيانات"
+                        className="whitespace-nowrap"
+                      >
+                        <Trash2 className="w-3 h-3 ml-1" />
+                        تنظيف الشهر
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    {filteredApproved.map((request) => (
+                      <div
+                        key={request.id}
+                        className="border border-green-200 dark:border-green-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-green-50 dark:bg-green-950/20"
+                      >
+                        <div className="bg-gradient-to-r from-green-500 to-emerald-500 px-4 py-2 flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <Avatar className="h-8 w-8 border-2 border-white">
+                              <AvatarFallback className="text-xs bg-white text-green-600">
+                                {request.student_name?.charAt(0) || 'ط'}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div>
+                              <h4 className="font-bold text-white text-sm">{request.student_name}</h4>
+                              <span className="text-xs text-green-50">✅ تم القبول</span>
+                            </div>
                           </div>
-                        </div>
-                        <div className="flex gap-2">
-                          {request.guardian_phone && (
+                          <div className="flex gap-2">
+                            {request.guardian_phone && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleSendWhatsApp(request)}
+                                className="h-7 px-3 text-white hover:bg-white/20 bg-white/10 hover:bg-white/30"
+                                title="إرسال WhatsApp"
+                              >
+                                <MessageCircle className="w-3 h-3 ml-1" />
+                                WhatsApp
+                              </Button>
+                            )}
                             <Button
                               size="sm"
                               variant="ghost"
-                              onClick={() => handleSendWhatsApp(request)}
-                              className="h-7 px-3 text-white hover:bg-white/20 bg-white/10 hover:bg-white/30"
-                              title="إرسال WhatsApp"
+                              onClick={() => handleDeleteFee(request.id, request.student_name)}
+                              className="h-7 px-3 text-white hover:bg-red-600/30 bg-red-600/20"
+                              title="حذف"
                             >
-                              <MessageCircle className="w-3 h-3 ml-1" />
-                              WhatsApp
+                              <Trash2 className="w-3 h-3" />
                             </Button>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                        <div>
-                          <span className="text-xs text-muted-foreground">الموبايل:</span>
-                          <p className="font-medium">{request.phone}</p>
-                        </div>
-                        {request.guardian_phone && (
-                          <div>
-                            <span className="text-xs text-muted-foreground">WhatsApp ولي الأمر:</span>
-                            <p className="font-medium text-green-600">{request.guardian_phone}</p>
                           </div>
-                        )}
-                        <div>
-                          <span className="text-xs text-muted-foreground">المبلغ:</span>
-                          <p className="font-medium text-green-600">{request.amount} ج.م</p>
                         </div>
-                        <div>
-                          <span className="text-xs text-muted-foreground">الصف:</span>
-                          <p className="font-medium">{request.grade_name}</p>
-                        </div>
-                        <div>
-                          <span className="text-xs text-muted-foreground">المجموعة:</span>
-                          <p className="font-medium">{request.group_name}</p>
-                        </div>
-                        <div>
-                          <span className="text-xs text-muted-foreground">تاريخ القبول:</span>
-                          <p className="font-medium">{new Date(request.updated_at || request.created_at).toLocaleDateString('ar-EG')}</p>
+
+                        <div className="p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                          <div>
+                            <span className="text-xs text-muted-foreground">الموبايل:</span>
+                            <p className="font-medium">{request.phone}</p>
+                          </div>
+                          {request.guardian_phone && (
+                            <div>
+                              <span className="text-xs text-muted-foreground">WhatsApp ولي الأمر:</span>
+                              <p className="font-medium text-green-600">{request.guardian_phone}</p>
+                            </div>
+                          )}
+                          <div>
+                            <span className="text-xs text-muted-foreground">المبلغ:</span>
+                            <p className="font-medium text-green-600">{request.amount} ج.م</p>
+                          </div>
+                          <div>
+                            <span className="text-xs text-muted-foreground">الصف:</span>
+                            <p className="font-medium">{request.grade_name}</p>
+                          </div>
+                          <div>
+                            <span className="text-xs text-muted-foreground">المجموعة:</span>
+                            <p className="font-medium">{request.group_name}</p>
+                          </div>
+                          <div>
+                            <span className="text-xs text-muted-foreground">تاريخ القبول:</span>
+                            <p className="font-medium">{new Date(request.updated_at || request.created_at).toLocaleDateString('ar-EG')}</p>
+                          </div>
                         </div>
                       </div>
+                    ))}
+                  </div>
+                  {filteredApproved.length === 0 && (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <CheckCircle className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                      <p>لا توجد طلبات مقبولة في هذا الشهر</p>
                     </div>
-                  ))}
+                  )}
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Online Students Fees Cards */}
             {filteredFees.length === 0 ? (
@@ -797,277 +906,7 @@ const Fees = () => {
           </CardContent>
         </Card>
 
-        {/* Offline Students Fees */}
-        <Card className="shadow-soft">
-          <CardHeader className="bg-gradient-to-r from-cyan-50 to-teal-50 dark:from-cyan-950 dark:to-teal-950">
-            <div className="flex items-center justify-between mb-4">
-              <CardTitle className="flex items-center gap-2">
-                <User className="w-5 h-5 text-cyan-600" />
-                كشف المصروفات - الطلاب الأوفلاين
-              </CardTitle>
-              <Dialog open={isAddNewOpen} onOpenChange={setIsAddNewOpen}>
-                <DialogTrigger asChild>
-                  <Button className="bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-600 hover:to-teal-600">
-                    <Plus className="w-4 h-4 ml-2" />
-                    إضافة طالب
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
-                  <DialogHeader>
-                    <DialogTitle>إضافة طالب أوفلاين</DialogTitle>
-                  </DialogHeader>
-                  <form onSubmit={processOfflinePayment} className="space-y-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="offlineStudentName">اسم الطالب *</Label>
-                      <Input
-                        id="offlineStudentName"
-                        type="text"
-                        value={offlinePaymentData.studentName}
-                        onChange={(e) => setOfflinePaymentData(prev => ({ ...prev, studentName: e.target.value }))}
-                        onBlur={(e) => handleStudentLookup('name', e.target.value)}
-                        placeholder="أدخل اسم الطالب"
-                        required
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="offlinePhone">رقم الموبايل *</Label>
-                      <Input
-                        id="offlinePhone"
-                        type="tel"
-                        value={offlinePaymentData.phone}
-                        onChange={(e) => setOfflinePaymentData(prev => ({ ...prev, phone: e.target.value }))}
-                        onBlur={(e) => handleStudentLookup('phone', e.target.value)}
-                        placeholder="01xxxxxxxxx"
-                        required
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor="offlineGuardianPhone">رقم ولي الأمر</Label>
-                      <Input
-                        id="offlineGuardianPhone"
-                        type="tel"
-                        value={offlinePaymentData.guardianPhone}
-                        onChange={(e) => setOfflinePaymentData(prev => ({ ...prev, guardianPhone: e.target.value }))}
-                        placeholder="01xxxxxxxxx"
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor="offlineBarcode">الباركود</Label>
-                      <Input
-                        id="offlineBarcode"
-                        type="text"
-                        value={offlinePaymentData.barcode}
-                        onChange={(e) => setOfflinePaymentData(prev => ({ ...prev, barcode: e.target.value }))}
-                        onBlur={(e) => handleStudentLookup('barcode', e.target.value)}
-                        className="font-mono"
-                      />
-                      <p className="text-xs text-muted-foreground">أدخل باركود الطالب أو اتركه فارغاً ليتم توليده</p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor="offlineGrade">الصف الدراسي *</Label>
-                      <Select value={offlinePaymentData.gradeId} onValueChange={(value) => setOfflinePaymentData(prev => ({ ...prev, gradeId: value }))}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="اختر الصف الدراسي" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {grades.map((grade) => (
-                            <SelectItem key={grade.id} value={grade.id}>
-                              {grade.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="offlineGroup">المجموعة *</Label>
-                      <Select value={offlinePaymentData.groupId} onValueChange={(value) => setOfflinePaymentData(prev => ({ ...prev, groupId: value }))}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="اختر المجموعة" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {groups.map((group) => (
-                            <SelectItem key={group.id} value={group.id}>
-                              {group.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label htmlFor="offlineTotalAmount">المبلغ المستحق *</Label>
-                        <Input
-                          id="offlineTotalAmount"
-                          type="number"
-                          value={offlinePaymentData.totalAmount}
-                          onChange={(e) => setOfflinePaymentData(prev => ({ ...prev, totalAmount: e.target.value }))}
-                          placeholder="المبلغ الإجمالي"
-                          required
-                          min="0"
-                          step="0.01"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="offlinePaidAmount">المبلغ المدفوع *</Label>
-                        <Input
-                          id="offlinePaidAmount"
-                          type="number"
-                          value={offlinePaymentData.paidAmount}
-                          onChange={(e) => setOfflinePaymentData(prev => ({ ...prev, paidAmount: e.target.value }))}
-                          placeholder="المبلغ المدفوع"
-                          required
-                          min="0"
-                          step="0.01"
-                        />
-                      </div>
-                    </div>
-                    {offlinePaymentData.totalAmount && offlinePaymentData.paidAmount && (
-                      <div className="p-3 bg-cyan-50 dark:bg-cyan-950 rounded-lg border border-cyan-200 dark:border-cyan-800">
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="font-medium text-cyan-700 dark:text-cyan-300">المتبقي:</span>
-                          <span className="font-bold text-cyan-900 dark:text-cyan-100">
-                            {(parseFloat(offlinePaymentData.totalAmount) - parseFloat(offlinePaymentData.paidAmount)).toFixed(2)} ج.م
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                    <div className="space-y-2">
-                      <Label htmlFor="offlineNotes">ملاحظات</Label>
-                      <Textarea
-                        id="offlineNotes"
-                        value={offlinePaymentData.notes}
-                        onChange={(e) => setOfflinePaymentData(prev => ({ ...prev, notes: e.target.value }))}
-                        placeholder="أضف ملاحظاتك هنا..."
-                        rows={3}
-                      />
-                    </div>
-                    <Button type="submit" className="w-full bg-purple-600 hover:bg-purple-700">
-                      إضافة الطالب
-                    </Button>
-                  </form>
-                </DialogContent>
-              </Dialog>
-            </div>
-            <div className="flex gap-4">
-              <div className="flex items-center gap-2">
-                <Search className="w-4 h-4 text-muted-foreground" />
-                <Input
-                  placeholder="البحث عن طالب..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="max-w-sm"
-                />
-              </div>
-              <Select value={filterStatus} onValueChange={setFilterStatus}>
-                <SelectTrigger className="max-w-[200px]">
-                  <SelectValue placeholder="تصفية حسب الحالة" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">جميع الحالات</SelectItem>
-                  <SelectItem value="مدفوع">مدفوع</SelectItem>
-                  <SelectItem value="جزئي">جزئي</SelectItem>
-                  <SelectItem value="متأخر">متأخر</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </CardHeader>
-          <CardContent className="p-4">
-            {/* Offline Students Fees Cards */}
-            {offlineFees.length === 0 ? (
-              <div className="text-center py-12 text-muted-foreground">
-                <DollarSign className="w-16 h-16 mx-auto mb-4 opacity-20" />
-                <p className="text-lg font-medium">لا توجد مصروفات للطلاب الأوفلاين</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {offlineFees.map((fee, index) => (
-                  <div
-                    key={fee.id}
-                    className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
-                  >
-                    <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-3 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <Avatar className="h-10 w-10 border-2 border-white">
-                          <AvatarFallback className="text-xs bg-white text-cyan-600">
-                            {fee.studentName?.charAt(0) || 'ط'}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div>
-                          <h3 className="font-bold text-white text-lg">{fee.studentName}</h3>
-                          <div className="flex items-center gap-2 text-xs text-cyan-50">
-                            <span>{fee.course}</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex gap-2">
-                        {fee.status !== "مدفوع" && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handlePayment(fee)}
-                            className="h-8 px-3 text-white hover:bg-white/20"
-                          >
-                            <CreditCard className="w-4 h-4 ml-1" />
-                            دفع
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4">
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <DollarSign className="w-4 h-4 text-cyan-600" />
-                          <span className="text-sm text-muted-foreground">المبلغ المطلوب</span>
-                        </div>
-                        <p className="font-bold text-cyan-600">{fee.amount} ج.م</p>
-                      </div>
-
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <CheckCircle className="w-4 h-4 text-green-600" />
-                          <span className="text-sm text-muted-foreground">المبلغ المدفوع</span>
-                        </div>
-                        <p className="font-bold text-green-600">{fee.paidAmount} ج.م</p>
-                      </div>
-
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <AlertTriangle className="w-4 h-4 text-red-600" />
-                          <span className="text-sm text-muted-foreground">المتبقي</span>
-                        </div>
-                        <p className="font-bold text-red-600">{fee.amount - fee.paidAmount} ج.م</p>
-                      </div>
-
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <Calendar className="w-4 h-4 text-cyan-600" />
-                          <span className="text-sm text-muted-foreground">تاريخ الاستحقاق</span>
-                        </div>
-                        <p className="font-medium">{fee.dueDate}</p>
-                      </div>
-
-                      <div className="col-span-2">
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="text-sm text-muted-foreground">الحالة</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {getStatusIcon(fee.status)}
-                          <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(fee.status)}`}>
-                            {fee.status}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        {/* قسم الأوفلاين تمت إزالته حسب الطلب */}
 
         <Dialog open={isOpen} onOpenChange={setIsOpen}>
           <DialogContent className="max-w-md">

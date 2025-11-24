@@ -6,7 +6,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Search, ChevronDown, ChevronUp, DollarSign, Calendar, Clock, User, Phone, CreditCard } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Search, ChevronDown, ChevronUp, DollarSign, Calendar, Clock, User, Phone, CreditCard, Plus } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
 import axios from 'axios';
@@ -64,6 +67,18 @@ const StudentPayments = () => {
   const [selectedGrade, setSelectedGrade] = useState<string>("all");
   const [selectedGroup, setSelectedGroup] = useState<string>("all");
   const [loading, setLoading] = useState(true);
+  const [isPaymentDialogOpen, setIsPaymentDialogOpen] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  const [paymentFormData, setPaymentFormData] = useState({
+    phone: '',
+    student_name: '',
+    guardian_phone: '',
+    barcode: '',
+    grade_id: '',
+    group_id: '',
+    amount: '',
+    notes: ''
+  });
   const { toast } = useToast();
 
   useEffect(() => {
@@ -205,19 +220,254 @@ const StudentPayments = () => {
     return groups.find(g => g.id === groupId)?.name || '-';
   };
 
+  const handlePhoneLookup = async (phone: string) => {
+    if (phone.length < 11) return;
+
+    setIsSearching(true);
+    try {
+      const student = students.find(s => s.phone === phone);
+      if (student) {
+        setPaymentFormData(prev => ({
+          ...prev,
+          phone: student.phone,
+          student_name: student.name,
+          guardian_phone: student.guardian_phone || '',
+          barcode: student.barcode || '',
+          grade_id: student.grade_id || '',
+          group_id: student.group_id || ''
+        }));
+        toast({
+          title: "تم العثور على الطالب",
+          description: `تم تحميل بيانات ${student.name}`,
+        });
+      } else {
+        toast({
+          title: "لم يتم العثور على الطالب",
+          description: "تأكد من رقم الهاتف",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error('Error looking up student:', error);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleSubmitOfflinePayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+
+    try {
+      const token = localStorage.getItem('token');
+      const headers = { Authorization: `Bearer ${token}` };
+
+      const paymentData = {
+        student_name: paymentFormData.student_name,
+        phone: paymentFormData.phone,
+        guardian_phone: paymentFormData.guardian_phone || null,
+        grade_id: paymentFormData.grade_id,
+        grade_name: getGradeName(paymentFormData.grade_id),
+        group_id: paymentFormData.group_id,
+        group_name: getGroupName(paymentFormData.group_id),
+        barcode: paymentFormData.barcode,
+        amount: parseFloat(paymentFormData.amount),
+        paid_amount: parseFloat(paymentFormData.amount),
+        status: 'paid',
+        payment_method: 'cash',
+        is_offline: true,
+        notes: paymentFormData.notes,
+        due_date: new Date().toISOString().split('T')[0],
+        payment_date: new Date().toISOString().split('T')[0],
+        payment_year: new Date().getFullYear(),
+        payment_month: new Date().getMonth() + 1
+      };
+
+      await axios.post(`${API_URL}/fees`, paymentData, { headers });
+
+      toast({
+        title: "تم التسجيل بنجاح",
+        description: `تم تسجيل دفع ${paymentFormData.student_name} بمبلغ ${paymentFormData.amount} ج.م`,
+      });
+
+      setIsPaymentDialogOpen(false);
+      setPaymentFormData({
+        phone: '',
+        student_name: '',
+        guardian_phone: '',
+        barcode: '',
+        grade_id: '',
+        group_id: '',
+        amount: '',
+        notes: ''
+      });
+
+      // Reload data
+      const feesRes = await axios.get(`${API_URL}/fees`, { headers });
+      const paymentsByStudent: Record<string, Payment[]> = {};
+      for (const student of students) {
+        const studentPayments = feesRes.data.filter((fee: Payment) =>
+          fee.phone === student.phone || (fee.student_id && fee.student_id === student.id)
+        );
+        studentPayments.sort((a: Payment, b: Payment) => {
+          const dateA = new Date(a.payment_date || a.created_at).getTime();
+          const dateB = new Date(b.payment_date || b.created_at).getTime();
+          return dateB - dateA;
+        });
+        paymentsByStudent[student.id] = studentPayments;
+      }
+      setPayments(paymentsByStudent);
+    } catch (error) {
+      console.error('Error submitting payment:', error);
+      toast({
+        title: "خطأ",
+        description: "فشل في تسجيل الدفع",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 dark:from-slate-900 dark:via-blue-950 dark:to-indigo-950" dir="rtl">
       <Header />
 
       <div className="container mx-auto px-4 py-8">
-        <div className="flex items-center gap-3 mb-8">
-          <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
-            <DollarSign className="w-6 h-6 text-primary" />
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
+              <DollarSign className="w-6 h-6 text-primary" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold text-foreground">سجل دفعات الطلاب</h1>
+              <p className="text-muted-foreground">عرض تفصيلي لجميع دفعات كل طالب</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-2xl font-bold text-foreground">سجل دفعات الطلاب</h1>
-            <p className="text-muted-foreground">عرض تفصيلي لجميع دفعات كل طالب</p>
-          </div>
+
+          <Dialog open={isPaymentDialogOpen} onOpenChange={setIsPaymentDialogOpen}>
+            <DialogTrigger asChild>
+              <Button className="bg-green-600 hover:bg-green-700">
+                <Plus className="w-4 h-4 ml-2" />
+                إضافة دفع أوفلاين
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>إضافة دفع أوفلاين</DialogTitle>
+              </DialogHeader>
+
+              <form onSubmit={handleSubmitOfflinePayment} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="phone">رقم الموبايل *</Label>
+                  <Input
+                    id="phone"
+                    type="tel"
+                    value={paymentFormData.phone}
+                    onChange={(e) => {
+                      setPaymentFormData(prev => ({ ...prev, phone: e.target.value }));
+                      handlePhoneLookup(e.target.value);
+                    }}
+                    placeholder="01xxxxxxxxx"
+                    required
+                    className="font-mono"
+                  />
+                  {isSearching && <p className="text-xs text-muted-foreground">جاري البحث...</p>}
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="student_name">اسم الطالب *</Label>
+                    <Input
+                      id="student_name"
+                      value={paymentFormData.student_name}
+                      onChange={(e) => setPaymentFormData(prev => ({ ...prev, student_name: e.target.value }))}
+                      required
+                      readOnly
+                      className="bg-muted"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="guardian_phone">رقم ولي الأمر</Label>
+                    <Input
+                      id="guardian_phone"
+                      type="tel"
+                      value={paymentFormData.guardian_phone}
+                      readOnly
+                      className="bg-muted font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="grade">الصف الدراسي</Label>
+                    <Input
+                      id="grade"
+                      value={getGradeName(paymentFormData.grade_id)}
+                      readOnly
+                      className="bg-muted"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="group">المجموعة</Label>
+                    <Input
+                      id="group"
+                      value={getGroupName(paymentFormData.group_id)}
+                      readOnly
+                      className="bg-muted"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="barcode">الباركود</Label>
+                  <Input
+                    id="barcode"
+                    value={paymentFormData.barcode}
+                    readOnly
+                    className="bg-muted font-mono"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="amount">المبلغ المدفوع *</Label>
+                  <Input
+                    id="amount"
+                    type="number"
+                    value={paymentFormData.amount}
+                    onChange={(e) => setPaymentFormData(prev => ({ ...prev, amount: e.target.value }))}
+                    placeholder="المبلغ بالجنيه"
+                    required
+                    min="0"
+                    step="0.01"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="notes">ملاحظات</Label>
+                  <Textarea
+                    id="notes"
+                    value={paymentFormData.notes}
+                    onChange={(e) => setPaymentFormData(prev => ({ ...prev, notes: e.target.value }))}
+                    placeholder="أضف ملاحظات إضافية..."
+                    rows={3}
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-4">
+                  <Button type="button" variant="outline" onClick={() => setIsPaymentDialogOpen(false)}>
+                    إلغاء
+                  </Button>
+                  <Button type="submit" disabled={loading || !paymentFormData.student_name} className="bg-green-600 hover:bg-green-700">
+                    تسجيل الدفع
+                  </Button>
+                </div>
+              </form>
+            </DialogContent>
+          </Dialog>
         </div>
 
         {/* Filters */}

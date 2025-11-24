@@ -1161,6 +1161,18 @@ export const rejectSubscriptionRequest = async (id: number, rejection_reason: st
     });
 };
 
+export const deleteSubscriptionRequest = async (id: number): Promise<{ message: string }> => {
+    return request<{ message: string }>(`/subscription-requests/${id}`, {
+        method: 'DELETE',
+    });
+};
+
+export const cleanupApprovedRequestsByMonth = async (month: number, year: number): Promise<{ message: string; deletedCount: number }> => {
+    return request<{ message: string; deletedCount: number }>(`/subscription-requests/cleanup/month?month=${month}&year=${year}`, {
+        method: 'DELETE',
+    });
+};
+
 // ==================== Expenses ====================
 export interface Expense {
     id: string;

@@ -39,6 +39,7 @@ interface Student {
   name: string;
   email?: string;
   phone?: string;
+  guardian_phone?: string;
   grade?: string;
   grade_id?: string;
   group_id?: string;
@@ -554,67 +555,101 @@ const Groups = () => {
                     </p>
                   </div>
                 ) : (
-                  getFilteredStudents().map((student) => (
+                  getFilteredStudents().map((student, index) => (
                     <div
                       key={student.id}
-                      className="border border-cyan-200 dark:border-cyan-800 rounded-lg p-4 hover:shadow-md transition-shadow bg-card"
+                      className="border-2 border-cyan-100 dark:border-cyan-900 rounded-xl overflow-hidden hover:shadow-lg transition-all duration-300 bg-white dark:bg-slate-900 hover:border-cyan-300 dark:hover:border-cyan-700"
                     >
-                      <div className="flex items-start gap-4">
-                        <Avatar className="h-12 w-12 border-2 border-primary/20">
-                          <AvatarFallback className="bg-gradient-to-br from-cyan-500 to-teal-500 text-white font-bold">
-                            {student.name?.charAt(0) || '؟'}
-                          </AvatarFallback>
-                        </Avatar>
-
-                        <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-3">
-                          <div>
-                            <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1 flex items-center gap-1">
-                              <Users className="w-3 h-3" />
-                              الاسم
+                      {/* Header */}
+                      <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-3">
+                        <div className="flex items-center gap-3">
+                          <Avatar className="h-12 w-12 border-3 border-white shadow-lg">
+                            <AvatarFallback className="bg-white text-cyan-600 font-bold text-lg">
+                              {student.name?.charAt(0) || '؟'}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div className="flex-1">
+                            <h4 className="text-white font-bold text-base">{student.name}</h4>
+                            <div className="flex items-center gap-2 mt-1">
+                              {student.grade_name && (
+                                <Badge variant="secondary" className="bg-white/20 text-white border-0 text-xs">
+                                  🎓 {student.grade_name}
+                                </Badge>
+                              )}
+                              <Badge variant={student.is_active ? "default" : "secondary"} className="bg-white/20 text-white border-0 text-xs">
+                                {student.is_active ? '✓ نشط' : '⚠ غير نشط'}
+                              </Badge>
                             </div>
-                            <div className="text-sm font-medium">{student.name}</div>
                           </div>
+                        </div>
+                      </div>
 
+                      {/* Content */}
+                      <div className="p-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           {student.phone && (
-                            <div>
-                              <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1 flex items-center gap-1">
-                                <Phone className="w-3 h-3" />
-                                رقم الهاتف
+                            <div className="flex items-start gap-3 p-3 bg-cyan-50 dark:bg-cyan-950/30 rounded-lg">
+                              <div className="w-8 h-8 bg-cyan-100 dark:bg-cyan-900 rounded-full flex items-center justify-center flex-shrink-0">
+                                <Phone className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
                               </div>
-                              <div className="text-sm font-medium" dir="ltr">{student.phone}</div>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-xs font-semibold text-cyan-700 dark:text-cyan-400 mb-1">
+                                  رقم الطالب
+                                </div>
+                                <div className="text-sm font-bold text-cyan-900 dark:text-cyan-100 font-mono" dir="ltr">
+                                  {student.phone}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          {student.guardian_phone && (
+                            <div className="flex items-start gap-3 p-3 bg-green-50 dark:bg-green-950/30 rounded-lg">
+                              <div className="w-8 h-8 bg-green-100 dark:bg-green-900 rounded-full flex items-center justify-center flex-shrink-0">
+                                <Phone className="w-4 h-4 text-green-600 dark:text-green-400" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-xs font-semibold text-green-700 dark:text-green-400 mb-1">
+                                  رقم ولي الأمر
+                                </div>
+                                <div className="text-sm font-bold text-green-900 dark:text-green-100 font-mono" dir="ltr">
+                                  {student.guardian_phone}
+                                </div>
+                              </div>
                             </div>
                           )}
 
                           {student.email && (
-                            <div>
-                              <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1 flex items-center gap-1">
-                                <Mail className="w-3 h-3" />
-                                البريد الإلكتروني
+                            <div className="flex items-start gap-3 p-3 bg-purple-50 dark:bg-purple-950/30 rounded-lg col-span-1 md:col-span-2">
+                              <div className="w-8 h-8 bg-purple-100 dark:bg-purple-900 rounded-full flex items-center justify-center flex-shrink-0">
+                                <Mail className="w-4 h-4 text-purple-600 dark:text-purple-400" />
                               </div>
-                              <div className="text-sm font-medium truncate">{student.email}</div>
-                            </div>
-                          )}
-
-                          {student.grade_name && (
-                            <div>
-                              <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🎓 الصف</div>
-                              <div className="text-sm font-medium">{student.grade_name}</div>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-xs font-semibold text-purple-700 dark:text-purple-400 mb-1">
+                                  البريد الإلكتروني
+                                </div>
+                                <div className="text-sm font-medium text-purple-900 dark:text-purple-100 truncate">
+                                  {student.email}
+                                </div>
+                              </div>
                             </div>
                           )}
 
                           {student.barcode && (
-                            <div>
-                              <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🔖 الباركود</div>
-                              <div className="text-sm font-mono font-medium">{student.barcode}</div>
+                            <div className="flex items-start gap-3 p-3 bg-orange-50 dark:bg-orange-950/30 rounded-lg col-span-1 md:col-span-2">
+                              <div className="w-8 h-8 bg-orange-100 dark:bg-orange-900 rounded-full flex items-center justify-center flex-shrink-0">
+                                <span className="text-sm">🔖</span>
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-xs font-semibold text-orange-700 dark:text-orange-400 mb-1">
+                                  الباركود
+                                </div>
+                                <div className="text-sm font-mono font-bold text-orange-900 dark:text-orange-100">
+                                  {student.barcode}
+                                </div>
+                              </div>
                             </div>
                           )}
-
-                          <div>
-                            <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📊 الحالة</div>
-                            <Badge variant={student.is_active ? "default" : "secondary"} className="text-xs">
-                              {student.is_active ? '✓ نشط' : '⚠ غير نشط'}
-                            </Badge>
-                          </div>
                         </div>
                       </div>
                     </div>

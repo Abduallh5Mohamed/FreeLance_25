@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { getGrades, getGroups, getStudents, getAttendance, type Grade, type Group, type Student, type Attendance } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
-import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, Search, Check, X } from 'lucide-react';
+import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, Search, Check, X, MessageCircle } from 'lucide-react';
 
 const AttendanceLog = () => {
   const [grades, setGrades] = useState<Grade[]>([]);
@@ -195,6 +195,58 @@ const AttendanceLog = () => {
     setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1));
   };
 
+  const handleSendWhatsApp = () => {
+    const student = students.find((s: any) => s.id === selectedStudentId);
+    if (!student) return;
+
+    const guardianPhone = student.guardian_phone || student.parent_phone;
+    if (!guardianPhone) {
+      toast({
+        title: 'خطأ',
+        description: 'رقم ولي الأمر غير متوفر',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    const grade = grades.find(g => g.id === selectedGradeId);
+    const group = groups.find(g => g.id === selectedGroupId);
+
+    const presentDays: string[] = [];
+    const absentDays: string[] = [];
+
+    scheduledDates.forEach(date => {
+      const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+      const record = attendanceMap[dateStr];
+      const dayLabel = date.toLocaleDateString('ar-EG', { day: 'numeric', month: 'numeric' });
+      
+      if (record) {
+        if (record.status === 'present') {
+          presentDays.push(dayLabel);
+        } else {
+          absentDays.push(dayLabel);
+        }
+      } else {
+        absentDays.push(dayLabel + ' (لم يُسجل)');
+      }
+    });
+
+    const message = `السلام عليكم ورحمة الله وبركاته\n\n` +
+      `تقرير حضور الطالب/ة: *${student.name}*\n` +
+      `الصف: ${grade?.name || '-'}\n` +
+      `المجموعة: ${group?.name || '-'}\n` +
+      `الشهر: ${monthLabel}\n\n` +
+      `✅ *أيام الحضور* (${presentDays.length}):${presentDays.length > 0 ? '\n' + presentDays.join('\n') : ' لا يوجد'}\n\n` +
+      `❌ *أيام الغياب* (${absentDays.length}):${absentDays.length > 0 ? '\n' + absentDays.join('\n') : ' لا يوجد'}\n\n` +
+      `مع خالص التحيات`;
+
+    const encodedMessage = encodeURIComponent(message);
+    const phoneNumber = guardianPhone.replace(/[^0-9]/g, '');
+    const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodedMessage}`;
+
+    window.open(whatsappUrl, '_blank');
+  };
+
   const monthLabel = currentMonth.toLocaleDateString('ar-EG', { year: 'numeric', month: 'long' });
 
   return (
@@ -285,6 +337,15 @@ const AttendanceLog = () => {
               <div className="flex items-center justify-between">
                 <CardTitle>{monthLabel}</CardTitle>
                 <div className="flex gap-2">
+                  <Button 
+                    variant="default" 
+                    size="sm" 
+                    onClick={handleSendWhatsApp}
+                    className="gap-2 bg-green-600 hover:bg-green-700 text-white"
+                  >
+                    <MessageCircle className="w-4 h-4" />
+                    إرسال تقرير واتساب
+                  </Button>
                   <Button variant="outline" size="icon" onClick={handlePrevMonth}>
                     <ChevronRight className="w-4 h-4" />
                   </Button>
