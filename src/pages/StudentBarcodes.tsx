@@ -29,6 +29,9 @@ export default function StudentBarcodes() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [editingGuardianId, setEditingGuardianId] = useState(null);
+  const [editingGuardianValue, setEditingGuardianValue] = useState('');
+  const [savingGuardian, setSavingGuardian] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -48,6 +51,13 @@ export default function StudentBarcodes() {
 
       console.log('Students loaded:', studentsData?.length);
       console.log('Groups loaded:', groupsData?.length);
+      // Debug: count students missing guardian phone
+      try {
+        const missingGuardianCount = (studentsData || []).filter(s => !(s.guardian_phone || s.parent_phone)).length;
+        console.log(`Students missing guardian_phone: ${missingGuardianCount}`);
+      } catch (e) {
+        console.log('Could not compute missing guardian_phone count', e);
+      }
     } catch (error) {
       console.error('Error loading data:', error);
       setMessage({ type: 'error', text: `خطأ في تحميل البيانات: ${error?.message}` });
@@ -118,6 +128,35 @@ export default function StudentBarcodes() {
     } catch (error) {
       console.error('Error:', error);
       setMessage({ type: 'error', text: 'خطأ' });
+    }
+  };
+
+  const startEditGuardian = (student) => {
+    setEditingGuardianId(student.id);
+    setEditingGuardianValue(student.guardian_phone || student.parent_phone || '');
+  };
+
+  const cancelEditGuardian = () => {
+    setEditingGuardianId(null);
+    setEditingGuardianValue('');
+  };
+
+  const saveGuardian = async (studentId) => {
+    setSavingGuardian(true);
+    try {
+      const payload = { guardian_phone: editingGuardianValue || null };
+      const ok = await updateStudent(studentId, payload);
+      if (!ok) throw new Error('فشل الحفظ');
+      setMessage({ type: 'success', text: 'تم حفظ رقم ولي الأمر' });
+      await loadData();
+      cancelEditGuardian();
+      setTimeout(() => setMessage(null), 2000);
+    } catch (e) {
+      console.error('Error saving guardian phone', e);
+      setMessage({ type: 'error', text: 'خطأ في حفظ رقم ولي الأمر' });
+      setTimeout(() => setMessage(null), 2000);
+    } finally {
+      setSavingGuardian(false);
     }
   };
 
@@ -288,9 +327,9 @@ export default function StudentBarcodes() {
                 ) : (
                   <div className="space-y-4 print-area">{filteredStudents.map((student, index) => {
                     const barcode = sanitizeBarcode(student.barcode);
-                    const groupName = student.group_id
+                    const groupName = student.group_name || (student.group_id
                       ? groups.find(g => g.id === student.group_id)?.name
-                      : 'لا يوجد اشتراك';
+                      : 'لا يوجد اشتراك');
 
                     return (
                       <motion.div
@@ -344,15 +383,42 @@ export default function StudentBarcodes() {
                           <div>
                             <div className="flex items-center gap-2 mb-2">
                               <Users className="w-4 h-4 text-cyan-600" />
-                              <span className="text-sm text-muted-foreground">المرحلة</span>
+                              <span className="text-sm text-muted-foreground">الصف</span>
                             </div>
-                            <p className="font-medium">{student.grade || '---'}</p>
+                            <p className="font-medium">{student.grade_name || student.grade || '---'}</p>
                           </div>
 
                           <div>
                             <div className="flex items-center gap-2 mb-2">
                               <Users className="w-4 h-4 text-cyan-600" />
-                              <span className="text-sm text-muted-foreground">الخصوصات</span>
+                              <span className="text-sm text-muted-foreground">رقم ولي الأمر</span>
+                            </div>
+                            {editingGuardianId === student.id ? (
+                              <div className="flex items-center gap-2">
+                                <Input
+                                  value={editingGuardianValue}
+                                  onChange={(e) => setEditingGuardianValue(e.target.value)}
+                                  className="w-full max-w-xs"
+                                />
+                                <div className="flex gap-2">
+                                  <Button size="sm" onClick={() => saveGuardian(student.id)} disabled={savingGuardian} className="bg-green-500 text-white">حفظ</Button>
+                                  <Button size="sm" variant="ghost" onClick={cancelEditGuardian}>إلغاء</Button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-between">
+                                <p className="font-medium">{student.guardian_phone || student.parent_phone || '---'}</p>
+                                <div className="no-print">
+                                  <Button size="sm" variant="ghost" onClick={() => startEditGuardian(student)} className="h-8 px-2">تعديل</Button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          <div>
+                            <div className="flex items-center gap-2 mb-2">
+                              <Users className="w-4 h-4 text-cyan-600" />
+                              <span className="text-sm text-muted-foreground">المجموعة</span>
                             </div>
                             <p className="font-medium">{groupName}</p>
                           </div>
@@ -409,7 +475,7 @@ export default function StudentBarcodes() {
                                 <Calendar className="w-4 h-4 text-cyan-600" />
                                 <span className="text-sm text-muted-foreground">تاريخ الانضمام</span>
                               </div>
-                              <p className="font-medium">Invalid Date</p>
+                              <p className="font-medium">{student.enrollment_date ? new Date(student.enrollment_date).toLocaleDateString('ar-EG') : '-'}</p>
                             </div>
                           )}
                         </div>
