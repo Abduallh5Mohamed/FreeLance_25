@@ -11,7 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Users, Plus, Edit2, Trash2, Search, Phone } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-import { getStudents, getGrades, getGroups, getCourses, createStudent, updateStudent, deleteStudent, type Student } from "@/lib/api-http";
+import { getStudents, getGrades, getGroups, getCourses, createStudent, updateStudent, deleteStudent, deleteUserByStudentId, type Student } from "@/lib/api-http";
 
 const OfflineStudents = () => {
   const [students, setStudents] = useState<Student[]>([]);
@@ -215,6 +215,29 @@ const OfflineStudents = () => {
       toast({
         title: "خطأ",
         description: "حدث خطأ في حذف الطالب",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleDeleteUser = async (studentId: string) => {
+    try {
+      const success = await deleteUserByStudentId(studentId);
+
+      if (success) {
+        fetchStudents();
+        toast({
+          title: "تم الحذف نهائياً",
+          description: "تم حذف الطالب نهائياً من users و students",
+        });
+      } else {
+        throw new Error("فشل الحذف النهائي");
+      }
+    } catch (error) {
+      console.error('Error deleting user:', error);
+      toast({
+        title: "خطأ",
+        description: "حدث خطأ في الحذف النهائي",
         variant: "destructive",
       });
     }
@@ -439,8 +462,18 @@ const OfflineStudents = () => {
                           size="sm"
                           onClick={() => handleDelete(student.id)}
                           className="h-8 w-8 p-0 text-white hover:bg-red-500/30"
+                          title="حذف من students"
                         >
                           <Trash2 className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteUser(student.id)}
+                          className="h-8 w-8 p-0 bg-red-600/90 text-white hover:bg-red-700 border-2 border-red-800 shadow-lg"
+                          title="⚠️ حذف نهائي من users"
+                        >
+                          <Trash2 className="w-4 h-4 font-bold" />
                         </Button>
                       </div>
                     </div>

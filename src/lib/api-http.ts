@@ -218,6 +218,15 @@ export const deleteStudent = async (id: string): Promise<boolean> => {
     }
 };
 
+export const deleteUserByStudentId = async (studentId: string): Promise<boolean> => {
+    try {
+        await request(`/auth/users/student/${studentId}`, { method: 'DELETE' });
+        return true;
+    } catch {
+        return false;
+    }
+};
+
 // ====================================
 // Courses Functions
 // ====================================

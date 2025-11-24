@@ -11,7 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Users, Plus, Edit2, Trash2, Search, Phone, Mail } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-import { getStudents, getGrades, getGroups, getCourses, getSubscriptions, updateStudent, deleteStudent } from "@/lib/api-http";
+import { getStudents, getGrades, getGroups, getCourses, getSubscriptions, updateStudent, deleteStudent, deleteUserByStudentId } from "@/lib/api-http";
 import { supabase } from "@/integrations/supabase/client";
 
 const Students = () => {
@@ -196,6 +196,29 @@ const Students = () => {
       toast({
         title: "خطأ",
         description: "حدث خطأ في حذف الطالب",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleDeleteUser = async (studentId: string) => {
+    try {
+      const success = await deleteUserByStudentId(studentId);
+
+      if (success) {
+        fetchStudents();
+        toast({
+          title: "تم الحذف نهائياً",
+          description: "تم حذف الطالب نهارياً من users و students",
+        });
+      } else {
+        throw new Error("فشل الحذف النهائي");
+      }
+    } catch (error) {
+      console.error('Error deleting user:', error);
+      toast({
+        title: "خطأ",
+        description: "حدث خطأ في الحذف النهائي",
         variant: "destructive",
       });
     }
@@ -404,117 +427,155 @@ const Students = () => {
           </CardHeader>
           <CardContent className="p-4">
             <div className="space-y-4">
-              {filteredStudents.map((student, index) => (
-                <div
-                  key={student.id}
-                  className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
-                >
-                  <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-2 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <Avatar className="h-10 w-10 border-2 border-white">
-                        <AvatarFallback className="text-xs bg-white text-cyan-600">{getInitials(student.name)}</AvatarFallback>
-                      </Avatar>
-                      <div>
-                        <h3 className="font-bold text-white text-lg">{student.name}</h3>
-                        <div className="flex items-center gap-2 text-xs text-cyan-50">
-                          <Mail className="w-3 h-3" />
-                          <span>{student.email}</span>
+              {filteredStudents.map((student, index) => {
+                const courseNames: string[] = student.course_names
+                  ? String(student.course_names).split(',').filter(Boolean)
+                  : (student.student_courses ? student.student_courses.map((enrollment) => enrollment.courses?.name).filter(Boolean) : []);
+                const joinDateSource = student.enrollment_date || student.created_at;
+                let joinDateDisplay = '-';
+                if (joinDateSource) {
+                  const d = new Date(joinDateSource);
+                  if (!isNaN(d.getTime())) {
+                    // Use Gregorian calendar with Arabic (Egypt) locale for numeric date
+                    try {
+                      joinDateDisplay = d.toLocaleDateString('ar-EG', { year: 'numeric', month: 'numeric', day: 'numeric' });
+                    } catch (_) {
+                      joinDateDisplay = d.toLocaleDateString('en-GB');
+                    }
+                  }
+                }
+                const gradeDisplay = student.grade_name || student.grade || '-';
+                const groupDisplay = student.group_name || '-';
+                return (
+                  <div
+                    key={student.id}
+                    className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
+                  >
+                    <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-2 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <Avatar className="h-10 w-10 border-2 border-white">
+                          <AvatarFallback className="text-xs bg-white text-cyan-600">{getInitials(student.name)}</AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <h3 className="font-bold text-white text-lg">{student.name}</h3>
+                          <div className="flex items-center gap-2 text-xs text-cyan-50">
+                            <Mail className="w-3 h-3" />
+                            <span>{student.email}</span>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleEdit(student)}
-                        className="h-8 w-8 p-0 text-white hover:bg-white/20"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleDelete(student.id)}
-                        className="h-8 w-8 p-0 text-white hover:bg-red-500/30"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    <div>
-                      <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📱 رقم الهاتف</div>
-                      <div className="text-sm font-medium flex items-center gap-2">
-                        <Phone className="w-3 h-3 text-muted-foreground" />
-                        {student.phone || '-'}
+                      <div className="flex gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleEdit(student)}
+                          className="h-8 w-8 p-0 text-white hover:bg-white/20"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDelete(student.id)}
+                          className="h-8 w-8 p-0 text-white hover:bg-red-500/30"
+                          title="حذف من students"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteUser(student.id)}
+                          className="h-8 w-8 p-0 bg-red-600/90 text-white hover:bg-red-700 border-2 border-red-800 shadow-lg"
+                          title="⚠️ حذف نهائي من users"
+                        >
+                          <Trash2 className="w-4 h-4 font-bold" />
+                        </Button>
                       </div>
                     </div>
 
-                    <div>
-                      <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">👨‍👩‍👦 رقم ولي الأمر</div>
-                      <div className="text-sm font-medium flex items-center gap-2">
-                        <Phone className="w-3 h-3 text-muted-foreground" />
-                        {student.guardian_phone || '-'}
+                    <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📱 رقم الهاتف</div>
+                        <div className="text-sm font-medium flex items-center gap-2">
+                          <Phone className="w-3 h-3 text-muted-foreground" />
+                          {student.phone || '-'}
+                        </div>
                       </div>
-                    </div>
 
-                    <div>
-                      <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🎓 المرحلة</div>
-                      <div className="text-sm font-medium">{student.grade}</div>
-                    </div>
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">👨‍👩‍👦 رقم ولي الأمر</div>
+                        <div className="text-sm font-medium flex items-center gap-2">
+                          <Phone className="w-3 h-3 text-muted-foreground" />
+                          {student.guardian_phone || '-'}
+                        </div>
+                      </div>
 
-                    <div>
-                      <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📅 تاريخ الانضمام</div>
-                      <div className="text-sm font-medium">{new Date(student.enrollment_date).toLocaleDateString('ar-SA')}</div>
-                    </div>
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🎓 المرحلة</div>
+                        <div className="text-sm font-medium">{gradeDisplay}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">👥 المجموعة</div>
+                        <div className="text-sm font-medium">{groupDisplay}</div>
+                      </div>
 
-                    <div>
-                      <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">💳 الاشتراك</div>
-                      <div className="text-sm">
-                        {student.subscriptions ? (
-                          <div className="space-y-1">
-                            <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs font-medium">
-                              {student.subscriptions.name}
-                            </span>
-                            <div className="text-xs text-muted-foreground">
-                              {student.subscription_price} جنيه
-                            </div>
-                            {student.subscription_end_date && (
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📅 تاريخ الانضمام</div>
+                        <div className="text-sm font-medium">{joinDateDisplay}</div>
+                      </div>
+
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">💳 الاشتراك</div>
+                        <div className="text-sm">
+                          {student.subscriptions ? (
+                            <div className="space-y-1">
+                              <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs font-medium">
+                                {student.subscriptions.name}
+                              </span>
                               <div className="text-xs text-muted-foreground">
-                                ينتهي: {new Date(student.subscription_end_date).toLocaleDateString('ar-SA')}
+                                {student.subscription_price} جنيه
                               </div>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">لا يوجد اشتراك</span>
-                        )}
+                              {student.subscription_end_date && (
+                                <div className="text-xs text-muted-foreground">
+                                  ينتهي: {new Date(student.subscription_end_date).toLocaleDateString('ar-SA')}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">لا يوجد اشتراك</span>
+                          )}
+                        </div>
                       </div>
-                    </div>
 
-                    <div>
-                      <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📚 الكورسات</div>
-                      <div className="flex flex-wrap gap-1">
-                        {student.student_courses?.map((enrollment) => (
-                          <span key={enrollment.courses.id} className="px-2 py-1 bg-primary/10 text-primary rounded text-xs font-medium">
-                            {enrollment.courses.name}
-                          </span>
-                        ))}
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📚 الكورسات</div>
+                        <div className="flex flex-wrap gap-1">
+                          {courseNames.length > 0 ? (
+                            courseNames.map((cName) => (
+                              <span key={cName} className="px-2 py-1 bg-primary/10 text-primary rounded text-xs font-medium">
+                                {cName}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-xs text-muted-foreground">لا توجد كورسات</span>
+                          )}
+                        </div>
                       </div>
-                    </div>
 
-                    <div>
-                      <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">⚡ الحالة</div>
-                      <span className={`px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1 ${student.is_active
-                        ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
-                        : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
-                        }`}>
-                        {student.is_active ? '✓ نشط' : '⚠ غير نشط'}
-                      </span>
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">⚡ الحالة</div>
+                        <span className={`px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1 ${student.is_active
+                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                          : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
+                          }`}>
+                          {student.is_active ? '✓ نشط' : '⚠ غير نشط'}
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
         </Card>

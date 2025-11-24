@@ -172,4 +172,72 @@ router.get('/me', async (req: Request, res: Response) => {
     }
 });
 
+// Delete user by student_id (for admins to delete student user accounts)
+// This will delete BOTH from users table AND students table (complete removal)
+router.delete('/users/student/:studentId', async (req: Request, res: Response) => {
+    try {
+        const { studentId } = req.params;
+
+        if (!studentId) {
+            return res.status(400).json({ error: 'Student ID is required' });
+        }
+
+        // First, get student info to find associated user by phone/email
+        const student = await queryOne<{ phone?: string; email?: string }>(
+            'SELECT phone, email FROM students WHERE id = ?',
+            [studentId]
+        );
+
+        if (!student) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
+
+        // Try to delete user by student_id first, then fallback to phone or email
+        let result = await query(
+            'DELETE FROM users WHERE student_id = ?',
+            [studentId]
+        );
+
+        let affectedRows = (result as unknown as QueryResult).affectedRows;
+
+        // If no rows deleted and student has phone, try deleting by phone
+        if (affectedRows === 0 && student.phone) {
+            result = await query(
+                'DELETE FROM users WHERE phone = ? AND role = "student"',
+                [student.phone]
+            );
+            affectedRows = (result as unknown as QueryResult).affectedRows;
+        }
+
+        // If still no rows deleted and student has email, try deleting by email
+        if (affectedRows === 0 && student.email) {
+            result = await query(
+                'DELETE FROM users WHERE email = ? AND role = "student"',
+                [student.email]
+            );
+            affectedRows = (result as unknown as QueryResult).affectedRows;
+        }
+
+        // Now delete from students table (and related records via CASCADE)
+        await query(
+            'DELETE FROM student_courses WHERE student_id = ?',
+            [studentId]
+        );
+
+        await query(
+            'DELETE FROM students WHERE id = ?',
+            [studentId]
+        );
+
+        res.json({
+            message: 'Student and user account deleted completely',
+            userDeleted: affectedRows > 0,
+            studentDeleted: true
+        });
+    } catch (error) {
+        console.error('Delete user and student error:', error);
+        res.status(500).json({ error: 'Failed to delete user and student' });
+    }
+});
+
 export default router;

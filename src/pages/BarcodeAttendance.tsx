@@ -147,7 +147,7 @@ const BarcodeAttendance = () => {
       const currentYear = new Date().getFullYear();
       const currentMonth = new Date().getMonth() + 1;
       // استخدم تعريف today في أعلى الدالة وتجنب إعادة تعريفه لتفادي الخطأ
-      
+
       for (const record of response.data || []) {
         const student = students.find((s: any) => s.id === record.student_id);
         if (student) {
@@ -209,7 +209,9 @@ const BarcodeAttendance = () => {
   const fetchAbsentStudents = async () => {
     try {
       const token = localStorage.getItem('token');
-      const today = new Date().toISOString().split('T')[0];
+      // Use local date parts to avoid UTC shift issues
+      const now = new Date();
+      const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
       const currentYear = new Date().getFullYear();
       const currentMonth = new Date().getMonth() + 1;
 
@@ -218,11 +220,16 @@ const BarcodeAttendance = () => {
         s.group_id === selectedGroupId && s.is_active
       );
 
-      // كل السجلات المسجلة (حضور أو غياب أو أى حالة) لهذا اليوم
-      const recordedIds = todayAttendance.map((a: any) => a.student_id);
+      // السجلات المسجلة حضور فعلي لهذا اليوم (نستثني الغياب حتى لو تم إدخاله يدوياً)
+      // نستخدم Set لتسريع عملية البحث وتجنب التكرار
+      const presentIds = new Set(
+        todayAttendance
+          .filter((a: any) => a.status === 'present')
+          .map((a: any) => a.student_id)
+      );
 
-      // الطلاب الذين لم يُسجل لهم أى سجل اليوم (لم يتم مرور باركودهم بعد)
-      const absent = groupStudents.filter((s: any) => !recordedIds.includes(s.id));
+      // الطلاب الذين ليس لديهم سجل حضور (present) اليوم
+      const absent = groupStudents.filter((s: any) => !presentIds.has(s.id));
 
       // Fetch last attendance for each absent student
       const lastAttendanceData: Record<string, any> = {};
@@ -685,7 +692,7 @@ const BarcodeAttendance = () => {
                     <TableRow key={record.id}>
                       <TableCell className="font-medium">{student?.name || 'غير معروف'}</TableCell>
                       <TableCell className="font-mono text-sm">{student?.phone || '-'}</TableCell>
-                      <TableCell className="font-mono text-sm">{student?.parent_phone || '-'}</TableCell>
+                      <TableCell className="font-mono text-sm">{student?.guardian_phone || '-'}</TableCell>
                       <TableCell className="font-mono text-sm">{student?.barcode || student?.barcode_id || '-'}</TableCell>
                       <TableCell>
                         <Badge variant={record.status === 'present' ? 'default' : 'destructive'}>
@@ -780,68 +787,76 @@ const BarcodeAttendance = () => {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {absentStudents.map((student: any) => {
-                    const lastAtt = lastAttendance[student.id];
-                    const hasPaid = monthlyPayments[student.id];
-                    return (
-                      <TableRow key={student.id}>
-                        <TableCell className="font-medium">{student.name}</TableCell>
-                        <TableCell className="font-mono text-sm">{student.phone || '-'}</TableCell>
-                        <TableCell className="font-mono text-sm">{student.parent_phone || '-'}</TableCell>
-                        <TableCell className="text-sm">
-                          {lastAtt ? (
-                            <div>
-                              <div>{new Date(lastAtt.attendance_date).toLocaleDateString('ar-SA')}</div>
-                              <div className="text-xs text-muted-foreground">
-                                {lastAtt.notes || 'لا يوجد ملاحظات'}
+                  {absentStudents
+                    .filter((student: any) => {
+                      // تأكيد مزدوج: استثناء أي طالب موجود في سجل الحضور اليوم
+                      const isPresentToday = todayAttendance.some(
+                        (a: any) => a.student_id === student.id && a.status === 'present'
+                      );
+                      return !isPresentToday;
+                    })
+                    .map((student: any) => {
+                      const lastAtt = lastAttendance[student.id];
+                      const hasPaid = monthlyPayments[student.id];
+                      return (
+                        <TableRow key={student.id}>
+                          <TableCell className="font-medium">{student.name}</TableCell>
+                          <TableCell className="font-mono text-sm">{student.phone || '-'}</TableCell>
+                          <TableCell className="font-mono text-sm">{student.guardian_phone || '-'}</TableCell>
+                          <TableCell className="text-sm">
+                            {lastAtt ? (
+                              <div>
+                                <div>{new Date(lastAtt.attendance_date).toLocaleDateString('ar-SA')}</div>
+                                <div className="text-xs text-muted-foreground">
+                                  {lastAtt.notes || 'لا يوجد ملاحظات'}
+                                </div>
                               </div>
-                            </div>
-                          ) : (
-                            <span className="text-muted-foreground">لم يحضر من قبل</span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={hasPaid ? 'default' : 'destructive'}>
-                            {hasPaid ? (
-                              <><CheckCircle className="ml-1 h-3 w-3" /> مدفوع</>
                             ) : (
-                              <><XCircle className="ml-1 h-3 w-3" /> غير مدفوع</>
+                              <span className="text-muted-foreground">لم يحضر من قبل</span>
                             )}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex gap-2">
-                            {!hasPaid && (
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={hasPaid ? 'default' : 'destructive'}>
+                              {hasPaid ? (
+                                <><CheckCircle className="ml-1 h-3 w-3" /> مدفوع</>
+                              ) : (
+                                <><XCircle className="ml-1 h-3 w-3" /> غير مدفوع</>
+                              )}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex gap-2">
+                              {!hasPaid && (
+                                <Button
+                                  variant="default"
+                                  size="sm"
+                                  onClick={() => handleQuickPayment(student)}
+                                  className="bg-green-600 hover:bg-green-700"
+                                >
+                                  <DollarSign className="ml-1 h-3 w-3" />
+                                  دفع
+                                </Button>
+                              )}
                               <Button
-                                variant="default"
+                                variant="outline"
                                 size="sm"
-                                onClick={() => handleQuickPayment(student)}
-                                className="bg-green-600 hover:bg-green-700"
+                                onClick={() => markAbsent(student)}
                               >
-                                <DollarSign className="ml-1 h-3 w-3" />
-                                دفع
+                                تسجيل غياب
                               </Button>
-                            )}
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => markAbsent(student)}
-                            >
-                              تسجيل غياب
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => sendWhatsAppNotification(student, 'absent')}
-                            >
-                              <MessageCircle className="ml-1 h-3 w-3" />
-                              واتساب
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => sendWhatsAppNotification(student, 'absent')}
+                              >
+                                <MessageCircle className="ml-1 h-3 w-3" />
+                                واتساب
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                 </TableBody>
               </Table>
             </CardContent>

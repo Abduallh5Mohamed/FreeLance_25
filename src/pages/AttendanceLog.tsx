@@ -89,8 +89,9 @@ const AttendanceLog = () => {
       setLoading(true);
       const start = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1);
       const end = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0);
-      const startStr = start.toISOString().split('T')[0];
-      const endStr = end.toISOString().split('T')[0];
+      const formatLocal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const startStr = formatLocal(start);
+      const endStr = formatLocal(end);
 
       const data = await getAttendance({
         student_id: studentId,
@@ -168,7 +169,10 @@ const AttendanceLog = () => {
   const attendanceMap = useMemo(() => {
     const map: { [dateStr: string]: Attendance } = {};
     attendance.forEach(a => {
-      const dateStr = new Date(a.attendance_date).toISOString().split('T')[0];
+      if (!a.attendance_date) return;
+      // Avoid UTC shift: format using local date parts instead of toISOString
+      const d = new Date(a.attendance_date as any);
+      const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
       map[dateStr] = a;
     });
     return map;
@@ -298,7 +302,7 @@ const AttendanceLog = () => {
               ) : (
                 <div className="space-y-3">
                   {scheduledDates.map(date => {
-                    const dateStr = date.toISOString().split('T')[0];
+                    const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
                     const record = attendanceMap[dateStr];
                     const dayLabel = date.toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 

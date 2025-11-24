@@ -31,7 +31,17 @@ const sanitizeBarcode = (value: string): string => {
 router.get('/', async (req: Request, res: Response) => {
     try {
         const students = await query(
-            `SELECT s.*, g.name AS grade_name, grp.name AS group_name
+            `SELECT 
+                s.*, 
+                g.name AS grade_name, 
+                grp.name AS group_name,
+                s.created_at AS enrollment_date,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ',')
+                    FROM student_courses sc 
+                    INNER JOIN courses c ON sc.course_id = c.id 
+                    WHERE sc.student_id = s.id
+                ) AS course_names
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -49,7 +59,17 @@ router.get('/', async (req: Request, res: Response) => {
 router.get('/:id', async (req: Request, res: Response) => {
     try {
         const student = await queryOne(
-            `SELECT s.*, g.name AS grade_name, grp.name AS group_name
+            `SELECT 
+                s.*, 
+                g.name AS grade_name, 
+                grp.name AS group_name,
+                s.created_at AS enrollment_date,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ',')
+                    FROM student_courses sc 
+                    INNER JOIN courses c ON sc.course_id = c.id 
+                    WHERE sc.student_id = s.id
+                ) AS course_names
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -72,7 +92,17 @@ router.get('/:id', async (req: Request, res: Response) => {
 router.get('/email/:email', async (req: Request, res: Response) => {
     try {
         const student = await queryOne(
-            `SELECT s.*, g.name AS grade_name, grp.name AS group_name
+            `SELECT 
+                s.*, 
+                g.name AS grade_name, 
+                grp.name AS group_name,
+                s.created_at AS enrollment_date,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ',')
+                    FROM student_courses sc 
+                    INNER JOIN courses c ON sc.course_id = c.id 
+                    WHERE sc.student_id = s.id
+                ) AS course_names
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -95,7 +125,17 @@ router.get('/email/:email', async (req: Request, res: Response) => {
 router.get('/phone/:phone', async (req: Request, res: Response) => {
     try {
         const student = await queryOne(
-            `SELECT s.*, g.name AS grade_name, grp.name AS group_name
+            `SELECT 
+                s.*, 
+                g.name AS grade_name, 
+                grp.name AS group_name,
+                s.created_at AS enrollment_date,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ',')
+                    FROM student_courses sc 
+                    INNER JOIN courses c ON sc.course_id = c.id 
+                    WHERE sc.student_id = s.id
+                ) AS course_names
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -118,7 +158,17 @@ router.get('/phone/:phone', async (req: Request, res: Response) => {
 router.get('/barcode/:barcode', async (req: Request, res: Response) => {
     try {
         const student = await queryOne(
-            `SELECT s.*, g.name AS grade_name, grp.name AS group_name
+            `SELECT 
+                s.*, 
+                g.name AS grade_name, 
+                grp.name AS group_name,
+                s.created_at AS enrollment_date,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ',')
+                    FROM student_courses sc 
+                    INNER JOIN courses c ON sc.course_id = c.id 
+                    WHERE sc.student_id = s.id
+                ) AS course_names
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -214,7 +264,17 @@ router.post('/', async (req: Request, res: Response) => {
         }
 
         const newStudent = await queryOne(
-            `SELECT s.*, g.name AS grade_name, grp.name AS group_name
+            `SELECT 
+                s.*, 
+                g.name AS grade_name, 
+                grp.name AS group_name,
+                s.created_at AS enrollment_date,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ',')
+                    FROM student_courses sc 
+                    INNER JOIN courses c ON sc.course_id = c.id 
+                    WHERE sc.student_id = s.id
+                ) AS course_names
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -326,7 +386,17 @@ router.put('/:id', async (req: Request, res: Response) => {
         }
 
         const updatedStudent = await queryOne(
-            `SELECT s.*, g.name AS grade_name, grp.name AS group_name
+            `SELECT 
+                s.*, 
+                g.name AS grade_name, 
+                grp.name AS group_name,
+                s.created_at AS enrollment_date,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ',')
+                    FROM student_courses sc 
+                    INNER JOIN courses c ON sc.course_id = c.id 
+                    WHERE sc.student_id = s.id
+                ) AS course_names
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id

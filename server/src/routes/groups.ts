@@ -13,13 +13,16 @@ interface Group {
     max_students?: number;
     current_students?: number;
     is_active: boolean;
+    // Added for schedule support
+    schedule_days?: string | null; // stored as JSON string of array
+    schedule_time?: string | null;
 }
 
 // Get all groups
 router.get('/', async (req: Request, res: Response) => {
     try {
         const groups = await query<Group>(
-            'SELECT id, name, description, course_id, grade_id, max_students, current_students, is_active FROM `groups` WHERE is_active = TRUE ORDER BY name'
+            'SELECT id, name, description, course_id, grade_id, max_students, current_students, is_active, schedule_days, schedule_time FROM `groups` WHERE is_active = TRUE ORDER BY name'
         );
         res.json(groups);
     } catch (error) {

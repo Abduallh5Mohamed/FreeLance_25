@@ -114,18 +114,17 @@ router.post('/', async (req: Request, res: Response) => {
             coursesJson = null;
         }
 
-        // Insert registration request with UUID (without email)
+        // Insert registration request with UUID including guardian_phone if schema supports it
         const requestId = randomUUID();
-        // Table student_registration_requests does NOT have guardian_phone column.
-        // Insert only supported columns.
         await pool.query(
             `INSERT INTO student_registration_requests 
-            (id, name, phone, password_hash, grade_id, group_id, requested_courses, status, is_offline, created_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+            (id, name, phone, guardian_phone, password_hash, grade_id, group_id, requested_courses, status, is_offline, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
             [
                 requestId,
                 name,
                 phone,
+                guardian_phone || null,
                 hashedPassword,
                 grade_id || null,
                 group_id || null,
@@ -257,7 +256,7 @@ router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthReq
         // Create student record with UUID and barcode
         const studentId = randomUUID();
         await connection.query(
-            `INSERT INTO students (id, name, phone, parent_phone, grade_id, group_id, password_hash, approval_status, is_offline, created_at) 
+            `INSERT INTO students (id, name, phone, guardian_phone, grade_id, group_id, password_hash, approval_status, is_offline, created_at) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
             [studentId, request.name, request.phone, request.guardian_phone || null, request.grade_id, request.group_id, request.password_hash, 'approved', request.is_offline || false]
         );
