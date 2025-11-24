@@ -29,6 +29,9 @@ export default function StudentBarcodes() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [editingGuardianId, setEditingGuardianId] = useState(null);
+  const [editingGuardianValue, setEditingGuardianValue] = useState('');
+  const [savingGuardian, setSavingGuardian] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -48,6 +51,13 @@ export default function StudentBarcodes() {
 
       console.log('Students loaded:', studentsData?.length);
       console.log('Groups loaded:', groupsData?.length);
+      // Debug: count students missing guardian phone
+      try {
+        const missingGuardianCount = (studentsData || []).filter(s => !(s.guardian_phone || s.parent_phone)).length;
+        console.log(`Students missing guardian_phone: ${missingGuardianCount}`);
+      } catch (e) {
+        console.log('Could not compute missing guardian_phone count', e);
+      }
     } catch (error) {
       console.error('Error loading data:', error);
       setMessage({ type: 'error', text: `خطأ في تحميل البيانات: ${error?.message}` });
