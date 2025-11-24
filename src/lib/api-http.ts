@@ -782,6 +782,15 @@ export const getNotAttemptedStudents = async (examId: string) => {
     return await request(`/exams/${examId}/not-attempted`);
 };
 
+// Get exam results (admin/teacher)
+export const getExamResults = async (examId?: string, studentId?: string) => {
+    const params = new URLSearchParams();
+    if (examId) params.append('exam_id', examId);
+    if (studentId) params.append('student_id', studentId);
+    const queryString = params.toString() ? `?${params.toString()}` : '';
+    return await request(`/exam-results${queryString}`);
+};
+
 // ====================================
 // Export all functions
 // ====================================

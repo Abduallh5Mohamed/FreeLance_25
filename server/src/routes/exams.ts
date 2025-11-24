@@ -64,25 +64,33 @@ router.get('/', async (req: Request, res: Response) => {
     try {
         const { course_id, is_active, student_id } = req.query;
 
-        let sql = `SELECT *, 
+        let sql: string;
+        const params: string[] = [];
+
+        // If student_id provided, join with student_courses to get enrolled courses
+        if (student_id) {
+            sql = `SELECT DISTINCT e.*, 
+                   CONCAT(e.exam_date, ' ', e.start_time) as start_time,
+                   CONCAT(e.exam_date, ' ', e.end_time) as end_time
+                   FROM exams e
+                   INNER JOIN student_courses sc ON sc.course_id = e.course_id AND sc.student_id = ?
+                   WHERE e.is_active = 1
+                   AND e.is_published = 1`;
+            params.push(student_id as string);
+        } else {
+            sql = `SELECT *, 
                    CONCAT(exam_date, ' ', start_time) as start_time,
                    CONCAT(exam_date, ' ', end_time) as end_time
                    FROM exams WHERE 1=1`;
-        const params: string[] = [];
 
-        // Default to active exams only (soft delete)
-        if (is_active === undefined) {
-            sql += ' AND is_active = ?';
-            params.push('1');
-        } else if (is_active !== undefined) {
-            sql += ' AND is_active = ?';
-            params.push(is_active as string);
-        }
-
-        // If student_id provided, only show published exams
-        if (student_id) {
-            sql += ' AND is_published = ?';
-            params.push('1');
+            // Default to active exams only (soft delete)
+            if (is_active === undefined) {
+                sql += ' AND is_active = ?';
+                params.push('1');
+            } else if (is_active !== undefined) {
+                sql += ' AND is_active = ?';
+                params.push(is_active as string);
+            }
         }
 
         if (course_id) {
@@ -96,15 +104,11 @@ router.get('/', async (req: Request, res: Response) => {
 
         // If student_id provided, add attempt count for each exam
         if (student_id) {
-            exams = await Promise.all(exams.map(async (exam) => {
-                const attempt = await queryOne(
-                    'SELECT COUNT(*) as attempt_count FROM exam_attempts WHERE exam_id = ? AND student_id = ?',
-                    [exam.id, student_id as string]
-                );
-                return {
-                    ...exam,
-                    attempts: attempt?.attempt_count || 0
-                };
+            // TODO: Add exam_attempts table
+            // For now, return 0 attempts for all exams
+            exams = exams.map((exam) => ({
+                ...exam,
+                attempts: 0
             }));
         }
 

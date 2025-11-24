@@ -42,6 +42,7 @@ import TeacherContentManager from "./pages/TeacherContentManager";
 import TeacherLectures from "./pages/TeacherLectures";
 import TeacherExams from "./pages/TeacherExams";
 import ExamReports from "./pages/ExamReports";
+import ExamResults from "./pages/ExamResults";
 import ChatAssistant from "./pages/ChatAssistant";
 import AuthGuard from "./components/AuthGuard";
 
@@ -86,6 +87,7 @@ const App = () => (
           <Route path="/teacher-lectures" element={<AuthGuard requiredRole="teacher"><TeacherLectures /></AuthGuard>} />
           <Route path="/teacher-exams" element={<AuthGuard requiredRole="teacher"><TeacherExams /></AuthGuard>} />
           <Route path="/exam-reports/:examId" element={<AuthGuard requiredRole="teacher"><ExamReports /></AuthGuard>} />
+          <Route path="/exam-results" element={<AuthGuard requiredRole="teacher"><ExamResults /></AuthGuard>} />
           <Route path="/chat-assistant" element={<AuthGuard requiredRole="teacher"><ChatAssistant /></AuthGuard>} />
 
           {/* Student Routes - Protected */}

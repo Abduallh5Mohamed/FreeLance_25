@@ -254,6 +254,14 @@ const TeacherDashboard = () => {
                 <FileVideo className="w-4 h-4 ml-2" />
                 رفع محتوى تعليمي
               </Button>
+              <Button
+                variant="outline"
+                className="w-full justify-start border-cyan-600 text-cyan-600 hover:bg-cyan-50"
+                onClick={() => navigate('/exam-results')}
+              >
+                <TrendingUp className="w-4 h-4 ml-2" />
+                نتائج الامتحانات
+              </Button>
             </CardContent>
           </Card>
 
