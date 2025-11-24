@@ -121,8 +121,22 @@ export default function StudentBarcodes() {
     }
   };
 
-  const handlePrint = () => {
-    window.print();
+  const handlePrint = (groupId?: string) => {
+    // Store the current group before printing
+    const currentGroup = selectedGroup;
+    
+    // If groupId is provided, switch to that group temporarily
+    if (groupId && groupId !== selectedGroup) {
+      setSelectedGroup(groupId);
+      // Wait for DOM to update, then print
+      setTimeout(() => {
+        window.print();
+        // Restore original group after print dialog closes
+        setTimeout(() => setSelectedGroup(currentGroup), 500);
+      }, 100);
+    } else {
+      window.print();
+    }
   };
 
   const generateAllBarcodes = async () => {
@@ -215,14 +229,6 @@ export default function StudentBarcodes() {
             </div>
             <div className="flex gap-2 no-print">
               <Button
-                onClick={handlePrint}
-                variant="outline"
-                className="gap-2 border-cyan-500 text-cyan-600 hover:bg-cyan-50 dark:hover:bg-cyan-950"
-              >
-                <Printer className="w-4 h-4" />
-                طباعة ({filteredStudents.length})
-              </Button>
-              <Button
                 onClick={generateAllBarcodes}
                 disabled={loading || students.filter(s => !s.barcode).length === 0}
                 className="bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-600 hover:to-teal-600 text-white gap-2"
@@ -276,8 +282,16 @@ export default function StudentBarcodes() {
                     placeholder="البحث عن طالب..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    className="w-full"
+                    className="flex-1"
                   />
+                  <Button
+                    onClick={() => handlePrint(selectedGroup)}
+                    variant="outline"
+                    className="gap-2 border-cyan-500 text-cyan-600 hover:bg-cyan-50 dark:hover:bg-cyan-950"
+                  >
+                    <Printer className="w-4 h-4" />
+                    طباعة المجموعة ({filteredStudents.length})
+                  </Button>
                 </div>
 
                 {filteredStudents.length === 0 ? (
