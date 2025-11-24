@@ -71,12 +71,10 @@ const StudentExams = () => {
     try {
       setLoading(true);
 
-      // Determine student ID (prefer full student record over user record)
+      // Determine student ID - use user.id directly for students
       const userStr = localStorage.getItem('currentUser');
-      const studentStr = localStorage.getItem('currentStudent');
       const user: User | null = userStr ? JSON.parse(userStr) : null;
-      const studentObj: { id?: string } | null = studentStr ? JSON.parse(studentStr) : null;
-      const studentId = studentObj?.id || user?.student_id || user?.id; // fallback chain
+      const studentId = user?.id; // Students are in users table with role='student'
 
       const data = await getExams(undefined, studentId);
       const now = new Date();

@@ -71,14 +71,13 @@ router.get('/', async (req: Request, res: Response) => {
                    FROM exams e WHERE 1=1`;
         const params: string[] = [];
 
-            // Default to active exams only (soft delete)
-            if (is_active === undefined) {
-                sql += ' AND is_active = ?';
-                params.push('1');
-            } else if (is_active !== undefined) {
-                sql += ' AND is_active = ?';
-                params.push(is_active as string);
-            }
+        // Default to active exams only (soft delete)
+        if (is_active === undefined) {
+            sql += ' AND is_active = ?';
+            params.push('1');
+        } else if (is_active !== undefined) {
+            sql += ' AND is_active = ?';
+            params.push(is_active as string);
         }
 
         if (course_id) {
@@ -428,7 +427,7 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
             return res.status(404).json({ error: 'Exam not found' });
         }
 
-        // Check if student is enrolled in the course
+        // Auto-enroll student if not enrolled (seamless experience)
         if (exam.course_id) {
             const enrollment = await queryOne(
                 'SELECT * FROM student_courses WHERE student_id = ? AND course_id = ?',
@@ -436,11 +435,17 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
             );
 
             if (!enrollment) {
-                return res.json({
-                    canAttempt: false,
-                    reason: 'not_enrolled',
-                    message: 'يجب التسجيل في الدورة أولاً',
-                });
+                // Auto-enroll student in course
+                try {
+                    await execute(
+                        'INSERT INTO student_courses (student_id, course_id) VALUES (?, ?)',
+                        [studentId, exam.course_id]
+                    );
+                    console.log(`✅ Auto-enrolled student ${studentId} in course ${exam.course_id}`);
+                } catch (enrollError) {
+                    console.error('⚠️ Auto-enrollment failed (continuing anyway):', enrollError);
+                    // Continue to allow exam attempt even if enrollment fails
+                }
             }
         }
 
@@ -526,7 +531,7 @@ router.post('/:examId/start/:studentId', async (req: Request, res: Response) => 
             return res.status(404).json({ error: 'Exam not found' });
         }
 
-        // Check if student is enrolled in the course
+        // Check if student is enrolled in the course - auto-enroll if not
         if (exam.course_id) {
             const enrollment = await queryOne(
                 'SELECT * FROM student_courses WHERE student_id = ? AND course_id = ?',
@@ -534,7 +539,17 @@ router.post('/:examId/start/:studentId', async (req: Request, res: Response) => 
             );
 
             if (!enrollment) {
-                return res.status(403).json({ error: 'يجب التسجيل في الدورة أولاً' });
+                // Auto-enroll student in the course
+                try {
+                    await execute(
+                        'INSERT INTO student_courses (student_id, course_id) VALUES (?, ?)',
+                        [studentId, exam.course_id]
+                    );
+                    console.log(`✅ Auto-enrolled student ${studentId} in course ${exam.course_id}`);
+                } catch (enrollError) {
+                    console.error('Auto-enrollment failed:', enrollError);
+                    // Continue anyway - enrollment is optional for exams
+                }
             }
         }
 
@@ -591,14 +606,57 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
         const { examId, studentId } = req.params;
         const { answers, score } = req.body;
 
+        // Get exam info for total_marks
+        const exam = await queryOne<any>(
+            'SELECT total_marks, passing_marks FROM exams WHERE id = ?',
+            [examId]
+        );
+
+        if (!exam) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
+
+        // Derive total marks if exam.total_marks missing or zero
+        let totalMarks: number = Number(exam.total_marks) || 0;
+        if (!totalMarks) {
+            const questionRows = await query<any>(
+                'SELECT points, marks FROM exam_questions WHERE exam_id = ?',
+                [examId]
+            );
+            totalMarks = Array.isArray(questionRows)
+                ? questionRows.reduce((sum, q) => sum + (Number(q.points) || Number(q.marks) || 1), 0)
+                : 0;
+        }
+
+        // Normalize passing marks (percentage vs absolute)
+        let rawPassing: number = Number(exam.passing_marks) || 0;
+        let passingMarks = rawPassing;
+        if (totalMarks > 0 && rawPassing > totalMarks && rawPassing <= 100) {
+            passingMarks = Math.ceil((rawPassing / 100) * totalMarks);
+        }
+
+        const passed = (Number(score) || 0) >= passingMarks;
+
+        // Update exam_attempts table
         await execute(
             `UPDATE exam_attempts 
-             SET status = 'completed', 
+             SET status = ?, 
                  completed_at = NOW(),
                  score = ?,
                  answers = ?
              WHERE exam_id = ? AND student_id = ?`,
-            [score ?? null, JSON.stringify(answers) ?? null, examId, studentId]
+            [passed ? 'passed' : 'failed', score ?? null, JSON.stringify(answers) ?? null, examId, studentId]
+        );
+
+        // Insert or update exam_results table for the results page
+        await execute(
+            `INSERT INTO exam_results (exam_id, student_id, marks_obtained, total_marks, submitted_at)
+             VALUES (?, ?, ?, ?, NOW())
+             ON DUPLICATE KEY UPDATE 
+                marks_obtained = VALUES(marks_obtained),
+                total_marks = VALUES(total_marks),
+                submitted_at = VALUES(submitted_at)`,
+            [examId, studentId, score ?? 0, totalMarks]
         );
 
         const updatedAttempt = await queryOne(
@@ -606,7 +664,7 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
             [examId, studentId]
         );
 
-        res.json(updatedAttempt);
+        res.json({ ...updatedAttempt, total_marks: totalMarks, passing_marks: passingMarks, passed });
     } catch (error) {
         console.error('Submit exam attempt error:', error);
         res.status(500).json({ error: 'Failed to submit exam attempt' });

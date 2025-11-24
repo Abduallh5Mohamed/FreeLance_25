@@ -28,10 +28,12 @@ interface ExamResult {
   id: string;
   exam_id: string;
   exam_title: string;
-  student_id: string;
+  student_id: string; // user id
   student_name: string;
-  grade_name?: string;
-  group_name?: string;
+  grade_id?: string | null;
+  group_id?: string | null;
+  grade_name?: string | null;
+  group_name?: string | null;
   score: number;
   total_marks: number;
   passing_marks?: number;
@@ -89,7 +91,7 @@ const ExamResults = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      
+
       // Load all data in parallel
       const [resultsData, studentsData, groupsData, gradesData] = await Promise.all([
         getExamResults(),
@@ -125,16 +127,14 @@ const ExamResults = () => {
         if (!matchesName && !matchesExam) return false;
       }
 
-      // Group filter
-      if (selectedGroup !== "all") {
-        const student = students.find(s => s.id === result.student_id);
-        if (student?.group_id !== selectedGroup) return false;
+      // Group filter (use group_id from result directly)
+      if (selectedGroup !== "all" && result.group_id !== selectedGroup) {
+        return false;
       }
 
-      // Grade filter
-      if (selectedGrade !== "all") {
-        const student = students.find(s => s.id === result.student_id);
-        if (student?.grade_id !== selectedGrade) return false;
+      // Grade filter (use grade_id from result directly)
+      if (selectedGrade !== "all" && result.grade_id !== selectedGrade) {
+        return false;
       }
 
       // Student filter
@@ -144,20 +144,19 @@ const ExamResults = () => {
 
       return true;
     });
-  }, [results, students, searchQuery, selectedGroup, selectedGrade, selectedStudent]);
+  }, [results, searchQuery, selectedGroup, selectedGrade, selectedStudent]);
 
   // Get filtered students based on grade and group
+  // Build student dropdown options from results (avoids mismatch between users.id and students.id)
   const availableStudents = useMemo(() => {
-    return students.filter((student) => {
-      if (selectedGrade !== "all" && student.grade_id !== selectedGrade) {
-        return false;
+    const map = new Map<string, { id: string; name: string }>();
+    results.forEach(r => {
+      if (!map.has(r.student_id)) {
+        map.set(r.student_id, { id: r.student_id, name: r.student_name || 'طالب' });
       }
-      if (selectedGroup !== "all" && student.group_id !== selectedGroup) {
-        return false;
-      }
-      return true;
     });
-  }, [students, selectedGrade, selectedGroup]);
+    return Array.from(map.values());
+  }, [results]);
 
   const getPercentage = (score: number, total: number) => {
     return total > 0 ? ((score / total) * 100).toFixed(1) : '0';
@@ -165,8 +164,8 @@ const ExamResults = () => {
 
   const getStatusBadge = (result: ExamResult) => {
     const percentage = parseFloat(getPercentage(result.score, result.total_marks));
-    const passingPercentage = result.passing_marks 
-      ? (result.passing_marks / result.total_marks) * 100 
+    const passingPercentage = result.passing_marks
+      ? (result.passing_marks / result.total_marks) * 100
       : 50;
 
     if (result.status === 'pending') {
@@ -220,126 +219,124 @@ const ExamResults = () => {
     <>
       <Header />
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">نتائج الامتحانات</h1>
-            <p className="text-gray-600">عرض ومتابعة درجات الطلاب</p>
-          </div>
-          <Button onClick={resetFilters} variant="outline">
-            إعادة تعيين الفلاتر
-          </Button>
-        </div>
-
-        {/* Filters */}
-        <Card>
-          <CardHeader>
-            <CardTitle>الفلاتر والبحث</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              {/* Search */}
-              <div className="relative">
-                <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                <Input
-                  placeholder="ابحث بالاسم أو الامتحان..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pr-10 text-right"
-                />
-              </div>
-
-              {/* Grade Filter */}
-              <Select value={selectedGrade} onValueChange={setSelectedGrade}>
-                <SelectTrigger className="text-right">
-                  <SelectValue placeholder="اختر الصف" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">كل الصفوف</SelectItem>
-                  {grades.map((grade) => (
-                    <SelectItem key={grade.id} value={grade.id}>
-                      {grade.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              {/* Group Filter */}
-              <Select value={selectedGroup} onValueChange={setSelectedGroup}>
-                <SelectTrigger className="text-right">
-                  <SelectValue placeholder="اختر المجموعة" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">كل المجموعات</SelectItem>
-                  {groups.map((group) => (
-                    <SelectItem key={group.id} value={group.id}>
-                      {group.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              {/* Student Filter */}
-              <Select value={selectedStudent} onValueChange={setSelectedStudent}>
-                <SelectTrigger className="text-right">
-                  <SelectValue placeholder="اختر الطالب" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">كل الطلاب</SelectItem>
-                  {availableStudents.map((student) => (
-                    <SelectItem key={student.id} value={student.id}>
-                      {student.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+        <div className="max-w-7xl mx-auto space-y-6">
+          {/* Header */}
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900">نتائج الامتحانات</h1>
+              <p className="text-gray-600">عرض ومتابعة درجات الطلاب</p>
             </div>
+            <Button onClick={resetFilters} variant="outline">
+              إعادة تعيين الفلاتر
+            </Button>
+          </div>
 
-            {/* Active filters summary */}
-            {(searchQuery || selectedGroup !== "all" || selectedGrade !== "all" || selectedStudent !== "all") && (
-              <div className="mt-4 text-sm text-gray-600">
-                عرض {filteredResults.length} من {results.length} نتيجة
-              </div>
-            )}
-          </CardContent>
-        </Card>
+          {/* Filters */}
+          <Card>
+            <CardHeader>
+              <CardTitle>الفلاتر والبحث</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                {/* Search */}
+                <div className="relative">
+                  <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <Input
+                    placeholder="ابحث بالاسم أو الامتحان..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pr-10 text-right"
+                  />
+                </div>
 
-        {/* Results Table */}
-        <Card>
-          <CardHeader>
-            <CardTitle>النتائج ({filteredResults.length})</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {filteredResults.length === 0 ? (
-              <div className="text-center py-12">
-                <Trophy className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                <p className="text-gray-600">لا توجد نتائج</p>
+                {/* Grade Filter */}
+                <Select value={selectedGrade} onValueChange={setSelectedGrade}>
+                  <SelectTrigger className="text-right">
+                    <SelectValue placeholder="اختر الصف" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">كل الصفوف</SelectItem>
+                    {grades.map((grade) => (
+                      <SelectItem key={grade.id} value={grade.id}>
+                        {grade.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                {/* Group Filter */}
+                <Select value={selectedGroup} onValueChange={setSelectedGroup}>
+                  <SelectTrigger className="text-right">
+                    <SelectValue placeholder="اختر المجموعة" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">كل المجموعات</SelectItem>
+                    {groups.map((group) => (
+                      <SelectItem key={group.id} value={group.id}>
+                        {group.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                {/* Student Filter */}
+                <Select value={selectedStudent} onValueChange={setSelectedStudent}>
+                  <SelectTrigger className="text-right">
+                    <SelectValue placeholder="اختر الطالب" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">كل الطلاب</SelectItem>
+                    {availableStudents.map((student) => (
+                      <SelectItem key={student.id} value={student.id}>
+                        {student.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="text-right">اسم الطالب</TableHead>
-                      <TableHead className="text-right">الصف</TableHead>
-                      <TableHead className="text-right">المجموعة</TableHead>
-                      <TableHead className="text-right">الامتحان</TableHead>
-                      <TableHead className="text-right">الدرجة</TableHead>
-                      <TableHead className="text-right">النسبة المئوية</TableHead>
-                      <TableHead className="text-right">الحالة</TableHead>
-                      <TableHead className="text-right">الأداء</TableHead>
-                      <TableHead className="text-right">تاريخ التسليم</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredResults.map((result) => {
-                      const student = students.find(s => s.id === result.student_id);
-                      return (
+
+              {/* Active filters summary */}
+              {(searchQuery || selectedGroup !== "all" || selectedGrade !== "all" || selectedStudent !== "all") && (
+                <div className="mt-4 text-sm text-gray-600">
+                  عرض {filteredResults.length} من {results.length} نتيجة
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Results Table */}
+          <Card>
+            <CardHeader>
+              <CardTitle>النتائج ({filteredResults.length})</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {filteredResults.length === 0 ? (
+                <div className="text-center py-12">
+                  <Trophy className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                  <p className="text-gray-600">لا توجد نتائج</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="text-right">اسم الطالب</TableHead>
+                        <TableHead className="text-right">الصف</TableHead>
+                        <TableHead className="text-right">المجموعة</TableHead>
+                        <TableHead className="text-right">الامتحان</TableHead>
+                        <TableHead className="text-right">الدرجة</TableHead>
+                        <TableHead className="text-right">النسبة المئوية</TableHead>
+                        <TableHead className="text-right">الحالة</TableHead>
+                        <TableHead className="text-right">الأداء</TableHead>
+                        <TableHead className="text-right">تاريخ التسليم</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredResults.map((result) => (
                         <TableRow key={result.id}>
                           <TableCell className="font-medium">{result.student_name}</TableCell>
-                          <TableCell>{student?.grade_name || result.grade_name || '-'}</TableCell>
-                          <TableCell>{student?.group_name || result.group_name || '-'}</TableCell>
+                          <TableCell>{result.grade_name || '-'}</TableCell>
+                          <TableCell>{result.group_name || '-'}</TableCell>
                           <TableCell>{result.exam_title}</TableCell>
                           <TableCell>
                             <span className="font-semibold">
@@ -363,16 +360,15 @@ const ExamResults = () => {
                               : '-'}
                           </TableCell>
                         </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       </div>
-    </div>
     </>
   );
 };

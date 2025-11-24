@@ -146,8 +146,8 @@ const TakeExam = () => {
         }
         const user = JSON.parse(userStr);
         const studentObj = studentStr ? JSON.parse(studentStr) : null;
-        // Prefer explicit student record id; fallback to user.student_id; final fallback to user.id (may fail backend if not enrolled)
-        const currentStudentId = studentObj?.id || user.student_id || user.id;
+        // Use user.id directly for students (they're in users table with role='student')
+        const currentStudentId = user.id;
         if (!currentStudentId) {
           toast({ title: 'خطأ', description: 'لا يمكن تحديد هوية الطالب. يرجى إعادة تسجيل الدخول.', variant: 'destructive' });
           navigate('/student-exams');

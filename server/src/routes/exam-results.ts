@@ -7,10 +7,12 @@ interface ExamResult {
     id: string;
     exam_id: string;
     exam_title: string;
-    student_id: string;
+    student_id: string; // user id
     student_name: string;
-    grade_name?: string;
-    group_name?: string;
+    grade_id?: string | null;
+    group_id?: string | null;
+    grade_name?: string | null;
+    group_name?: string | null;
     score: number;
     total_marks: number;
     passing_marks?: number;
@@ -28,22 +30,26 @@ router.get('/', async (req: Request, res: Response) => {
             SELECT 
                 er.id,
                 er.exam_id,
-                e.title as exam_title,
+                e.title AS exam_title,
                 er.student_id,
-                s.name as student_name,
-                gr.name as grade_name,
-                g.name as group_name,
-                er.score,
-                e.total_marks,
+                COALESCE(u.name, 'طالب غير معروف') AS student_name,
+                s.grade_id,
+                s.group_id,
+                gr.name AS grade_name,
+                grp.name AS group_name,
+                er.marks_obtained AS score,
+                er.total_marks,
                 e.passing_marks,
-                er.status,
+                'graded' AS status,
                 er.submitted_at,
                 er.graded_at
             FROM exam_results er
             INNER JOIN exams e ON e.id = er.exam_id
-            INNER JOIN students s ON s.id = er.student_id
+            LEFT JOIN users u ON u.id = er.student_id AND u.role = 'student'
+            /* Try to locate matching student row by explicit link, or fallback by phone, or by id match */
+            LEFT JOIN students s ON (s.id = u.student_id OR (u.student_id IS NULL AND s.phone = u.phone) OR s.id = u.id)
             LEFT JOIN grades gr ON gr.id = s.grade_id
-            LEFT JOIN \`groups\` g ON g.id = s.group_id
+            LEFT JOIN \`groups\` grp ON grp.id = s.group_id
             WHERE 1=1
         `;
         const params: string[] = [];
@@ -64,7 +70,7 @@ router.get('/', async (req: Request, res: Response) => {
         res.json(results);
     } catch (error) {
         console.error('Get exam results error:', error);
-        res.status(500).json({ error: 'Failed to fetch exam results' });
+        res.status(500).json({ error: 'Failed to fetch exam results', details: error instanceof Error ? error.message : 'Unknown error' });
     }
 });
 
@@ -77,25 +83,28 @@ router.get('/:id', async (req: Request, res: Response) => {
             SELECT 
                 er.id,
                 er.exam_id,
-                e.title as exam_title,
+                e.title AS exam_title,
                 er.student_id,
-                s.name as student_name,
-                gr.name as grade_name,
-                g.name as group_name,
-                er.score,
-                e.total_marks,
+                COALESCE(u.name, 'طالب غير معروف') AS student_name,
+                s.grade_id,
+                s.group_id,
+                gr.name AS grade_name,
+                grp.name AS group_name,
+                er.marks_obtained AS score,
+                er.total_marks,
                 e.passing_marks,
-                er.status,
-                er.answers,
+                'graded' AS status,
+                NULL AS answers,
                 er.submitted_at,
                 er.graded_at,
                 er.graded_by,
-                er.feedback
+                er.remarks AS feedback
             FROM exam_results er
             INNER JOIN exams e ON e.id = er.exam_id
-            INNER JOIN students s ON s.id = er.student_id
+            LEFT JOIN users u ON u.id = er.student_id AND u.role = 'student'
+            LEFT JOIN students s ON (s.id = u.student_id OR (u.student_id IS NULL AND s.phone = u.phone) OR s.id = u.id)
             LEFT JOIN grades gr ON gr.id = s.grade_id
-            LEFT JOIN \`groups\` g ON g.id = s.group_id
+            LEFT JOIN \`groups\` grp ON grp.id = s.group_id
             WHERE er.id = ?
         `;
 
@@ -107,7 +116,7 @@ router.get('/:id', async (req: Request, res: Response) => {
         res.json(results[0]);
     } catch (error) {
         console.error('Get exam result error:', error);
-        res.status(500).json({ error: 'Failed to fetch exam result' });
+        res.status(500).json({ error: 'Failed to fetch exam result', details: error instanceof Error ? error.message : 'Unknown error' });
     }
 });
 
