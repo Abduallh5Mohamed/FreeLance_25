@@ -124,7 +124,7 @@ export default function StudentBarcodes() {
   const handlePrint = (groupId?: string) => {
     // Store the current group before printing
     const currentGroup = selectedGroup;
-    
+
     // If groupId is provided, switch to that group temporarily
     if (groupId && groupId !== selectedGroup) {
       setSelectedGroup(groupId);
@@ -187,29 +187,61 @@ export default function StudentBarcodes() {
               left: 0;
               top: 0;
               width: 100%;
+              padding: 20px;
             }
             .no-print {
               display: none !important;
             }
-            .print-student-card {
-              page-break-inside: avoid;
-              break-inside: avoid;
-              margin-bottom: 20px;
-              border: 2px solid #0891b2;
-              padding: 15px;
-              background: white;
+            .print-table {
+              width: 100%;
+              border-collapse: collapse;
+              margin-top: 20px;
             }
-            .print-header {
+            .print-table th,
+            .print-table td {
+              border: 1px solid #000;
+              padding: 8px;
+              text-align: center;
+              font-size: 12px;
+            }
+            .print-table th {
               background: #0891b2 !important;
               -webkit-print-color-adjust: exact;
               print-color-adjust: exact;
               color: white !important;
-              padding: 10px;
+              font-weight: bold;
+            }
+            .print-table tr:nth-child(even) {
+              background: #f0f9ff !important;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
+            .print-header-title {
+              text-align: center;
               margin-bottom: 10px;
+              padding: 10px;
+              background: #0891b2 !important;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+              color: white !important;
+              font-size: 18px;
+              font-weight: bold;
+              border-radius: 5px;
+            }
+            .barcode-cell {
+              padding: 5px !important;
+            }
+            .barcode-cell svg {
+              margin: 0 auto;
             }
             @page {
-              size: A4;
-              margin: 15mm;
+              size: A4 landscape;
+              margin: 10mm;
+            }
+          }
+          @media screen {
+            .print-area {
+              display: none;
             }
           }
         `}
@@ -300,137 +332,176 @@ export default function StudentBarcodes() {
                     <p className="text-lg font-medium">لا توجد طلاب في هذه المجموعة</p>
                   </div>
                 ) : (
-                  <div className="space-y-4 print-area">{filteredStudents.map((student, index) => {
-                    const barcode = sanitizeBarcode(student.barcode);
-                    const groupName = student.group_id
-                      ? groups.find(g => g.id === student.group_id)?.name
-                      : 'لا يوجد اشتراك';
+                  <>
+                    {/* عرض البطاقات على الشاشة */}
+                    <div className="space-y-4 no-print">{filteredStudents.map((student, index) => {
+                      const barcode = sanitizeBarcode(student.barcode);
+                      const groupName = student.group_id
+                        ? groups.find(g => g.id === student.group_id)?.name
+                        : 'لا يوجد اشتراك';
 
-                    return (
-                      <motion.div
-                        key={student.id}
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: index * 0.05 }}
-                        className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900 print-student-card"
-                      >
-                        <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-3 flex items-center justify-between print-header">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center text-cyan-600 font-bold text-sm">
-                              {student.name?.charAt(0) || 'ط'}
+                      return (
+                        <motion.div
+                          key={student.id}
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: index * 0.05 }}
+                          className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
+                        >
+                          <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-3 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center text-cyan-600 font-bold text-sm">
+                                {student.name?.charAt(0) || 'ط'}
+                              </div>
+                              <div>
+                                <h3 className="font-bold text-white text-lg">{student.name}</h3>
+                              </div>
                             </div>
-                            <div>
-                              <h3 className="font-bold text-white text-lg">{student.name}</h3>
-                            </div>
-                          </div>
-                          <div className="flex gap-2 no-print">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => generateBarcode(student.id)}
-                              disabled={loading}
-                              className="h-8 w-8 p-0 text-white hover:bg-white/20"
-                            >
-                              <Edit2 className="w-4 h-4" />
-                            </Button>
-                            {barcode && (
+                            <div className="flex gap-2">
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => deleteBarcode(student.id)}
+                                onClick={() => generateBarcode(student.id)}
+                                disabled={loading}
                                 className="h-8 w-8 p-0 text-white hover:bg-white/20"
                               >
-                                <Trash2 className="w-4 h-4" />
+                                <Edit2 className="w-4 h-4" />
                               </Button>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="p-4 grid grid-cols-2 gap-4">
-                          <div>
-                            <div className="flex items-center gap-2 mb-2">
-                              <Barcode className="w-4 h-4 text-cyan-600" />
-                              <span className="text-sm text-muted-foreground">رقم الهاتف</span>
+                              {barcode && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => deleteBarcode(student.id)}
+                                  className="h-8 w-8 p-0 text-white hover:bg-white/20"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              )}
                             </div>
-                            <p className="font-medium">{student.phone || '---'}</p>
                           </div>
 
-                          <div>
-                            <div className="flex items-center gap-2 mb-2">
-                              <Users className="w-4 h-4 text-cyan-600" />
-                              <span className="text-sm text-muted-foreground">المرحلة</span>
-                            </div>
-                            <p className="font-medium">{student.grade || '---'}</p>
-                          </div>
-
-                          <div>
-                            <div className="flex items-center gap-2 mb-2">
-                              <Users className="w-4 h-4 text-cyan-600" />
-                              <span className="text-sm text-muted-foreground">الخصوصات</span>
-                            </div>
-                            <p className="font-medium">{groupName}</p>
-                          </div>
-
-                          <div>
-                            <div className="flex items-center gap-2 mb-2">
-                              <Barcode className="w-4 h-4 text-cyan-600" />
-                              <span className="text-sm text-muted-foreground">الاشتراك</span>
-                            </div>
-                            <p className="font-medium text-cyan-600">لا يوجد اشتراك</p>
-                          </div>
-
-                          <div className="col-span-2">
-                            <div className="flex items-center gap-2 mb-2">
-                              <CheckCircle className="w-4 h-4 text-cyan-600" />
-                              <span className="text-sm text-muted-foreground">الحالة</span>
-                            </div>
-                            {barcode ? (
-                              <span className="inline-flex items-center gap-2 text-green-700 dark:text-green-400 text-sm bg-green-100 dark:bg-green-500/20 px-3 py-1 rounded">
-                                <CheckCircle className="w-4 h-4" />
-                                نشط
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-2 text-amber-700 dark:text-amber-400 text-sm bg-amber-100 dark:bg-amber-500/20 px-3 py-1 rounded">
-                                <Calendar className="w-4 h-4" />
-                                بدون باركود
-                              </span>
-                            )}
-                          </div>
-
-                          {barcode && (
-                            <div className="col-span-2">
+                          <div className="p-4 grid grid-cols-2 gap-4">
+                            <div>
                               <div className="flex items-center gap-2 mb-2">
                                 <Barcode className="w-4 h-4 text-cyan-600" />
-                                <span className="text-sm text-muted-foreground">الباركود</span>
+                                <span className="text-sm text-muted-foreground">رقم الهاتف</span>
                               </div>
-                              <div className="bg-white p-2 rounded border inline-block">
-                                <BarcodeReact
-                                  value={barcode}
-                                  width={1.2}
-                                  height={35}
-                                  fontSize={10}
-                                  background="#ffffff"
-                                  lineColor="#000000"
-                                  margin={0}
-                                />
-                              </div>
+                              <p className="font-medium">{student.phone || '---'}</p>
                             </div>
-                          )}
 
-                          {!barcode && (
-                            <div className="col-span-2">
+                            <div>
                               <div className="flex items-center gap-2 mb-2">
-                                <Calendar className="w-4 h-4 text-cyan-600" />
-                                <span className="text-sm text-muted-foreground">تاريخ الانضمام</span>
+                                <Users className="w-4 h-4 text-cyan-600" />
+                                <span className="text-sm text-muted-foreground">المرحلة</span>
                               </div>
-                              <p className="font-medium">Invalid Date</p>
+                              <p className="font-medium">{student.grade || '---'}</p>
                             </div>
-                          )}
-                        </div>
-                      </motion.div>
-                    );
-                  })}
-                  </div>
+
+                            <div>
+                              <div className="flex items-center gap-2 mb-2">
+                                <Users className="w-4 h-4 text-cyan-600" />
+                                <span className="text-sm text-muted-foreground">الخصوصات</span>
+                              </div>
+                              <p className="font-medium">{groupName}</p>
+                            </div>
+
+                            <div>
+                              <div className="flex items-center gap-2 mb-2">
+                                <CheckCircle className="w-4 h-4 text-cyan-600" />
+                                <span className="text-sm text-muted-foreground">الحالة</span>
+                              </div>
+                              {barcode ? (
+                                <span className="inline-flex items-center gap-2 text-green-700 dark:text-green-400 text-sm bg-green-100 dark:bg-green-500/20 px-3 py-1 rounded">
+                                  <CheckCircle className="w-4 h-4" />
+                                  نشط
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-2 text-amber-700 dark:text-amber-400 text-sm bg-amber-100 dark:bg-amber-500/20 px-3 py-1 rounded">
+                                  <Calendar className="w-4 h-4" />
+                                  بدون باركود
+                                </span>
+                              )}
+                            </div>
+
+                            {barcode && (
+                              <div className="col-span-2">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <Barcode className="w-4 h-4 text-cyan-600" />
+                                  <span className="text-sm text-muted-foreground">الباركود</span>
+                                </div>
+                                <div className="bg-white p-2 rounded border inline-block">
+                                  <BarcodeReact
+                                    value={barcode}
+                                    width={1.2}
+                                    height={35}
+                                    fontSize={10}
+                                    background="#ffffff"
+                                    lineColor="#000000"
+                                    margin={0}
+                                  />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </motion.div>
+                      );
+                    })}
+                    </div>
+
+                    {/* جدول الطباعة */}
+                    <div className="print-area">
+                      <div className="print-header-title">
+                        كشف الباركود - {selectedGroup === 'all' ? 'جميع الطلاب' : selectedGroup === 'no-group' ? 'بدون مجموعة' : groups.find(g => g.id === selectedGroup)?.name || 'المجموعة'}
+                      </div>
+                      <table className="print-table">
+                        <thead>
+                          <tr>
+                            <th style={{ width: '40px' }}>م</th>
+                            <th style={{ width: '150px' }}>اسم الطالب</th>
+                            <th style={{ width: '100px' }}>رقم الهاتف</th>
+                            <th style={{ width: '100px' }}>رقم ولي الأمر</th>
+                            <th style={{ width: '80px' }}>المرحلة</th>
+                            <th style={{ width: '100px' }}>المجموعة</th>
+                            <th style={{ width: '200px' }}>الباركود</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredStudents.map((student, index) => {
+                            const barcode = sanitizeBarcode(student.barcode);
+                            const groupName = student.group_id
+                              ? groups.find(g => g.id === student.group_id)?.name
+                              : '-';
+
+                            return (
+                              <tr key={student.id}>
+                                <td>{index + 1}</td>
+                                <td style={{ textAlign: 'right', paddingRight: '8px' }}>{student.name}</td>
+                                <td>{student.phone || '-'}</td>
+                                <td>{student.guardian_phone || '-'}</td>
+                                <td>{student.grade || '-'}</td>
+                                <td>{groupName}</td>
+                                <td className="barcode-cell">
+                                  {barcode ? (
+                                    <BarcodeReact
+                                      value={barcode}
+                                      width={1}
+                                      height={30}
+                                      fontSize={8}
+                                      background="#ffffff"
+                                      lineColor="#000000"
+                                      margin={0}
+                                    />
+                                  ) : (
+                                    <span style={{ color: '#f59e0b' }}>لا يوجد</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
                 )}
               </div>
             </TabsContent>
