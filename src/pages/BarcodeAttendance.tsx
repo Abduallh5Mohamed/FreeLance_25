@@ -297,7 +297,16 @@ const BarcodeAttendance = () => {
       toast({ title: 'لا يوجد رقم', description: 'لا يتوفر رقم لولي الأمر أو الطالب', variant: 'destructive' });
       return;
     }
-    const phoneNumber = rawPhone.replace(/[^0-9]/g, '').replace(/^0/, '2');
+    // إزالة كل الحروف وإبقاء الأرقام فقط
+    let phoneNumber = rawPhone.replace(/[^0-9]/g, '');
+    // إضافة كود مصر إذا كان الرقم يبدأ بـ 0
+    if (phoneNumber.startsWith('0')) {
+      phoneNumber = '+20' + phoneNumber.substring(1);
+    } else if (!phoneNumber.startsWith('20')) {
+      phoneNumber = '+20' + phoneNumber;
+    } else {
+      phoneNumber = '+' + phoneNumber;
+    }
     const encodedMessage = encodeURIComponent(message);
     window.open(`https://wa.me/${phoneNumber}?text=${encodedMessage}`, '_blank');
   };
