@@ -54,6 +54,7 @@ const TakeExam = () => {
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [canAttempt, setCanAttempt] = useState(true);
   const [attemptMessage, setAttemptMessage] = useState('');
+  const [attemptResult, setAttemptResult] = useState<{score:number; total:number; passed:boolean; passingMarks:number} | null>(null);
   const [examStartTime, setExamStartTime] = useState<Date | null>(null);
   const [studentId, setStudentId] = useState<string>('');
 
@@ -137,30 +138,21 @@ const TakeExam = () => {
 
         // Get student ID from localStorage
         const userStr = localStorage.getItem('currentUser');
+        const studentStr = localStorage.getItem('currentStudent');
         if (!userStr) {
-          toast({
-            title: 'خطأ',
-            description: 'يجب تسجيل الدخول أولاً',
-            variant: 'destructive'
-          });
+          toast({ title: 'خطأ', description: 'يجب تسجيل الدخول أولاً', variant: 'destructive' });
           navigate('/auth');
           return;
         }
-
         const user = JSON.parse(userStr);
-
-        // Check if user has a valid student_id
-        if (!user.student_id) {
-          toast({
-            title: 'خطأ',
-            description: 'لا يمكنك دخول الامتحانات. يرجى التواصل مع الإدارة.',
-            variant: 'destructive'
-          });
+        const studentObj = studentStr ? JSON.parse(studentStr) : null;
+        // Prefer explicit student record id; fallback to user.student_id; final fallback to user.id (may fail backend if not enrolled)
+        const currentStudentId = studentObj?.id || user.student_id || user.id;
+        if (!currentStudentId) {
+          toast({ title: 'خطأ', description: 'لا يمكن تحديد هوية الطالب. يرجى إعادة تسجيل الدخول.', variant: 'destructive' });
           navigate('/student-exams');
           return;
         }
-
-        const currentStudentId = user.student_id;
         setStudentId(currentStudentId);
 
         // Check if student can attempt this exam
@@ -169,14 +161,29 @@ const TakeExam = () => {
 
         if (!attemptCheck.canAttempt) {
           setCanAttempt(false);
-          setAttemptMessage(attemptCheck.message || 'لا يمكنك دخول هذا الامتحان');
+          setAttemptMessage(attemptCheck.message || attemptCheck.reason || 'لا يمكنك دخول هذا الامتحان');
 
-          // If already attempted, show score
-          if (attemptCheck.reason === 'already_attempted' && attemptCheck.score !== undefined) {
-            setShowResults(true);
-            setScore(attemptCheck.score);
-            setTotalMarks(attemptCheck.totalMarks || 0);
-            setPassed(attemptCheck.passed || false);
+          // If already attempted, fetch exam to display summary
+          if (attemptCheck.reason === 'already_attempted') {
+            try {
+              const examData = await getExamById(examId);
+              // Fetch questions to derive total marks if missing
+              const qs = await getExamQuestions(examId);
+              const computedTotal = Array.isArray(qs)
+                ? qs.reduce((sum: number, q: any) => sum + (q.marks || q.points || 1), 0)
+                : 0;
+              const rawTotal = examData.total_marks || examData.totalMarks || computedTotal;
+              const rawPassing = examData.passing_marks || examData.passingMarks || 0;
+              // Interpret passing as percentage if > total and <=100
+              const passingMarks = rawTotal > 0 && rawPassing > rawTotal && rawPassing <= 100
+                ? Math.ceil((rawPassing / 100) * rawTotal)
+                : rawPassing;
+              const existingScore = attemptCheck.score || 0;
+              const passed = existingScore >= passingMarks;
+              setAttemptResult({score: existingScore, total: rawTotal, passed, passingMarks});
+            } catch (e) {
+              console.error('Failed to load exam for attempt summary', e);
+            }
           }
 
           if (attemptCheck.reason === 'not_started' && attemptCheck.startTime) {
@@ -335,8 +342,16 @@ const TakeExam = () => {
       }
     });
 
-    const totalMarks = exam.total_marks || exam.totalMarks || 0;
-    const passingMarks = exam.passing_marks || exam.passingMarks || 0;
+    // Derive total marks if missing from exam object
+    let totalMarks = exam.total_marks || exam.totalMarks || 0;
+    if (!totalMarks) {
+      totalMarks = exam.questions.reduce((sum, q) => sum + (q.marks || q.points || 1), 0);
+    }
+    let passingMarks = exam.passing_marks || exam.passingMarks || 0;
+    // Interpret passing as percentage (e.g., 50 means 50%) if raw passing > total but <=100
+    if (totalMarks > 0 && passingMarks > totalMarks && passingMarks <= 100) {
+      passingMarks = Math.ceil((passingMarks / 100) * totalMarks);
+    }
     const percentage = totalMarks > 0 ? (score / totalMarks) * 100 : 0;
     const passed = score >= passingMarks;
 
@@ -410,8 +425,47 @@ const TakeExam = () => {
     );
   }
 
-  // Show message if student can't attempt exam
+  // Show message or summary if student can't attempt exam
   if (!canAttempt) {
+    // If already attempted show result summary
+    if (attemptResult) {
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 flex items-center justify-center p-4">
+          <FloatingParticles />
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="max-w-md w-full"
+          >
+            <Card className="shadow-2xl border-2">
+              <CardHeader className="text-center pb-4">
+                <div className={`mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4 ${attemptResult.passed ? 'bg-green-100 dark:bg-green-900/20' : 'bg-red-100 dark:bg-red-900/20'}`}> 
+                  {attemptResult.passed ? (
+                    <CheckCircle2 className="w-8 h-8 text-green-600 dark:text-green-500" />
+                  ) : (
+                    <XCircle className="w-8 h-8 text-red-600 dark:text-red-500" />
+                  )}
+                </div>
+                <CardTitle className="text-2xl">نتيجة الامتحان</CardTitle>
+              </CardHeader>
+              <CardContent className="text-center space-y-4">
+                <p className="text-lg font-semibold">الدرجة: {attemptResult.score} / {attemptResult.total}</p>
+                <p className={attemptResult.passed ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold'}>
+                  {attemptResult.passed ? 'تم النجاح' : `لم تحصل على درجة النجاح (${attemptResult.passingMarks})`}
+                </p>
+                <Button
+                  onClick={() => navigate('/student-exams')}
+                  className="w-full"
+                >
+                  العودة للامتحانات
+                </Button>
+              </CardContent>
+            </Card>
+          </motion.div>
+        </div>
+      );
+    }
+    // Generic block view
     return (
       <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 flex items-center justify-center p-4">
         <FloatingParticles />
@@ -429,7 +483,6 @@ const TakeExam = () => {
             </CardHeader>
             <CardContent className="text-center space-y-4">
               <p className="text-lg text-muted-foreground">{attemptMessage}</p>
-
               {examStartTime && (
                 <div className="bg-primary/5 p-4 rounded-lg">
                   <p className="text-sm font-medium mb-2">الامتحان يبدأ في:</p>
@@ -449,7 +502,6 @@ const TakeExam = () => {
                   </p>
                 </div>
               )}
-
               <Button
                 onClick={() => navigate('/student-exams')}
                 className="w-full"

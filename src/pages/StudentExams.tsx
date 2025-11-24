@@ -33,6 +33,26 @@ const StudentExams = () => {
   const [exams, setExams] = useState<StudentExam[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // ===== DateTime Helpers (shared between loader + render) =====
+  const sanitizeDateTime = (raw?: string): string | undefined => {
+    if (!raw) return undefined;
+    const trimmed = raw.trim();
+    const parts = trimmed.split(/\s+/);
+    // Pattern like: YYYY-MM-DD YYYY-MM-DD HH:MM:SS → collapse duplicate date
+    if (parts.length === 3 && parts[0] === parts[1]) {
+      return `${parts[0]} ${parts[2]}`;
+    }
+    return trimmed;
+  };
+
+  const parseSafe = (raw?: string): Date | null => {
+    const s = sanitizeDateTime(raw);
+    if (!s) return null;
+    const isoCandidate = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(s) ? s.replace(' ', 'T') : s;
+    const d = new Date(isoCandidate);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
   // Check authentication
   useEffect(() => {
     const userStr = localStorage.getItem('currentUser');
@@ -51,60 +71,65 @@ const StudentExams = () => {
     try {
       setLoading(true);
 
-      // Get student ID from localStorage
+      // Determine student ID (prefer full student record over user record)
       const userStr = localStorage.getItem('currentUser');
+      const studentStr = localStorage.getItem('currentStudent');
       const user: User | null = userStr ? JSON.parse(userStr) : null;
-      const studentId = user?.student_id || user?.id;
+      const studentObj: { id?: string } | null = studentStr ? JSON.parse(studentStr) : null;
+      const studentId = studentObj?.id || user?.student_id || user?.id; // fallback chain
 
       const data = await getExams(undefined, studentId);
       const now = new Date();
 
       console.log('🕐 Current time:', now.toISOString(), '(Local:', now.toLocaleString('ar-EG'), ')');
 
-      const examsData = data?.map((exam: StudentExam) => {
-        // Determine exam status based on start_time, end_time, and attempts
-        let status: 'available' | 'upcoming' | 'completed' | 'expired' = 'available';
+
+      const examsData = data?.map((exam: StudentExam & { start_dt?: string; end_dt?: string }) => {
         const hasAttempted = (exam.attempts || 0) > 0;
+
+        // Sanitize raw times first
+        const combinedStart = exam.start_dt || exam.start_time;
+        const combinedEnd = exam.end_dt || exam.end_time;
+        const rawStart = sanitizeDateTime(combinedStart);
+        const rawEnd = sanitizeDateTime(combinedEnd);
+        const startDate = parseSafe(rawStart);
+        const endDate = parseSafe(rawEnd);
 
         console.log(`\n📝 Exam: ${exam.title}`);
         console.log('  Has attempted:', hasAttempted);
-        console.log('  Start time:', exam.start_time);
-        console.log('  End time:', exam.end_time);
+        console.log('  Start time (raw):', exam.start_time, '→', rawStart, 'Parsed valid?', !!startDate);
+        console.log('  End time (raw):', exam.end_time, '→', rawEnd, 'Parsed valid?', !!endDate);
+
+        let status: 'available' | 'upcoming' | 'completed' | 'expired' = 'available';
 
         if (hasAttempted) {
-          // If student already attempted, mark as completed regardless of time
           status = 'completed';
           console.log('  ✅ Status: completed (already attempted)');
-        } else if (exam.start_time && exam.end_time) {
-          const startTime = new Date(exam.start_time);
-          const endTime = new Date(exam.end_time);
+        } else if (startDate && endDate) {
+          console.log('  Start parsed:', startDate.toISOString(), '(Local:', startDate.toLocaleString('ar-EG'), ')');
+          console.log('  End parsed:', endDate.toISOString(), '(Local:', endDate.toLocaleString('ar-EG'), ')');
+          console.log('  Now < Start?', now < startDate);
+          console.log('  Now > End?', now > endDate);
 
-          console.log('  Start parsed:', startTime.toISOString(), '(Local:', startTime.toLocaleString('ar-EG'), ')');
-          console.log('  End parsed:', endTime.toISOString(), '(Local:', endTime.toLocaleString('ar-EG'), ')');
-          console.log('  Now < Start?', now < startTime);
-          console.log('  Now > End?', now > endTime);
-
-          if (now < startTime) {
-            // Exam hasn't started yet
+          if (now < startDate) {
             status = 'upcoming';
             console.log('  📅 Status: upcoming (not started yet)');
-          } else if (now > endTime) {
-            // Exam has ended and not attempted
+          } else if (now > endDate) {
             status = 'expired';
             console.log('  ⏰ Status: expired (time ended, not attempted)');
           } else {
-            // Exam is currently available (between start and end time)
             status = 'available';
             console.log('  ✅ Status: available (within time window)');
           }
         } else {
-          // No timing set - check only attempts
           status = hasAttempted ? 'completed' : 'available';
-          console.log('  ⚠️ Status:', status, '(no timing set)');
+          console.log('  ⚠️ Status:', status, '(timing missing or invalid)');
         }
 
         return {
           ...exam,
+          start_time: rawStart, // sanitized
+          end_time: rawEnd,     // sanitized
           status,
           attempts: exam.attempts || 0,
           maxAttempts: exam.maxAttempts || 1,
@@ -343,24 +368,32 @@ const StudentExams = () => {
                     {/* Date and Time (if available) */}
                     {(exam.start_time || exam.end_time) && (
                       <div className="bg-muted/50 rounded-lg p-3 mb-4 space-y-2">
-                        {exam.start_time && (
+                        {exam.start_time && (() => {
+                          const d = parseSafe(exam.start_time);
+                          if (!d) return null;
+                          return (
                           <div className="flex items-center gap-2 text-sm">
                             <Calendar className="w-4 h-4 text-primary" />
                             <span className="font-medium">البدء:</span>
-                            <span>{new Date(exam.start_time).toLocaleDateString('ar-EG')}</span>
+                            <span>{d.toLocaleDateString('ar-EG')}</span>
                             <Clock className="w-4 h-4 text-primary" />
-                            <span>{new Date(exam.start_time).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
+                            <span>{d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
                           </div>
-                        )}
-                        {exam.end_time && (
+                          );
+                        })()}
+                        {exam.end_time && (() => {
+                          const d = parseSafe(exam.end_time);
+                          if (!d) return null;
+                          return (
                           <div className="flex items-center gap-2 text-sm">
                             <Calendar className="w-4 h-4 text-red-500" />
                             <span className="font-medium">الانتهاء:</span>
-                            <span>{new Date(exam.end_time).toLocaleDateString('ar-EG')}</span>
+                            <span>{d.toLocaleDateString('ar-EG')}</span>
                             <Clock className="w-4 h-4 text-red-500" />
-                            <span>{new Date(exam.end_time).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
+                            <span>{d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
                           </div>
-                        )}
+                          );
+                        })()}
                       </div>
                     )}
 
@@ -386,26 +419,26 @@ const StudentExams = () => {
                         {(exam.attempts || 0) >= (exam.maxAttempts || 1) ? 'استنفذت المحاولات' : 'بدء الامتحان'}
                       </Button>
                     )}
-                    {exam.status === 'upcoming' && exam.start_time && (
+                    {exam.status === 'upcoming' && exam.start_time && (() => { const d = parseSafe(exam.start_time); if (!d) return null; return (
                       <div className="space-y-2">
                         <Button className="w-full" variant="outline" disabled>
                           الامتحان لم يبدأ بعد
                         </Button>
                         <p className="text-xs text-center text-muted-foreground">
-                          سيبدأ في: {new Date(exam.start_time).toLocaleString('ar-EG')}
+                          سيبدأ في: {d.toLocaleString('ar-EG')}
                         </p>
                       </div>
-                    )}
-                    {exam.status === 'expired' && exam.end_time && (
+                    )})()}
+                    {exam.status === 'expired' && exam.end_time && (() => { const d = parseSafe(exam.end_time); if (!d) return null; return (
                       <div className="space-y-2">
                         <Button className="w-full" variant="destructive" disabled>
                           انتهى الامتحان
                         </Button>
                         <p className="text-xs text-center text-muted-foreground">
-                          انتهى في: {new Date(exam.end_time).toLocaleString('ar-EG')}
+                          انتهى في: {d.toLocaleString('ar-EG')}
                         </p>
                       </div>
-                    )}
+                    )})()}
                     {exam.status === 'completed' && (exam.attempts || 0) < (exam.maxAttempts || 1) && (
                       <Button
                         onClick={() => handleStartExam(exam)}
