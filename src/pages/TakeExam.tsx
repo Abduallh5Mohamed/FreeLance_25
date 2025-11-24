@@ -54,7 +54,7 @@ const TakeExam = () => {
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [canAttempt, setCanAttempt] = useState(true);
   const [attemptMessage, setAttemptMessage] = useState('');
-  const [attemptResult, setAttemptResult] = useState<{score:number; total:number; passed:boolean; passingMarks:number} | null>(null);
+  const [attemptResult, setAttemptResult] = useState<{ score: number; total: number; passed: boolean; passingMarks: number } | null>(null);
   const [examStartTime, setExamStartTime] = useState<Date | null>(null);
   const [studentId, setStudentId] = useState<string>('');
 
@@ -180,7 +180,7 @@ const TakeExam = () => {
                 : rawPassing;
               const existingScore = attemptCheck.score || 0;
               const passed = existingScore >= passingMarks;
-              setAttemptResult({score: existingScore, total: rawTotal, passed, passingMarks});
+              setAttemptResult({ score: existingScore, total: rawTotal, passed, passingMarks });
             } catch (e) {
               console.error('Failed to load exam for attempt summary', e);
             }
@@ -439,7 +439,7 @@ const TakeExam = () => {
           >
             <Card className="shadow-2xl border-2">
               <CardHeader className="text-center pb-4">
-                <div className={`mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4 ${attemptResult.passed ? 'bg-green-100 dark:bg-green-900/20' : 'bg-red-100 dark:bg-red-900/20'}`}> 
+                <div className={`mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4 ${attemptResult.passed ? 'bg-green-100 dark:bg-green-900/20' : 'bg-red-100 dark:bg-red-900/20'}`}>
                   {attemptResult.passed ? (
                     <CheckCircle2 className="w-8 h-8 text-green-600 dark:text-green-500" />
                   ) : (

@@ -372,26 +372,26 @@ const StudentExams = () => {
                           const d = parseSafe(exam.start_time);
                           if (!d) return null;
                           return (
-                          <div className="flex items-center gap-2 text-sm">
-                            <Calendar className="w-4 h-4 text-primary" />
-                            <span className="font-medium">البدء:</span>
-                            <span>{d.toLocaleDateString('ar-EG')}</span>
-                            <Clock className="w-4 h-4 text-primary" />
-                            <span>{d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
-                          </div>
+                            <div className="flex items-center gap-2 text-sm">
+                              <Calendar className="w-4 h-4 text-primary" />
+                              <span className="font-medium">البدء:</span>
+                              <span>{d.toLocaleDateString('ar-EG')}</span>
+                              <Clock className="w-4 h-4 text-primary" />
+                              <span>{d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
+                            </div>
                           );
                         })()}
                         {exam.end_time && (() => {
                           const d = parseSafe(exam.end_time);
                           if (!d) return null;
                           return (
-                          <div className="flex items-center gap-2 text-sm">
-                            <Calendar className="w-4 h-4 text-red-500" />
-                            <span className="font-medium">الانتهاء:</span>
-                            <span>{d.toLocaleDateString('ar-EG')}</span>
-                            <Clock className="w-4 h-4 text-red-500" />
-                            <span>{d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
-                          </div>
+                            <div className="flex items-center gap-2 text-sm">
+                              <Calendar className="w-4 h-4 text-red-500" />
+                              <span className="font-medium">الانتهاء:</span>
+                              <span>{d.toLocaleDateString('ar-EG')}</span>
+                              <Clock className="w-4 h-4 text-red-500" />
+                              <span>{d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
+                            </div>
                           );
                         })()}
                       </div>
@@ -419,26 +419,30 @@ const StudentExams = () => {
                         {(exam.attempts || 0) >= (exam.maxAttempts || 1) ? 'استنفذت المحاولات' : 'بدء الامتحان'}
                       </Button>
                     )}
-                    {exam.status === 'upcoming' && exam.start_time && (() => { const d = parseSafe(exam.start_time); if (!d) return null; return (
-                      <div className="space-y-2">
-                        <Button className="w-full" variant="outline" disabled>
-                          الامتحان لم يبدأ بعد
-                        </Button>
-                        <p className="text-xs text-center text-muted-foreground">
-                          سيبدأ في: {d.toLocaleString('ar-EG')}
-                        </p>
-                      </div>
-                    )})()}
-                    {exam.status === 'expired' && exam.end_time && (() => { const d = parseSafe(exam.end_time); if (!d) return null; return (
-                      <div className="space-y-2">
-                        <Button className="w-full" variant="destructive" disabled>
-                          انتهى الامتحان
-                        </Button>
-                        <p className="text-xs text-center text-muted-foreground">
-                          انتهى في: {d.toLocaleString('ar-EG')}
-                        </p>
-                      </div>
-                    )})()}
+                    {exam.status === 'upcoming' && exam.start_time && (() => {
+                      const d = parseSafe(exam.start_time); if (!d) return null; return (
+                        <div className="space-y-2">
+                          <Button className="w-full" variant="outline" disabled>
+                            الامتحان لم يبدأ بعد
+                          </Button>
+                          <p className="text-xs text-center text-muted-foreground">
+                            سيبدأ في: {d.toLocaleString('ar-EG')}
+                          </p>
+                        </div>
+                      )
+                    })()}
+                    {exam.status === 'expired' && exam.end_time && (() => {
+                      const d = parseSafe(exam.end_time); if (!d) return null; return (
+                        <div className="space-y-2">
+                          <Button className="w-full" variant="destructive" disabled>
+                            انتهى الامتحان
+                          </Button>
+                          <p className="text-xs text-center text-muted-foreground">
+                            انتهى في: {d.toLocaleString('ar-EG')}
+                          </p>
+                        </div>
+                      )
+                    })()}
                     {exam.status === 'completed' && (exam.attempts || 0) < (exam.maxAttempts || 1) && (
                       <Button
                         onClick={() => handleStartExam(exam)}

@@ -223,7 +223,7 @@ router.put('/:id', async (req: Request, res: Response) => {
 
         // Normalize incoming date/time (support start_date/end_date from UI) — keep local values as provided
         const finalStart = start_time || start_date || null;
-        const finalEnd   = end_time || end_date || null;
+        const finalEnd = end_time || end_date || null;
 
         const result = await execute(
             `UPDATE exams 
@@ -474,7 +474,7 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
 
         // Build Date objects from start_dt/end_dt when available (robust parsing)
         const startTime = parseLocalDateTime(exam?.start_dt);
-        const endTime   = parseLocalDateTime(exam?.end_dt);
+        const endTime = parseLocalDateTime(exam?.end_dt);
 
         console.log('🕐 Time Check:');
         console.log('  Current time:', now.toISOString(), '(Local:', now.toLocaleString('ar-EG'), ')');
@@ -550,7 +550,7 @@ router.post('/:examId/start/:studentId', async (req: Request, res: Response) => 
         // Enforce schedule window strictly
         const now = new Date();
         const startTime = parseLocalDateTime(exam?.start_dt);
-        const endTime   = parseLocalDateTime(exam?.end_dt);
+        const endTime = parseLocalDateTime(exam?.end_dt);
 
         if (!startTime || !endTime) {
             // Allow starting when schedule is not set

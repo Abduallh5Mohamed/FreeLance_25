@@ -157,7 +157,7 @@ export default function TeacherExams() {
           const d = new Date(value);
           if (isNaN(d.getTime())) return null;
           const pad = (n: number) => String(n).padStart(2, '0');
-          return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+          return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
         } catch {
           return null;
         }
@@ -174,18 +174,18 @@ export default function TeacherExams() {
         },
         body: JSON.stringify({
           course_id: selectedCourse,
-            title: examData.title,
-            description: examData.description || null,
-            duration_minutes: parseInt(examData.duration_minutes),
-            total_marks: totalMarks,
-            passing_marks: passingMarksCalc, // computed from percentage
-            passing_percentage: passingPercent,
-            is_active: true,
-            // Provide both unified ISO strings; backend will extract DATE() and TIME()
-            start_date: startDateTime,
-            end_date: endDateTime,
-            start_time: startDateTime,
-            end_time: endDateTime
+          title: examData.title,
+          description: examData.description || null,
+          duration_minutes: parseInt(examData.duration_minutes),
+          total_marks: totalMarks,
+          passing_marks: passingMarksCalc, // computed from percentage
+          passing_percentage: passingPercent,
+          is_active: true,
+          // Provide both unified ISO strings; backend will extract DATE() and TIME()
+          start_date: startDateTime,
+          end_date: endDateTime,
+          start_time: startDateTime,
+          end_time: endDateTime
         })
       });
 
