@@ -187,7 +187,7 @@ const TeacherDashboard = () => {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-4xl font-bold bg-gradient-to-r from-cyan-600 to-teal-600 bg-clip-text text-transparent mb-2">
-                مرحباً، {currentUser?.name} 👋
+                {currentUser?.role === 'admin' ? 'مرحباً أيها القائد 👋' : `مرحباً، ${currentUser?.name} 👋`}
               </h1>
               <p className="text-slate-600 dark:text-slate-400">
                 إليك ملخص سريع عن أنشطتك اليوم - منصة القائد
@@ -241,7 +241,7 @@ const TeacherDashboard = () => {
               <Button
                 variant="outline"
                 className="w-full justify-start border-cyan-600 text-cyan-600 hover:bg-cyan-50"
-                onClick={() => navigate('/qr-attendance')}
+                onClick={() => navigate('/barcode-attendance')}
               >
                 <Calendar className="w-4 h-4 ml-2" />
                 تسجيل الحضور
