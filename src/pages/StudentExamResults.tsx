@@ -7,6 +7,7 @@ import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
+import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://72.62.35.177:3001/api';
 
@@ -23,6 +24,7 @@ interface ExamResult {
 }
 
 const StudentExamResults = () => {
+  useScreenRecordingPrevention(); // Prevent screen recording & screenshots
   const [examResults, setExamResults] = useState<ExamResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [studentId, setStudentId] = useState<string>('');

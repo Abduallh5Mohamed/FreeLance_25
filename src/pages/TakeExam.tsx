@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
-import { Clock, AlertCircle, CheckCircle2, XCircle, Trophy, Timer } from "lucide-react";
+import { Clock, AlertCircle, CheckCircle2, XCircle, Trophy, Timer, Download, FileText } from "lucide-react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
@@ -11,6 +11,8 @@ import { FloatingParticles } from "@/components/FloatingParticles";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { getExamById, getExamQuestions, canAttemptExam, startExamAttempt, submitExamAttempt } from "@/lib/api";
+import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
+import jsPDF from "jspdf";
 
 interface Question {
   id: string;
@@ -41,9 +43,11 @@ interface ExamData {
 }
 
 const TakeExam = () => {
+  useScreenRecordingPrevention(); // Prevent screen recording & screenshots
   const { examId } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const resultRef = useRef<HTMLDivElement>(null);
 
   const [exam, setExam] = useState<ExamData | null>(null);
   const [answers, setAnswers] = useState<Record<string, number>>({});
@@ -56,6 +60,7 @@ const TakeExam = () => {
   const [attemptMessage, setAttemptMessage] = useState('');
   const [attemptResult, setAttemptResult] = useState<{ score: number; total: number; passed: boolean; passingMarks: number } | null>(null);
   const [examStartTime, setExamStartTime] = useState<Date | null>(null);
+  const [generatingPDF, setGeneratingPDF] = useState(false);
   const [studentId, setStudentId] = useState<string>('');
 
   // Sample exam data - replace with real API call
@@ -394,6 +399,157 @@ const TakeExam = () => {
     }
   }, [timeLeft, isSubmitted, exam, loading, handleSubmit]);
 
+  // ===== Generate PDF Function =====
+  const generateExamPDF = async () => {
+    if (!exam || !result) return;
+
+    setGeneratingPDF(true);
+    
+    try {
+      const doc = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4'
+      });
+
+      // Add Arabic font support (using built-in helvetica for now)
+      doc.setFont("helvetica");
+      doc.setR2L(true); // Right to Left for Arabic
+
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      let yPos = 20;
+
+      // Header
+      doc.setFillColor(13, 148, 136); // Teal color
+      doc.rect(0, 0, pageWidth, 40, 'F');
+      
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(24);
+      doc.text("نتيجة الامتحان", pageWidth / 2, 18, { align: 'center' });
+      
+      doc.setFontSize(14);
+      doc.text(exam.title || "امتحان", pageWidth / 2, 30, { align: 'center' });
+
+      yPos = 55;
+
+      // Result Box
+      const passed = result.passed;
+      doc.setFillColor(passed ? 34 : 239, passed ? 197 : 68, passed ? 94 : 68);
+      doc.roundedRect(20, yPos - 10, pageWidth - 40, 35, 5, 5, 'F');
+      
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(28);
+      doc.text(passed ? "ناجح" : "راسب", pageWidth / 2, yPos + 5, { align: 'center' });
+      
+      doc.setFontSize(16);
+      doc.text(`${result.score}/${result.total} (${result.percentage.toFixed(1)}%)`, pageWidth / 2, yPos + 18, { align: 'center' });
+
+      yPos += 45;
+
+      // Statistics
+      doc.setTextColor(0, 0, 0);
+      doc.setFontSize(12);
+      
+      const correctAnswers = exam.questions.filter(q => answers[q.id] === q.correct_answer).length;
+      const wrongAnswers = exam.questions.filter(q => answers[q.id] !== undefined && answers[q.id] !== q.correct_answer).length;
+      const unanswered = exam.questions.length - correctAnswers - wrongAnswers;
+
+      doc.setFillColor(240, 240, 240);
+      doc.roundedRect(20, yPos - 5, pageWidth - 40, 30, 3, 3, 'F');
+      
+      doc.text(`الاجابات الصحيحة: ${correctAnswers}`, pageWidth - 30, yPos + 5, { align: 'right' });
+      doc.text(`الاجابات الخاطئة: ${wrongAnswers}`, pageWidth / 2, yPos + 5, { align: 'center' });
+      doc.text(`لم تجب: ${unanswered}`, 30, yPos + 5, { align: 'left' });
+      doc.text(`تاريخ الامتحان: ${new Date().toLocaleDateString('ar-EG')}`, pageWidth / 2, yPos + 18, { align: 'center' });
+
+      yPos += 45;
+
+      // Questions & Answers
+      doc.setFontSize(16);
+      doc.setTextColor(13, 148, 136);
+      doc.text("تفاصيل الاجابات", pageWidth - 20, yPos, { align: 'right' });
+      yPos += 10;
+
+      doc.setFontSize(11);
+      doc.setTextColor(0, 0, 0);
+
+      exam.questions.forEach((question, idx) => {
+        const userAnswer = answers[question.id];
+        const isCorrect = userAnswer === question.correct_answer;
+        const wasAnswered = userAnswer !== undefined;
+
+        // Check if we need a new page
+        if (yPos > pageHeight - 40) {
+          doc.addPage();
+          yPos = 20;
+        }
+
+        // Question background
+        doc.setFillColor(isCorrect ? 220 : wasAnswered ? 254 : 245, isCorrect ? 252 : wasAnswered ? 226 : 245, isCorrect ? 231 : wasAnswered ? 226 : 245);
+        doc.roundedRect(15, yPos - 5, pageWidth - 30, 25, 2, 2, 'F');
+
+        // Status icon (text representation)
+        const statusText = isCorrect ? "✓" : wasAnswered ? "✗" : "○";
+        doc.setTextColor(isCorrect ? 34 : wasAnswered ? 239 : 128, isCorrect ? 197 : wasAnswered ? 68 : 128, isCorrect ? 94 : wasAnswered ? 68 : 128);
+        doc.text(statusText, pageWidth - 20, yPos + 3, { align: 'right' });
+
+        // Question text
+        doc.setTextColor(0, 0, 0);
+        const questionText = `${idx + 1}. ${question.question_text || question.question}`;
+        doc.text(questionText.substring(0, 60) + (questionText.length > 60 ? '...' : ''), pageWidth - 30, yPos + 3, { align: 'right' });
+
+        // Answer
+        doc.setFontSize(9);
+        if (wasAnswered) {
+          const userAnswerText = Array.isArray(question.options) ? question.options[userAnswer] : 'غير معروف';
+          doc.setTextColor(isCorrect ? 34 : 239, isCorrect ? 197 : 68, isCorrect ? 94 : 68);
+          doc.text(`اجابتك: ${userAnswerText.substring(0, 40)}`, pageWidth - 30, yPos + 12, { align: 'right' });
+          
+          if (!isCorrect) {
+            const correctAnswerText = Array.isArray(question.options) ? question.options[question.correct_answer as number] : 'غير معروف';
+            doc.setTextColor(34, 197, 94);
+            doc.text(`الصحيح: ${correctAnswerText.substring(0, 40)}`, pageWidth - 30, yPos + 17, { align: 'right' });
+          }
+        } else {
+          doc.setTextColor(128, 128, 128);
+          doc.text("لم تجب على هذا السؤال", pageWidth - 30, yPos + 12, { align: 'right' });
+        }
+        doc.setFontSize(11);
+
+        yPos += 30;
+      });
+
+      // Footer
+      if (yPos > pageHeight - 30) {
+        doc.addPage();
+        yPos = 20;
+      }
+      
+      doc.setFontSize(10);
+      doc.setTextColor(128, 128, 128);
+      doc.text("منصة القائد التعليمية - جميع الحقوق محفوظة", pageWidth / 2, pageHeight - 10, { align: 'center' });
+
+      // Save PDF
+      const fileName = `نتيجة_${exam.title?.replace(/\s+/g, '_') || 'الامتحان'}_${new Date().toLocaleDateString('ar-EG').replace(/\//g, '-')}.pdf`;
+      doc.save(fileName);
+
+      toast({
+        title: "تم التحميل بنجاح",
+        description: "تم تحميل نتيجة الامتحان كملف PDF",
+      });
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      toast({
+        title: "خطأ",
+        description: "فشل إنشاء ملف PDF",
+        variant: "destructive"
+      });
+    } finally {
+      setGeneratingPDF(false);
+    }
+  };
+
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -655,20 +811,41 @@ const TakeExam = () => {
                 </div>
 
                 {/* Actions */}
-                <div className="flex gap-3">
+                <div className="flex flex-col gap-3">
+                  {/* PDF Download Button */}
                   <Button
-                    onClick={() => navigate('/student-exams')}
-                    className="flex-1"
-                    variant="outline"
+                    onClick={generateExamPDF}
+                    disabled={generatingPDF}
+                    className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
                   >
-                    العودة للامتحانات
+                    {generatingPDF ? (
+                      <>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white ml-2" />
+                        جاري إنشاء PDF...
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-5 h-5 ml-2" />
+                        تحميل النتيجة كـ PDF
+                      </>
+                    )}
                   </Button>
-                  <Button
-                    onClick={() => navigate('/student')}
-                    className="flex-1 bg-gradient-to-r from-primary to-accent"
-                  >
-                    العودة للرئيسية
-                  </Button>
+
+                  <div className="flex gap-3">
+                    <Button
+                      onClick={() => navigate('/student-exams')}
+                      className="flex-1"
+                      variant="outline"
+                    >
+                      العودة للامتحانات
+                    </Button>
+                    <Button
+                      onClick={() => navigate('/student')}
+                      className="flex-1 bg-gradient-to-r from-primary to-accent"
+                    >
+                      العودة للرئيسية
+                    </Button>
+                  </div>
                 </div>
               </CardContent>
             </Card>

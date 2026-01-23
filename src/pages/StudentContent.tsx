@@ -12,12 +12,14 @@ import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
 import { getStudentMaterials, CourseMaterial, User } from "@/lib/api-http";
 import { VideoPlayer } from "@/components/VideoPlayer";
+import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 
 interface Material extends CourseMaterial {
   thumbnail?: string;
 }
 
 const StudentContent = () => {
+  useScreenRecordingPrevention(); // Prevent screen recording & screenshots
   const { toast } = useToast();
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');

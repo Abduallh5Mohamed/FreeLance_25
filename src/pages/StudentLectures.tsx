@@ -13,6 +13,7 @@ import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
 import { getStudentLectures, Lecture as APILecture, User } from "@/lib/api-http";
 import { VideoPlayer } from "@/components/VideoPlayer";
+import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 
 interface Lecture extends APILecture {
   completed?: boolean;
@@ -26,6 +27,7 @@ interface Lecture extends APILecture {
 }
 
 const StudentLectures = () => {
+  useScreenRecordingPrevention(); // Prevent screen recording & screenshots
   const { toast } = useToast();
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');

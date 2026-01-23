@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { BookOpen, FileText, Clock, Calendar, Download, Play, Eye, MessageSquare, Award, Users, Calendar as CalendarIcon, Sparkles, TrendingUp, Trophy, Target } from "lucide-react";
+import { BookOpen, FileText, Clock, Calendar, Download, Play, Eye, MessageSquare, Award, Users, Calendar as CalendarIcon, Sparkles, TrendingUp, Trophy, Target, ClipboardCheck } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
 import { useNavigate } from "react-router-dom";
 import { getStudents, getCourses, getGroups, getMaterials, Student, User, Course } from "@/lib/api";
@@ -266,14 +266,6 @@ const StudentDashboard = () => {
                     </Badge>
                   </div>
                 </div>
-                <motion.div
-                  whileHover={{ scale: 1.05 }}
-                  className="bg-gradient-to-br from-primary/10 to-accent/10 backdrop-blur-sm p-4 md:p-5 lg:p-6 rounded-xl md:rounded-2xl text-center border-2 border-primary/20 w-full sm:w-auto min-w-[200px]"
-                >
-                  <Sparkles className="w-6 h-6 md:w-7 md:h-7 lg:w-8 lg:h-8 mx-auto mb-2 text-primary" />
-                  <p className="text-xs md:text-sm text-muted-foreground mb-1">الكورسات المسجلة</p>
-                  <AnimatedCounter to={courses.length} className="text-2xl sm:text-3xl md:text-4xl font-bold text-primary" />
-                </motion.div>
               </div>
             </CardContent>
           </GlassmorphicCard>
@@ -281,8 +273,8 @@ const StudentDashboard = () => {
 
         <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-4 lg:gap-6">
           {/* Left Sidebar */}
-          <div className="md:col-span-1 lg:col-span-1 space-y-3 md:space-y-4 lg:space-y-6" data-section="courses">
-            {/* Enrolled Courses */}
+          <div className="md:col-span-1 lg:col-span-1 space-y-3 md:space-y-4 lg:space-y-6" data-section="quick-links">
+            {/* Quick Access Dashboard */}
             <AnimatedSection>
               <GlassmorphicCard>
                 <CardHeader className="pb-3 md:pb-4">
@@ -291,52 +283,84 @@ const StudentDashboard = () => {
                       animate={{ rotate: [0, 10, -10, 0] }}
                       transition={{ duration: 2, repeat: Infinity }}
                     >
-                      <BookOpen className="w-4 h-4 md:w-5 md:h-5 text-primary" />
+                      <Target className="w-4 h-4 md:w-5 md:h-5 text-primary" />
                     </motion.div>
-                    <span className="text-sm md:text-base">الكورسات المسجلة</span>
+                    <span className="text-sm md:text-base">الوصول السريع</span>
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-2 md:space-y-3">
-                    {courses.length > 0 ? (
-                      <AnimatePresence>
-                        {courses.map((course, index) => (
-                          <motion.div
-                            key={course.id}
-                            initial={{ opacity: 0, x: -20 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            exit={{ opacity: 0, x: 20 }}
-                            transition={{ delay: index * 0.1 }}
-                          >
-                            <Card className="p-3 md:p-4 bg-gradient-to-br from-primary/5 to-accent/5 border-primary/20 hover:shadow-lg hover:scale-105 transition-all duration-300 cursor-pointer">
-                              <div className="flex items-start gap-2 md:gap-3">
-                                <div className="p-1.5 md:p-2 bg-primary/10 rounded-lg flex-shrink-0">
-                                  <BookOpen className="w-4 h-4 md:w-5 md:h-5 text-primary" />
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <h3 className="font-bold text-foreground mb-1 text-sm md:text-base truncate">{course.name}</h3>
-                                  <Badge className="mb-1 md:mb-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white border-0 text-[10px] md:text-xs">
-                                    {course.subject}
-                                  </Badge>
-                                  {course.description && (
-                                    <p className="text-[10px] md:text-xs text-muted-foreground leading-relaxed line-clamp-2">{course.description}</p>
-                                  )}
-                                </div>
-                              </div>
-                            </Card>
-                          </motion.div>
-                        ))}
-                      </AnimatePresence>
-                    ) : (
-                      <motion.div
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        className="text-center py-6 md:py-8"
+                    {/* Exams Quick Link */}
+                    <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                      <Card 
+                        className="p-3 md:p-4 bg-gradient-to-br from-blue-500/10 to-cyan-500/10 border-blue-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
+                        onClick={() => navigate('/student-exams')}
                       >
-                        <BookOpen className="w-10 h-10 md:w-12 md:h-12 mx-auto mb-2 md:mb-3 text-muted-foreground opacity-50" />
-                        <p className="text-muted-foreground text-xs md:text-sm">لم يتم تسجيلك في أي كورس بعد</p>
-                      </motion.div>
-                    )}
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-blue-500/20 rounded-lg">
+                            <ClipboardCheck className="w-5 h-5 text-blue-600" />
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="font-bold text-sm md:text-base">الامتحانات</h3>
+                            <p className="text-xs text-muted-foreground">{exams.length} امتحان متاح</p>
+                          </div>
+                        </div>
+                      </Card>
+                    </motion.div>
+
+                    {/* Lectures Quick Link */}
+                    <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                      <Card 
+                        className="p-3 md:p-4 bg-gradient-to-br from-purple-500/10 to-pink-500/10 border-purple-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
+                        onClick={() => navigate('/student-lectures')}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-purple-500/20 rounded-lg">
+                            <Play className="w-5 h-5 text-purple-600" />
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="font-bold text-sm md:text-base">المحاضرات</h3>
+                            <p className="text-xs text-muted-foreground">شاهد المحاضرات</p>
+                          </div>
+                        </div>
+                      </Card>
+                    </motion.div>
+
+                    {/* Results Quick Link */}
+                    <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                      <Card 
+                        className="p-3 md:p-4 bg-gradient-to-br from-green-500/10 to-emerald-500/10 border-green-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
+                        onClick={() => navigate('/student-exam-results')}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-green-500/20 rounded-lg">
+                            <Trophy className="w-5 h-5 text-green-600" />
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="font-bold text-sm md:text-base">النتائج</h3>
+                            <p className="text-xs text-muted-foreground">{examResults.length} نتيجة</p>
+                          </div>
+                        </div>
+                      </Card>
+                    </motion.div>
+
+                    {/* Materials Quick Link */}
+                    <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                      <Card 
+                        className="p-3 md:p-4 bg-gradient-to-br from-orange-500/10 to-amber-500/10 border-orange-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
+                        onClick={() => navigate('/student-content')}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-orange-500/20 rounded-lg">
+                            <FileText className="w-5 h-5 text-orange-600" />
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="font-bold text-sm md:text-base">المحتوى التعليمي</h3>
+                            <p className="text-xs text-muted-foreground">{materials.length} ملف</p>
+                          </div>
+                        </div>
+                      </Card>
+                    </motion.div>
                   </div>
                 </CardContent>
               </GlassmorphicCard>
