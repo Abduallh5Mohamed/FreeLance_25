@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { BookOpen, FileText, Clock, Calendar, Download, Play, Eye, MessageSquare, Award, Users, Calendar as CalendarIcon, Sparkles, TrendingUp, Trophy, Target, ClipboardCheck } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
 import { useNavigate } from "react-router-dom";
-import { getStudents, getCourses, getGroups, getMaterials, Student, User, Course } from "@/lib/api";
+import { getStudents, getCourses, getGroups, getMaterials, getStudentExamResults, getStudentExams, Student, User, Course } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 import { motion, AnimatePresence } from "framer-motion";
@@ -106,8 +106,25 @@ const StudentDashboard = () => {
       const allMaterials = await getMaterials();
       setMaterials(allMaterials || []);
 
-      // TODO: Add API routes for exams, messages
-      setExams([]);
+      // Fetch exams for student's grade
+      try {
+        const studentExams = await getStudentExams(student.grade_id || undefined);
+        setExams(studentExams || []);
+      } catch (err) {
+        console.error('Error fetching exams:', err);
+        setExams([]);
+      }
+
+      // Fetch exam results for this student
+      try {
+        const results = await getStudentExamResults(user.id);
+        setExamResults(results || []);
+      } catch (err) {
+        console.error('Error fetching exam results:', err);
+        setExamResults([]);
+      }
+
+      // TODO: Add API routes for messages
       setMessages([]);
 
       setLoading(false);
