@@ -8,8 +8,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { getCourses, getExams as getExamsHttp, Course, Exam } from '@/lib/api-http';
-import { ClipboardCheck, Plus, Trash2, BookOpen, Clock, Edit } from 'lucide-react';
+import { getCourses, getExams as getExamsHttp, getGrades, Course, Exam, Grade, User } from '@/lib/api-http';
+import { ClipboardCheck, Plus, Trash2, BookOpen, Clock, Edit, GraduationCap } from 'lucide-react';
 import Header from '@/components/Header';
 import { motion } from 'framer-motion';
 
@@ -30,6 +30,7 @@ export default function TeacherExams() {
   const navigate = useNavigate();
   const [courses, setCourses] = useState<Course[]>([]);
   const [exams, setExams] = useState<Exam[]>([]);
+  const [grades, setGrades] = useState<Grade[]>([]);
   const [selectedCourse, setSelectedCourse] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -37,6 +38,7 @@ export default function TeacherExams() {
   const [examData, setExamData] = useState({
     title: '',
     description: '',
+    grade_id: '',
     duration_minutes: '60',
     passing_score: '60',
     start_date: '',
@@ -64,6 +66,7 @@ export default function TeacherExams() {
     }
 
     loadCourses();
+    loadGrades();
     loadExams();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -79,6 +82,15 @@ export default function TeacherExams() {
         description: 'فشل تحميل الدورات',
         variant: 'destructive'
       });
+    }
+  };
+
+  const loadGrades = async () => {
+    try {
+      const data = await getGrades();
+      setGrades(data || []);
+    } catch (error) {
+      console.error('Error loading grades:', error);
     }
   };
 
@@ -174,6 +186,7 @@ export default function TeacherExams() {
         },
         body: JSON.stringify({
           course_id: selectedCourse,
+          grade_id: examData.grade_id || null,  // ✅ Include grade_id
           title: examData.title,
           description: examData.description || null,
           duration_minutes: parseInt(examData.duration_minutes),
@@ -232,6 +245,7 @@ export default function TeacherExams() {
       setExamData({
         title: '',
         description: '',
+        grade_id: '',
         duration_minutes: '60',
         passing_score: '60',
         start_date: '',
@@ -336,6 +350,25 @@ export default function TeacherExams() {
                               <div className="flex items-center gap-2">
                                 <BookOpen className="h-4 w-4 text-cyan-500" />
                                 {c.name}
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <Label>الصف الدراسي *</Label>
+                      <Select value={examData.grade_id} onValueChange={(value) => setExamData({ ...examData, grade_id: value })}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="اختر الصف الدراسي" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {grades.map(grade => (
+                            <SelectItem key={grade.id} value={grade.id}>
+                              <div className="flex items-center gap-2">
+                                <GraduationCap className="h-4 w-4 text-purple-500" />
+                                {grade.name}
                               </div>
                             </SelectItem>
                           ))}

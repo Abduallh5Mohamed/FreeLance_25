@@ -74,6 +74,41 @@ router.get('/', async (req: Request, res: Response) => {
     }
 });
 
+// Get all results for a specific student
+router.get('/student/:studentId', async (req: Request, res: Response) => {
+    try {
+        const { studentId } = req.params;
+
+        const sql = `
+            SELECT 
+                er.id,
+                er.exam_id,
+                e.title AS exam_title,
+                er.student_id,
+                er.marks_obtained AS score,
+                er.total_marks,
+                e.passing_marks,
+                CASE 
+                    WHEN er.marks_obtained >= e.passing_marks THEN 'passed'
+                    ELSE 'failed'
+                END AS status,
+                er.submitted_at,
+                er.graded_at,
+                er.remarks AS feedback
+            FROM exam_results er
+            INNER JOIN exams e ON e.id = er.exam_id
+            WHERE er.student_id = ?
+            ORDER BY er.submitted_at DESC
+        `;
+
+        const results = await query<ExamResult>(sql, [studentId]);
+        res.json(results);
+    } catch (error) {
+        console.error('Get student exam results error:', error);
+        res.status(500).json({ error: 'Failed to fetch student exam results', details: error instanceof Error ? error.message : 'Unknown error' });
+    }
+});
+
 // Get exam result by ID
 router.get('/:id', async (req: Request, res: Response) => {
     try {

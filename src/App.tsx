@@ -43,6 +43,7 @@ import TeacherLectures from "./pages/TeacherLectures";
 import TeacherExams from "./pages/TeacherExams";
 import ExamReports from "./pages/ExamReports";
 import ExamResults from "./pages/ExamResults";
+import StudentExamResults from "./pages/StudentExamResults";
 import ChatAssistant from "./pages/ChatAssistant";
 import AuthGuard from "./components/AuthGuard";
 
@@ -98,6 +99,7 @@ const App = () => (
           <Route path="/student-content" element={<AuthGuard requiredRole="student"><StudentContent /></AuthGuard>} />
           <Route path="/student-lectures" element={<AuthGuard requiredRole="student"><StudentLectures /></AuthGuard>} />
           <Route path="/student-exams" element={<AuthGuard requiredRole="student"><StudentExams /></AuthGuard>} />
+          <Route path="/student-exam-results" element={<AuthGuard requiredRole="student"><StudentExamResults /></AuthGuard>} />
           <Route path="/exam-access" element={<AuthGuard requiredRole="student"><ExamAccess /></AuthGuard>} />
           <Route path="/take-exam/:examId" element={<AuthGuard requiredRole="student"><TakeExam /></AuthGuard>} />
 

@@ -791,6 +791,19 @@ export const getExamResults = async (examId?: string, studentId?: string) => {
     return await request(`/exam-results${queryString}`);
 };
 
+// Get exam results for a specific student
+export const getStudentExamResults = async (studentId: string) => {
+    return await request(`/exam-results/student/${studentId}`);
+};
+
+// Get available exams for a student (filtered by grade)
+export const getStudentExams = async (gradeId?: string) => {
+    const params = new URLSearchParams();
+    if (gradeId) params.append('grade_id', gradeId);
+    params.append('is_active', 'true');
+    return await request(`/exams?${params.toString()}`);
+};
+
 // ====================================
 // Export all functions
 // ====================================
@@ -845,6 +858,9 @@ export default {
     createExam,
     updateExam,
     deleteExam,
+    getStudentExams,
+    getStudentExamResults,
+    getExamResults,
 
     // Materials
     getMaterials,

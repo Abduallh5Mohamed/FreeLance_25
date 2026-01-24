@@ -6,13 +6,7 @@
 **الموقع الإلكتروني**: Nested.Website  
 **فريق التطوير**: Abduallh, Baraa, Omar
 
-## كيف يمكنني التعديل على الكود؟
 
-هناك عدة طرق لتعديل التطبيق:
-
-**استخدام IDE المفضل لديك**
-
-يمكنك العمل محليًا باستخدام IDE الخاص بك، فقط قم باستنساخ المستودع ودفع التغييرات.
 
 The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
 
@@ -56,14 +50,5 @@ This project is built with:
 - shadcn-ui
 - Tailwind CSS
 
-## كيف يمكنني نشر هذا المشروع؟
-
-يمكنك نشر المشروع على أي منصة استضافة مثل:
-- Vercel
-- Netlify
-- AWS
-- Azure
-
-## هل يمكنني ربط نطاق مخصص؟
-
-نعم، يمكنك ربط نطاقك الخاص عبر إعدادات منصة الاستضافة التي تختارها.
+# Website Link
+https://elka2d.cloud/

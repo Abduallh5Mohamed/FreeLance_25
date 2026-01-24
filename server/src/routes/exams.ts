@@ -62,7 +62,7 @@ interface ExamResult {
 // Get all exams
 router.get('/', async (req: Request, res: Response) => {
     try {
-        const { course_id, is_active, student_id } = req.query;
+        const { course_id, is_active, student_id, grade_id } = req.query;
 
         // Return raw fields - start_time and end_time are DATETIME columns
         let sql = `SELECT e.* FROM exams e WHERE 1=1`;
@@ -80,6 +80,12 @@ router.get('/', async (req: Request, res: Response) => {
         if (course_id) {
             sql += ' AND course_id = ?';
             params.push(course_id as string);
+        }
+
+        // ✅ Add grade_id filter
+        if (grade_id) {
+            sql += ' AND (grade_id = ? OR grade_id IS NULL)';
+            params.push(grade_id as string);
         }
 
         sql += ' ORDER BY created_at DESC';
@@ -136,6 +142,7 @@ router.post('/', async (req: Request, res: Response) => {
             title,
             description,
             course_id,
+            grade_id,    // ✅ Add grade_id support
             duration_minutes,
             total_marks,
             passing_marks,
@@ -166,12 +173,13 @@ router.post('/', async (req: Request, res: Response) => {
         const examDateOnly = finalStartTime ? finalStartTime.split(' ')[0] : null;
 
         const result = await execute(
-            `INSERT INTO exams (id, title, description, course_id, duration_minutes, total_marks, passing_marks, exam_date, start_time, end_time, is_active, is_published, created_at, updated_at)
-             VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW())`,
+            `INSERT INTO exams (id, title, description, course_id, grade_id, duration_minutes, total_marks, passing_marks, exam_date, start_time, end_time, is_active, is_published, created_at, updated_at)
+             VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, DATE(?), TIME(?), TIME(?), ?, 1, NOW(), NOW())`,
             [
                 title,
                 description ?? null,
                 course_id,
+                grade_id ?? null,  // ✅ Include grade_id
                 duration_minutes,
                 total_marks,
                 passing_marks ?? null,
