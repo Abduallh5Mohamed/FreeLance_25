@@ -2,6 +2,9 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { testConnection } from './db';
+import { createServer } from 'http';
+import { setupSocketIO } from './services/socket';
+import path from 'path';
 
 // Import routes
 import authRoutes from './routes/auth';
@@ -24,10 +27,12 @@ import subscriptionRequestsRoutes from './routes/subscription-requests';
 import expensesRoutes from './routes/expenses';
 import importsRoutes from './routes/imports';
 import migrationsRoutes from './routes/migrations';
+import messagesRoutes from './routes/messages';
 
 dotenv.config();
 
 const app = express();
+const httpServer = createServer(app);
 const PORT = process.env.PORT || 3001;
 
 // Middleware
@@ -35,8 +40,10 @@ app.use(cors({
     origin: (origin, callback) => {
         const allowedOrigins = [
             'http://localhost:8080',
+            'http://localhost:8081',
             'http://localhost:3000',
             'http://127.0.0.1:8080',
+            'http://127.0.0.1:8081',
             'http://127.0.0.1:3000',
             process.env.CORS_ORIGIN,
             process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined,
@@ -53,6 +60,12 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Serve uploaded files
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+
+// Initialize Socket.IO
+setupSocketIO(httpServer);
 
 // Request logging middleware
 app.use((req: Request, res: Response, next: NextFunction) => {
@@ -86,6 +99,7 @@ app.use('/api/subscription-requests', subscriptionRequestsRoutes);
 app.use('/api/expenses', expensesRoutes);
 app.use('/api/imports', importsRoutes);
 app.use('/api/migrations', migrationsRoutes);
+app.use('/api/messages', messagesRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {
@@ -116,7 +130,7 @@ const startServer = async () => {
             console.warn('⚠️ SKIP_DB_ON_START is set — skipping DB connectivity check (dev only)');
         }
 
-        const server = app.listen(PORT, () => {
+        const server = httpServer.listen(PORT, () => {
             console.log(`
 ╔════════════════════════════════════════════════╗
 ║                                                ║

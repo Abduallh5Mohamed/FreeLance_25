@@ -64,11 +64,8 @@ router.get('/', async (req: Request, res: Response) => {
     try {
         const { course_id, is_active, student_id } = req.query;
 
-        // Preserve raw time fields; expose combined datetime as start_dt/end_dt
-        let sql = `SELECT e.*, 
-                   CONCAT(e.exam_date, ' ', e.start_time) AS start_dt,
-                   CONCAT(e.exam_date, ' ', e.end_time)   AS end_dt
-                   FROM exams e WHERE 1=1`;
+        // Return raw fields - start_time and end_time are DATETIME columns
+        let sql = `SELECT e.* FROM exams e WHERE 1=1`;
         const params: string[] = [];
 
         // Default to active exams only (soft delete)
@@ -165,9 +162,12 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
+        // Extract just the date part for exam_date
+        const examDateOnly = finalStartTime ? finalStartTime.split(' ')[0] : null;
+
         const result = await execute(
             `INSERT INTO exams (id, title, description, course_id, duration_minutes, total_marks, passing_marks, exam_date, start_time, end_time, is_active, is_published, created_at, updated_at)
-             VALUES (UUID(), ?, ?, ?, ?, ?, ?, DATE(?), TIME(?), TIME(?), ?, 1, NOW(), NOW())`,
+             VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW())`,
             [
                 title,
                 description ?? null,
@@ -175,7 +175,7 @@ router.post('/', async (req: Request, res: Response) => {
                 duration_minutes,
                 total_marks,
                 passing_marks ?? null,
-                finalStartTime,
+                examDateOnly,
                 finalStartTime,
                 finalEndTime,
                 is_active
@@ -413,13 +413,9 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
     try {
         const { examId, studentId } = req.params;
 
-        // Fetch exam with concatenated date-times for reliable parsing
+        // Fetch exam - start_time and end_time are already DATETIME columns
         const exam = await queryOne<any>(
-            `SELECT e.*, 
-                    CONCAT(e.exam_date, ' ', e.start_time) AS start_dt,
-                    CONCAT(e.exam_date, ' ', e.end_time)   AS end_dt
-             FROM exams e
-             WHERE e.id = ?`,
+            `SELECT e.* FROM exams e WHERE e.id = ?`,
             [examId]
         );
 
@@ -468,9 +464,9 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
 
         const now = new Date();
 
-        // Build Date objects from start_dt/end_dt when available (robust parsing)
-        const startTime = parseLocalDateTime(exam?.start_dt);
-        const endTime = parseLocalDateTime(exam?.end_dt);
+        // Use start_time and end_time directly (they are DATETIME columns)
+        const startTime = exam?.start_time ? new Date(exam.start_time) : null;
+        const endTime = exam?.end_time ? new Date(exam.end_time) : null;
 
         console.log('🕐 Time Check:');
         console.log('  Current time:', now.toISOString(), '(Local:', now.toLocaleString('ar-EG'), ')');
@@ -480,7 +476,7 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
         console.log('  Now > End?', !!(endTime && now > endTime));
 
         // If schedule missing/invalid, allow attempt (treat as always-open exam)
-        if (!startTime || !endTime) {
+        if (!startTime || !endTime || isNaN(startTime.getTime()) || isNaN(endTime.getTime())) {
             return res.json({
                 canAttempt: true,
                 reason: 'no_schedule',
@@ -488,17 +484,16 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
             });
         }
 
-        if (startTime && now < startTime) {
+        if (now < startTime) {
             return res.json({
                 canAttempt: false,
                 reason: 'not_started',
                 message: 'الامتحان لم يبدأ بعد',
-                // Return start time as local-friendly string (no timezone shift)
-                startTime: String(exam.start_dt).replace(' ', 'T')
+                startTime: startTime.toISOString()
             });
         }
 
-        if (endTime && now > endTime) {
+        if (now > endTime) {
             return res.json({
                 canAttempt: false,
                 reason: 'ended',
@@ -518,12 +513,9 @@ router.post('/:examId/start/:studentId', async (req: Request, res: Response) => 
     try {
         const { examId, studentId } = req.params;
 
-        // Get exam info with concatenated datetime for validation
+        // Get exam info - start_time and end_time are DATETIME columns
         const exam = await queryOne<any>(
-            `SELECT e.*, 
-                    CONCAT(e.exam_date, ' ', e.start_time) AS start_dt,
-                    CONCAT(e.exam_date, ' ', e.end_time)   AS end_dt
-             FROM exams e WHERE e.id = ?`,
+            `SELECT e.* FROM exams e WHERE e.id = ?`,
             [examId]
         );
 
@@ -555,10 +547,10 @@ router.post('/:examId/start/:studentId', async (req: Request, res: Response) => 
 
         // Enforce schedule window strictly
         const now = new Date();
-        const startTime = parseLocalDateTime(exam?.start_dt);
-        const endTime = parseLocalDateTime(exam?.end_dt);
+        const startTime = exam?.start_time ? new Date(exam.start_time) : null;
+        const endTime = exam?.end_time ? new Date(exam.end_time) : null;
 
-        if (!startTime || !endTime) {
+        if (!startTime || !endTime || isNaN(startTime.getTime()) || isNaN(endTime.getTime())) {
             // Allow starting when schedule is not set
             console.warn('⚠️ Exam has no valid schedule; allowing start:', examId);
         } else {

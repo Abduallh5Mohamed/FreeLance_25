@@ -141,7 +141,7 @@ const StudentHeader = () => {
     { name: "المحاضرات", href: "/student-lectures", icon: Video },
     { name: "المحتوى التعليمي", href: "/student-content", icon: File },
     { name: "الامتحانات", href: "/student-exams", icon: FileText },
-    { name: "المحادثات", href: "/student-chat", icon: MessageCircle },
+    { name: "الرسائل", href: "/student-messages", icon: MessageCircle },
   ];
 
   const handleLogout = async () => {

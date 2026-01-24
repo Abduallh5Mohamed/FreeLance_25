@@ -58,6 +58,7 @@ const App = () => (
           <Route path="/" element={<Index />} />
           <Route path="/promo" element={<PromoVideo />} />
           <Route path="/auth" element={<Auth />} />
+          <Route path="/login" element={<Auth />} />
 
           {/* Teacher Routes - Protected */}
           <Route path="/teacher" element={<AuthGuard requiredRole="teacher"><TeacherDashboard /></AuthGuard>} />
@@ -93,6 +94,7 @@ const App = () => (
           {/* Student Routes - Protected */}
           <Route path="/student" element={<AuthGuard requiredRole="student"><StudentDashboard /></AuthGuard>} />
           <Route path="/student-chat" element={<AuthGuard requiredRole="student"><StudentChat /></AuthGuard>} />
+          <Route path="/student-messages" element={<AuthGuard requiredRole="student"><Messages /></AuthGuard>} />
           <Route path="/student-content" element={<AuthGuard requiredRole="student"><StudentContent /></AuthGuard>} />
           <Route path="/student-lectures" element={<AuthGuard requiredRole="student"><StudentLectures /></AuthGuard>} />
           <Route path="/student-exams" element={<AuthGuard requiredRole="student"><StudentExams /></AuthGuard>} />

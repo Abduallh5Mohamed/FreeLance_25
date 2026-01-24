@@ -14,12 +14,16 @@ export const AuthGuard = ({ children, requiredRole }: AuthGuardProps) => {
 
     useEffect(() => {
         const checkAuth = () => {
-            console.log('🔍 AuthGuard: Checking authentication...');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('🔍 AuthGuard: Starting authentication check');
+            console.log('🔍 Required Role:', requiredRole || 'any');
+
             const userStr = localStorage.getItem('currentUser');
-            console.log('🔍 AuthGuard: User from localStorage:', userStr);
+            console.log('🔍 Raw localStorage data:', userStr);
 
             if (!userStr) {
-                console.log('❌ AuthGuard: No user found, redirecting to /auth');
+                console.log('❌ AuthGuard: No user found in localStorage');
+                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
                 toast({
                     variant: "destructive",
                     title: "غير مسموح",
@@ -32,14 +36,21 @@ export const AuthGuard = ({ children, requiredRole }: AuthGuardProps) => {
 
             try {
                 const user = JSON.parse(userStr);
-                console.log('🔍 AuthGuard: Parsed user:', user);
-                console.log('🔍 AuthGuard: Required role:', requiredRole);
-                console.log('🔍 AuthGuard: User role:', user.role);
+                console.log('✅ User parsed successfully');
+                console.log('👤 User ID:', user.id);
+                console.log('👤 User Name:', user.name);
+                console.log('👤 User Role:', user.role);
+                console.log('🎯 Required Role:', requiredRole);
+                console.log('🔄 Is Admin?', user.role === 'admin');
 
                 // Check if user has required role
                 // Admin has access to all pages (teacher and student)
                 if (requiredRole && user.role !== requiredRole && user.role !== 'admin') {
-                    console.log('❌ AuthGuard: Role mismatch, redirecting to /auth');
+                    console.log('❌ AuthGuard: Role check FAILED');
+                    console.log('   User role:', user.role);
+                    console.log('   Required role:', requiredRole);
+                    console.log('   Is admin:', user.role === 'admin');
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
                     toast({
                         variant: "destructive",
                         title: "غير مسموح",
@@ -50,11 +61,13 @@ export const AuthGuard = ({ children, requiredRole }: AuthGuardProps) => {
                     return;
                 }
 
-                console.log('✅ AuthGuard: User authorized!');
+                console.log('✅ AuthGuard: Authorization check PASSED!');
+                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
                 setIsAuthorized(true);
                 setIsChecking(false);
             } catch (error) {
                 console.error('❌ AuthGuard: Error parsing user data:', error);
+                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
                 toast({
                     variant: "destructive",
                     title: "خطأ",

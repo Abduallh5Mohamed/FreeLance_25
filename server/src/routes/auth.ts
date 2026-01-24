@@ -240,4 +240,34 @@ router.delete('/users/student/:studentId', async (req: Request, res: Response) =
     }
 });
 
+// Search user by phone
+router.get('/search-by-phone/:phone', async (req: Request, res: Response) => {
+    try {
+        const { phone } = req.params;
+
+        if (!phone) {
+            return res.status(400).json({ error: 'Phone number is required' });
+        }
+
+        const user = await queryOne<User>(
+            `SELECT id, phone, name, role, is_active 
+             FROM users 
+             WHERE phone = ? AND is_active = TRUE`,
+            [phone.trim()]
+        );
+
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Don't return sensitive data
+        const { password_hash, ...userData } = user as any;
+
+        res.json(userData);
+    } catch (error) {
+        console.error('Search user by phone error:', error);
+        res.status(500).json({ error: 'Failed to search user' });
+    }
+});
+
 export default router;

@@ -1,909 +1,1032 @@
-import { useState, useEffect, useRef } from "react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
-import { MessageCircle, Send, User, Bot, Sparkles, Zap, Star, MessageSquare } from "lucide-react";
-import Header from "@/components/Header";
-import StudentHeader from "@/components/StudentHeader";
-import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
-import { motion, AnimatePresence } from "framer-motion";
-import { FloatingParticles } from "@/components/FloatingParticles";
+import { useEffect, useState, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { io, Socket } from 'socket.io-client';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Card } from '@/components/ui/card';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Separator } from '@/components/ui/separator';
+import {
+    Send,
+    Image as ImageIcon,
+    Edit2,
+    Trash2,
+    Check,
+    CheckCheck,
+    Clock,
+    ArrowLeft,
+    Search
+} from 'lucide-react';
+import axios from 'axios';
 
-const Messages = () => {
-  const [messages, setMessages] = useState([]);
-  const [selectedConversation, setSelectedConversation] = useState(null);
-  const [newMessage, setNewMessage] = useState("");
-  const [conversations, setConversations] = useState([]);
-  const [currentUser, setCurrentUser] = useState(null);
-  const [isStudent, setIsStudent] = useState(false);
-  const [isAiLoading, setIsAiLoading] = useState(false);
-  const [showAiHelper, setShowAiHelper] = useState(false);
-  const [isAiMode, setIsAiMode] = useState(false); // New state for AI mode toggle
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  
-  const { toast } = useToast();
+const API_URL = 'http://localhost:3001/api';
+const SOCKET_URL = 'http://localhost:3001';
 
-  // Auto scroll to bottom when new messages arrive
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+interface User {
+    id: string;
+    username?: string;
+    name?: string;
+    role: string;
+    phone?: string;
+    is_online?: boolean;
+    last_seen?: string | null;
+}
 
-  useEffect(() => {
-    checkUserRole();
-  }, []);
+interface Message {
+    id: number;
+    sender_id: string;
+    receiver_id: string;
+    content: string;
+    message_type: 'text' | 'image';
+    image_url?: string;
+    is_edited: boolean;
+    edited_at?: string;
+    is_deleted: boolean;
+    deleted_at?: string;
+    created_at: string;
+    sender_name?: string;
+    sender_role?: string;
+    is_delivered?: boolean;
+    delivered_at?: string;
+    is_read?: boolean;
+    read_at?: string;
+}
 
-  useEffect(() => {
-    if (currentUser) {
-      fetchConversations();
-    }
-  }, [currentUser, isStudent]);
+interface Conversation {
+    id: number;
+    other_user_id: string;
+    other_user_name: string;
+    other_user_role: string;
+    unread_count: number;
+    last_message_content: string;
+    last_message_type: string;
+    last_message_time: string;
+    is_online: boolean;
+    last_seen: string;
+}
 
-  const checkUserRole = async () => {
-    try {
-      // Check for admin user FIRST
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        setCurrentUser({ email: user.email, type: 'admin' });
-        setIsStudent(false);
-        return; // Stop here if admin
-      }
+export default function Messages() {
+    const navigate = useNavigate();
+    const [user, setUser] = useState<any>(null);
+    const [socket, setSocket] = useState<Socket | null>(null);
+    const [conversations, setConversations] = useState<Conversation[]>([]);
+    const [availableUsers, setAvailableUsers] = useState<User[]>([]);
+    const [selectedUser, setSelectedUser] = useState<User | null>(null);
+    const [messages, setMessages] = useState<Message[]>([]);
+    const [messageText, setMessageText] = useState('');
+    const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
+    const [isTyping, setIsTyping] = useState(false);
+    const [searchPhone, setSearchPhone] = useState('');
+    const [searchResult, setSearchResult] = useState<User | null>(null);
+    const [isSearching, setIsSearching] = useState(false);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
-      // Check if this is an offline student
-      const offlineSession = localStorage.getItem('offlineStudentSession');
-      if (offlineSession) {
-        const session = JSON.parse(offlineSession);
-        const isValid = new Date().getTime() - session.timestamp < 24 * 60 * 60 * 1000;
-        
-        if (isValid) {
-          setCurrentUser({ 
-            email: session.student.email, 
-            studentId: session.student.id,
-            type: 'student' 
-          });
-          setIsStudent(true);
-          return;
-        } else {
-          localStorage.removeItem('offlineStudentSession');
-        }
-      }
+    // Get auth token
+    const getToken = () => localStorage.getItem('authToken');
 
-      // Check if student is logged in via temporary session
-      const studentSession = localStorage.getItem('student_session');
-      
-      if (studentSession) {
-        const session = JSON.parse(studentSession);
-        // Check if session is still valid (24 hours)
-        if (Date.now() - session.loginTime < 24 * 60 * 60 * 1000) {
-          setCurrentUser({ email: session.email, type: 'student' });
-          setIsStudent(true);
-          return;
-        } else {
-          localStorage.removeItem('student_session');
-        }
-      }
-    } catch (error) {
-      console.error('Error checking user role:', error);
-    }
-  };
+    // Scroll to bottom
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    };
 
-  const fetchConversations = async () => {
-    try {
-      if (!currentUser) return;
+    useEffect(() => {
+        scrollToBottom();
+    }, [messages]);
 
-      if (isStudent) {
-        // For students, fetch their messages with admin
-        // Use studentId from currentUser if available (for offline students)
-        let studentId = currentUser.studentId;
-        let studentName = '';
-        
-        if (!studentId) {
-          // If no studentId, fetch from students table
-          console.log('🔍 Fetching student by email:', currentUser.email);
-          const { data: studentData, error: studentError } = await supabase
-            .from('students')
-            .select('id, name')
-            .eq('email', currentUser.email)
-            .maybeSingle();
+    // Initialize
+    useEffect(() => {
+        // Get user from localStorage
+        const userStr = localStorage.getItem('currentUser');
+        const token = getToken();
 
-          if (studentError) {
-            console.error('❌ Error fetching student:', studentError);
-            toast({
-              title: "خطأ",
-              description: "لم يتم العثور على بيانات الطالب",
-              variant: "destructive"
-            });
+        console.log('📨 Messages: Checking authentication');
+        console.log('📨 User from localStorage:', userStr);
+        console.log('📨 Token:', token);
+
+        if (!userStr) {
+            console.log('❌ Messages: No user found, redirecting to /auth');
+            navigate('/auth');
             return;
-          }
-
-          if (!studentData) {
-            console.error('❌ Student not found with email:', currentUser.email);
-            toast({
-              title: "خطأ",
-              description: "لم يتم العثور على حساب الطالب",
-              variant: "destructive"
-            });
-            return;
-          }
-          
-          studentId = studentData.id;
-          studentName = studentData.name;
-        } else {
-          // Fetch student name
-          const { data: studentData } = await supabase
-            .from('students')
-            .select('name')
-            .eq('id', studentId)
-            .maybeSingle();
-          
-          studentName = studentData?.name || '';
         }
 
-        console.log('✅ Student ID found:', studentId);
-        console.log('✅ Student Name:', studentName);
+        try {
+            const userData = JSON.parse(userStr);
+            console.log('✅ Messages: User found:', userData);
+            setUser(userData);
+            initializeSocket(userData);
+            loadConversations();
+            loadAvailableUsers(userData);
 
-        // Set conversation FIRST, before fetching messages
-        setSelectedConversation({ 
-          id: 'admin', 
-          studentName: 'الأستاذ محمد رمضان', 
-          studentId: studentId 
+            // Auto-select AI Assistant for students
+            if (userData.role === 'student') {
+                setTimeout(() => {
+                    selectUser({
+                        id: 'ai-assistant',
+                        username: 'المساعد الذكي',
+                        phone: '',
+                        is_online: true,
+                        last_seen: null,
+                        role: 'ai'
+                    });
+                }, 500);
+            }
+        } catch (err) {
+            console.error('❌ Messages: Error parsing user:', err);
+            navigate('/auth');
+        }
+    }, []);
+
+    // Initialize Socket.IO
+    const initializeSocket = (userData: any) => {
+        const newSocket = io(SOCKET_URL);
+
+        newSocket.on('connect', () => {
+            console.log('✅ Socket connected');
+            newSocket.emit('user:connect', userData.id);
         });
 
-        const { data: messagesData, error: messagesError } = await supabase
-          .from('teacher_messages')
-          .select('*')
-          .eq('student_id', studentId)
-          .order('sent_at', { ascending: true });
+        newSocket.on('message:new', (message: Message) => {
+            console.log('📨 Received new message:', message);
 
-        if (messagesError) {
-          console.error('❌ Error fetching messages:', messagesError);
-        }
+            // Only add message if it's NOT from the current user (sender already added it)
+            // and it's for the current conversation
+            if (message.sender_id !== userData.id &&
+                selectedUser &&
+                (message.sender_id === selectedUser.id || message.receiver_id === selectedUser.id)) {
+                setMessages(prev => {
+                    // Check if message already exists
+                    const exists = prev.some(m => m.id === message.id);
+                    if (exists) return prev;
+                    return [...prev, message];
+                });
 
-        // Format messages
-        const formattedMessages = messagesData?.map(msg => ({
-          ...msg,
-          isFromTeacher: !msg.sender_id,
-          isAi: false,
-          time: new Date(msg.sent_at).toLocaleTimeString('ar-SA', { 
-            hour: '2-digit', 
-            minute: '2-digit' 
-          })
-        })) || [];
+                // Mark as read if we're viewing this conversation
+                if (message.receiver_id === userData.id) {
+                    markMessageAsRead(message.id);
+                }
+            }
 
-        setMessages(formattedMessages);
-      } else {
-        // For admin, fetch all conversations with students
-        const { data: messagesData } = await supabase
-          .from('teacher_messages')
-          .select('*, student_id')
-          .order('sent_at', { ascending: false });
+            // Reload conversations to show new message
+            loadConversations();
 
-        // Get unique students who have sent messages
-        const studentIds = [...new Set(messagesData?.map(m => m.student_id).filter(Boolean))];
-        
-        if (studentIds.length > 0) {
-          const { data: studentsData } = await supabase
-            .from('students')
-            .select('id, name, email')
-            .in('id', studentIds);
-
-          // Group messages by student
-          const conversationsMap = new Map();
-          studentsData?.forEach(student => {
-            const studentMessages = messagesData?.filter(m => m.student_id === student.id);
-            const lastMessage = studentMessages?.[0];
-            
-            conversationsMap.set(student.id, {
-              id: student.id,
-              studentName: student.name,
-              studentEmail: student.email,
-              lastMessage: lastMessage?.message_text?.substring(0, 50) + '...' || 'لا توجد رسائل',
-              lastMessageTime: lastMessage?.sent_at
-            });
-          });
-
-          setConversations(Array.from(conversationsMap.values()));
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching conversations:', error);
-    }
-  };
-
-  const loadMessagesForConversation = async (conversationId) => {
-    try {
-      const { data: messagesData } = await supabase
-        .from('teacher_messages')
-        .select('*')
-        .eq('student_id', conversationId)
-        .order('sent_at', { ascending: true });
-
-      // Add a property to identify if message is from teacher (admin)
-      const formattedMessages = messagesData?.map(msg => ({
-        ...msg,
-        isFromTeacher: !msg.sender_id, // If sender_id is null, it's from teacher
-        time: new Date(msg.sent_at).toLocaleTimeString('ar-SA', { 
-          hour: '2-digit', 
-          minute: '2-digit' 
-        })
-      })) || [];
-
-      setMessages(formattedMessages);
-    } catch (error) {
-      console.error('Error loading messages:', error);
-    }
-  };
-
-  const askAiAssistant = async () => {
-    if (!newMessage.trim() || !currentUser || !isStudent) return;
-    
-    setIsAiLoading(true);
-    
-    try {
-      const { data: studentData } = await supabase
-        .from('students')
-        .select('id')
-        .eq('email', currentUser.email)
-        .single();
-
-      if (!studentData) throw new Error('Student not found');
-
-      // Add user question to messages immediately
-      const userMessageObj = {
-        id: Date.now().toString(),
-        message_text: newMessage,
-        sender_id: studentData.id,
-        student_id: studentData.id,
-        sent_at: new Date().toISOString(),
-        isFromTeacher: false,
-        isAi: false,
-        time: new Date().toLocaleTimeString('ar-SA', { 
-          hour: '2-digit', 
-          minute: '2-digit' 
-        })
-      };
-      setMessages(prevMessages => [...prevMessages, userMessageObj]);
-
-      const userQuestion = newMessage;
-      setNewMessage("");
-
-      // Call AI assistant
-      const { data, error } = await supabase.functions.invoke('ai-chat-assistant', {
-        body: { 
-          message: userQuestion,
-          studentId: studentData.id
-        }
-      });
-
-      if (error) throw error;
-
-      if (data.success) {
-        // Add AI response to messages
-        const aiMessageObj = {
-          id: (Date.now() + 1).toString(),
-          message_text: data.response,
-          sender_id: null,
-          student_id: studentData.id,
-          sent_at: new Date().toISOString(),
-          isFromTeacher: false,
-          isAi: true,
-          time: new Date().toLocaleTimeString('ar-SA', { 
-            hour: '2-digit', 
-            minute: '2-digit' 
-          })
-        };
-        setMessages(prevMessages => [...prevMessages, aiMessageObj]);
-
-        toast({
-          title: "المساعد الذكي",
-          description: "تم الحصول على الإجابة بنجاح",
+            // For students, also reload available users to show teacher if not already visible
+            if (userData.role === 'student') {
+                loadAvailableUsers(userData);
+            }
         });
-      } else {
-        throw new Error(data.error || 'Failed to get AI response');
-      }
-    } catch (error) {
-      console.error('Error calling AI assistant:', error);
-      toast({
-        title: "خطأ",
-        description: error.message || "فشل الاتصال بالمساعد الذكي",
-        variant: "destructive",
-      });
-    } finally {
-      setIsAiLoading(false);
-    }
-  };
 
-  const sendMessage = async () => {
-    if (!newMessage.trim() || !currentUser) {
-      console.log('⚠️ Cannot send: empty message or no user');
-      return;
-    }
-    
-    console.log('📤 Attempting to send message...');
-    console.log('Current user:', currentUser);
-    console.log('Is student:', isStudent);
-    console.log('Selected conversation:', selectedConversation);
-    
-    try {
-      if (isStudent) {
-        // Student sending message to admin
-        // Use studentId from selectedConversation first, fallback to currentUser
-        let studentId = selectedConversation?.studentId || currentUser.studentId;
-        
-        if (!studentId) {
-          console.log('🔍 No studentId in context, fetching from database...');
-          // If no studentId, fetch from students table
-          const { data: studentData, error: fetchError } = await supabase
-            .from('students')
-            .select('id')
-            .eq('email', currentUser.email)
-            .maybeSingle();
+        newSocket.on('message:sent', (message: Message) => {
+            console.log('✅ Message sent confirmation:', message);
+            // Replace temp message with real one from server
+            setMessages(prev => {
+                // Remove temp message (has temporary ID > 1000000000000) and add real one
+                const filtered = prev.filter(m => m.id < 1000000000000 || m.sender_id !== message.sender_id || m.content !== message.content);
+                // Check if message already exists (to prevent duplicates)
+                const exists = prev.some(m => m.id === message.id);
+                if (exists) {
+                    return prev.map(m => m.id === message.id ? message : m);
+                }
+                return [...filtered, message];
+            });
+        });
 
-          if (fetchError) {
-            console.error('❌ Error fetching student:', fetchError);
-            throw new Error('فشل في العثور على بيانات الطالب: ' + fetchError.message);
-          }
+        newSocket.on('message:read', (data: { messageId: number; readAt: Date }) => {
+            setMessages(prev => prev.map(msg =>
+                msg.id === data.messageId
+                    ? { ...msg, is_read: true, read_at: data.readAt.toString() }
+                    : msg
+            ));
+        });
 
-          if (!studentData) {
-            console.error('❌ Student not found with email:', currentUser.email);
-            throw new Error('لم يتم العثور على حساب الطالب');
-          }
-          studentId = studentData.id;
-        }
+        newSocket.on('message:edited', (data: any) => {
+            setMessages(prev => prev.map(msg =>
+                msg.id === data.messageId
+                    ? { ...msg, content: data.content, is_edited: true, edited_at: data.editedAt }
+                    : msg
+            ));
+        });
 
-        console.log('✅ Using student ID:', studentId);
-        console.log('📝 Message text:', newMessage);
+        newSocket.on('message:deleted', (data: { messageId: number }) => {
+            setMessages(prev => prev.filter(msg => msg.id !== data.messageId));
+        });
 
-        const { data: insertedData, error: insertError } = await supabase
-          .from('teacher_messages')
-          .insert({
-            sender_id: studentId,
-            message_text: newMessage,
-            student_id: studentId
-          })
-          .select();
+        newSocket.on('user:status', (data: { userId: string; isOnline: boolean; lastSeen?: Date }) => {
+            setAvailableUsers(prev => prev.map(u =>
+                u.id === data.userId
+                    ? { ...u, is_online: data.isOnline, last_seen: data.lastSeen?.toString() }
+                    : u
+            ));
 
-        if (insertError) {
-          console.error('❌ Insert error:', insertError);
-          throw insertError;
-        }
+            if (selectedUser && selectedUser.id === data.userId) {
+                setSelectedUser(prev => prev ? {
+                    ...prev,
+                    is_online: data.isOnline,
+                    last_seen: data.lastSeen?.toString()
+                } : null);
+            }
+        });
 
-        console.log('✅ Message inserted successfully:', insertedData);
-          
-        // Reload messages to get the updated list
-        fetchConversations();
-        
-        // Add message to local state for immediate display
-        const newMessageObj = {
-          id: Date.now().toString(),
-          message_text: newMessage,
-          sender_id: studentId,
-          student_id: studentId,
-          sent_at: new Date().toISOString(),
-          isFromTeacher: false,
-          isAi: false,
-          time: new Date().toLocaleTimeString('ar-SA', { 
-            hour: '2-digit', 
-            minute: '2-digit' 
-          })
+        newSocket.on('typing:start', (data: { userId: string }) => {
+            if (selectedUser && data.userId === selectedUser.id) {
+                setIsTyping(true);
+            }
+        });
+
+        newSocket.on('typing:stop', () => {
+            setIsTyping(false);
+        });
+
+        setSocket(newSocket);
+
+        return () => {
+            newSocket.close();
         };
-        setMessages(prevMessages => [...prevMessages, newMessageObj]);
-      } else {
-        // Admin sending message to student
-        if (selectedConversation) {
-          const { error } = await supabase
-            .from('teacher_messages')
-            .insert({
-              sender_id: null, // Admin messages have null sender_id
-              message_text: newMessage,
-              student_id: selectedConversation.id
+    };
+
+    // Save AI messages to localStorage whenever they change
+    useEffect(() => {
+        if (selectedUser?.id === 'ai-assistant' && messages.length > 0) {
+            localStorage.setItem('ai-messages', JSON.stringify(messages));
+        }
+    }, [messages, selectedUser]);
+
+    // Load conversations
+    const loadConversations = async () => {
+        try {
+            const token = getToken();
+            const res = await axios.get(`${API_URL}/messages/conversations`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            setConversations(res.data);
+        } catch (error) {
+            console.error('Error loading conversations:', error);
+        }
+    };
+
+    // Load available users
+    const loadAvailableUsers = async (userData?: any) => {
+        try {
+            const token = getToken();
+            const currentUser = userData || user;
+            console.log('🔍 Loading available users for:', currentUser?.role);
+            // For students, always show the main teacher
+            if (currentUser?.role === 'student') {
+                const teacher = {
+                    id: '01024083057', // Use phone as ID temporarily
+                    username: 'الأستاذ محمد رمضان',
+                    role: 'teacher',
+                    phone: '01024083057',
+                    is_online: false,
+                    last_seen: null
+                };
+
+                // Try to get actual teacher data from database
+                try {
+                    const teacherRes = await axios.get(`${API_URL}/auth/search-by-phone/01024083057`, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+
+                    if (teacherRes.data) {
+                        teacher.id = teacherRes.data.id;
+                        teacher.username = teacherRes.data.name || 'الأستاذ محمد رمضان';
+                        console.log('✅ Teacher data loaded:', teacher);
+                    }
+                } catch (err) {
+                    console.error('⚠️ Could not load teacher data, using default:', err);
+                }
+
+                console.log('✅ Main teacher set:', teacher);
+                setAvailableUsers([teacher]);
+                return;
+            }
+
+            // For teachers and admins, load all available users
+            const res = await axios.get(`${API_URL}/messages/users/available`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            console.log('✅ Available users loaded:', res.data);
+            // Map 'name' to 'username' for compatibility
+            const usersWithUsername = res.data.map((u: any) => ({
+                ...u,
+                username: u.name || u.username
+            }));
+            setAvailableUsers(usersWithUsername);
+        } catch (error) {
+            console.error('❌ Error loading users:', error);
+        }
+    };
+
+    // Load messages with selected user
+    const loadMessages = async (userId: string) => {
+        // AI Assistant messages are stored locally
+        if (userId === 'ai-assistant') {
+            // Load from localStorage or start with welcome message
+            const storedMessages = localStorage.getItem('ai-messages');
+            if (storedMessages) {
+                setMessages(JSON.parse(storedMessages));
+            } else {
+                const welcomeMessage: Message = {
+                    id: 1,
+                    sender_id: 'ai-assistant',
+                    receiver_id: user.id,
+                    content: 'السلام عليكم! أنا مساعدك الذكي المتخصص في مادة التاريخ. كيف يمكنني مساعدتك اليوم؟',
+                    message_type: 'text',
+                    is_edited: false,
+                    is_deleted: false,
+                    created_at: new Date().toISOString(),
+                    is_delivered: true,
+                    is_read: true
+                };
+                setMessages([welcomeMessage]);
+            }
+            return;
+        }
+
+        try {
+            const token = getToken();
+            const res = await axios.get(`${API_URL}/messages/${userId}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            setMessages(res.data);
+
+            // Mark all messages with this user as read at once
+            const unreadMessages = res.data.filter((msg: Message) =>
+                msg.receiver_id === user.id && !msg.is_read
+            );
+
+            if (unreadMessages.length > 0) {
+                console.log(`📖 Marking ${unreadMessages.length} messages as read for user ${userId}`);
+                // Use the new endpoint to mark all as read at once
+                try {
+                    await axios.put(`${API_URL}/messages/mark-all-read/${userId}`, {}, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+                    console.log('✅ All messages marked as read');
+                } catch (err) {
+                    console.error('❌ Error marking messages as read:', err);
+                }
+            }
+        } catch (error) {
+            console.error('Error loading messages:', error);
+        }
+    };
+
+    // Search user by phone
+    const searchUserByPhone = async () => {
+        if (!searchPhone.trim()) return;
+
+        setIsSearching(true);
+        setSearchResult(null);
+
+        try {
+            const token = getToken();
+            // البحث في جدول users برقم الهاتف
+            const res = await axios.get(`${API_URL}/auth/search-by-phone/${searchPhone.trim()}`, {
+                headers: { Authorization: `Bearer ${token}` }
             });
 
-          if (error) throw error;
-          
-          // Reload messages for this conversation
-          await loadMessagesForConversation(selectedConversation.id);
-          
-          // Refresh conversations list to update last message
-          fetchConversations();
+            if (res.data) {
+                // تحويل name إلى username للتوافق مع الواجهة
+                const userData = {
+                    ...res.data,
+                    username: res.data.name,
+                    is_online: false
+                };
+                setSearchResult(userData);
+                console.log('✅ User found:', userData);
+            } else {
+                console.log('❌ No user found with this phone');
+            }
+        } catch (error: any) {
+            console.error('Error searching user:', error);
+            if (error.response?.status === 404) {
+                console.log('❌ User not found');
+            }
+        } finally {
+            setIsSearching(false);
         }
-      }
+    };
 
-      toast({
-        title: "تم إرسال الرسالة",
-        description: "تم إرسال رسالتك بنجاح",
-      });
-      
-      setNewMessage("");
-    } catch (error) {
-      console.error('❌ Error sending message:', error);
-      toast({
-        title: "خطأ في الإرسال",
-        description: error.message || "حاول مرة أخرى",
-        variant: "destructive",
-      });
-    }
-  };
+    // Send message
+    const sendMessage = async () => {
+        console.log('🚀 sendMessage called');
+        console.log('📝 Message text:', messageText);
+        console.log('👤 Selected user:', selectedUser);
+        console.log('🔌 Socket:', socket);
 
-  // Toggle between AI and Teacher mode
-  const toggleAiMode = () => {
-    setIsAiMode(!isAiMode);
-    toast({
-      title: isAiMode ? "تم التحويل للمدرس" : "تم التحويل للمساعد الذكي",
-      description: isAiMode ? "يمكنك الآن التحدث مع الأستاذ محمد رمضان" : "يمكنك الآن التحدث مع المساعد الذكي",
-    });
-  };
+        if (!messageText.trim() || !selectedUser) {
+            console.log('❌ Cannot send: missing requirements');
+            return;
+        }
 
-  // Modified sendMessage to handle AI mode
-  const handleSendMessage = async () => {
-    if (isStudent && isAiMode) {
-      // Send to AI if in AI mode
-      await askAiAssistant();
-    } else {
-      // Send to teacher
-      await sendMessage();
-    }
-  };
+        // AI Assistant
+        if (selectedUser.id === 'ai-assistant') {
+            const userMessage: Message = {
+                id: Date.now(),
+                sender_id: user.id,
+                receiver_id: 'ai-assistant',
+                content: messageText,
+                message_type: 'text',
+                is_edited: false,
+                is_deleted: false,
+                created_at: new Date().toISOString(),
+                is_delivered: true,
+                is_read: true
+            };
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950 relative overflow-hidden" dir="rtl">
-      {/* Floating Particles Background */}
-      <FloatingParticles />
-      
-      {isStudent ? <StudentHeader /> : <Header />}
-      
-      <div className="container mx-auto px-2 sm:px-3 md:px-4 lg:px-6 py-4 md:py-6 lg:py-8 relative z-10">
-        {/* Header with Animation */}
-        <motion.div 
-          initial={{ opacity: 0, y: -30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6 }}
-          className="mb-4 md:mb-6 lg:mb-8"
-        >
-          <div className="relative overflow-hidden rounded-2xl md:rounded-3xl bg-gradient-to-r from-cyan-600 to-teal-600 p-4 md:p-6 lg:p-8 shadow-2xl">
-            {/* Animated Background Pattern */}
-            <div className="absolute inset-0 opacity-10">
-              <div className="absolute inset-0" style={{
-                backgroundImage: `radial-gradient(circle at 20px 20px, white 2px, transparent 0)`,
-                backgroundSize: '40px 40px'
-              }} />
+            setMessages(prev => [...prev, userMessage]);
+            setMessageText('');
+            setIsTyping(true);
+
+            try {
+                const googleApiKey = 'AIzaSyAm-hpg9pjc66DqNnS8qHpdgeKBd-FZP70';
+                const systemPrompt = `أنت مساعد ذكي تعليمي متخصص حصراً في مساعدة طلاب المرحلة الثانوية المصريين في دراسة التاريخ.
+
+وظيفتك الأساسية:
+- شرح الأحداث التاريخية والشخصيات والفترات بوضوح ودقة
+- مساعدة الطلاب على فهم دروس المنهج المصري للتاريخ
+- تقديم ملخصات وتحليلات ومقارنات للأحداث التاريخية
+- الإجابة على أسئلة من نمط الامتحانات
+- مساعدة الطالب على كتابة الإجابات الطويلة
+
+رد دائماً بالعربية فقط، وكن ودوداً وصبوراً - بدو كمعلم مختص وليس روبوت.`;
+
+                const response = await fetch(
+                    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${googleApiKey}`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            systemInstruction: { parts: [{ text: systemPrompt }] },
+                            contents: [{ role: 'user', parts: [{ text: messageText }] }],
+                            generationConfig: {
+                                temperature: 0.7,
+                                maxOutputTokens: 1000,
+                                topK: 40,
+                                topP: 0.95,
+                            },
+                        }),
+                    }
+                );
+
+                const data = await response.json();
+
+                if (response.ok && data.candidates?.[0]?.content?.parts?.[0]?.text) {
+                    const aiMessage: Message = {
+                        id: Date.now() + 1,
+                        sender_id: 'ai-assistant',
+                        receiver_id: user.id,
+                        content: data.candidates[0].content.parts[0].text,
+                        message_type: 'text',
+                        is_edited: false,
+                        is_deleted: false,
+                        created_at: new Date().toISOString(),
+                        is_delivered: true,
+                        is_read: true
+                    };
+                    setMessages(prev => [...prev, aiMessage]);
+                } else {
+                    throw new Error('فشل في الحصول على رد من المساعد الذكي');
+                }
+            } catch (error) {
+                console.error('AI Error:', error);
+                const errorMessage: Message = {
+                    id: Date.now() + 1,
+                    sender_id: 'ai-assistant',
+                    receiver_id: user.id,
+                    content: 'عذراً، حدث خطأ في الاتصال بالمساعد الذكي. يرجى المحاولة مرة أخرى.',
+                    message_type: 'text',
+                    is_edited: false,
+                    is_deleted: false,
+                    created_at: new Date().toISOString(),
+                    is_delivered: true,
+                    is_read: true
+                };
+                setMessages(prev => [...prev, errorMessage]);
+            } finally {
+                setIsTyping(false);
+            }
+            return;
+        }
+
+        if (!socket) {
+            console.log('❌ No socket connection');
+            return;
+        }
+
+        if (editingMessageId) {
+            console.log('✏️ Editing message:', editingMessageId);
+            // Edit message
+            socket.emit('message:edit', {
+                messageId: editingMessageId,
+                userId: user.id,
+                content: messageText
+            });
+            setEditingMessageId(null);
+        } else {
+            // Send new message
+            const tempMessage: Message = {
+                id: Date.now(), // Temporary ID
+                sender_id: user.id,
+                receiver_id: selectedUser.id,
+                content: messageText,
+                message_type: 'text',
+                is_edited: false,
+                is_deleted: false,
+                created_at: new Date().toISOString(),
+                is_delivered: false,
+                is_read: false
+            };
+
+            console.log('📤 Sending message:', tempMessage);
+
+            // Add message to UI immediately
+            setMessages(prev => [...prev, tempMessage]);
+
+            // Send via socket
+            socket.emit('message:send', {
+                senderId: user.id,
+                receiverId: selectedUser.id,
+                content: messageText,
+                messageType: 'text'
+            });
+
+            console.log('✅ Message added to UI and sent via socket');
+        }
+
+        setMessageText('');
+        if (socket && selectedUser) {
+            socket.emit('typing:stop', { senderId: user.id, receiverId: selectedUser.id });
+        }
+    };
+
+    // Send image
+    const sendImage = async (file: File) => {
+        if (!selectedUser) return;
+
+        const formData = new FormData();
+        formData.append('image', file);
+        formData.append('receiver_id', selectedUser.id);
+
+        try {
+            const token = getToken();
+            const res = await axios.post(`${API_URL}/messages/upload-image`, formData, {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'multipart/form-data'
+                }
+            });
+
+            setMessages(prev => [...prev, res.data]);
+        } catch (error) {
+            console.error('Error uploading image:', error);
+        }
+    };
+
+    // Mark message as read
+    const markMessageAsRead = async (messageId: number) => {
+        if (!user) return;
+
+        // Use API call to ensure it's persisted in database
+        try {
+            const token = getToken();
+            await axios.put(`${API_URL}/messages/${messageId}/mark-read`, {}, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+
+            // Also emit via socket for real-time updates
+            if (socket) {
+                socket.emit('message:read', { messageId, userId: user.id });
+            }
+        } catch (error) {
+            console.error('Error marking message as read:', error);
+        }
+    };
+
+    // Delete message
+    const deleteMessage = (messageId: number) => {
+        if (!socket || !user) return;
+        socket.emit('message:delete', { messageId, userId: user.id });
+    };
+
+    // Start editing
+    const startEditing = (message: Message) => {
+        setEditingMessageId(message.id);
+        setMessageText(message.content);
+    };
+
+    // Handle typing
+    const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
+        setMessageText(e.target.value);
+
+        if (socket && selectedUser) {
+            socket.emit('typing:start', { senderId: user.id, receiverId: selectedUser.id });
+
+            // Stop typing after 2 seconds of no input
+            setTimeout(() => {
+                socket.emit('typing:stop', { senderId: user.id, receiverId: selectedUser.id });
+            }, 2000);
+        }
+    };
+
+    // Select user to chat
+    const selectUser = (chatUser: User) => {
+        setSelectedUser(chatUser);
+        setMessages([]);
+        loadMessages(chatUser.id);
+
+        // Immediately clear unread count in the UI for this conversation
+        setConversations(prev => prev.map(conv =>
+            conv.other_user_id === chatUser.id
+                ? { ...conv, unread_count: 0 }
+                : conv
+        ));
+    };
+
+    // Format time
+    const formatTime = (dateString: string) => {
+        const date = new Date(dateString);
+        return date.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+    };
+
+    // Format date
+    const formatDate = (dateString: string) => {
+        const date = new Date(dateString);
+        const today = new Date();
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+
+        if (date.toDateString() === today.toDateString()) {
+            return 'اليوم';
+        } else if (date.toDateString() === yesterday.toDateString()) {
+            return 'أمس';
+        } else {
+            return date.toLocaleDateString('ar-EG');
+        }
+    };
+
+    // Get message status icon
+    const getStatusIcon = (message: Message) => {
+        if (message.sender_id !== user?.id) return null;
+
+        if (message.is_read) {
+            return <CheckCheck className="h-4 w-4 text-blue-500" />;
+        } else if (message.is_delivered) {
+            return <CheckCheck className="h-4 w-4 text-gray-400" />;
+        } else {
+            return <Check className="h-4 w-4 text-gray-400" />;
+        }
+    };
+
+    if (!user) {
+        return (
+            <div className="flex items-center justify-center h-screen">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
             </div>
+        );
+    }
 
-            <div className="relative z-10 flex items-center justify-between flex-wrap gap-3 md:gap-4">
-              <div className="flex items-center gap-3 md:gap-4">
-                <motion.div
-                  initial={{ scale: 0, rotate: -180 }}
-                  animate={{ scale: 1, rotate: 0 }}
-                  transition={{ type: "spring", stiffness: 200, delay: 0.2 }}
-                  className="p-2 md:p-3 lg:p-4 bg-white/20 backdrop-blur-sm rounded-xl md:rounded-2xl"
-                >
-                  <MessageSquare className="w-8 h-8 md:w-10 md:h-10 lg:w-12 lg:h-12 text-white" />
-                </motion.div>
-                <div>
-                  <motion.h1 
-                    className="text-xl md:text-2xl lg:text-4xl font-extrabold text-white mb-1 md:mb-2"
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ duration: 0.5, delay: 0.3 }}
-                  >
-                    الرسائل
-                  </motion.h1>
-                  <motion.p 
-                    className="text-white/90 text-xs md:text-sm lg:text-lg flex items-center gap-1 md:gap-2"
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ duration: 0.5, delay: 0.4 }}
-                  >
-                    <Sparkles className="h-4 w-4 md:h-5 md:w-5" />
-                    <span className="hidden sm:inline">التواصل المباشر مع {isStudent ? 'الأستاذ' : 'الطلاب'}</span>
-                    <span className="sm:hidden">{isStudent ? 'الأستاذ' : 'الطلاب'}</span>
-                  </motion.p>
-                </div>
-              </div>
-              
-              {isStudent && (
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.8 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ duration: 0.5, delay: 0.5 }}
-                  className="flex items-center gap-1.5 md:gap-2 bg-white/20 backdrop-blur-sm px-2 md:px-3 lg:px-4 py-1.5 md:py-2 rounded-full"
-                >
-                  <Bot className="h-4 w-4 md:h-5 md:w-5 text-white" />
-                  <span className="text-white font-semibold text-xs md:text-sm">المساعد الذكي متاح</span>
-                  <Badge className="bg-green-500 text-white text-[10px] md:text-xs">جديد</Badge>
-                </motion.div>
-              )}
-            </div>
-          </div>
-        </motion.div>
-
-        <div className={`grid grid-cols-1 ${isStudent ? '' : 'md:grid-cols-3 lg:grid-cols-3'} gap-3 md:gap-4 lg:gap-6`}>
-          {/* Conversations List - Only for Admin */}
-          {!isStudent && (
-            <motion.div
-              initial={{ opacity: 0, x: -50 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.5 }}
-              className="md:col-span-1"
-            >
-              <Card className="shadow-2xl border-cyan-500/20 bg-gradient-to-br from-card/95 to-card backdrop-blur-xl hover:shadow-glow transition-all duration-500">
-                <CardHeader className="bg-gradient-to-r from-cyan-500/10 to-teal-500/10 border-b border-cyan-500/20">
-                  <CardTitle className="flex items-center gap-2">
-                    <MessageCircle className="h-5 w-5 text-cyan-600" />
-                    المحادثات
-                    <Badge className="mr-auto bg-cyan-600">{conversations.length}</Badge>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="p-4">
-                  <AnimatePresence mode="popLayout">
-                    {conversations.length > 0 ? (
-                      <div className="space-y-2">
-                        {conversations.map((conversation, index) => (
-                          <motion.div
-                            key={conversation.id}
-                            initial={{ opacity: 0, x: -20 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            exit={{ opacity: 0, x: 20 }}
-                            transition={{ duration: 0.3, delay: index * 0.05 }}
-                            whileHover={{ scale: 1.02, x: 5 }}
-                            className={`p-4 rounded-xl hover:bg-gradient-to-r hover:from-cyan-500/10 hover:to-teal-500/10 cursor-pointer transition-all duration-300 border-2 ${
-                              selectedConversation?.id === conversation.id 
-                                ? 'bg-gradient-to-r from-cyan-500/20 to-teal-500/20 border-cyan-600 shadow-lg' 
-                                : 'border-transparent hover:border-cyan-500/30'
-                            }`}
-                            onClick={() => {
-                              setSelectedConversation(conversation);
-                              loadMessagesForConversation(conversation.id);
-                            }}
-                          >
-                            <div className="flex items-center gap-3">
-                              <motion.div
-                                whileHover={{ rotate: 360 }}
-                                transition={{ duration: 0.5 }}
-                              >
-                                <Avatar className="border-2 border-cyan-500/30">
-                                  <AvatarFallback className="bg-gradient-to-br from-cyan-600 to-teal-600 text-white">
-                                    <User className="w-5 h-5" />
-                                  </AvatarFallback>
-                                </Avatar>
-                              </motion.div>
-                              <div className="flex-1">
-                                <p className="font-bold text-foreground">{conversation.studentName}</p>
-                                <p className="text-sm text-muted-foreground truncate">
-                                  {conversation.lastMessage}
-                                </p>
-                              </div>
-                              <Star className="h-4 w-4 text-cyan-500 fill-cyan-500" />
-                            </div>
-                          </motion.div>
-                        ))}
-                      </div>
-                    ) : (
-                      <motion.div 
-                        initial={{ opacity: 0, scale: 0.9 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="text-center py-12 text-muted-foreground"
-                      >
-                        <motion.div
-                          animate={{ y: [0, -10, 0] }}
-                          transition={{ duration: 2, repeat: Infinity }}
-                        >
-                          <MessageCircle className="w-16 h-16 mx-auto mb-4 opacity-30" />
-                        </motion.div>
-                        <p className="text-lg font-semibold">لا توجد محادثات</p>
-                        <p className="text-sm">انتظر رسائل من الطلاب</p>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </CardContent>
-              </Card>
-            </motion.div>
-          )}
-
-          {/* Chat Area */}
-          <motion.div
-            initial={{ opacity: 0, y: 50 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.2 }}
-            className={`${isStudent ? 'w-full' : 'md:col-span-2 lg:col-span-2'}`}
-          >
-            <Card className={`shadow-2xl border-cyan-500/20 bg-gradient-to-br from-card/95 to-card backdrop-blur-xl h-[calc(100vh-200px)] sm:h-[calc(100vh-220px)] md:h-[calc(100vh-280px)] flex flex-col`}>
-            <CardHeader className="bg-gradient-to-r from-cyan-500/10 via-teal-500/10 to-cyan-500/10 border-b border-cyan-500/20 p-3 md:p-6">
-              <CardTitle className="flex items-center gap-2 text-base md:text-lg">
-                <MessageCircle className="h-5 w-5 md:h-6 md:w-6 text-cyan-600" />
-                <span className="truncate">
-                  {isStudent 
-                    ? 'المحادثة' 
-                    : selectedConversation 
-                      ? `محادثة مع ${selectedConversation.studentName}` 
-                      : "اختر محادثة"
-                  }
-                </span>
-                {isStudent && (
-                  <Badge className="mr-auto bg-gradient-to-r from-green-500 to-emerald-500 text-white text-xs">
-                    <Zap className="h-3 w-3 ml-1" />
-                    متصل
-                  </Badge>
-                )}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="flex-1 overflow-hidden flex flex-col p-0">
-              {(selectedConversation || isStudent) ? (
-                <div className="flex flex-col h-full">
-                  {/* AI/Teacher Toggle Button */}
-                  {isStudent && (
-                    <motion.div 
-                      initial={{ opacity: 0, y: -20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="mx-2 sm:mx-3 md:mx-4 mt-2 md:mt-4 mb-2"
-                    >
-                      {/* Display current mode */}
-                      <div className="text-center mb-2 md:mb-3">
-                        <p className={`text-sm md:text-lg font-bold ${
-                          isAiMode 
-                            ? 'text-purple-900 dark:text-purple-100' 
-                            : 'text-primary'
-                        } flex items-center justify-center gap-1 md:gap-2`}>
-                          {isAiMode ? (
-                            <>
-                              <Bot className="w-4 h-4 md:w-5 md:h-5" />
-                              <span>المساعد الذكي</span>
-                              <Sparkles className="w-3 h-3 md:w-4 md:h-4" />
-                            </>
-                          ) : (
-                            <>
-                              <User className="w-4 h-4 md:w-5 md:h-5" />
-                              <span>الأستاذ محمد رمضان</span>
-                            </>
-                          )}
-                        </p>
-                        <p className={`text-xs ${
-                          isAiMode 
-                            ? 'text-purple-600 dark:text-purple-400' 
-                            : 'text-muted-foreground'
-                        }`}>
-                          {isAiMode ? 'الوضع الحالي: محادثة مع AI' : 'الوضع الحالي: محادثة مع الأستاذ'}
-                        </p>
-                      </div>
-
-                      {/* Toggle button showing NEXT mode */}
-                      <motion.button
-                        onClick={toggleAiMode}
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                        className={`w-full p-3 md:p-4 rounded-xl md:rounded-2xl border-2 transition-all duration-300 ${
-                          !isAiMode 
-                            ? 'bg-gradient-to-r from-purple-500/20 via-pink-500/20 to-blue-500/20 border-purple-300 dark:border-purple-700' 
-                            : 'bg-gradient-to-r from-cyan-500/10 to-teal-500/10 border-cyan-500/30'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 md:gap-3 flex-1 min-w-0">
-                            <motion.div
-                              animate={!isAiMode ? { rotate: [0, 360] } : {}}
-                              transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
-                              className={`p-1.5 md:p-2 rounded-lg md:rounded-xl flex-shrink-0 ${
-                                !isAiMode 
-                                  ? 'bg-purple-500/20' 
-                                  : 'bg-primary/20'
-                              }`}
-                            >
-                              {!isAiMode ? (
-                                <Bot className="w-5 h-5 md:w-6 md:h-6 text-purple-600 dark:text-purple-400" />
-                            ) : (
-                              <User className="w-5 h-5 md:w-6 md:h-6 text-cyan-600" />
-                            )}
-                          </motion.div>
-                          <div className="text-right flex-1 min-w-0">
-                            <p className={`text-xs md:text-sm font-bold truncate ${
-                              !isAiMode 
-                                ? 'text-purple-900 dark:text-purple-100' 
-                                : 'text-cyan-600'
-                            } flex items-center gap-1 md:gap-2`}>
-                                <span className="truncate">{!isAiMode ? 'المساعد الذكي' : 'الأستاذ محمد رمضان'}</span>
-                                {!isAiMode && <Sparkles className="h-3 w-3 md:h-4 md:w-4 flex-shrink-0" />}
-                              </p>
-                              <p className={`text-[10px] md:text-xs truncate ${
-                                !isAiMode 
-                                  ? 'text-purple-600 dark:text-purple-400' 
-                                  : 'text-muted-foreground'
-                              }`}>
-                                {!isAiMode ? 'اضغط للتحويل للمساعد الذكي' : 'اضغط للتحويل للأستاذ محمد'}
-                              </p>
-                            </div>
-                          </div>
-                          <Badge className={`${
-                            !isAiMode 
-                              ? 'bg-gradient-to-r from-purple-500 to-pink-500' 
-                              : 'bg-gradient-to-r from-cyan-600 to-teal-600'
-                          } text-white border-0 text-xs flex-shrink-0`}>
-                            {!isAiMode ? (
-                              <>
-                                <Sparkles className="w-3 h-3 ml-1" />
-                                متاح
-                              </>
-                            ) : (
-                              <>
-                                <Zap className="w-3 h-3 ml-1" />
-                                متصل
-                              </>
-                            )}
-                          </Badge>
-                        </div>
-                      </motion.button>
-                    </motion.div>
-                  )}
-
-                  {/* Messages Area */}
-                  <div className="flex-1 overflow-y-auto p-3 md:p-4 lg:p-6 space-y-3 md:space-y-4 bg-gradient-to-b from-muted/20 to-transparent">
-                    <AnimatePresence mode="popLayout">
-                      {messages.map((message, index) => (
-                        <motion.div
-                          key={message.id}
-                          initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          exit={{ opacity: 0, scale: 0.95 }}
-                          transition={{ duration: 0.3, delay: index * 0.02 }}
-                          className={`flex ${
-                            message.isAi ? 'justify-center' : 
-                            message.isFromTeacher ? 'justify-end' : 'justify-start'
-                          }`}
-                        >
-                          {message.isAi ? (
-                            <motion.div 
-                              whileHover={{ scale: 1.02 }}
-                              className="max-w-[95%] sm:max-w-[90%] md:max-w-[85%] p-3 md:p-4 lg:p-5 rounded-xl md:rounded-2xl bg-gradient-to-br from-purple-500/20 via-pink-500/20 to-blue-500/20 backdrop-blur-sm border-2 border-purple-300/30 dark:border-purple-700/30 shadow-lg"
-                            >
-                              <div className="flex items-start gap-2 md:gap-3 mb-2 md:mb-3">
-                                <motion.div
-                                  animate={{ rotate: [0, 360] }}
-                                  transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                                >
-                                  <Bot className="w-5 h-5 md:w-6 md:h-6 text-purple-600 dark:text-purple-400 flex-shrink-0" />
-                                </motion.div>
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-xs md:text-sm font-bold text-purple-900 dark:text-purple-100 mb-1 md:mb-2 flex items-center gap-1 md:gap-2">
-                                    <span>المساعد الذكي</span>
-                                    <Sparkles className="h-3 w-3 md:h-4 md:w-4" />
-                                  </p>
-                                  <p className="text-xs md:text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed break-words">{message.message_text}</p>
-                                </div>
-                              </div>
-                              <p className="text-[10px] md:text-xs text-purple-600 dark:text-purple-400 flex items-center gap-1">
-                                <Zap className="h-3 w-3" />
-                                {message.time}
-                              </p>
-                            </motion.div>
-                          ) : (
-                            <motion.div
-                              whileHover={{ scale: 1.02 }}
-                              className={`max-w-[85%] sm:max-w-[75%] md:max-w-[70%] p-3 md:p-4 rounded-xl md:rounded-2xl shadow-lg ${
-                                message.isFromTeacher 
-                                  ? 'bg-gradient-to-br from-cyan-600 to-teal-600 text-white' 
-                                  : 'bg-gradient-to-br from-card to-muted border-2 border-cyan-500/20'
-                              }`}
-                            >
-                              <p className="mb-1 md:mb-2 leading-relaxed text-xs md:text-sm break-words">{message.message_text}</p>
-                              <p className={`text-[10px] md:text-xs flex items-center gap-1 ${message.isFromTeacher ? 'opacity-90' : 'text-muted-foreground'}`}>
-                                <MessageCircle className="h-3 w-3" />
-                                {message.time}
-                              </p>
-                            </motion.div>
-                          )}
-                        </motion.div>
-                      ))}
-                    </AnimatePresence>
-                    
-                    {isAiLoading && (
-                      <motion.div 
-                        initial={{ opacity: 0, scale: 0.8 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="flex justify-center"
-                      >
-                        <div className="bg-gradient-to-r from-purple-500/20 to-pink-500/20 backdrop-blur-sm p-5 rounded-2xl border-2 border-purple-300/30 dark:border-purple-700/30">
-                          <div className="flex items-center gap-3">
-                            <motion.div
-                              animate={{ rotate: 360 }}
-                              transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                            >
-                              <Bot className="w-6 h-6 text-purple-600 dark:text-purple-400" />
-                            </motion.div>
-                            <div className="flex gap-1">
-                              {[0, 1, 2].map((i) => (
-                                <motion.div
-                                  key={i}
-                                  className="w-2 h-2 bg-purple-600 dark:bg-purple-400 rounded-full"
-                                  animate={{ y: [0, -10, 0] }}
-                                  transition={{ duration: 0.6, repeat: Infinity, delay: i * 0.15 }}
-                                />
-                              ))}
-                            </div>
-                            <p className="text-sm text-purple-700 dark:text-purple-300 font-semibold">المساعد الذكي يفكر...</p>
-                          </div>
-                        </div>
-                      </motion.div>
-                    )}
-                    <div ref={messagesEndRef} />
-                  </div>
-
-                  {/* Message Input */}
-                  <div className="p-2 md:p-3 lg:p-4 border-t border-cyan-500/20 bg-gradient-to-r from-card/50 to-muted/50 backdrop-blur-sm">
-                    <div className="flex gap-2 md:gap-3">
-                      <Textarea
-                        value={newMessage}
-                        onChange={(e) => setNewMessage(e.target.value)}
-                        placeholder={isStudent && isAiMode ? "اسأل المساعد الذكي..." : "اكتب رسالتك..."}
-                        className="resize-none border-2 border-cyan-500/30 focus:border-cyan-600 transition-all duration-300 rounded-lg md:rounded-xl text-sm md:text-base"
-                        rows={2}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && !e.shiftKey) {
-                            e.preventDefault();
-                            handleSendMessage();
-                          }
-                        }}
-                      />
-                      <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-                        <Button 
-                          onClick={handleSendMessage} 
-                          className={`px-3 md:px-4 lg:px-6 transition-all duration-300 h-full ${
-                            isStudent && isAiMode
-                              ? 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600'
-                              : 'bg-gradient-to-r from-cyan-600 to-teal-600 hover:shadow-glow'
-                          }`}
-                          disabled={isAiLoading || !newMessage.trim()}
-                        >
-                          {isStudent && isAiMode ? (
-                            <Bot className="w-4 h-4 md:w-5 md:h-5" />
-                          ) : (
-                            <Send className="w-4 h-4 md:w-5 md:h-5" />
-                          )}
+    return (
+        <div className="flex h-screen bg-gray-50" dir="rtl">
+            {/* Sidebar - Conversations & Users */}
+            <div className="w-80 bg-white border-l border-gray-200 flex flex-col">
+                <div className="p-4 border-b border-gray-200">
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-xl font-bold">الرسائل</h2>
+                        <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
+                            <ArrowLeft className="h-5 w-5" />
                         </Button>
-                      </motion.div>
                     </div>
-                    {isStudent && (
-                      <motion.p 
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        className="text-[10px] md:text-xs text-center text-muted-foreground mt-2 flex items-center justify-center gap-1"
-                      >
-                        <Sparkles className="w-3 h-3" />
-                        <span className="hidden sm:inline">اضغط زر <Bot className="w-3 h-3 inline mx-1" /> للسؤال عن التاريخ والجغرافيا</span>
-                        <span className="sm:hidden">استخدم المساعد الذكي للأسئلة</span>
-                      </motion.p>
-                    )}
-                  </div>
                 </div>
-              ) : (
-                <motion.div 
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="flex items-center justify-center h-full text-muted-foreground"
-                >
-                  <div className="text-center">
-                    <motion.div
-                      animate={{ 
-                        y: [0, -20, 0],
-                        rotate: [0, 5, -5, 0]
-                      }}
-                      transition={{ duration: 3, repeat: Infinity }}
-                    >
-                      <MessageCircle className="w-24 h-24 mx-auto mb-6 opacity-30" />
-                    </motion.div>
-                    <p className="text-2xl font-bold mb-2">اختر محادثة لبدء التواصل</p>
-                    <p className="text-sm">ستظهر الرسائل هنا</p>
-                  </div>
-                </motion.div>
-              )}
-            </CardContent>
-          </Card>
-          </motion.div>
-        </div>
-      </div>
-    </div>
-  );
-};
 
-export default Messages;
+                <ScrollArea className="flex-1">
+                    {/* Conversations */}
+                    {conversations.length > 0 && (
+                        <div className="p-2">
+                            <h3 className="text-sm font-semibold text-gray-500 px-2 mb-2">المحادثات</h3>
+                            {conversations.map(conv => (
+                                <div
+                                    key={conv.id}
+                                    className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer hover:bg-gray-100 transition-colors ${selectedUser?.id === conv.other_user_id ? 'bg-blue-50' : ''
+                                        }`}
+                                    onClick={() => selectUser({
+                                        id: conv.other_user_id,
+                                        username: conv.other_user_name,
+                                        role: conv.other_user_role,
+                                        is_online: conv.is_online,
+                                        last_seen: conv.last_seen
+                                    })}
+                                >
+                                    <div className="relative">
+                                        <Avatar>
+                                            <AvatarFallback>{conv.other_user_name[0]}</AvatarFallback>
+                                        </Avatar>
+                                        {conv.is_online && (
+                                            <div className="absolute bottom-0 left-0 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
+                                        )}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex items-center justify-between">
+                                            <p className="font-medium text-sm truncate">{conv.other_user_name}</p>
+                                            <span className="text-xs text-gray-500">
+                                                {formatTime(conv.last_message_time)}
+                                            </span>
+                                        </div>
+                                        <p className="text-sm text-gray-500 truncate">
+                                            {conv.last_message_type === 'image' ? '📷 صورة' : conv.last_message_content}
+                                        </p>
+                                    </div>
+                                    {conv.unread_count > 0 && (
+                                        <div className="bg-blue-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                                            {conv.unread_count}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    <Separator className="my-2" />
+
+                    {/* Search by Phone - Admin/Teacher Only */}
+                    {(user.role === 'admin' || user.role === 'teacher') && (
+                        <div className="p-2 mb-2">
+                            <h3 className="text-sm font-semibold text-gray-500 px-2 mb-2">بحث برقم الهاتف</h3>
+                            <div className="flex gap-2 px-2">
+                                <Input
+                                    value={searchPhone}
+                                    onChange={(e) => setSearchPhone(e.target.value)}
+                                    onKeyPress={(e) => e.key === 'Enter' && searchUserByPhone()}
+                                    placeholder="أدخل رقم الهاتف..."
+                                    className="flex-1"
+                                    dir="ltr"
+                                />
+                                <Button
+                                    onClick={searchUserByPhone}
+                                    disabled={isSearching || !searchPhone.trim()}
+                                    size="sm"
+                                >
+                                    {isSearching ? '...' : 'بحث'}
+                                </Button>
+                            </div>
+                            {searchResult && (
+                                <div
+                                    className="flex items-center gap-3 p-3 rounded-lg cursor-pointer hover:bg-gray-100 transition-colors bg-blue-50 mt-2 mx-2"
+                                    onClick={() => {
+                                        selectUser(searchResult);
+                                        setSearchPhone('');
+                                        setSearchResult(null);
+                                    }}
+                                >
+                                    <div className="relative">
+                                        <Avatar>
+                                            <AvatarFallback>{(searchResult.username || searchResult.name || 'U')[0]}</AvatarFallback>
+                                        </Avatar>
+                                        {searchResult.is_online && (
+                                            <div className="absolute bottom-0 left-0 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
+                                        )}
+                                    </div>
+                                    <div className="flex-1">
+                                        <p className="font-medium text-sm">{searchResult.username || searchResult.name}</p>
+                                        <p className="text-xs text-gray-500">{searchResult.phone}</p>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    <Separator className="my-2" />
+
+                    {/* AI Assistant */}
+                    <div className="p-2 mb-2">
+                        <div
+                            className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer hover:bg-gray-100 transition-colors ${selectedUser?.id === 'ai-assistant' ? 'bg-blue-50' : ''
+                                }`}
+                            onClick={() => selectUser({
+                                id: 'ai-assistant',
+                                username: 'المساعد الذكي',
+                                phone: '',
+                                is_online: true,
+                                last_seen: null,
+                                role: 'ai'
+                            })}
+                        >
+                            <div className="relative">
+                                <Avatar className="bg-gradient-to-br from-blue-500 to-purple-500">
+                                    <AvatarFallback className="text-white">AI</AvatarFallback>
+                                </Avatar>
+                                <div className="absolute bottom-0 left-0 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
+                            </div>
+                            <div className="flex-1">
+                                <p className="font-medium text-sm">المساعد الذكي</p>
+                                <p className="text-xs text-gray-500">متاح دائماً لمساعدتك</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <Separator className="my-2" />
+
+                    {/* Available Users */}
+                    <div className="p-2">
+                        <h3 className="text-sm font-semibold text-gray-500 px-2 mb-2">
+                            {user.role === 'student' ? 'المدرس' : user.role === 'teacher' ? 'الطلاب' : 'جميع المستخدمين'}
+                        </h3>
+                        {availableUsers.map(availUser => (
+                            <div
+                                key={availUser.id}
+                                className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer hover:bg-gray-100 transition-colors ${selectedUser?.id === availUser.id ? 'bg-blue-50' : ''
+                                    }`}
+                                onClick={() => selectUser(availUser)}
+                            >
+                                <div className="relative">
+                                    <Avatar>
+                                        <AvatarFallback>{(availUser.username || availUser.name || 'U')[0]}</AvatarFallback>
+                                    </Avatar>
+                                    {availUser.is_online && (
+                                        <div className="absolute bottom-0 left-0 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
+                                    )}
+                                </div>
+                                <div className="flex-1">
+                                    <p className="font-medium text-sm">{availUser.username || availUser.name}</p>
+                                    <p className="text-xs text-gray-500">
+                                        {availUser.is_online ? (
+                                            <span className="text-green-600">متصل الآن</span>
+                                        ) : (
+                                            availUser.last_seen && `آخر ظهور ${formatDate(availUser.last_seen)}`
+                                        )}
+                                    </p>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </ScrollArea>
+            </div>
+
+            {/* Chat Area */}
+            <div className="flex-1 flex flex-col">
+                {selectedUser ? (
+                    <>
+                        {/* Chat Header */}
+                        <div className="bg-white border-b border-gray-200 p-4">
+                            <div className="flex items-center gap-3">
+                                <div className="relative">
+                                    <Avatar>
+                                        <AvatarFallback>{(selectedUser.username || selectedUser.name || 'U')[0]}</AvatarFallback>
+                                    </Avatar>
+                                    {selectedUser.is_online && (
+                                        <div className="absolute bottom-0 left-0 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
+                                    )}
+                                </div>
+                                <div>
+                                    <h3 className="font-semibold">{selectedUser.username || selectedUser.name}</h3>
+                                    <p className="text-sm text-gray-500">
+                                        {selectedUser.is_online ? (
+                                            <span className="text-green-600">متصل الآن</span>
+                                        ) : (
+                                            selectedUser.last_seen && `آخر ظهور ${formatDate(selectedUser.last_seen)}`
+                                        )}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Messages */}
+                        <ScrollArea className="flex-1 p-4">
+                            {messages.map((message, index) => {
+                                const isOwn = message.sender_id === user.id;
+                                const showDate = index === 0 ||
+                                    formatDate(messages[index - 1].created_at) !== formatDate(message.created_at);
+
+                                return (
+                                    <div key={message.id}>
+                                        {showDate && (
+                                            <div className="flex justify-center my-4">
+                                                <span className="bg-gray-200 text-gray-600 text-xs px-3 py-1 rounded-full">
+                                                    {formatDate(message.created_at)}
+                                                </span>
+                                            </div>
+                                        )}
+
+                                        <div className={`flex mb-4 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                                            <div className={`max-w-[70%] ${isOwn ? 'order-1' : 'order-2'}`}>
+                                                <Card className={`p-3 ${isOwn ? 'bg-blue-500 text-white' : 'bg-white'}`}>
+                                                    {message.message_type === 'image' && message.image_url && (
+                                                        <img
+                                                            src={`${SOCKET_URL}${message.image_url}`}
+                                                            alt="صورة"
+                                                            className="rounded-lg max-w-full mb-2"
+                                                        />
+                                                    )}
+                                                    {message.message_type === 'text' && (
+                                                        <p className="text-sm whitespace-pre-wrap break-words">
+                                                            {message.content}
+                                                        </p>
+                                                    )}
+                                                    <div className={`flex items-center gap-2 mt-2 text-xs ${isOwn ? 'text-blue-100' : 'text-gray-500'
+                                                        }`}>
+                                                        <span>{formatTime(message.created_at)}</span>
+                                                        {message.is_edited && <span>(معدلة)</span>}
+                                                        {getStatusIcon(message)}
+                                                    </div>
+                                                </Card>
+
+                                                {isOwn && message.message_type === 'text' && (
+                                                    <div className="flex gap-2 mt-1 justify-end">
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            className="h-6 w-6"
+                                                            onClick={() => startEditing(message)}
+                                                        >
+                                                            <Edit2 className="h-3 w-3" />
+                                                        </Button>
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            className="h-6 w-6 text-red-500"
+                                                            onClick={() => deleteMessage(message.id)}
+                                                        >
+                                                            <Trash2 className="h-3 w-3" />
+                                                        </Button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                            {isTyping && (
+                                <div className="flex items-center gap-2 text-sm text-gray-500">
+                                    <div className="flex gap-1">
+                                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                                    </div>
+                                    <span>يكتب...</span>
+                                </div>
+                            )}
+                            <div ref={messagesEndRef} />
+                        </ScrollArea>
+
+                        {/* Input */}
+                        <div className="bg-white border-t border-gray-200 p-4">
+                            {editingMessageId && (
+                                <div className="bg-blue-50 p-2 rounded-lg mb-2 flex items-center justify-between">
+                                    <span className="text-sm text-blue-700">تعديل الرسالة</span>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => {
+                                            setEditingMessageId(null);
+                                            setMessageText('');
+                                        }}
+                                    >
+                                        إلغاء
+                                    </Button>
+                                </div>
+                            )}
+                            <div className="flex gap-2">
+                                <input
+                                    type="file"
+                                    ref={fileInputRef}
+                                    className="hidden"
+                                    accept="image/*"
+                                    onChange={(e) => {
+                                        const file = e.target.files?.[0];
+                                        if (file) sendImage(file);
+                                    }}
+                                />
+                                <Button
+                                    variant="outline"
+                                    size="icon"
+                                    onClick={() => fileInputRef.current?.click()}
+                                >
+                                    <ImageIcon className="h-5 w-5" />
+                                </Button>
+                                <Input
+                                    value={messageText}
+                                    onChange={handleTyping}
+                                    onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                                    placeholder="اكتب رسالتك..."
+                                    className="flex-1"
+                                />
+                                <Button onClick={sendMessage} disabled={!messageText.trim()}>
+                                    <Send className="h-5 w-5" />
+                                </Button>
+                            </div>
+                        </div>
+                    </>
+                ) : (
+                    <div className="flex-1 flex items-center justify-center text-gray-500">
+                        <div className="text-center">
+                            <Clock className="h-16 w-16 mx-auto mb-4 text-gray-300" />
+                            <p>اختر محادثة للبدء</p>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
