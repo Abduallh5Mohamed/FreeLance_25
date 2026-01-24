@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback, useRef, useState } from 'react';
 
 interface ProtectionOptions {
   showWatermark?: boolean;
@@ -6,90 +6,138 @@ interface ProtectionOptions {
   blockDevTools?: boolean;
 }
 
+interface StudentData {
+  name: string;
+  group: string;
+  grade: string;
+}
+
 export const useScreenRecordingPrevention = (options: ProtectionOptions = {}) => {
   const { showWatermark = true, studentName, blockDevTools = true } = options;
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cleanupRef = useRef<(() => void) | null>(null);
+  const [isBlurred, setIsBlurred] = useState(false);
 
-  // Get student info from localStorage
-  const getStudentInfo = useCallback(() => {
+  // Get student info from localStorage including group and grade
+  const getStudentInfo = useCallback((): StudentData => {
     try {
       const studentStr = localStorage.getItem('currentStudent');
       const userStr = localStorage.getItem('currentUser');
       if (studentStr) {
         const student = JSON.parse(studentStr);
-        return student.name || student.email || 'طالب';
+        return {
+          name: student.name || student.email || 'طالب',
+          group: student.group_name || student.group?.name || '',
+          grade: student.grade_name || student.grade?.name || ''
+        };
       }
       if (userStr) {
         const user = JSON.parse(userStr);
-        return user.name || user.email || 'طالب';
+        return {
+          name: user.name || user.email || 'طالب',
+          group: user.group_name || '',
+          grade: user.grade_name || ''
+        };
       }
     } catch {
-      return 'طالب';
+      return { name: 'طالب', group: '', grade: '' };
     }
-    return studentName || 'طالب';
+    return { name: studentName || 'طالب', group: '', grade: '' };
   }, [studentName]);
 
-  const showBlockedMessage = useCallback(() => {
+  // Debounced blocked message to prevent hanging
+  const showBlockedMessageDebounced = useCallback(() => {
     // Check if already showing
     if (document.getElementById('screen-capture-blocked')) return;
     
-    const overlay = document.createElement('div');
-    overlay.id = 'screen-capture-blocked';
-    overlay.style.cssText = `
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100vw;
-      height: 100vh;
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-      z-index: 999999;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-direction: column;
-      color: white;
-      font-family: 'Segoe UI', Tahoma, sans-serif;
-      animation: fadeIn 0.3s ease;
-    `;
-    overlay.innerHTML = `
-      <style>
-        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.1); } }
-        @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-5px); } 75% { transform: translateX(5px); } }
-      </style>
-      <div style="text-align: center; padding: 40px; max-width: 500px;">
-        <div style="font-size: 80px; margin-bottom: 20px; animation: pulse 1s infinite;">⛔</div>
-        <h2 style="margin-bottom: 15px; font-size: 28px; animation: shake 0.5s;">تم رصد محاولة تسجيل!</h2>
-        <p style="opacity: 0.9; font-size: 18px; line-height: 1.6;">
-          لحماية المحتوى التعليمي، لا يُسمح بتصوير الشاشة أو تسجيلها.
-        </p>
-        <p style="opacity: 0.6; font-size: 14px; margin-top: 20px;">
-          ⏱️ سيتم إغلاق هذه الرسالة تلقائياً...
-        </p>
-        <div style="margin-top: 30px; padding: 15px; background: rgba(255,255,255,0.1); border-radius: 10px;">
-          <p style="font-size: 12px; opacity: 0.7;">
-            تم تسجيل هذه المحاولة في النظام
+    requestAnimationFrame(() => {
+      const overlay = document.createElement('div');
+      overlay.id = 'screen-capture-blocked';
+      overlay.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        z-index: 999999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        color: white;
+        font-family: 'Segoe UI', Tahoma, sans-serif;
+        opacity: 0;
+        transition: opacity 0.3s ease;
+      `;
+      overlay.innerHTML = `
+        <div style="text-align: center; padding: 40px; max-width: 500px;">
+          <div style="font-size: 80px; margin-bottom: 20px;">⛔</div>
+          <h2 style="margin-bottom: 15px; font-size: 28px;">تم رصد محاولة تسجيل!</h2>
+          <p style="opacity: 0.9; font-size: 18px; line-height: 1.6;">
+            لحماية المحتوى التعليمي، لا يُسمح بتصوير الشاشة أو تسجيلها.
           </p>
+          <p style="opacity: 0.6; font-size: 14px; margin-top: 20px;">
+            ⏱️ سيتم إغلاق هذه الرسالة تلقائياً...
+          </p>
+          <div style="margin-top: 30px; padding: 15px; background: rgba(255,255,255,0.1); border-radius: 10px;">
+            <p style="font-size: 12px; opacity: 0.7;">
+              تم تسجيل هذه المحاولة في النظام
+            </p>
+          </div>
         </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-    
-    setTimeout(() => {
-      if (document.body.contains(overlay)) {
-        overlay.style.animation = 'fadeOut 0.3s ease forwards';
-        setTimeout(() => {
-          if (document.body.contains(overlay)) {
-            document.body.removeChild(overlay);
-          }
-        }, 300);
-      }
-    }, 4000);
+      `;
+      document.body.appendChild(overlay);
+      
+      // Fade in
+      requestAnimationFrame(() => {
+        overlay.style.opacity = '1';
+      });
+      
+      // Auto remove after 3 seconds
+      setTimeout(() => {
+        if (document.body.contains(overlay)) {
+          overlay.style.opacity = '0';
+          setTimeout(() => {
+            if (document.body.contains(overlay)) {
+              document.body.removeChild(overlay);
+            }
+          }, 300);
+        }
+      }, 3000);
+    });
   }, []);
 
+  // Clear clipboard safely
+  const clearClipboard = useCallback(() => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText('محتوى محمي').catch(() => {});
+      }
+    } catch {
+      // Silently fail
+    }
+  }, []);
+
+  // Blur content when screen capture is detected
+  const blurContent = useCallback(() => {
+    setIsBlurred(true);
+    document.body.classList.add('capture-detected');
+    showBlockedMessageDebounced();
+    clearClipboard();
+    
+    // Unblur after a short delay
+    setTimeout(() => {
+      setIsBlurred(false);
+      document.body.classList.remove('capture-detected');
+    }, 3500);
+  }, [showBlockedMessageDebounced, clearClipboard]);
+
   useEffect(() => {
-    const studentInfo = getStudentInfo();
-    const timestamp = new Date().toLocaleString('ar-EG');
+    const studentData = getStudentInfo();
+    const studentInfo = studentData.name;
+    const groupInfo = studentData.group;
+    const gradeInfo = studentData.grade;
 
     // ===== Enhanced CSS Protection =====
     const style = document.createElement('style');
@@ -106,26 +154,19 @@ export const useScreenRecordingPrevention = (options: ProtectionOptions = {}) =>
         user-select: none !important;
       }
       
+      /* Blur when capture detected */
+      .capture-detected {
+        filter: blur(25px) !important;
+        transition: filter 0.1s ease !important;
+      }
+      
       /* Hide content completely when printing */
       @media print {
-        html, body {
+        html, body, * {
           display: none !important;
           visibility: hidden !important;
+          opacity: 0 !important;
         }
-      }
-
-      /* Add noise effect to make screenshots less useful */
-      .screen-protected::before {
-        content: '';
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        pointer-events: none;
-        z-index: 99998;
-        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='1' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%' height='100%' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
-        opacity: 0.02;
       }
 
       /* Watermark pattern */
@@ -142,13 +183,14 @@ export const useScreenRecordingPrevention = (options: ProtectionOptions = {}) =>
 
       .watermark-text {
         position: absolute;
-        font-size: 14px;
-        font-weight: 500;
-        color: rgba(0, 0, 0, 0.04);
+        font-size: 12px;
+        font-weight: 600;
+        color: rgba(0, 0, 0, 0.03);
         white-space: nowrap;
-        transform: rotate(-30deg);
+        transform: rotate(-35deg);
         font-family: 'Segoe UI', Tahoma, sans-serif;
         direction: rtl;
+        text-shadow: 0 0 1px rgba(0,0,0,0.01);
       }
 
       /* Disable drag */
@@ -156,31 +198,47 @@ export const useScreenRecordingPrevention = (options: ProtectionOptions = {}) =>
       .screen-protected video {
         -webkit-user-drag: none !important;
         user-drag: none !important;
-        pointer-events: none !important;
       }
 
       /* DevTools detection styles */
       .devtools-open {
         filter: blur(20px) !important;
       }
+      
+      /* Block pointer events on images when needed */
+      .screen-protected img.protected-image {
+        pointer-events: none !important;
+      }
     `;
-    document.head.appendChild(style);
+    
+    if (!document.getElementById('screen-capture-prevention-styles')) {
+      document.head.appendChild(style);
+    }
     document.body.classList.add('screen-protected');
 
     // ===== Create Dynamic Watermark with Student Info =====
+    const existingWatermark = document.getElementById('dynamic-watermark');
+    if (existingWatermark) {
+      existingWatermark.remove();
+    }
+    
     if (showWatermark) {
       const watermarkContainer = document.createElement('div');
       watermarkContainer.id = 'dynamic-watermark';
       
-      // Create grid of watermarks
+      // Create grid of watermarks with optimized count
       let watermarkHTML = '';
-      for (let row = 0; row < 10; row++) {
-        for (let col = 0; col < 5; col++) {
-          const top = 10 + (row * 10);
-          const left = -10 + (col * 25);
+      const rows = 8;
+      const cols = 4;
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+          const top = 5 + (row * (100 / rows));
+          const left = -5 + (col * (100 / cols));
+          // Show student name, group, and grade
+          const watermarkText = [studentInfo, gradeInfo, groupInfo].filter(Boolean).join(' | ') || studentInfo;
           watermarkHTML += `
             <div class="watermark-text" style="top: ${top}%; left: ${left}%;">
-              ${studentInfo} | ${timestamp} | منصة القائد
+              ${watermarkText} | منصة القائد
             </div>
           `;
         }
@@ -192,43 +250,44 @@ export const useScreenRecordingPrevention = (options: ProtectionOptions = {}) =>
     // ===== Prevent right-click =====
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
-      e.stopPropagation();
       return false;
     };
 
-    // ===== Keyboard Protection =====
+    // ===== Optimized Keyboard Protection =====
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Print Screen variations
-      if (e.key === 'PrintScreen' || e.code === 'PrintScreen') {
+      const key = e.key?.toLowerCase();
+      const code = e.code?.toLowerCase();
+      
+      // Print Screen - blur and clear clipboard
+      if (key === 'printscreen' || code === 'printscreen') {
         e.preventDefault();
-        navigator.clipboard?.writeText?.('محتوى محمي').catch(() => {});
-        showBlockedMessage();
+        blurContent();
         return false;
       }
 
       // Windows + Shift + S (Snipping Tool)
-      if ((e.metaKey || e.key === 'Meta') && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+      if ((e.metaKey || e.key === 'Meta') && e.shiftKey && key === 's') {
         e.preventDefault();
-        showBlockedMessage();
+        blurContent();
         return false;
       }
 
-      // Ctrl + Shift + S
-      if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+      // Ctrl + Shift + S (Various screenshot tools)
+      if (e.ctrlKey && e.shiftKey && key === 's') {
         e.preventDefault();
-        showBlockedMessage();
+        blurContent();
         return false;
       }
 
       // Ctrl + P (Print)
-      if (e.ctrlKey && (e.key === 'p' || e.key === 'P')) {
+      if (e.ctrlKey && key === 'p') {
         e.preventDefault();
-        showBlockedMessage();
+        showBlockedMessageDebounced();
         return false;
       }
 
       // Ctrl + S (Save)
-      if (e.ctrlKey && !e.shiftKey && (e.key === 's' || e.key === 'S')) {
+      if (e.ctrlKey && !e.shiftKey && key === 's') {
         e.preventDefault();
         return false;
       }
@@ -236,50 +295,59 @@ export const useScreenRecordingPrevention = (options: ProtectionOptions = {}) =>
       // DevTools prevention
       if (blockDevTools) {
         // F12
-        if (e.key === 'F12' || e.code === 'F12') {
+        if (key === 'f12' || code === 'f12') {
           e.preventDefault();
           return false;
         }
 
-        // Ctrl + Shift + I
-        if (e.ctrlKey && e.shiftKey && (e.key === 'i' || e.key === 'I')) {
-          e.preventDefault();
-          return false;
-        }
-
-        // Ctrl + Shift + J
-        if (e.ctrlKey && e.shiftKey && (e.key === 'j' || e.key === 'J')) {
+        // Ctrl + Shift + I, J, C
+        if (e.ctrlKey && e.shiftKey && (key === 'i' || key === 'j' || key === 'c')) {
           e.preventDefault();
           return false;
         }
 
         // Ctrl + U (View Source)
-        if (e.ctrlKey && (e.key === 'u' || e.key === 'U')) {
-          e.preventDefault();
-          return false;
-        }
-
-        // Ctrl + Shift + C (Inspect Element)
-        if (e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+        if (e.ctrlKey && key === 'u') {
           e.preventDefault();
           return false;
         }
       }
 
       // Ctrl + A (Select All)
-      if (e.ctrlKey && (e.key === 'a' || e.key === 'A')) {
+      if (e.ctrlKey && key === 'a') {
         e.preventDefault();
         return false;
       }
 
-      // Ctrl + C (Copy) - Allow in some cases but monitor
-      if (e.ctrlKey && (e.key === 'c' || e.key === 'C')) {
+      // Ctrl + C (Copy)
+      if (e.ctrlKey && key === 'c') {
         e.preventDefault();
         return false;
       }
     };
 
-    // ===== DevTools Detection =====
+    // ===== Screen Capture API Detection (for external tools) =====
+    let mediaRecorderDetectionActive = true;
+    
+    const detectScreenCapture = async () => {
+      try {
+        // Try to detect if getDisplayMedia is being used
+        const originalGetDisplayMedia = navigator.mediaDevices?.getDisplayMedia;
+        if (originalGetDisplayMedia) {
+          navigator.mediaDevices.getDisplayMedia = async function() {
+            // Show warning when screen sharing is attempted
+            blurContent();
+            throw new Error('Screen capture is not allowed');
+          };
+        }
+      } catch {
+        // Silently fail
+      }
+    };
+    
+    detectScreenCapture();
+
+    // ===== DevTools Detection (Optimized - less frequent checks) =====
     const detectDevTools = () => {
       if (!blockDevTools) return;
       
@@ -294,10 +362,27 @@ export const useScreenRecordingPrevention = (options: ProtectionOptions = {}) =>
       }
     };
 
-    // ===== Visibility Change - Clear Clipboard =====
+    // ===== Visibility Change Detection =====
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
-        navigator.clipboard?.writeText?.('').catch(() => {});
+        clearClipboard();
+      }
+    };
+
+    // ===== Focus/Blur Detection for External Tools =====
+    const handleWindowBlur = () => {
+      // When window loses focus, it might be due to screenshot tool
+      // Add a subtle watermark boost
+      const watermark = document.getElementById('dynamic-watermark');
+      if (watermark) {
+        watermark.style.opacity = '1.5';
+      }
+    };
+    
+    const handleWindowFocus = () => {
+      const watermark = document.getElementById('dynamic-watermark');
+      if (watermark) {
+        watermark.style.opacity = '1';
       }
     };
 
@@ -308,47 +393,58 @@ export const useScreenRecordingPrevention = (options: ProtectionOptions = {}) =>
     };
 
     // ===== Setup Event Listeners =====
-    document.addEventListener('contextmenu', handleContextMenu, true);
-    document.addEventListener('keydown', handleKeyDown, true);
-    document.addEventListener('keyup', handleKeyDown, true);
+    document.addEventListener('contextmenu', handleContextMenu, { passive: false });
+    document.addEventListener('keydown', handleKeyDown, { passive: false });
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    document.addEventListener('dragstart', handleDragStart, true);
-    window.addEventListener('resize', detectDevTools);
+    document.addEventListener('dragstart', handleDragStart, { passive: false });
+    window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('focus', handleWindowFocus);
     
-    // Check DevTools periodically
-    intervalRef.current = setInterval(detectDevTools, 1000);
+    // Check DevTools less frequently (every 2 seconds instead of 1)
+    intervalRef.current = setInterval(detectDevTools, 2000);
     detectDevTools();
 
-    // ===== Cleanup =====
-    return () => {
+    // ===== Cleanup Function =====
+    cleanupRef.current = () => {
       const watermark = document.getElementById('dynamic-watermark');
       if (watermark && document.body.contains(watermark)) {
-        document.body.removeChild(watermark);
+        watermark.remove();
       }
       
-      document.body.classList.remove('screen-protected');
-      document.body.classList.remove('devtools-open');
+      document.body.classList.remove('screen-protected', 'devtools-open', 'capture-detected');
       
-      if (document.head.contains(style)) {
-        document.head.removeChild(style);
+      const styleEl = document.getElementById('screen-capture-prevention-styles');
+      if (styleEl && document.head.contains(styleEl)) {
+        styleEl.remove();
       }
       
-      document.removeEventListener('contextmenu', handleContextMenu, true);
-      document.removeEventListener('keydown', handleKeyDown, true);
-      document.removeEventListener('keyup', handleKeyDown, true);
+      document.removeEventListener('contextmenu', handleContextMenu);
+      document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      document.removeEventListener('dragstart', handleDragStart, true);
-      window.removeEventListener('resize', detectDevTools);
+      document.removeEventListener('dragstart', handleDragStart);
+      window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('focus', handleWindowFocus);
       
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
+        intervalRef.current = null;
       }
       
       const blockedOverlay = document.getElementById('screen-capture-blocked');
       if (blockedOverlay && document.body.contains(blockedOverlay)) {
-        document.body.removeChild(blockedOverlay);
+        blockedOverlay.remove();
+      }
+      
+      mediaRecorderDetectionActive = false;
+    };
+
+    return () => {
+      if (cleanupRef.current) {
+        cleanupRef.current();
       }
     };
-  }, [showWatermark, getStudentInfo, showBlockedMessage, blockDevTools]);
+  }, [showWatermark, getStudentInfo, showBlockedMessageDebounced, blockDevTools, blurContent, clearClipboard]);
+
+  return { isBlurred };
 };
 

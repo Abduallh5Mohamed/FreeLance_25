@@ -485,7 +485,7 @@ const StudentDashboard = () => {
               <CardContent>
                 <div className="space-y-2 md:space-y-3">
                   {exams.length > 0 ? (
-                    exams.map((exam) => (
+                    exams.slice(0, 5).map((exam) => (
                       <Card key={exam.id} className="p-3 md:p-4">
                         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                           <div className="flex-1 min-w-0">
@@ -537,7 +537,7 @@ const StudentDashboard = () => {
               <CardContent>
                 <div className="space-y-2 md:space-y-3">
                   {examResults.length > 0 ? (
-                    examResults.map((result) => {
+                    examResults.slice(0, 5).map((result) => {
                       const percentage = (result.marks_obtained / result.exams?.total_marks) * 100;
                       return (
                         <Card key={result.id} className="p-3 md:p-4">
