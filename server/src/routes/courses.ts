@@ -44,14 +44,18 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Course name is required' });
         }
 
-        const result = await execute(
-            'INSERT INTO courses (name, subject, description, grade, price) VALUES (?, ?, ?, ?, ?)',
-            [name, subject || null, description || null, grade || null, price]
+        // Generate UUID for the new course
+        const idResult = await query<{id: string}>('SELECT UUID() as id');
+        const newId = idResult[0].id;
+
+        await execute(
+            'INSERT INTO courses (id, name, subject, description, grade, price) VALUES (?, ?, ?, ?, ?, ?)',
+            [newId, name, subject || null, description || null, grade || null, price]
         );
 
         const newCourse = await queryOne(
             'SELECT * FROM courses WHERE id = ?',
-            [result.insertId]
+            [newId]
         );
 
         res.status(201).json(newCourse);

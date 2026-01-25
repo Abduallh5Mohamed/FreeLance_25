@@ -101,7 +101,7 @@ export default function CourseContentManager() {
           <CardContent className="pt-6">
             <Select value={selectedCourse} onValueChange={setSelectedCourse}>
               <SelectTrigger className="h-12 text-lg">
-                <SelectValue placeholder="🎓 اختر دورة لإدارة محتواها" />
+                <SelectValue placeholder="اختر دورة لإدارة محتواها" />
               </SelectTrigger>
               <SelectContent>
                 {courses.map(c => (
@@ -185,7 +185,9 @@ export default function CourseContentManager() {
                         <SelectValue placeholder="اختر الصف الدراسي" />
                       </SelectTrigger>
                       <SelectContent>
-                        {grades.map(g => (
+                        {grades
+                          .filter(g => !selectedCourseData?.grade || g.name === selectedCourseData.grade)
+                          .map(g => (
                           <SelectItem key={g.id} value={g.id}>
                             {g.name}
                           </SelectItem>

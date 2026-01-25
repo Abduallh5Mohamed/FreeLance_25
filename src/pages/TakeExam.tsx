@@ -3,7 +3,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
-import { Clock, AlertCircle, CheckCircle2, XCircle, Trophy, Timer, Download, FileText } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Clock, AlertCircle, CheckCircle2, XCircle, Trophy, Timer, Download, FileText, Image as ImageIcon, Upload } from "lucide-react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
@@ -18,6 +20,8 @@ interface Question {
   id: string;
   question_text?: string;
   question?: string;
+  question_image?: string;  // ✅ صورة السؤال
+  question_type?: 'multiple_choice' | 'essay';  // ✅ نوع السؤال
   options?: string | string[];
   correct_answer?: string | number;
   correctAnswer?: number;
@@ -51,6 +55,8 @@ const TakeExam = () => {
 
   const [exam, setExam] = useState<ExamData | null>(null);
   const [answers, setAnswers] = useState<Record<string, number>>({});
+  const [essayAnswers, setEssayAnswers] = useState<Record<string, string>>({});  // ✅ إجابات مقالية
+  const [answerImages, setAnswerImages] = useState<Record<string, string>>({});  // ✅ صور الإجابات
   const [timeLeft, setTimeLeft] = useState(0); // in seconds
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -928,10 +934,63 @@ const TakeExam = () => {
                     <CardTitle className="text-xl">
                       {exam.questions[currentQuestion].question_text || exam.questions[currentQuestion].question}
                     </CardTitle>
+                    
+                    {/* ✅ عرض صورة السؤال */}
+                    {exam.questions[currentQuestion].question_image && (
+                      <div className="mt-4">
+                        <img 
+                          src={exam.questions[currentQuestion].question_image} 
+                          alt="صورة السؤال" 
+                          className="max-w-full rounded-lg border"
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               </CardHeader>
               <CardContent>
+                {/* ✅ عرض حسب نوع السؤال */}
+                {exam.questions[currentQuestion].question_type === 'essay' ? (
+                  // سؤال مقالي
+                  <div className="space-y-4">
+                    <div>
+                      <Label>اكتب إجابتك هنا:</Label>
+                      <Textarea
+                        value={essayAnswers[exam.questions[currentQuestion].id] || ''}
+                        onChange={(e) => setEssayAnswers({
+                          ...essayAnswers,
+                          [exam.questions[currentQuestion].id]: e.target.value
+                        })}
+                        placeholder="اكتب إجابتك المفصلة..."
+                        className="min-h-[200px] mt-2"
+                      />
+                    </div>
+                    
+                    <div className="border-t pt-4">
+                      <Label className="flex items-center gap-2 mb-2">
+                        <Upload className="h-4 w-4" />
+                        أو ارفع صورة الإجابة (اختياري)
+                      </Label>
+                      <Input
+                        type="url"
+                        value={answerImages[exam.questions[currentQuestion].id] || ''}
+                        onChange={(e) => setAnswerImages({
+                          ...answerImages,
+                          [exam.questions[currentQuestion].id]: e.target.value
+                        })}
+                        placeholder="رابط صورة الإجابة (Google Drive, Imgur, etc.)"
+                      />
+                      {answerImages[exam.questions[currentQuestion].id] && (
+                        <img 
+                          src={answerImages[exam.questions[currentQuestion].id]} 
+                          alt="صورة الإجابة" 
+                          className="mt-2 max-w-sm rounded-lg border"
+                        />
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  // سؤال اختيار من متعدد
                 <RadioGroup
                   value={answers[exam.questions[currentQuestion].id]?.toString()}
                   onValueChange={(value) => {
@@ -993,6 +1052,7 @@ const TakeExam = () => {
                     ));
                   })()}
                 </RadioGroup>
+                )}
               </CardContent>
             </Card>
 

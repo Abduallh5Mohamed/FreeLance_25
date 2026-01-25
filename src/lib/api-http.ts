@@ -723,6 +723,11 @@ export const getExams = async (courseId?: string, studentId?: string): Promise<E
     return request<Exam[]>(`/exams${queryString}`);
 };
 
+// ✅ Get exams for student based on their group
+export const getStudentExams = async (userId: string): Promise<Exam[]> => {
+    return request<Exam[]>(`/exams/student/${userId}`);
+};
+
 export const getExamById = async (id: string): Promise<Exam | null> => {
     try {
         return await request<Exam>(`/exams/${id}`);
@@ -816,14 +821,6 @@ export const getExamResults = async (examId?: string, studentId?: string) => {
 // Get exam results for a specific student
 export const getStudentExamResults = async (studentId: string) => {
     return await request(`/exam-results/student/${studentId}`);
-};
-
-// Get available exams for a student (filtered by grade)
-export const getStudentExams = async (gradeId?: string) => {
-    const params = new URLSearchParams();
-    if (gradeId) params.append('grade_id', gradeId);
-    params.append('is_active', 'true');
-    return await request(`/exams?${params.toString()}`);
 };
 
 // ====================================

@@ -8,8 +8,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { getCourses, getExams as getExamsHttp, getGrades, Course, Exam, Grade, User } from '@/lib/api-http';
-import { ClipboardCheck, Plus, Trash2, BookOpen, Clock, Edit, GraduationCap } from 'lucide-react';
+import { getCourses, getExams as getExamsHttp, getGrades, getGroups, Course, Exam, Grade, User, Group } from '@/lib/api-http';
+import { ClipboardCheck, Plus, Trash2, BookOpen, Clock, Edit, GraduationCap, Image as ImageIcon } from 'lucide-react';
 import Header from '@/components/Header';
 import { motion } from 'framer-motion';
 
@@ -17,11 +17,13 @@ const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 interface Question {
   question_text: string;
-  option_a: string;
-  option_b: string;
-  option_c: string;
-  option_d: string;
-  correct_answer: 'a' | 'b' | 'c' | 'd';
+  question_image?: string;  // ✅ صورة السؤال
+  question_type: 'multiple_choice' | 'essay';  // ✅ نوع السؤال
+  option_a?: string;
+  option_b?: string;
+  option_c?: string;
+  option_d?: string;
+  correct_answer?: 'a' | 'b' | 'c' | 'd';
   marks: number;
 }
 
@@ -31,7 +33,9 @@ export default function TeacherExams() {
   const [courses, setCourses] = useState<Course[]>([]);
   const [exams, setExams] = useState<Exam[]>([]);
   const [grades, setGrades] = useState<Grade[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
   const [selectedCourse, setSelectedCourse] = useState<string>('');
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [questions, setQuestions] = useState<Question[]>([]);
 
@@ -47,6 +51,8 @@ export default function TeacherExams() {
 
   const [currentQuestion, setCurrentQuestion] = useState<Question>({
     question_text: '',
+    question_image: '',
+    question_type: 'multiple_choice',
     option_a: '',
     option_b: '',
     option_c: '',
@@ -67,6 +73,7 @@ export default function TeacherExams() {
 
     loadCourses();
     loadGrades();
+    loadGroups();
     loadExams();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -94,6 +101,15 @@ export default function TeacherExams() {
     }
   };
 
+  const loadGroups = async () => {
+    try {
+      const data = await getGroups();
+      setGroups(data || []);
+    } catch (error) {
+      console.error('Error loading groups:', error);
+    }
+  };
+
   const loadExams = async () => {
     try {
       console.log('📚 Loading exams from MySQL...');
@@ -106,18 +122,32 @@ export default function TeacherExams() {
   };
 
   const addQuestion = () => {
-    if (!currentQuestion.question_text || !currentQuestion.option_a || !currentQuestion.option_b) {
+    // Validation based on question type
+    if (!currentQuestion.question_text) {
       toast({
         title: 'خطأ',
-        description: 'يرجى ملء السؤال وخيارين على الأقل',
+        description: 'يرجى كتابة نص السؤال',
         variant: 'destructive'
       });
       return;
     }
 
+    if (currentQuestion.question_type === 'multiple_choice') {
+      if (!currentQuestion.option_a || !currentQuestion.option_b) {
+        toast({
+          title: 'خطأ',
+          description: 'يرجى ملء خيارين على الأقل للسؤال',
+          variant: 'destructive'
+        });
+        return;
+      }
+    }
+
     setQuestions([...questions, currentQuestion]);
     setCurrentQuestion({
       question_text: '',
+      question_image: '',
+      question_type: 'multiple_choice',
       option_a: '',
       option_b: '',
       option_c: '',
@@ -143,6 +173,24 @@ export default function TeacherExams() {
       toast({
         title: 'خطأ',
         description: 'يرجى ملء جميع الحقول وإضافة أسئلة',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    if (!examData.grade_id) {
+      toast({
+        title: 'خطأ',
+        description: 'يرجى اختيار الصف الدراسي',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    if (selectedGroupIds.length === 0) {
+      toast({
+        title: 'خطأ',
+        description: 'يرجى اختيار مجموعة واحدة على الأقل',
         variant: 'destructive'
       });
       return;
@@ -187,6 +235,7 @@ export default function TeacherExams() {
         body: JSON.stringify({
           course_id: selectedCourse,
           grade_id: examData.grade_id || null,  // ✅ Include grade_id
+          group_ids: selectedGroupIds.length > 0 ? selectedGroupIds : null, // ✅ Include group_ids
           title: examData.title,
           description: examData.description || null,
           duration_minutes: parseInt(examData.duration_minutes),
@@ -208,12 +257,20 @@ export default function TeacherExams() {
       // Insert questions via Backend API
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
-        const options = JSON.stringify({
-          a: question.option_a,
-          b: question.option_b,
-          c: question.option_c,
-          d: question.option_d
-        });
+        
+        // ✅ Prepare options based on question type
+        let options = null;
+        let correctAnswer = null;
+        
+        if (question.question_type === 'multiple_choice') {
+          options = JSON.stringify({
+            a: question.option_a,
+            b: question.option_b,
+            c: question.option_c,
+            d: question.option_d
+          });
+          correctAnswer = question.correct_answer;
+        }
 
         const response = await fetch(`${API_URL}/exams/${examResult.id}/questions`, {
           method: 'POST',
@@ -223,10 +280,11 @@ export default function TeacherExams() {
           },
           body: JSON.stringify({
             question_text: question.question_text,
-            question_type: 'multiple_choice',
+            question_image: question.question_image || null,  // ✅ Include image
+            question_type: question.question_type,  // ✅ Include type
             options: options,
-            correct_answer: question.correct_answer,
-            marks: question.marks,
+            correct_answer: correctAnswer,
+            points: question.marks,
             display_order: i + 1
           })
         });
@@ -340,7 +398,15 @@ export default function TeacherExams() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="md:col-span-2">
                       <Label>اختر الدورة *</Label>
-                      <Select value={selectedCourse} onValueChange={setSelectedCourse}>
+                      <Select 
+                        value={selectedCourse} 
+                        onValueChange={(value) => {
+                          setSelectedCourse(value);
+                          // Reset grade and groups when course changes
+                          setExamData({ ...examData, grade_id: '' });
+                          setSelectedGroupIds([]);
+                        }}
+                      >
                         <SelectTrigger>
                           <SelectValue placeholder="اختر الدورة" />
                         </SelectTrigger>
@@ -359,22 +425,63 @@ export default function TeacherExams() {
 
                     <div className="md:col-span-2">
                       <Label>الصف الدراسي *</Label>
-                      <Select value={examData.grade_id} onValueChange={(value) => setExamData({ ...examData, grade_id: value })}>
+                      <Select 
+                        value={examData.grade_id} 
+                        onValueChange={(value) => {
+                          setExamData({ ...examData, grade_id: value });
+                          // Reset groups when grade changes
+                          setSelectedGroupIds([]);
+                        }}
+                      >
                         <SelectTrigger>
                           <SelectValue placeholder="اختر الصف الدراسي" />
                         </SelectTrigger>
                         <SelectContent>
-                          {grades.map(grade => (
-                            <SelectItem key={grade.id} value={grade.id}>
-                              <div className="flex items-center gap-2">
-                                <GraduationCap className="h-4 w-4 text-purple-500" />
-                                {grade.name}
-                              </div>
-                            </SelectItem>
-                          ))}
+                          {grades
+                            .filter(grade => {
+                              if (!selectedCourse) return true;
+                              const course = courses.find(c => c.id === selectedCourse);
+                              return !course?.grade || grade.name === course.grade;
+                            })
+                            .map(grade => (
+                              <SelectItem key={grade.id} value={grade.id}>
+                                <div className="flex items-center gap-2">
+                                  <GraduationCap className="h-4 w-4 text-purple-500" />
+                                  {grade.name}
+                                </div>
+                              </SelectItem>
+                            ))}
                         </SelectContent>
                       </Select>
                     </div>
+
+                    {/* ✅ Group Selection */}
+                    {examData.grade_id && (
+                      <div className="md:col-span-2">
+                        <Label>المجموعات *</Label>
+                        <div className="flex flex-wrap gap-2 mt-2 p-3 bg-gray-50 rounded-lg border">
+                          {groups
+                            .filter(g => g.grade_id === examData.grade_id)
+                            .map(group => (
+                              <label key={group.id} className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedGroupIds.includes(group.id)}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedGroupIds([...selectedGroupIds, group.id]);
+                                    } else {
+                                      setSelectedGroupIds(selectedGroupIds.filter(id => id !== group.id));
+                                    }
+                                  }}
+                                  className="rounded"
+                                />
+                                <span className="text-sm">{group.name}</span>
+                              </label>
+                            ))}
+                        </div>
+                      </div>
+                    )}
 
                     <div className="md:col-span-2">
                       <Label>عنوان الامتحان *</Label>
@@ -455,6 +562,25 @@ export default function TeacherExams() {
                     </h3>
 
                     <div className="space-y-4">
+                      {/* ✅ Question Type Selection */}
+                      <div>
+                        <Label>نوع السؤال *</Label>
+                        <Select 
+                          value={currentQuestion.question_type} 
+                          onValueChange={(value: 'multiple_choice' | 'essay') => 
+                            setCurrentQuestion({ ...currentQuestion, question_type: value })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="multiple_choice">اختيار من متعدد</SelectItem>
+                            <SelectItem value="essay">سؤال مقالي</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
                       <div>
                         <Label>نص السؤال *</Label>
                         <Textarea
@@ -465,7 +591,24 @@ export default function TeacherExams() {
                         />
                       </div>
 
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {/* ✅ Question Image Upload */}
+                      <div>
+                        <Label>صورة السؤال (اختياري)</Label>
+                        <Input
+                          type="url"
+                          value={currentQuestion.question_image || ''}
+                          onChange={(e) => setCurrentQuestion({ ...currentQuestion, question_image: e.target.value })}
+                          placeholder="رابط صورة السؤال (Google Drive, Imgur, etc.)"
+                        />
+                        <p className="text-xs text-muted-foreground mt-1">
+                          يمكنك رفع الصورة على Google Drive أو Imgur ولصق الرابط هنا
+                        </p>
+                      </div>
+
+                      {/* ✅ Show options only for multiple choice */}
+                      {currentQuestion.question_type === 'multiple_choice' && (
+                        <>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
                           <Label>الخيار أ *</Label>
                           <Input
@@ -504,7 +647,7 @@ export default function TeacherExams() {
                         <div>
                           <Label>الإجابة الصحيحة *</Label>
                           <Select
-                            value={currentQuestion.correct_answer}
+                            value={currentQuestion.correct_answer || 'a'}
                             onValueChange={(value) => setCurrentQuestion({ ...currentQuestion, correct_answer: value as 'a' | 'b' | 'c' | 'd' })}
                           >
                             <SelectTrigger>
@@ -527,7 +670,24 @@ export default function TeacherExams() {
                             min="1"
                           />
                         </div>
-                      </div>                    <Button
+                      </div>
+                        </>
+                      )}
+
+                      {/* ✅ Essay question - only marks */}
+                      {currentQuestion.question_type === 'essay' && (
+                        <div>
+                          <Label>درجة السؤال *</Label>
+                          <Input
+                            type="number"
+                            value={currentQuestion.marks}
+                            onChange={(e) => setCurrentQuestion({ ...currentQuestion, marks: parseInt(e.target.value) })}
+                            min="1"
+                          />
+                        </div>
+                      )}
+
+                    <Button
                         type="button"
                         onClick={addQuestion}
                         variant="outline"
@@ -549,10 +709,24 @@ export default function TeacherExams() {
                         {questions.map((q, index) => (
                           <div key={index} className="p-3 bg-cyan-50 dark:bg-gray-800 rounded-lg flex justify-between items-start">
                             <div className="flex-1">
-                              <p className="font-medium">{index + 1}. {q.question_text}</p>
+                              <div className="flex items-center gap-2 mb-1">
+                                <p className="font-medium">{index + 1}. {q.question_text}</p>
+                                <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">
+                                  {q.question_type === 'essay' ? 'مقالي' : 'اختيار من متعدد'}
+                                </span>
+                              </div>
                               <p className="text-sm text-muted-foreground mt-1">
-                                الإجابة: {q.correct_answer.toUpperCase()} | الدرجة: {q.marks}
+                                {q.question_type === 'multiple_choice' && q.correct_answer 
+                                  ? `الإجابة: ${q.correct_answer.toUpperCase()} | ` 
+                                  : ''}
+                                الدرجة: {q.marks}
                               </p>
+                              {q.question_image && (
+                                <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+                                  <ImageIcon className="h-3 w-3" />
+                                  يحتوي على صورة
+                                </p>
+                              )}
                             </div>
                             <Button
                               type="button"
@@ -610,14 +784,24 @@ export default function TeacherExams() {
                       >
                         <div className="flex justify-between items-start mb-2">
                           <h4 className="font-bold">{exam.title}</h4>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleDeleteExam(exam.id)}
-                            className="text-red-600 hover:text-red-700"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          <div className="flex gap-2">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => navigate(`/teacher/exams/${exam.id}/edit`)}
+                              className="text-blue-600 hover:text-blue-700"
+                            >
+                              <Edit className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDeleteExam(exam.id)}
+                              className="text-red-600 hover:text-red-700"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
                         <div className="space-y-1 text-xs">
                           <Badge variant="outline">

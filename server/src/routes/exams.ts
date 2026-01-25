@@ -3,6 +3,47 @@ import { query, queryOne, execute } from '../db';
 
 const router = Router();
 
+// ✅ Get exams for a specific student based on their group
+router.get('/student/:userId', async (req: Request, res: Response) => {
+    try {
+        const { userId } = req.params;
+
+        // Get student's group_id using phone from users table
+        const user = await queryOne<{ phone: string }>(
+            'SELECT phone FROM users WHERE id = ?',
+            [userId]
+        );
+
+        if (!user?.phone) {
+            return res.json([]); // User not found
+        }
+
+        const student = await queryOne<{ group_id: string }>(
+            'SELECT group_id FROM students WHERE phone = ?',
+            [user.phone]
+        );
+
+        if (!student?.group_id) {
+            return res.json([]); // Student has no group, return empty
+        }
+
+        // Get exams assigned to this group
+        const exams = await query<Exam>(
+            `SELECT DISTINCT e.* 
+             FROM exams e
+             INNER JOIN exam_groups eg ON e.id = eg.exam_id
+             WHERE eg.group_id = ?
+             ORDER BY e.created_at DESC`,
+            [student.group_id]
+        );
+
+        res.json(exams);
+    } catch (error) {
+        console.error('❌ Error fetching student exams:', error);
+        res.status(500).json({ error: 'Failed to fetch exams' });
+    }
+});
+
 // Helper: parse 'YYYY-MM-DD HH:MM:SS[.fraction]' or 'YYYY-MM-DDTHH:MM:SS' as local Date
 function parseLocalDateTime(dt: any): Date | null {
     if (!dt) return null;
@@ -143,6 +184,7 @@ router.post('/', async (req: Request, res: Response) => {
             description,
             course_id,
             grade_id,    // ✅ Add grade_id support
+            group_ids,   // ✅ Add group_ids support
             duration_minutes,
             total_marks,
             passing_marks,
@@ -193,6 +235,16 @@ router.post('/', async (req: Request, res: Response) => {
         const newExam = await queryOne<Exam>(
             'SELECT * FROM exams WHERE id = (SELECT id FROM exams ORDER BY created_at DESC LIMIT 1)'
         );
+
+        // ✅ Save group associations
+        if (group_ids && Array.isArray(group_ids) && group_ids.length > 0 && newExam) {
+            for (const groupId of group_ids) {
+                await execute(
+                    'INSERT INTO exam_groups (exam_id, group_id) VALUES (?, ?)',
+                    [newExam.id, groupId]
+                );
+            }
+        }
 
         console.log('✅ Exam created:', newExam);
 
@@ -716,6 +768,49 @@ router.get('/:examId/not-attempted', async (req: Request, res: Response) => {
     } catch (error) {
         console.error('Get not attempted students error:', error);
         res.status(500).json({ error: 'Failed to fetch students' });
+    }
+});
+
+// ✅ Update exam question with image support
+router.put('/:examId/questions/:questionId', async (req: Request, res: Response) => {
+    try {
+        const { examId, questionId } = req.params;
+        const { question_text, question_image, question_type, options, correct_answer, points, explanation } = req.body;
+
+        await execute(
+            `UPDATE exam_questions 
+             SET question_text = ?, 
+                 question_image = ?,
+                 question_type = ?, 
+                 options = ?, 
+                 correct_answer = ?, 
+                 points = ?,
+                 explanation = ?
+             WHERE id = ? AND exam_id = ?`,
+            [question_text, question_image || null, question_type, options, correct_answer, points, explanation || null, questionId, examId]
+        );
+
+        res.json({ message: 'Question updated successfully' });
+    } catch (error) {
+        console.error('Update question error:', error);
+        res.status(500).json({ error: 'Failed to update question' });
+    }
+});
+
+// ✅ Delete exam question
+router.delete('/:examId/questions/:questionId', async (req: Request, res: Response) => {
+    try {
+        const { examId, questionId } = req.params;
+
+        await execute(
+            'DELETE FROM exam_questions WHERE id = ? AND exam_id = ?',
+            [questionId, examId]
+        );
+
+        res.json({ message: 'Question deleted successfully' });
+    } catch (error) {
+        console.error('Delete question error:', error);
+        res.status(500).json({ error: 'Failed to delete question' });
     }
 });
 
