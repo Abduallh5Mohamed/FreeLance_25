@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { BookOpen, FileText, Clock, Calendar, Download, Play, Eye, MessageSquare, Award, Users, Calendar as CalendarIcon, Sparkles, TrendingUp, Trophy, Target, ClipboardCheck } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
 import { useNavigate } from "react-router-dom";
-import { getStudents, getCourses, getGroups, getMaterials, getStudentExamResults, getStudentExams, Student, User, Course } from "@/lib/api";
+import { getStudents, getCourses, getGroups, getMaterials, getStudentMaterials, getStudentExams, getStudentExamResults, Student, User, Course } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 import { motion, AnimatePresence } from "framer-motion";
@@ -102,13 +102,13 @@ const StudentDashboard = () => {
         }
       }
 
-      // Fetch materials
-      const allMaterials = await getMaterials();
-      setMaterials(allMaterials || []);
+      // Fetch materials for this specific student based on their group
+      const studentMaterials = await getStudentMaterials(user.id);
+      setMaterials(studentMaterials || []);
 
-      // Fetch exams for student's grade
+      // ✅ Fetch exams for this student based on their group
       try {
-        const studentExams = await getStudentExams(student.grade_id || undefined);
+        const studentExams = await getStudentExams(user.id);
         setExams(studentExams || []);
       } catch (err) {
         console.error('Error fetching exams:', err);

@@ -41,6 +41,7 @@ import StudentRegistrationRequests from "./pages/StudentRegistrationRequests";
 import TeacherContentManager from "./pages/TeacherContentManager";
 import TeacherLectures from "./pages/TeacherLectures";
 import TeacherExams from "./pages/TeacherExams";
+import EditExam from "./pages/EditExam";
 import ExamReports from "./pages/ExamReports";
 import ExamResults from "./pages/ExamResults";
 import StudentExamResults from "./pages/StudentExamResults";
@@ -87,8 +88,7 @@ const App = () => (
           <Route path="/course-content" element={<AuthGuard requiredRole="teacher"><CourseContentManager /></AuthGuard>} />
           <Route path="/teacher-content-manager" element={<AuthGuard requiredRole="teacher"><TeacherContentManager /></AuthGuard>} />
           <Route path="/teacher-lectures" element={<AuthGuard requiredRole="teacher"><TeacherLectures /></AuthGuard>} />
-          <Route path="/teacher-exams" element={<AuthGuard requiredRole="teacher"><TeacherExams /></AuthGuard>} />
-          <Route path="/exam-reports/:examId" element={<AuthGuard requiredRole="teacher"><ExamReports /></AuthGuard>} />
+          <Route path="/teacher-exams" element={<AuthGuard requiredRole="teacher"><TeacherExams /></AuthGuard>} />          <Route path="/teacher/exams/:examId/edit" element={<AuthGuard requiredRole="teacher"><EditExam /></AuthGuard>} />          <Route path="/exam-reports/:examId" element={<AuthGuard requiredRole="teacher"><ExamReports /></AuthGuard>} />
           <Route path="/exam-results" element={<AuthGuard requiredRole="teacher"><ExamResults /></AuthGuard>} />
           <Route path="/chat-assistant" element={<AuthGuard requiredRole="teacher"><ChatAssistant /></AuthGuard>} />
 

@@ -9,7 +9,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
-import { getExams, getStudents, Exam, User, Student } from "@/lib/api";
+import { getStudentExams, getStudents, Exam, User, Student } from "@/lib/api";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 
 interface StudentExam extends Exam {
@@ -73,38 +73,29 @@ const StudentExams = () => {
     try {
       setLoading(true);
 
-      // Determine student ID and grade_id
+      // Determine student ID
       const userStr = localStorage.getItem('currentUser');
       const user: User | null = userStr ? JSON.parse(userStr) : null;
-      const studentId = user?.id; // Students are in users table with role='student'
+      const studentId = user?.id;
 
-      // Get student's grade_id
-      let studentGradeId: string | undefined;
-      try {
-        const students = await getStudents();
-        const student = students?.find((s: Student) => s.id === studentId);
-        studentGradeId = student?.grade_id;
-        console.log('📚 Student grade_id:', studentGradeId);
-      } catch (error) {
-        console.error('Error fetching student grade:', error);
+      if (!studentId) {
+        toast({
+          title: 'خطأ',
+          description: 'لم يتم العثور على بيانات الطالب',
+          variant: 'destructive'
+        });
+        setLoading(false);
+        return;
       }
 
-      // Fetch exams (will be filtered by grade_id on backend if available)
-      const data = await getExams(undefined, studentId);
+      // ✅ Fetch exams ONLY for this student's group
+      const data = await getStudentExams(studentId);
       const now = new Date();
 
       console.log('🕐 Current time:', now.toISOString(), '(Local:', now.toLocaleString('ar-EG'), ')');
+      console.log(`📚 Loaded ${data?.length || 0} exams for student's group`);
 
-      // Filter exams client-side to only show exams for student's grade
-      let filteredData = data;
-      if (studentGradeId) {
-        filteredData = data?.filter((exam: any) => 
-          !exam.grade_id || exam.grade_id === studentGradeId
-        );
-        console.log(`🎯 Filtered ${data?.length || 0} exams to ${filteredData?.length || 0} for grade ${studentGradeId}`);
-      }
-
-      const examsData = filteredData?.map((exam: StudentExam & { start_dt?: string; end_dt?: string }) => {
+      const examsData = data?.map((exam: StudentExam & { start_dt?: string; end_dt?: string }) => {
         const hasAttempted = (exam.attempts || 0) > 0;
 
         // Sanitize raw times first
