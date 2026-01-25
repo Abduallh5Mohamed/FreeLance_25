@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>HLS Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+</head>
+
+<body>
+    <h1>HLS Video Test</h1>
+    <video id="video" controls width="640" height="360" style="background: black;"></video>
+    <div id="status">Loading...</div>
+    <script>
+        const video = document.getElementById('video');
+        const status = document.getElementById('status');
+        // Use the direct 360p playlist instead of master
+        const videoSrc = 'http://localhost:9000/videos-hls/e0acff5d-f093-4307-8792-eadeccc2683e/360p/playlist.m3u8';
+
+        console.log('Testing video source:', videoSrc);
+
+        if (Hls.isSupported()) {
+            status.textContent = 'HLS.js supported, initializing...';
+            const hls = new Hls({
+                debug: true,
+                enableWorker: true,
+                lowLatencyMode: false
+            });
+            hls.loadSource(videoSrc);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, function (event, data) {
+                console.log('Manifest parsed:', data);
+                status.textContent = 'Manifest loaded, playing...';
+                video.play().then(() => {
+                    status.textContent = 'Playing!';
+                }).catch(e => {
+                    status.textContent = 'Autoplay blocked, click to play: ' + e.message;
+                });
+            });
+            hls.on(Hls.Events.ERROR, function (event, data) {
+                console.error('HLS Error:', data);
+                status.textContent = 'Error: ' + data.details;
+            });
+            hls.on(Hls.Events.FRAG_LOADED, function (event, data) {
+                console.log('Fragment loaded:', data.frag.sn);
+            });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = videoSrc;
+            video.addEventListener('loadedmetadata', function () {
+                video.play();
+            });
+        } else {
+            status.textContent = 'HLS not supported in this browser';
+        }
+    </script>
+</body>
+
+</html>

@@ -28,6 +28,8 @@ import expensesRoutes from './routes/expenses';
 import importsRoutes from './routes/imports';
 import migrationsRoutes from './routes/migrations';
 import messagesRoutes from './routes/messages';
+import videosRoutes from './routes/videos';
+import { initializeBuckets } from './services/minio';
 
 dotenv.config();
 
@@ -100,6 +102,7 @@ app.use('/api/expenses', expensesRoutes);
 app.use('/api/imports', importsRoutes);
 app.use('/api/migrations', migrationsRoutes);
 app.use('/api/messages', messagesRoutes);
+app.use('/api/videos', videosRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {
@@ -115,6 +118,15 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 // Start server
 const startServer = async () => {
     try {
+        // Initialize MinIO buckets
+        console.log('🗄️  Initializing MinIO storage...');
+        try {
+            await initializeBuckets();
+            console.log('✅ MinIO storage ready');
+        } catch (minioError) {
+            console.warn('⚠️  MinIO initialization failed (video uploads will not work):', minioError);
+        }
+
         // Optionally skip DB connection on start for local development
         const skipDb = process.env.SKIP_DB_ON_START === 'true';
         let dbConnected = false;
@@ -130,15 +142,16 @@ const startServer = async () => {
             console.warn('⚠️ SKIP_DB_ON_START is set — skipping DB connectivity check (dev only)');
         }
 
-        const server = httpServer.listen(PORT, () => {
+        const server = httpServer.listen(PORT, '0.0.0.0', () => {
             console.log(`
 ╔════════════════════════════════════════════════╗
 ║                                                ║
 ║   🚀 Al-Qaed Backend API Server                ║
 ║                                                ║
-║   📡 Server running on: http://localhost:${PORT}  ║
+║   📡 Localhost: http://localhost:${PORT}       ║
+║   📱 Network: http://0.0.0.0:${PORT}           ║
 ║   🗄️  Database: MySQL (${process.env.DB_NAME})           ║
-║   🌍 CORS: localhost (all ports)           ║
+║   🌍 CORS: All origins allowed (dev mode)  ║
 ║                                                ║
 ║   📚 Available API Routes:                     ║
 ║                                                ║

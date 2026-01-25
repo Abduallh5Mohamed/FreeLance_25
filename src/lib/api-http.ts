@@ -3,7 +3,29 @@
  * Replaces the mock localStorage database with real HTTP requests
  */
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://deeppink-woodpecker-473963.hostingersite.com/api';
+// Get API base URL from environment or use current host
+const getApiBaseUrl = (): string => {
+    // If VITE_API_URL is defined, use it (for mobile testing)
+    // Example: VITE_API_URL=http://192.168.1.100:3001/api
+    const envApiUrl = import.meta.env.VITE_API_URL;
+    if (envApiUrl) {
+        console.log('🔗 Using API URL from environment:', envApiUrl);
+        return envApiUrl;
+    }
+
+    // Otherwise, detect based on current host
+    const currentHost = window.location.hostname;
+    if (currentHost !== 'localhost' && currentHost !== '127.0.0.1') {
+        const apiUrl = `http://${currentHost}:3001/api`;
+        console.log('🔗 Using API URL based on hostname:', apiUrl);
+        return apiUrl;
+    }
+
+    console.log('🔗 Using default localhost API URL');
+    return 'http://localhost:3001/api';
+};
+
+const API_BASE_URL = getApiBaseUrl();
 
 // Helper to get auth token from localStorage
 const getAuthToken = (): string | null => {
