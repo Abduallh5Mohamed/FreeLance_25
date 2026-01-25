@@ -81,10 +81,10 @@ router.post('/', async (req: Request, res: Response) => {
 
         // Guardian phone required uniqueness (if provided)
         if (guardian_phone) {
-            // Check guardian phone in existing students
+            // Check guardian phone in existing students (using both guardian_phone and parent_phone for compatibility)
             const [existingGuardianStudents] = await pool.query<RowDataPacket[]>(
-                'SELECT id FROM students WHERE guardian_phone = ?',
-                [guardian_phone]
+                'SELECT id FROM students WHERE guardian_phone = ? OR parent_phone = ?',
+                [guardian_phone, guardian_phone]
             );
             if (existingGuardianStudents.length > 0) {
                 return res.status(400).json({ error: 'رقم ولي الأمر مستخدم بالفعل مع طالب آخر' });
@@ -138,9 +138,10 @@ router.post('/', async (req: Request, res: Response) => {
             id: requestId,
             message: 'تم إرسال طلب التسجيل بنجاح. سيتم مراجعته من قبل الإدارة.'
         });
-    } catch (error) {
+    } catch (error: any) {
         console.error('Error creating registration request:', error);
-        res.status(500).json({ error: 'Failed to create registration request' });
+        console.error('Error details:', error.message, error.code, error.sqlMessage);
+        res.status(500).json({ error: 'Failed to create registration request', details: error.message });
     }
 });
 

@@ -317,7 +317,7 @@ const Header = () => {
         {/* Mobile Navigation */}
         <div className="relative">
           {isMenuOpen && (
-            <div className="xl:hidden absolute top-4 left-0 right-0 bg-primary border-t-2 border-white/20 shadow-2xl rounded-b-3xl backdrop-blur-lg z-50 max-h-[80vh] overflow-y-auto">
+            <div className="xl:hidden absolute top-4 left-0 right-0 bg-gradient-to-br from-teal-600 to-teal-700 border-t-2 border-white/20 shadow-2xl rounded-b-3xl backdrop-blur-lg z-50 max-h-[80vh] overflow-y-auto">
               <div className="px-4 py-4 space-y-1">
                 {/* Main Links */}
                 <div className="mb-4">
