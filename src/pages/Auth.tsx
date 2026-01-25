@@ -31,10 +31,10 @@ const Auth = () => {
   const [selectedGroup, setSelectedGroup] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [courses, setCourses] = useState<Array<{ id: string; name: string }>>([]);
+  const [courses, setCourses] = useState<Array<{ id: string; name: string; grade?: string }>>([]);
   const [grades, setGrades] = useState<Array<{ id: string; name: string }>>([]);
   const [groups, setGroups] = useState<Array<{ id: string; name: string; grade_id?: string }>>([]);
-  const [studentType, setStudentType] = useState<"online" | "offline">("online"); // Online or Offline
+  const [studentType, setStudentType] = useState<"online" | "offline">("online");
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -163,7 +163,7 @@ const Auth = () => {
           }
         }
 
-        // Create registration request with student type (online/offline)
+        // Create registration request with student type
         const result = await createRegistrationRequest({
           name: name.trim(),
           phone: phone.trim(),
@@ -172,7 +172,7 @@ const Auth = () => {
           grade_id: gradeId,
           group_id: selectedGroup || null,
           requested_courses: selectedCourses.length > 0 ? selectedCourses : undefined,
-          is_offline: studentType === "offline", // Pass student type
+          is_offline: studentType === "offline",
         });
 
         // Clear form
@@ -185,7 +185,6 @@ const Auth = () => {
         setGradeId("");
         setSelectedCourses([]);
         setSelectedGroup("");
-        setStudentType("online"); // Reset to online
 
         toast({
           title: "تم إرسال طلب التسجيل بنجاح",
@@ -297,37 +296,6 @@ const Auth = () => {
           {/* Login/Register Form */}
           <div className={`bg-black/50 backdrop-blur-xl rounded-3xl border border-white/10 shadow-2xl mt-3 ${isLogin ? 'p-10' : 'p-6'}`}>
             <form onSubmit={handleAuth} className={isLogin ? 'space-y-6' : 'space-y-5'}>
-              {/* Student Type Selection - Only for registration */}
-              {!isLogin && (
-                <div className="space-y-3">
-                  <Label className="text-white text-right block">
-                    نوع الطالب
-                  </Label>
-                  <div className="grid grid-cols-2 gap-4">
-                    <button
-                      type="button"
-                      onClick={() => setStudentType("online")}
-                      className={`py-3 px-4 rounded-xl font-semibold transition-all duration-300 flex items-center justify-center ${studentType === "online"
-                        ? "bg-gradient-to-r from-yellow-500 to-orange-500 text-white shadow-lg"
-                        : "bg-white/10 text-white hover:bg-white/20 border border-white/20"
-                        }`}
-                    >
-                      أونلاين
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setStudentType("offline")}
-                      className={`py-3 px-4 rounded-xl font-semibold transition-all duration-300 flex items-center justify-center ${studentType === "offline"
-                        ? "bg-gradient-to-r from-yellow-500 to-orange-500 text-white shadow-lg"
-                        : "bg-white/10 text-white hover:bg-white/20 border border-white/20"
-                        }`}
-                    >
-                      أوفلاين
-                    </button>
-                  </div>
-                </div>
-              )}
-
               {/* Name & Phone - Side by side on desktop (for registration) */}
               {!isLogin ? (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -422,6 +390,7 @@ const Auth = () => {
                           console.log('📋 Filtered groups for grade:', filtered);
                           setGradeId(value);
                           setSelectedGroup(''); // Reset group when grade changes
+                          setSelectedCourses([]); // Reset courses when grade changes
                         }} required>
                           <SelectTrigger className="bg-white/10 border-white/20 text-white h-11 rounded-xl text-right">
                             <SelectValue placeholder="اختر الصف الدراسي" />
@@ -476,7 +445,7 @@ const Auth = () => {
                 </div>
               )}
 
-              {/* Student Type & Group - 2 fields in the first row (for registration) */}
+              {/* Student Type & Group - Side by side (for registration) */}
               {!isLogin && (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {/* Student Type Select */}
@@ -501,7 +470,7 @@ const Auth = () => {
                     </div>
                   </div>
 
-                  {/* Group Select filtered by selected grade */}
+                  {/* Group Select */}
                   <div className="space-y-1.5">
                     <Label htmlFor="group" className="text-white text-right block text-sm">
                       المجموعة
@@ -536,32 +505,56 @@ const Auth = () => {
                 </div>
               )}
 
-              {/* Courses Selection - Only for registration */}
+              {/* Courses Selection - Only for registration, filtered by grade */}
               {!isLogin && (
                 <div className="space-y-1.5">
                   <Label className="text-white text-right block text-sm">
                     اختر الكورسات المسجلة
                   </Label>
                   <div className="bg-white/5 rounded-xl p-3 max-h-32 overflow-y-auto space-y-2">
-                    {courses.map((course) => (
-                      <div key={course.id} className="flex items-center justify-end gap-2">
-                        <Label htmlFor={course.id} className="text-white text-sm cursor-pointer">
-                          {course.name}
-                        </Label>
-                        <Checkbox
-                          id={course.id}
-                          checked={selectedCourses.includes(course.id)}
-                          onCheckedChange={(checked) => {
-                            if (checked) {
-                              setSelectedCourses([...selectedCourses, course.id]);
-                            } else {
-                              setSelectedCourses(selectedCourses.filter(id => id !== course.id));
-                            }
-                          }}
-                          className="border-white/30"
-                        />
+                    {gradeId ? (
+                      <>
+                        {courses
+                          .filter(course => {
+                            const selectedGrade = grades.find(g => g.id === gradeId);
+                            const gradeName = selectedGrade?.name;
+                            console.log('🔍 Course:', course.name, '| Course Grade:', course.grade, '| Selected Grade Name:', gradeName, '| Match:', course.grade === gradeName);
+                            return course.grade === gradeName;
+                          })
+                          .map((course) => (
+                          <div key={course.id} className="flex items-center justify-end gap-2">
+                            <Label htmlFor={course.id} className="text-white text-sm cursor-pointer">
+                              {course.name}
+                            </Label>
+                            <Checkbox
+                              id={course.id}
+                              checked={selectedCourses.includes(course.id)}
+                              onCheckedChange={(checked) => {
+                                if (checked) {
+                                  setSelectedCourses([...selectedCourses, course.id]);
+                                } else {
+                                  setSelectedCourses(selectedCourses.filter(id => id !== course.id));
+                                }
+                              }}
+                              className="border-white/30"
+                            />
+                          </div>
+                        ))}
+                        {(() => {
+                          const selectedGrade = grades.find(g => g.id === gradeId);
+                          const gradeName = selectedGrade?.name;
+                          return courses.filter(c => c.grade === gradeName).length === 0;
+                        })() && (
+                          <div className="p-2 text-sm text-gray-400 text-center">
+                            لا توجد كورسات لهذا الصف
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="p-2 text-sm text-gray-400 text-center">
+                        اختر الصف الدراسي أولاً
                       </div>
-                    ))}
+                    )}
                   </div>
                 </div>
               )}
