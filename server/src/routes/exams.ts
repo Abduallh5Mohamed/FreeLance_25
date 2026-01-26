@@ -365,6 +365,7 @@ router.post('/:examId/questions', async (req: Request, res: Response) => {
     try {
         const {
             question_text,
+            question_image,  // ✅ دعم صورة السؤال
             question_type,
             options,
             correct_answer,
@@ -372,16 +373,22 @@ router.post('/:examId/questions', async (req: Request, res: Response) => {
             display_order
         } = req.body;
 
-        if (!question_text || !question_type || !marks) {
+        // ✅ التحقق: يجب وجود نص أو صورة على الأقل
+        if (!question_text && !question_image) {
+            return res.status(400).json({ error: 'يجب إدخال نص السؤال أو رفع صورة على الأقل' });
+        }
+
+        if (!question_type || !marks) {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
         await execute(
-            `INSERT INTO exam_questions (id, exam_id, question_text, question_type, options, correct_answer, points, display_order, created_at)
-             VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, NOW())`,
+            `INSERT INTO exam_questions (id, exam_id, question_text, question_image, question_type, options, correct_answer, points, display_order, created_at)
+             VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
             [
                 req.params.examId,
-                question_text,
+                question_text ?? null,
+                question_image ?? null,  // ✅ حفظ صورة السؤال
                 question_type,
                 options ?? null,
                 correct_answer ?? null,
@@ -656,7 +663,7 @@ router.post('/:examId/start/:studentId', async (req: Request, res: Response) => 
 router.post('/:examId/submit/:studentId', async (req: Request, res: Response) => {
     try {
         const { examId, studentId } = req.params;
-        const { answers, score } = req.body;
+        const { answers, score, essayAnswers, answerImages } = req.body;  // ✅ دعم الإجابات المقالية وصور الإجابات
 
         // Get exam info for total_marks
         const exam = await queryOne<any>(
@@ -689,6 +696,13 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
 
         const passed = (Number(score) || 0) >= passingMarks;
 
+        // ✅ دمج الإجابات المختلفة
+        const allAnswers = {
+            multipleChoice: answers || {},
+            essay: essayAnswers || {},
+            images: answerImages || {}
+        };
+
         // Update exam_attempts table
         await execute(
             `UPDATE exam_attempts 
@@ -697,7 +711,7 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
                  score = ?,
                  answers = ?
              WHERE exam_id = ? AND student_id = ?`,
-            [passed ? 'passed' : 'failed', score ?? null, JSON.stringify(answers) ?? null, examId, studentId]
+            [passed ? 'passed' : 'failed', score ?? null, JSON.stringify(allAnswers), examId, studentId]
         );
 
         // Insert or update exam_results table for the results page

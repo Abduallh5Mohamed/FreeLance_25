@@ -57,6 +57,7 @@ const TakeExam = () => {
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [essayAnswers, setEssayAnswers] = useState<Record<string, string>>({});  // ✅ إجابات مقالية
   const [answerImages, setAnswerImages] = useState<Record<string, string>>({});  // ✅ صور الإجابات
+  const [uploadingAnswerImage, setUploadingAnswerImage] = useState(false);  // ✅ حالة رفع صورة الإجابة
   const [timeLeft, setTimeLeft] = useState(0); // in seconds
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -167,7 +168,7 @@ const TakeExam = () => {
         setStudentId(currentStudentId);
 
         // Check if student can attempt this exam
-        const attemptCheck = await canAttemptExam(examId, currentStudentId);
+        const attemptCheck = await canAttemptExam(examId, currentStudentId) as any;
         console.log('🔍 Can attempt check:', attemptCheck);
 
         if (!attemptCheck.canAttempt) {
@@ -177,14 +178,14 @@ const TakeExam = () => {
           // If already attempted, fetch exam to display summary
           if (attemptCheck.reason === 'already_attempted') {
             try {
-              const examData = await getExamById(examId);
+              const examData = await getExamById(examId) as any;
               // Fetch questions to derive total marks if missing
               const qs = await getExamQuestions(examId);
               const computedTotal = Array.isArray(qs)
                 ? qs.reduce((sum: number, q: any) => sum + (q.marks || q.points || 1), 0)
                 : 0;
-              const rawTotal = examData.total_marks || examData.totalMarks || computedTotal;
-              const rawPassing = examData.passing_marks || examData.passingMarks || 0;
+              const rawTotal = examData?.total_marks || examData?.totalMarks || computedTotal;
+              const rawPassing = examData?.passing_marks || examData?.passingMarks || 0;
               // Interpret passing as percentage if > total and <=100
               const passingMarks = rawTotal > 0 && rawPassing > rawTotal && rawPassing <= 100
                 ? Math.ceil((rawPassing / 100) * rawTotal)
@@ -376,10 +377,10 @@ const TakeExam = () => {
     setResult(examResult);
     setIsSubmitted(true);
 
-    // Submit attempt to backend
+    // Submit attempt to backend with all answer types
     if (examId && studentId) {
       try {
-        await submitExamAttempt(examId, studentId, answers, examResult.score);
+        await submitExamAttempt(examId, studentId, answers, examResult.score, essayAnswers, answerImages);
         console.log('✅ Exam attempt submitted successfully');
       } catch (error) {
         console.error('❌ Failed to submit exam attempt:', error);
@@ -393,7 +394,7 @@ const TakeExam = () => {
         : `لم تحصل على درجة النجاح. حصلت على ${examResult.score}/${examResult.total}`,
       variant: examResult.passed ? "default" : "destructive"
     });
-  }, [calculateScore, toast, examId, studentId, answers]);
+  }, [calculateScore, toast, examId, studentId, answers, essayAnswers, answerImages]);
 
   // Timer countdown
   useEffect(() => {
@@ -954,7 +955,7 @@ const TakeExam = () => {
                   // سؤال مقالي
                   <div className="space-y-4">
                     <div>
-                      <Label>اكتب إجابتك هنا:</Label>
+                      <Label className="text-base font-medium">اكتب إجابتك هنا:</Label>
                       <Textarea
                         value={essayAnswers[exam.questions[currentQuestion].id] || ''}
                         onChange={(e) => setEssayAnswers({
@@ -964,28 +965,83 @@ const TakeExam = () => {
                         placeholder="اكتب إجابتك المفصلة..."
                         className="min-h-[200px] mt-2"
                       />
+                      <p className="text-xs text-muted-foreground mt-1">يمكنك كتابة الإجابة أو رفع صورة أو كلاهما</p>
                     </div>
                     
                     <div className="border-t pt-4">
-                      <Label className="flex items-center gap-2 mb-2">
+                      <Label className="flex items-center gap-2 mb-3 text-base font-medium">
                         <Upload className="h-4 w-4" />
-                        أو ارفع صورة الإجابة (اختياري)
+                        أو ارفع صورة الإجابة
                       </Label>
-                      <Input
-                        type="url"
-                        value={answerImages[exam.questions[currentQuestion].id] || ''}
-                        onChange={(e) => setAnswerImages({
-                          ...answerImages,
-                          [exam.questions[currentQuestion].id]: e.target.value
-                        })}
-                        placeholder="رابط صورة الإجابة (Google Drive, Imgur, etc.)"
-                      />
-                      {answerImages[exam.questions[currentQuestion].id] && (
-                        <img 
-                          src={answerImages[exam.questions[currentQuestion].id]} 
-                          alt="صورة الإجابة" 
-                          className="mt-2 max-w-sm rounded-lg border"
-                        />
+                      
+                      {answerImages[exam.questions[currentQuestion].id] ? (
+                        <div className="relative inline-block">
+                          <img 
+                            src={answerImages[exam.questions[currentQuestion].id]} 
+                            alt="صورة الإجابة" 
+                            className="max-w-full max-h-64 rounded-lg border"
+                          />
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="sm"
+                            className="absolute top-2 left-2"
+                            onClick={() => setAnswerImages({
+                              ...answerImages,
+                              [exam.questions[currentQuestion].id]: ''
+                            })}
+                          >
+                            حذف الصورة
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="border-2 border-dashed rounded-lg p-6 text-center">
+                          <input
+                            type="file"
+                            accept="image/*"
+                            id={`answer-image-${exam.questions[currentQuestion].id}`}
+                            className="hidden"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                setUploadingAnswerImage(true);
+                                try {
+                                  const reader = new FileReader();
+                                  reader.onload = (event) => {
+                                    const base64 = event.target?.result as string;
+                                    setAnswerImages({
+                                      ...answerImages,
+                                      [exam.questions[currentQuestion].id]: base64
+                                    });
+                                    setUploadingAnswerImage(false);
+                                  };
+                                  reader.onerror = () => {
+                                    toast({ title: "خطأ", description: "فشل قراءة الصورة", variant: "destructive" });
+                                    setUploadingAnswerImage(false);
+                                  };
+                                  reader.readAsDataURL(file);
+                                } catch (err) {
+                                  toast({ title: "خطأ", description: "فشل رفع الصورة", variant: "destructive" });
+                                  setUploadingAnswerImage(false);
+                                }
+                              }
+                            }}
+                          />
+                          <label htmlFor={`answer-image-${exam.questions[currentQuestion].id}`} className="cursor-pointer">
+                            {uploadingAnswerImage ? (
+                              <div className="flex items-center justify-center gap-2 text-muted-foreground py-4">
+                                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
+                                جاري الرفع...
+                              </div>
+                            ) : (
+                              <div className="flex flex-col items-center gap-3 text-muted-foreground hover:text-primary transition-colors py-4">
+                                <ImageIcon className="w-12 h-12" />
+                                <span className="text-sm font-medium">اضغط لرفع صورة الإجابة</span>
+                                <span className="text-xs">(اختياري - يمكنك كتابة نص فقط)</span>
+                              </div>
+                            )}
+                          </label>
+                        </div>
                       )}
                     </div>
                   </div>
