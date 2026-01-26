@@ -20,8 +20,29 @@ import {
 } from 'lucide-react';
 import axios from 'axios';
 
-const API_URL = 'http://localhost:3001/api';
-const SOCKET_URL = 'http://localhost:3001';
+// Helper to get API URL
+const getApiUrl = () => {
+    // Check if we have an environment variable (from .env.local)
+    // Note: Vite exposes env vars on import.meta.env
+    const envApiUrl = import.meta.env.VITE_API_URL;
+    if (envApiUrl) return envApiUrl;
+
+    const currentHost = window.location.hostname;
+    if (currentHost !== 'localhost' && currentHost !== '127.0.0.1') {
+        return `http://${currentHost}:3001/api`;
+    }
+    return 'http://localhost:3001/api';
+};
+
+// Helper to get Socket URL (base URL without /api)
+const getSocketUrl = () => {
+    const apiUrl = getApiUrl();
+    // Remove /api from the end
+    return apiUrl.replace('/api', '');
+};
+
+const API_URL = getApiUrl();
+const SOCKET_URL = getSocketUrl();
 
 interface User {
     id: string;
