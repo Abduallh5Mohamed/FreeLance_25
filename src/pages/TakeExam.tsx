@@ -379,7 +379,12 @@ const TakeExam = () => {
     // Submit attempt to backend
     if (examId && studentId) {
       try {
-        await submitExamAttempt(examId, studentId, answers, examResult.score);
+        // ✅ Include essay answers and answer images
+        await submitExamAttempt(examId, studentId, {
+          multipleChoice: answers,
+          essayAnswers: essayAnswers,
+          answerImages: answerImages
+        }, examResult.score);
         console.log('✅ Exam attempt submitted successfully');
       } catch (error) {
         console.error('❌ Failed to submit exam attempt:', error);
@@ -393,7 +398,7 @@ const TakeExam = () => {
         : `لم تحصل على درجة النجاح. حصلت على ${examResult.score}/${examResult.total}`,
       variant: examResult.passed ? "default" : "destructive"
     });
-  }, [calculateScore, toast, examId, studentId, answers]);
+  }, [calculateScore, toast, examId, studentId, answers, essayAnswers, answerImages]);
 
   // Timer countdown
   useEffect(() => {
@@ -410,7 +415,7 @@ const TakeExam = () => {
     if (!exam || !result) return;
 
     setGeneratingPDF(true);
-    
+
     try {
       const doc = new jsPDF({
         orientation: 'portrait',
@@ -429,11 +434,11 @@ const TakeExam = () => {
       // Header
       doc.setFillColor(13, 148, 136); // Teal color
       doc.rect(0, 0, pageWidth, 40, 'F');
-      
+
       doc.setTextColor(255, 255, 255);
       doc.setFontSize(24);
       doc.text("نتيجة الامتحان", pageWidth / 2, 18, { align: 'center' });
-      
+
       doc.setFontSize(14);
       doc.text(exam.title || "امتحان", pageWidth / 2, 30, { align: 'center' });
 
@@ -443,11 +448,11 @@ const TakeExam = () => {
       const passed = result.passed;
       doc.setFillColor(passed ? 34 : 239, passed ? 197 : 68, passed ? 94 : 68);
       doc.roundedRect(20, yPos - 10, pageWidth - 40, 35, 5, 5, 'F');
-      
+
       doc.setTextColor(255, 255, 255);
       doc.setFontSize(28);
       doc.text(passed ? "ناجح" : "راسب", pageWidth / 2, yPos + 5, { align: 'center' });
-      
+
       doc.setFontSize(16);
       doc.text(`${result.score}/${result.total} (${result.percentage.toFixed(1)}%)`, pageWidth / 2, yPos + 18, { align: 'center' });
 
@@ -456,14 +461,14 @@ const TakeExam = () => {
       // Statistics
       doc.setTextColor(0, 0, 0);
       doc.setFontSize(12);
-      
+
       const correctAnswers = exam.questions.filter(q => answers[q.id] === q.correct_answer).length;
       const wrongAnswers = exam.questions.filter(q => answers[q.id] !== undefined && answers[q.id] !== q.correct_answer).length;
       const unanswered = exam.questions.length - correctAnswers - wrongAnswers;
 
       doc.setFillColor(240, 240, 240);
       doc.roundedRect(20, yPos - 5, pageWidth - 40, 30, 3, 3, 'F');
-      
+
       doc.text(`الاجابات الصحيحة: ${correctAnswers}`, pageWidth - 30, yPos + 5, { align: 'right' });
       doc.text(`الاجابات الخاطئة: ${wrongAnswers}`, pageWidth / 2, yPos + 5, { align: 'center' });
       doc.text(`لم تجب: ${unanswered}`, 30, yPos + 5, { align: 'left' });
@@ -511,7 +516,7 @@ const TakeExam = () => {
           const userAnswerText = Array.isArray(question.options) ? question.options[userAnswer] : 'غير معروف';
           doc.setTextColor(isCorrect ? 34 : 239, isCorrect ? 197 : 68, isCorrect ? 94 : 68);
           doc.text(`اجابتك: ${userAnswerText.substring(0, 40)}`, pageWidth - 30, yPos + 12, { align: 'right' });
-          
+
           if (!isCorrect) {
             const correctAnswerText = Array.isArray(question.options) ? question.options[question.correct_answer as number] : 'غير معروف';
             doc.setTextColor(34, 197, 94);
@@ -531,7 +536,7 @@ const TakeExam = () => {
         doc.addPage();
         yPos = 20;
       }
-      
+
       doc.setFontSize(10);
       doc.setTextColor(128, 128, 128);
       doc.text("منصة القائد التعليمية - جميع الحقوق محفوظة", pageWidth / 2, pageHeight - 10, { align: 'center' });
@@ -934,14 +939,18 @@ const TakeExam = () => {
                     <CardTitle className="text-xl">
                       {exam.questions[currentQuestion].question_text || exam.questions[currentQuestion].question}
                     </CardTitle>
-                    
+
                     {/* ✅ عرض صورة السؤال */}
                     {exam.questions[currentQuestion].question_image && (
                       <div className="mt-4">
-                        <img 
-                          src={exam.questions[currentQuestion].question_image} 
-                          alt="صورة السؤال" 
-                          className="max-w-full rounded-lg border"
+                        <img
+                          src={`${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://192.168.1.7:3001'}${exam.questions[currentQuestion].question_image}`}
+                          alt="صورة السؤال"
+                          className="max-w-full max-h-96 object-contain rounded-lg border shadow-sm"
+                          onError={(e) => {
+                            console.error('Failed to load image:', exam.questions[currentQuestion].question_image);
+                            e.currentTarget.style.display = 'none';
+                          }}
                         />
                       </div>
                     )}
@@ -965,93 +974,117 @@ const TakeExam = () => {
                         className="min-h-[200px] mt-2"
                       />
                     </div>
-                    
+
                     <div className="border-t pt-4">
                       <Label className="flex items-center gap-2 mb-2">
                         <Upload className="h-4 w-4" />
                         أو ارفع صورة الإجابة (اختياري)
                       </Label>
-                      <Input
-                        type="url"
-                        value={answerImages[exam.questions[currentQuestion].id] || ''}
-                        onChange={(e) => setAnswerImages({
-                          ...answerImages,
-                          [exam.questions[currentQuestion].id]: e.target.value
-                        })}
-                        placeholder="رابط صورة الإجابة (Google Drive, Imgur, etc.)"
-                      />
-                      {answerImages[exam.questions[currentQuestion].id] && (
-                        <img 
-                          src={answerImages[exam.questions[currentQuestion].id]} 
-                          alt="صورة الإجابة" 
-                          className="mt-2 max-w-sm rounded-lg border"
+                      <div className="flex items-center gap-3">
+                        <Input
+                          type="file"
+                          accept="image/*"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              const formData = new FormData();
+                              formData.append('image', file);
+
+                              try {
+                                const API_URL = import.meta.env.VITE_API_URL || '/api';
+                                const response = await fetch(`${API_URL}/exams/upload-question-image`, {
+                                  method: 'POST',
+                                  body: formData
+                                });
+
+                                const data = await response.json();
+                                if (data.success) {
+                                  setAnswerImages({
+                                    ...answerImages,
+                                    [exam.questions[currentQuestion].id]: data.imageUrl
+                                  });
+                                  toast({ title: 'تم رفع الصورة بنجاح' });
+                                }
+                              } catch (error) {
+                                toast({ title: 'فشل رفع الصورة', variant: 'destructive' });
+                              }
+                            }
+                          }}
+                          className="max-w-xs"
                         />
-                      )}
+                        {answerImages[exam.questions[currentQuestion].id] && (
+                          <img
+                            src={`${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://192.168.1.7:3001'}${answerImages[exam.questions[currentQuestion].id]}`}
+                            alt="صورة الإجابة"
+                            className="h-16 w-16 object-cover rounded border"
+                          />
+                        )}
+                      </div>
                     </div>
                   </div>
                 ) : (
                   // سؤال اختيار من متعدد
-                <RadioGroup
-                  value={answers[exam.questions[currentQuestion].id]?.toString()}
-                  onValueChange={(value) => {
-                    console.log(`Selected answer index: ${value} for question: ${exam.questions[currentQuestion].id}`);
-                    handleAnswerChange(exam.questions[currentQuestion].id, parseInt(value));
-                  }}
-                  className="space-y-3"
-                >
-                  {(() => {
-                    const q = exam.questions[currentQuestion];
-                    const options = q.options;
-                    let optionsArray: string[] = [];
+                  <RadioGroup
+                    value={answers[exam.questions[currentQuestion].id]?.toString()}
+                    onValueChange={(value) => {
+                      console.log(`Selected answer index: ${value} for question: ${exam.questions[currentQuestion].id}`);
+                      handleAnswerChange(exam.questions[currentQuestion].id, parseInt(value));
+                    }}
+                    className="space-y-3"
+                  >
+                    {(() => {
+                      const q = exam.questions[currentQuestion];
+                      const options = q.options;
+                      let optionsArray: string[] = [];
 
-                    console.log(`=== Rendering Question ${currentQuestion + 1} ===`);
-                    console.log('Question object:', q);
-                    console.log('Correct answer stored:', q.correct_answer, 'Type:', typeof q.correct_answer);
+                      console.log(`=== Rendering Question ${currentQuestion + 1} ===`);
+                      console.log('Question object:', q);
+                      console.log('Correct answer stored:', q.correct_answer, 'Type:', typeof q.correct_answer);
 
-                    if (typeof options === 'string') {
-                      try {
-                        const parsed = JSON.parse(options);
-                        // If it's an object like {a: "...", b: "...", c: "...", d: "..."}, convert to array
-                        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                          optionsArray = [parsed.a, parsed.b, parsed.c, parsed.d].filter(Boolean);
-                        } else if (Array.isArray(parsed)) {
-                          optionsArray = parsed;
+                      if (typeof options === 'string') {
+                        try {
+                          const parsed = JSON.parse(options);
+                          // If it's an object like {a: "...", b: "...", c: "...", d: "..."}, convert to array
+                          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                            optionsArray = [parsed.a, parsed.b, parsed.c, parsed.d].filter(Boolean);
+                          } else if (Array.isArray(parsed)) {
+                            optionsArray = parsed;
+                          }
+                        } catch (e) {
+                          console.error('Failed to parse options:', e, options);
+                          optionsArray = [];
                         }
-                      } catch (e) {
-                        console.error('Failed to parse options:', e, options);
-                        optionsArray = [];
+                      } else if (Array.isArray(options)) {
+                        optionsArray = options;
                       }
-                    } else if (Array.isArray(options)) {
-                      optionsArray = options;
-                    }
 
-                    console.log('Rendering options:', optionsArray);
+                      console.log('Rendering options:', optionsArray);
 
-                    if (optionsArray.length === 0) {
-                      return <div className="text-center py-8 text-muted-foreground">لا توجد خيارات متاحة</div>;
-                    }
+                      if (optionsArray.length === 0) {
+                        return <div className="text-center py-8 text-muted-foreground">لا توجد خيارات متاحة</div>;
+                      }
 
-                    return optionsArray.map((option: string, idx: number) => (
-                      <motion.div
-                        key={idx}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: idx * 0.1 }}
-                      >
-                        <Label
-                          htmlFor={`option-${idx}`}
-                          className={`flex items-center gap-3 p-4 rounded-lg border-2 cursor-pointer transition-all hover:bg-accent ${answers[exam.questions[currentQuestion].id] === idx
-                            ? 'border-primary bg-primary/10'
-                            : 'border-border'
-                            }`}
+                      return optionsArray.map((option: string, idx: number) => (
+                        <motion.div
+                          key={idx}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: idx * 0.1 }}
                         >
-                          <RadioGroupItem value={idx.toString()} id={`option-${idx}`} />
-                          <span className="flex-1 text-base">{option}</span>
-                        </Label>
-                      </motion.div>
-                    ));
-                  })()}
-                </RadioGroup>
+                          <Label
+                            htmlFor={`option-${idx}`}
+                            className={`flex items-center gap-3 p-4 rounded-lg border-2 cursor-pointer transition-all hover:bg-accent ${answers[exam.questions[currentQuestion].id] === idx
+                              ? 'border-primary bg-primary/10'
+                              : 'border-border'
+                              }`}
+                          >
+                            <RadioGroupItem value={idx.toString()} id={`option-${idx}`} />
+                            <span className="flex-1 text-base">{option}</span>
+                          </Label>
+                        </motion.div>
+                      ));
+                    })()}
+                  </RadioGroup>
                 )}
               </CardContent>
             </Card>

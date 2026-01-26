@@ -257,11 +257,11 @@ export default function TeacherExams() {
       // Insert questions via Backend API
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
-        
+
         // ✅ Prepare options based on question type
         let options = null;
         let correctAnswer = null;
-        
+
         if (question.question_type === 'multiple_choice') {
           options = JSON.stringify({
             a: question.option_a,
@@ -398,8 +398,8 @@ export default function TeacherExams() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="md:col-span-2">
                       <Label>اختر الدورة *</Label>
-                      <Select 
-                        value={selectedCourse} 
+                      <Select
+                        value={selectedCourse}
                         onValueChange={(value) => {
                           setSelectedCourse(value);
                           // Reset grade and groups when course changes
@@ -425,8 +425,8 @@ export default function TeacherExams() {
 
                     <div className="md:col-span-2">
                       <Label>الصف الدراسي *</Label>
-                      <Select 
-                        value={examData.grade_id} 
+                      <Select
+                        value={examData.grade_id}
                         onValueChange={(value) => {
                           setExamData({ ...examData, grade_id: value });
                           // Reset groups when grade changes
@@ -565,9 +565,9 @@ export default function TeacherExams() {
                       {/* ✅ Question Type Selection */}
                       <div>
                         <Label>نوع السؤال *</Label>
-                        <Select 
-                          value={currentQuestion.question_type} 
-                          onValueChange={(value: 'multiple_choice' | 'essay') => 
+                        <Select
+                          value={currentQuestion.question_type}
+                          onValueChange={(value: 'multiple_choice' | 'essay') =>
                             setCurrentQuestion({ ...currentQuestion, question_type: value })
                           }
                         >
@@ -581,96 +581,124 @@ export default function TeacherExams() {
                         </Select>
                       </div>
 
+                      {/* Question Text */}
                       <div>
                         <Label>نص السؤال *</Label>
                         <Textarea
                           value={currentQuestion.question_text}
                           onChange={(e) => setCurrentQuestion({ ...currentQuestion, question_text: e.target.value })}
                           placeholder="اكتب السؤال هنا..."
-                          rows={2}
+                          rows={3}
                         />
                       </div>
 
                       {/* ✅ Question Image Upload */}
                       <div>
                         <Label>صورة السؤال (اختياري)</Label>
-                        <Input
-                          type="url"
-                          value={currentQuestion.question_image || ''}
-                          onChange={(e) => setCurrentQuestion({ ...currentQuestion, question_image: e.target.value })}
-                          placeholder="رابط صورة السؤال (Google Drive, Imgur, etc.)"
-                        />
-                        <p className="text-xs text-muted-foreground mt-1">
-                          يمكنك رفع الصورة على Google Drive أو Imgur ولصق الرابط هنا
-                        </p>
+                        <div className="flex items-center gap-3">
+                          <Input
+                            type="file"
+                            accept="image/*"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                const formData = new FormData();
+                                formData.append('image', file);
+
+                                try {
+                                  const response = await fetch(`${API_URL}/exams/upload-question-image`, {
+                                    method: 'POST',
+                                    body: formData
+                                  });
+
+                                  const data = await response.json();
+                                  if (data.success) {
+                                    setCurrentQuestion({ ...currentQuestion, question_image: data.imageUrl });
+                                    toast({ title: 'تم رفع الصورة بنجاح' });
+                                  }
+                                } catch (error) {
+                                  toast({ title: 'فشل رفع الصورة', variant: 'destructive' });
+                                }
+                              }
+                            }}
+                            className="max-w-xs"
+                          />
+                          {currentQuestion.question_image && (
+                            <img
+                              src={`${import.meta.env.VITE_API_URL?.replace('/api', '')}${currentQuestion.question_image}`}
+                              alt="Preview"
+                              className="h-16 w-16 object-cover rounded border"
+                            />
+                          )}
+                        </div>
                       </div>
 
                       {/* ✅ Show options only for multiple choice */}
                       {currentQuestion.question_type === 'multiple_choice' && (
                         <>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div>
-                          <Label>الخيار أ *</Label>
-                          <Input
-                            value={currentQuestion.option_a}
-                            onChange={(e) => setCurrentQuestion({ ...currentQuestion, option_a: e.target.value })}
-                            placeholder="الخيار الأول"
-                          />
-                        </div>
-                        <div>
-                          <Label>الخيار ب *</Label>
-                          <Input
-                            value={currentQuestion.option_b}
-                            onChange={(e) => setCurrentQuestion({ ...currentQuestion, option_b: e.target.value })}
-                            placeholder="الخيار الثاني"
-                          />
-                        </div>
-                        <div>
-                          <Label>الخيار ج</Label>
-                          <Input
-                            value={currentQuestion.option_c}
-                            onChange={(e) => setCurrentQuestion({ ...currentQuestion, option_c: e.target.value })}
-                            placeholder="الخيار الثالث"
-                          />
-                        </div>
-                        <div>
-                          <Label>الخيار د</Label>
-                          <Input
-                            value={currentQuestion.option_d}
-                            onChange={(e) => setCurrentQuestion({ ...currentQuestion, option_d: e.target.value })}
-                            placeholder="الخيار الرابع"
-                          />
-                        </div>
-                      </div>
+                            <div>
+                              <Label>الخيار أ *</Label>
+                              <Input
+                                value={currentQuestion.option_a}
+                                onChange={(e) => setCurrentQuestion({ ...currentQuestion, option_a: e.target.value })}
+                                placeholder="الخيار الأول"
+                              />
+                            </div>
+                            <div>
+                              <Label>الخيار ب *</Label>
+                              <Input
+                                value={currentQuestion.option_b}
+                                onChange={(e) => setCurrentQuestion({ ...currentQuestion, option_b: e.target.value })}
+                                placeholder="الخيار الثاني"
+                              />
+                            </div>
+                            <div>
+                              <Label>الخيار ج</Label>
+                              <Input
+                                value={currentQuestion.option_c}
+                                onChange={(e) => setCurrentQuestion({ ...currentQuestion, option_c: e.target.value })}
+                                placeholder="الخيار الثالث"
+                              />
+                            </div>
+                            <div>
+                              <Label>الخيار د</Label>
+                              <Input
+                                value={currentQuestion.option_d}
+                                onChange={(e) => setCurrentQuestion({ ...currentQuestion, option_d: e.target.value })}
+                                placeholder="الخيار الرابع"
+                              />
+                            </div>
+                          </div>
 
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <Label>الإجابة الصحيحة *</Label>
-                          <Select
-                            value={currentQuestion.correct_answer || 'a'}
-                            onValueChange={(value) => setCurrentQuestion({ ...currentQuestion, correct_answer: value as 'a' | 'b' | 'c' | 'd' })}
-                          >
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="a">الخيار أ</SelectItem>
-                              <SelectItem value="b">الخيار ب</SelectItem>
-                              <SelectItem value="c">الخيار ج</SelectItem>
-                              <SelectItem value="d">الخيار د</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div>
-                          <Label>درجة السؤال *</Label>
-                          <Input
-                            type="number"
-                            value={currentQuestion.marks}
-                            onChange={(e) => setCurrentQuestion({ ...currentQuestion, marks: parseInt(e.target.value) })}
-                            min="1"
-                          />
-                        </div>
-                      </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <Label>الإجابة الصحيحة *</Label>
+                              <Select
+                                value={currentQuestion.correct_answer || 'a'}
+                                onValueChange={(value) => setCurrentQuestion({ ...currentQuestion, correct_answer: value as 'a' | 'b' | 'c' | 'd' })}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="a">الخيار أ</SelectItem>
+                                  <SelectItem value="b">الخيار ب</SelectItem>
+                                  <SelectItem value="c">الخيار ج</SelectItem>
+                                  <SelectItem value="d">الخيار د</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div>
+                              <Label>درجة السؤال *</Label>
+                              <Input
+                                type="number"
+                                value={currentQuestion.marks}
+                                onChange={(e) => setCurrentQuestion({ ...currentQuestion, marks: parseInt(e.target.value) })}
+                                min="1"
+                              />
+                            </div>
+                          </div>
                         </>
                       )}
 
@@ -687,7 +715,7 @@ export default function TeacherExams() {
                         </div>
                       )}
 
-                    <Button
+                      <Button
                         type="button"
                         onClick={addQuestion}
                         variant="outline"
@@ -716,8 +744,8 @@ export default function TeacherExams() {
                                 </span>
                               </div>
                               <p className="text-sm text-muted-foreground mt-1">
-                                {q.question_type === 'multiple_choice' && q.correct_answer 
-                                  ? `الإجابة: ${q.correct_answer.toUpperCase()} | ` 
+                                {q.question_type === 'multiple_choice' && q.correct_answer
+                                  ? `الإجابة: ${q.correct_answer.toUpperCase()} | `
                                   : ''}
                                 الدرجة: {q.marks}
                               </p>

@@ -1,7 +1,40 @@
 import { Router, Request, Response } from 'express';
 import { query, queryOne, execute } from '../db';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
 
 const router = Router();
+
+// Setup multer for question image uploads
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const uploadDir = path.join(__dirname, '../../uploads/questions');
+        if (!fs.existsSync(uploadDir)) {
+            fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        cb(null, uploadDir);
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, 'question-' + uniqueSuffix + path.extname(file.originalname));
+    }
+});
+
+const upload = multer({
+    storage: storage,
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = /jpeg|jpg|png|gif|webp/;
+        const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+        const mimetype = allowedTypes.test(file.mimetype);
+        if (extname && mimetype) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only image files are allowed'));
+        }
+    }
+});
 
 // ✅ Get exams for a specific student based on their group
 router.get('/student/:userId', async (req: Request, res: Response) => {
@@ -211,23 +244,23 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
-        // Extract just the date part for exam_date
+        // Extract date and keep full datetime for start_time/end_time since they are DATETIME columns
         const examDateOnly = finalStartTime ? finalStartTime.split(' ')[0] : null;
 
         const result = await execute(
             `INSERT INTO exams (id, title, description, course_id, grade_id, duration_minutes, total_marks, passing_marks, exam_date, start_time, end_time, is_active, is_published, created_at, updated_at)
-             VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, DATE(?), TIME(?), TIME(?), ?, 1, NOW(), NOW())`,
+             VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW())`,
             [
                 title,
                 description ?? null,
                 course_id,
-                grade_id ?? null,  // ✅ Include grade_id
+                grade_id ?? null,
                 duration_minutes,
                 total_marks,
                 passing_marks ?? null,
                 examDateOnly,
-                finalStartTime,
-                finalEndTime,
+                finalStartTime,  // Keep full datetime
+                finalEndTime,    // Keep full datetime
                 is_active
             ]
         );
@@ -262,54 +295,113 @@ router.put('/:id', async (req: Request, res: Response) => {
             title,
             description,
             duration_minutes,
+            duration, // Support both duration and duration_minutes
             total_marks,
             passing_marks,
             start_time,
             end_time,
             start_date, // optional ISO
             end_date,   // optional ISO
-            is_active
+            is_active,
+            course_id,
+            grade_id,
+            group_id
         } = req.body;
+
+        console.log('📝 UPDATE EXAM REQUEST:', {
+            id: req.params.id,
+            title,
+            course_id,
+            grade_id,
+            group_id,
+            start_time,
+            end_time,
+            duration
+        });
 
         // Normalize incoming date/time (support start_date/end_date from UI) — keep local values as provided
         const finalStart = start_time || start_date || null;
         const finalEnd = end_time || end_date || null;
+        const finalDuration = duration || duration_minutes || null;
 
-        const result = await execute(
-            `UPDATE exams 
-             SET title = COALESCE(?, title),
-                 description = COALESCE(?, description),
-                 duration_minutes = COALESCE(?, duration_minutes),
-                 total_marks = COALESCE(?, total_marks),
-                 passing_marks = COALESCE(?, passing_marks),
-                 exam_date = COALESCE(DATE(?), exam_date),
-                 start_time = COALESCE(TIME(?), start_time),
-                 end_time = COALESCE(TIME(?), end_time),
-                 is_active = COALESCE(?, is_active),
-                 updated_at = NOW()
-             WHERE id = ?`,
-            [
-                title ?? null,
-                description ?? null,
-                duration_minutes ?? null,
-                total_marks ?? null,
-                passing_marks ?? null,
-                finalStart ?? null,
-                finalStart ?? null,
-                finalEnd ?? null,
-                is_active ?? null,
-                req.params.id
-            ]
-        );
+        // Build UPDATE query dynamically to only update provided fields
+        const updates: string[] = [];
+        const values: any[] = [];
+
+        if (title !== undefined) {
+            updates.push('title = ?');
+            values.push(title);
+        }
+        if (description !== undefined) {
+            updates.push('description = ?');
+            values.push(description);
+        }
+        if (finalDuration !== undefined && finalDuration !== null) {
+            updates.push('duration_minutes = ?');
+            values.push(finalDuration);
+        }
+        if (total_marks !== undefined) {
+            updates.push('total_marks = ?');
+            values.push(total_marks);
+        }
+        if (passing_marks !== undefined) {
+            updates.push('passing_marks = ?');
+            values.push(passing_marks);
+        }
+        if (finalStart !== undefined) {
+            updates.push('start_time = ?');
+            values.push(finalStart);
+            if (finalStart) {
+                updates.push('exam_date = DATE(?)');
+                values.push(finalStart);
+            }
+        }
+        if (finalEnd !== undefined) {
+            updates.push('end_time = ?');
+            values.push(finalEnd);
+        }
+        if (is_active !== undefined) {
+            updates.push('is_active = ?');
+            values.push(is_active);
+        }
+        if (course_id !== undefined) {
+            updates.push('course_id = ?');
+            values.push(course_id);
+        }
+        if (grade_id !== undefined) {
+            updates.push('grade_id = ?');
+            values.push(grade_id);
+        }
+        if (group_id !== undefined) {
+            updates.push('group_id = ?');
+            values.push(group_id);
+        }
+
+        updates.push('updated_at = NOW()');
+        values.push(req.params.id);
+
+        if (updates.length === 1) {
+            return res.status(400).json({ error: 'No fields to update' });
+        }
+
+        const query = `UPDATE exams SET ${updates.join(', ')} WHERE id = ?`;
+        console.log('🔧 UPDATE QUERY:', query);
+        console.log('📊 VALUES:', values);
+
+        const result = await execute(query, values);
 
         if (result.affectedRows === 0) {
             return res.status(404).json({ error: 'Exam not found' });
         }
 
+        console.log('✅ UPDATE RESULT:', result);
+
         const updatedExam = await queryOne<Exam>(
             'SELECT * FROM exams WHERE id = ?',
             [req.params.id]
         );
+
+        console.log('✅ UPDATED EXAM:', updatedExam);
 
         res.json(updatedExam);
     } catch (error) {
@@ -334,6 +426,26 @@ router.delete('/:id', async (req: Request, res: Response) => {
     } catch (error) {
         console.error('Delete exam error:', error);
         res.status(500).json({ error: 'Failed to delete exam' });
+    }
+});
+
+// Upload question image
+router.post('/upload-question-image', upload.single('image'), async (req: Request, res: Response) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No image file provided' });
+        }
+
+        const imageUrl = `/uploads/questions/${req.file.filename}`;
+
+        res.json({
+            success: true,
+            imageUrl: imageUrl,
+            filename: req.file.filename
+        });
+    } catch (error) {
+        console.error('Error uploading question image:', error);
+        res.status(500).json({ error: 'Failed to upload image' });
     }
 });
 
@@ -365,27 +477,33 @@ router.post('/:examId/questions', async (req: Request, res: Response) => {
     try {
         const {
             question_text,
+            question_image,  // ✅ Accept image URL
             question_type,
             options,
             correct_answer,
             marks,
+            points,  // ✅ Accept both marks and points
             display_order
         } = req.body;
 
-        if (!question_text || !question_type || !marks) {
+        const finalPoints = points || marks;  // ✅ Use points if provided, fallback to marks
+
+        if (!question_text || !question_type || !finalPoints) {
+            console.error('❌ Missing required fields:', { question_text, question_type, points: finalPoints });
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
         await execute(
-            `INSERT INTO exam_questions (id, exam_id, question_text, question_type, options, correct_answer, points, display_order, created_at)
-             VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, NOW())`,
+            `INSERT INTO exam_questions (id, exam_id, question_text, question_image, question_type, options, correct_answer, points, display_order, created_at)
+             VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
             [
                 req.params.examId,
                 question_text,
+                question_image ?? null,  // ✅ Save image URL
                 question_type,
                 options ?? null,
                 correct_answer ?? null,
-                marks,
+                finalPoints,
                 display_order ?? 0
             ]
         );
@@ -681,7 +799,7 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
         }
 
         // Normalize passing marks (percentage vs absolute)
-        let rawPassing: number = Number(exam.passing_marks) || 0;
+        const rawPassing: number = Number(exam.passing_marks) || 0;
         let passingMarks = rawPassing;
         if (totalMarks > 0 && rawPassing > totalMarks && rawPassing <= 100) {
             passingMarks = Math.ceil((rawPassing / 100) * totalMarks);

@@ -80,6 +80,9 @@ app.get('/health', (req: Request, res: Response) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Serve uploaded files
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/groups', groupsRoutes);
@@ -142,7 +145,7 @@ const startServer = async () => {
             console.warn('⚠️ SKIP_DB_ON_START is set — skipping DB connectivity check (dev only)');
         }
 
-        const server = httpServer.listen(PORT, '0.0.0.0', () => {
+        const server = httpServer.listen(Number(PORT), '0.0.0.0', () => {
             console.log(`
 ╔════════════════════════════════════════════════╗
 ║                                                ║

@@ -68,7 +68,6 @@ const App = () => (
             <Route path="/login" element={<Auth />} />
             <Route path="/test-video" element={<TestVideo />} />
 
-<<<<<<< HEAD
             {/* Teacher Routes - Protected */}
             <Route path="/teacher" element={<AuthGuard requiredRole="teacher"><TeacherDashboard /></AuthGuard>} />
             <Route path="/courses" element={<AuthGuard requiredRole="teacher"><Courses /></AuthGuard>} />
@@ -96,40 +95,10 @@ const App = () => (
             <Route path="/teacher-content-manager" element={<AuthGuard requiredRole="teacher"><TeacherContentManager /></AuthGuard>} />
             <Route path="/teacher-lectures" element={<AuthGuard requiredRole="teacher"><TeacherLectures /></AuthGuard>} />
             <Route path="/teacher-exams" element={<AuthGuard requiredRole="teacher"><TeacherExams /></AuthGuard>} />
+            <Route path="/teacher/exams/:examId/edit" element={<AuthGuard requiredRole="teacher"><EditExam /></AuthGuard>} />
             <Route path="/exam-reports/:examId" element={<AuthGuard requiredRole="teacher"><ExamReports /></AuthGuard>} />
             <Route path="/exam-results" element={<AuthGuard requiredRole="teacher"><ExamResults /></AuthGuard>} />
             <Route path="/chat-assistant" element={<AuthGuard requiredRole="teacher"><ChatAssistant /></AuthGuard>} />
-=======
-          {/* Teacher Routes - Protected */}
-          <Route path="/teacher" element={<AuthGuard requiredRole="teacher"><TeacherDashboard /></AuthGuard>} />
-          <Route path="/courses" element={<AuthGuard requiredRole="teacher"><Courses /></AuthGuard>} />
-          <Route path="/students" element={<AuthGuard requiredRole="teacher"><Students /></AuthGuard>} />
-          <Route path="/offline-students" element={<AuthGuard requiredRole="teacher"><OfflineStudents /></AuthGuard>} />
-          <Route path="/registration-requests" element={<AuthGuard requiredRole="teacher"><StudentRegistrationRequests /></AuthGuard>} />
-          <Route path="/subscriptions" element={<AuthGuard requiredRole="teacher"><Subscriptions /></AuthGuard>} />
-          <Route path="/groups" element={<AuthGuard requiredRole="teacher"><Groups /></AuthGuard>} />
-          <Route path="/grades" element={<AuthGuard requiredRole="teacher"><Grades /></AuthGuard>} />
-          <Route path="/attendance" element={<AuthGuard requiredRole="teacher"><Attendance /></AuthGuard>} />
-          <Route path="/barcode-attendance" element={<AuthGuard requiredRole="teacher"><BarcodeAttendance /></AuthGuard>} />
-          <Route path="/attendance-log" element={<AuthGuard requiredRole="teacher"><AttendanceLog /></AuthGuard>} />
-          <Route path="/student-payments" element={<AuthGuard requiredRole="teacher"><StudentPayments /></AuthGuard>} />
-          <Route path="/fees" element={<AuthGuard requiredRole="teacher"><Fees /></AuthGuard>} />
-          <Route path="/messages" element={<AuthGuard requiredRole="teacher"><Messages /></AuthGuard>} />
-          <Route path="/reports" element={<AuthGuard requiredRole="teacher"><Reports /></AuthGuard>} />
-          <Route path="/expenses" element={<AuthGuard requiredRole="teacher"><Expenses /></AuthGuard>} />
-          <Route path="/account-statement" element={<AuthGuard requiredRole="teacher"><AccountStatement /></AuthGuard>} />
-          <Route path="/imports" element={<AuthGuard requiredRole="teacher"><Imports /></AuthGuard>} />
-          <Route path="/student-barcodes" element={<AuthGuard requiredRole="teacher"><StudentBarcodes /></AuthGuard>} />
-          <Route path="/profits" element={<AuthGuard requiredRole="teacher"><Profits /></AuthGuard>} />
-          <Route path="/staff" element={<AuthGuard requiredRole="teacher"><Staff /></AuthGuard>} />
-          <Route path="/online-meeting" element={<AuthGuard requiredRole="teacher"><OnlineMeeting /></AuthGuard>} />
-          <Route path="/course-content" element={<AuthGuard requiredRole="teacher"><CourseContentManager /></AuthGuard>} />
-          <Route path="/teacher-content-manager" element={<AuthGuard requiredRole="teacher"><TeacherContentManager /></AuthGuard>} />
-          <Route path="/teacher-lectures" element={<AuthGuard requiredRole="teacher"><TeacherLectures /></AuthGuard>} />
-          <Route path="/teacher-exams" element={<AuthGuard requiredRole="teacher"><TeacherExams /></AuthGuard>} />          <Route path="/teacher/exams/:examId/edit" element={<AuthGuard requiredRole="teacher"><EditExam /></AuthGuard>} />          <Route path="/exam-reports/:examId" element={<AuthGuard requiredRole="teacher"><ExamReports /></AuthGuard>} />
-          <Route path="/exam-results" element={<AuthGuard requiredRole="teacher"><ExamResults /></AuthGuard>} />
-          <Route path="/chat-assistant" element={<AuthGuard requiredRole="teacher"><ChatAssistant /></AuthGuard>} />
->>>>>>> 2893c21278d72314f0049c104b144fd51a897955
 
             {/* Student Routes - Protected */}
             <Route path="/student" element={<AuthGuard requiredRole="student"><StudentDashboard /></AuthGuard>} />
