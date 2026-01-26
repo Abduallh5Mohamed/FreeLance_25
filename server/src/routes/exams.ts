@@ -646,15 +646,19 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
         const startTime = exam?.start_time ? new Date(exam.start_time) : null;
         const endTime = exam?.end_time ? new Date(exam.end_time) : null;
 
+        // Check if dates are valid before using them
+        const isValidStartTime = startTime && !isNaN(startTime.getTime());
+        const isValidEndTime = endTime && !isNaN(endTime.getTime());
+
         console.log('🕐 Time Check:');
         console.log('  Current time:', now.toISOString(), '(Local:', now.toLocaleString('ar-EG'), ')');
-        console.log('  Start time:', startTime ? startTime.toISOString() : 'N/A', startTime ? `(Local: ${startTime.toLocaleString('ar-EG')})` : '');
-        console.log('  End time:', endTime ? endTime.toISOString() : 'N/A', endTime ? `(Local: ${endTime.toLocaleString('ar-EG')})` : '');
-        console.log('  Now < Start?', !!(startTime && now < startTime));
-        console.log('  Now > End?', !!(endTime && now > endTime));
+        console.log('  Start time:', isValidStartTime ? startTime.toISOString() : 'Invalid/N/A', isValidStartTime ? `(Local: ${startTime.toLocaleString('ar-EG')})` : '');
+        console.log('  End time:', isValidEndTime ? endTime.toISOString() : 'Invalid/N/A', isValidEndTime ? `(Local: ${endTime.toLocaleString('ar-EG')})` : '');
+        console.log('  Now < Start?', !!(isValidStartTime && now < startTime));
+        console.log('  Now > End?', !!(isValidEndTime && now > endTime));
 
         // If schedule missing/invalid, allow attempt (treat as always-open exam)
-        if (!startTime || !endTime || isNaN(startTime.getTime()) || isNaN(endTime.getTime())) {
+        if (!isValidStartTime || !isValidEndTime) {
             return res.json({
                 canAttempt: true,
                 reason: 'no_schedule',
@@ -773,8 +777,26 @@ router.post('/:examId/start/:studentId', async (req: Request, res: Response) => 
 // Submit exam attempt
 router.post('/:examId/submit/:studentId', async (req: Request, res: Response) => {
     try {
-        const { examId, studentId } = req.params;
+        const { examId, studentId: userId } = req.params;
         const { answers, score, essayAnswers, answerImages } = req.body;  // ✅ دعم الإجابات المقالية وصور الإجابات
+
+        // Get the actual student_id from users table (could be user.id or user.student_id)
+        // First check if userId is a user with student_id, otherwise use userId directly
+        const userRow = await queryOne<any>(
+            'SELECT id, student_id FROM users WHERE id = ?',
+            [userId]
+        );
+        
+        // Determine the correct student_id for exam_results table
+        // exam_attempts uses user.id, but exam_results needs students.id (foreign key)
+        let actualStudentId = userId; // For exam_attempts (uses user.id)
+        let resultsStudentId = userRow?.student_id || userId; // For exam_results (needs students.id)
+        
+        // Verify the student exists in students table for exam_results
+        const studentExists = await queryOne<any>(
+            'SELECT id FROM students WHERE id = ?',
+            [resultsStudentId]
+        );
 
         // Get exam info for total_marks
         const exam = await queryOne<any>(
@@ -814,31 +836,37 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
             images: answerImages || {}
         };
 
-        // Update exam_attempts table
+        // Update exam_attempts table (uses user.id as student_id)
         await execute(
             `UPDATE exam_attempts 
              SET status = ?, 
                  completed_at = NOW(),
                  score = ?,
+                 total_marks = ?,
                  answers = ?
              WHERE exam_id = ? AND student_id = ?`,
-            [passed ? 'passed' : 'failed', score ?? null, JSON.stringify(allAnswers), examId, studentId]
+            [passed ? 'passed' : 'failed', score ?? null, totalMarks, JSON.stringify(allAnswers), examId, actualStudentId]
         );
 
         // Insert or update exam_results table for the results page
-        await execute(
-            `INSERT INTO exam_results (exam_id, student_id, marks_obtained, total_marks, submitted_at)
-             VALUES (?, ?, ?, ?, NOW())
-             ON DUPLICATE KEY UPDATE 
-                marks_obtained = VALUES(marks_obtained),
-                total_marks = VALUES(total_marks),
-                submitted_at = VALUES(submitted_at)`,
-            [examId, studentId, score ?? 0, totalMarks]
-        );
+        // Only insert if we have a valid student in students table
+        if (studentExists) {
+            await execute(
+                `INSERT INTO exam_results (exam_id, student_id, marks_obtained, total_marks, submitted_at)
+                 VALUES (?, ?, ?, ?, NOW())
+                 ON DUPLICATE KEY UPDATE 
+                    marks_obtained = VALUES(marks_obtained),
+                    total_marks = VALUES(total_marks),
+                    submitted_at = VALUES(submitted_at)`,
+                [examId, resultsStudentId, score ?? 0, totalMarks]
+            );
+        } else {
+            console.log(`Warning: No student record found for user ${userId}, skipping exam_results insert`);
+        }
 
         const updatedAttempt = await queryOne(
             'SELECT * FROM exam_attempts WHERE exam_id = ? AND student_id = ?',
-            [examId, studentId]
+            [examId, actualStudentId]
         );
 
         res.json({ ...updatedAttempt, total_marks: totalMarks, passing_marks: passingMarks, passed });

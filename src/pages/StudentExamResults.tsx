@@ -1,7 +1,9 @@
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Trophy, CheckCircle2, XCircle, Clock, Calendar, FileText, TrendingUp, Award } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Trophy, CheckCircle2, XCircle, Clock, Calendar, FileText, TrendingUp, Award, Download } from "lucide-react";
+import jsPDF from 'jspdf';
 import StudentHeader from "@/components/StudentHeader";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
@@ -134,12 +136,95 @@ const StudentExamResults = () => {
     return 'ضعيف';
   };
 
+  const [generatingPDF, setGeneratingPDF] = useState<string | null>(null);
+
   const averageScore = examResults.length > 0
     ? examResults.reduce((sum, result) => sum + result.percentage, 0) / examResults.length
     : 0;
 
   const passedExams = examResults.filter(r => r.passed).length;
   const totalExams = examResults.length;
+
+  // Generate PDF for a specific result
+  const generateResultPDF = async (result: ExamResult) => {
+    setGeneratingPDF(result.id);
+    try {
+      const doc = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4'
+      });
+
+      // Get student name from localStorage
+      const userStr = localStorage.getItem('currentUser');
+      const user = userStr ? JSON.parse(userStr) : null;
+      const studentName = user?.name || 'طالب';
+
+      // Arabic font setup
+      doc.setFont('helvetica', 'bold');
+      
+      // Header
+      doc.setFillColor(59, 130, 246);
+      doc.rect(0, 0, 210, 40, 'F');
+      
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(24);
+      doc.text('Exam Result Certificate', 105, 25, { align: 'center' });
+      
+      // Student info
+      doc.setTextColor(0, 0, 0);
+      doc.setFontSize(14);
+      doc.text(`Student: ${studentName}`, 20, 55);
+      doc.text(`Exam: ${result.exam_title}`, 20, 65);
+      doc.text(`Date: ${new Date(result.attempted_at).toLocaleDateString('en-US')}`, 20, 75);
+      
+      // Score box
+      const passed = result.passed;
+      doc.setFillColor(passed ? 34 : 239, passed ? 197 : 68, passed ? 94 : 68);
+      doc.roundedRect(50, 90, 110, 50, 5, 5, 'F');
+      
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(32);
+      doc.text(`${result.score} / ${result.total_marks}`, 105, 115, { align: 'center' });
+      doc.setFontSize(16);
+      doc.text(`${result.percentage.toFixed(1)}%`, 105, 130, { align: 'center' });
+      
+      // Status
+      doc.setTextColor(0, 0, 0);
+      doc.setFontSize(20);
+      doc.text(passed ? 'PASSED' : 'FAILED', 105, 160, { align: 'center' });
+      
+      // Grade
+      doc.setFontSize(16);
+      doc.text(`Grade: ${getGradeLabel(result.percentage)}`, 105, 175, { align: 'center' });
+      
+      // Passing mark info
+      doc.setFontSize(12);
+      doc.setTextColor(100, 100, 100);
+      doc.text(`Passing Score: ${result.passing_marks}`, 105, 190, { align: 'center' });
+      
+      // Footer
+      doc.setFontSize(10);
+      doc.text('Al-Qaed Educational Platform', 105, 280, { align: 'center' });
+      
+      // Save
+      doc.save(`exam-result-${result.exam_title.replace(/\s+/g, '-')}.pdf`);
+      
+      toast({
+        title: "تم التحميل",
+        description: "تم تحميل شهادة نتيجة الامتحان بنجاح",
+      });
+    } catch (error) {
+      console.error('PDF generation error:', error);
+      toast({
+        variant: "destructive",
+        title: "خطأ",
+        description: "فشل إنشاء ملف PDF",
+      });
+    } finally {
+      setGeneratingPDF(null);
+    }
+  };
 
   if (loading) {
     return (
@@ -320,6 +405,20 @@ const StudentExamResults = () => {
                       <div className="text-center text-xs text-muted-foreground pt-2 border-t">
                         درجة النجاح: {result.passing_marks}
                       </div>
+
+                      {/* Download PDF Button */}
+                      <Button
+                        onClick={() => generateResultPDF(result)}
+                        disabled={generatingPDF === result.id}
+                        className="w-full mt-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+                      >
+                        {generatingPDF === result.id ? (
+                          <Clock className="w-4 h-4 ml-2 animate-spin" />
+                        ) : (
+                          <Download className="w-4 h-4 ml-2" />
+                        )}
+                        {generatingPDF === result.id ? 'جاري التحميل...' : 'تحميل النتيجة PDF'}
+                      </Button>
                     </CardContent>
                   </Card>
                 </motion.div>

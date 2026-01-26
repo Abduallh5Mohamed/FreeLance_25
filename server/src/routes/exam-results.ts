@@ -79,6 +79,11 @@ router.get('/student/:studentId', async (req: Request, res: Response) => {
     try {
         const { studentId } = req.params;
 
+        // The studentId could be a user.id or a student.id
+        // First check if it's a user.id and get the linked student_id
+        const userRow = await query<any>('SELECT student_id FROM users WHERE id = ?', [studentId]);
+        const actualStudentId = userRow?.[0]?.student_id || studentId;
+
         const sql = `
             SELECT 
                 er.id,
@@ -97,11 +102,11 @@ router.get('/student/:studentId', async (req: Request, res: Response) => {
                 er.remarks AS feedback
             FROM exam_results er
             INNER JOIN exams e ON e.id = er.exam_id
-            WHERE er.student_id = ?
+            WHERE er.student_id = ? OR er.student_id = ?
             ORDER BY er.submitted_at DESC
         `;
 
-        const results = await query<ExamResult>(sql, [studentId]);
+        const results = await query<ExamResult>(sql, [studentId, actualStudentId]);
         res.json(results);
     } catch (error) {
         console.error('Get student exam results error:', error);

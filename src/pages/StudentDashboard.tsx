@@ -3,7 +3,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { BookOpen, FileText, Clock, Calendar, Download, Play, Eye, MessageSquare, Award, Users, Calendar as CalendarIcon, Sparkles, TrendingUp, Trophy, Target, ClipboardCheck } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { BookOpen, FileText, Clock, Calendar, Download, Play, Eye, MessageSquare, Award, Users, Calendar as CalendarIcon, Sparkles, TrendingUp, Trophy, Target, ClipboardCheck, Search } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
 import { useNavigate } from "react-router-dom";
 import { getStudents, getCourses, getGroups, getMaterials, getStudentMaterials, getStudentExams, getStudentExamResults, Student, User, Course } from "@/lib/api";
@@ -26,6 +28,10 @@ const StudentDashboard = () => {
   const [groupInfo, setGroupInfo] = useState(null);
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
+  
+  // Filter states
+  const [selectedExam, setSelectedExam] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState("");
 
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -178,6 +184,19 @@ const StudentDashboard = () => {
     if (percentage >= 60) return 'جيد';
     return 'مقبول';
   };
+
+  // Filter exam results based on selected exam and search query
+  const filteredExamResults = examResults.filter((result) => {
+    // Filter by selected exam
+    const examFilter = selectedExam === "all" || result.exam_id?.toString() === selectedExam;
+    
+    // Filter by search query (search in exam title and course name)
+    const searchFilter = !searchQuery || 
+      result.exams?.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      result.exams?.courses?.name?.toLowerCase().includes(searchQuery.toLowerCase());
+    
+    return examFilter && searchFilter;
+  });
 
   if (loading) {
     return (
@@ -523,11 +542,51 @@ const StudentDashboard = () => {
                   <Award className="w-4 h-4 md:w-5 md:h-5" />
                   <span className="text-sm md:text-base">نتائج الامتحانات</span>
                 </CardTitle>
+                <p className="text-xs text-muted-foreground mt-1">
+                  عرض ومتابعة درجات الطالب
+                </p>
               </CardHeader>
               <CardContent>
+                {/* Filters Section */}
+                <div className="mb-4 space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {/* Search by name */}
+                    <div className="relative">
+                      <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
+                      <Input
+                        type="text"
+                        placeholder="ابحث بالاسم أو الامتحان..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="pr-10"
+                      />
+                    </div>
+                    
+                    {/* Filter by exam */}
+                    <Select value={selectedExam} onValueChange={setSelectedExam}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="اختر امتحان محدد" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">كل الامتحانات</SelectItem>
+                        {exams.map((exam) => (
+                          <SelectItem key={exam.id} value={exam.id.toString()}>
+                            {exam.title}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  
+                  {/* Results count */}
+                  <div className="text-xs text-muted-foreground text-center">
+                    عرض {filteredExamResults.length} من {examResults.length} نتيجة
+                  </div>
+                </div>
+
                 <div className="space-y-2 md:space-y-3">
-                  {examResults.length > 0 ? (
-                    examResults.slice(0, 5).map((result) => {
+                  {filteredExamResults.length > 0 ? (
+                    filteredExamResults.map((result) => {
                       const percentage = (result.marks_obtained / result.exams?.total_marks) * 100;
                       return (
                         <Card key={result.id} className="p-3 md:p-4">
@@ -563,9 +622,27 @@ const StudentDashboard = () => {
                       );
                     })
                   ) : (
-                    <p className="text-center text-muted-foreground py-8">
-                      لا توجد نتائج امتحانات بعد
-                    </p>
+                    <div className="text-center text-muted-foreground py-8">
+                      {examResults.length === 0 ? (
+                        <p>لا توجد نتائج امتحانات بعد</p>
+                      ) : (
+                        <div className="space-y-2">
+                          <Award className="w-12 h-12 mx-auto text-muted-foreground/50" />
+                          <p>لا توجد نتائج</p>
+                          <Button 
+                            variant="outline" 
+                            size="sm"
+                            onClick={() => {
+                              setSelectedExam("all");
+                              setSearchQuery("");
+                            }}
+                            className="mt-2"
+                          >
+                            إعادة تعيين الفلاتر
+                          </Button>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               </CardContent>

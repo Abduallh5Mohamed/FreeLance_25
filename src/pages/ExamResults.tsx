@@ -73,6 +73,7 @@ const ExamResults = () => {
   const [selectedGroup, setSelectedGroup] = useState<string>("all");
   const [selectedGrade, setSelectedGrade] = useState<string>("all");
   const [selectedStudent, setSelectedStudent] = useState<string>("all");
+  const [selectedExam, setSelectedExam] = useState<string>("all");
 
   // Check authentication
   useEffect(() => {
@@ -142,9 +143,14 @@ const ExamResults = () => {
         return false;
       }
 
+      // Exam filter
+      if (selectedExam !== "all" && result.exam_id !== selectedExam) {
+        return false;
+      }
+
       return true;
     });
-  }, [results, searchQuery, selectedGroup, selectedGrade, selectedStudent]);
+  }, [results, searchQuery, selectedGroup, selectedGrade, selectedStudent, selectedExam]);
 
   // Get filtered students based on grade and group
   // Build student dropdown options from results (avoids mismatch between users.id and students.id)
@@ -153,6 +159,17 @@ const ExamResults = () => {
     results.forEach(r => {
       if (!map.has(r.student_id)) {
         map.set(r.student_id, { id: r.student_id, name: r.student_name || 'طالب' });
+      }
+    });
+    return Array.from(map.values());
+  }, [results]);
+
+  // Build exam dropdown options from results
+  const availableExams = useMemo(() => {
+    const map = new Map<string, { id: string; title: string }>();
+    results.forEach(r => {
+      if (r.exam_id && !map.has(r.exam_id)) {
+        map.set(r.exam_id, { id: r.exam_id, title: r.exam_title || 'امتحان' });
       }
     });
     return Array.from(map.values());
@@ -197,6 +214,7 @@ const ExamResults = () => {
     setSelectedGroup("all");
     setSelectedGrade("all");
     setSelectedStudent("all");
+    setSelectedExam("all");
   };
 
   if (loading) {
@@ -237,7 +255,7 @@ const ExamResults = () => {
               <CardTitle>الفلاتر والبحث</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
                 {/* Search */}
                 <div className="relative">
                   <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -293,10 +311,25 @@ const ExamResults = () => {
                     ))}
                   </SelectContent>
                 </Select>
+
+                {/* Exam Filter */}
+                <Select value={selectedExam} onValueChange={setSelectedExam}>
+                  <SelectTrigger className="text-right">
+                    <SelectValue placeholder="اختر الامتحان" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">كل الامتحانات</SelectItem>
+                    {availableExams.map((exam) => (
+                      <SelectItem key={exam.id} value={exam.id}>
+                        {exam.title}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               {/* Active filters summary */}
-              {(searchQuery || selectedGroup !== "all" || selectedGrade !== "all" || selectedStudent !== "all") && (
+              {(searchQuery || selectedGroup !== "all" || selectedGrade !== "all" || selectedStudent !== "all" || selectedExam !== "all") && (
                 <div className="mt-4 text-sm text-gray-600">
                   عرض {filteredResults.length} من {results.length} نتيجة
                 </div>

@@ -380,16 +380,7 @@ const TakeExam = () => {
     // Submit attempt to backend with all answer types
     if (examId && studentId) {
       try {
-<<<<<<< HEAD
-        // ✅ Include essay answers and answer images
-        await submitExamAttempt(examId, studentId, {
-          multipleChoice: answers,
-          essayAnswers: essayAnswers,
-          answerImages: answerImages
-        }, examResult.score);
-=======
         await submitExamAttempt(examId, studentId, answers, examResult.score, essayAnswers, answerImages);
->>>>>>> 67094d74cefe28cfaba055cdf05561bb1ef821ba
         console.log('✅ Exam attempt submitted successfully');
       } catch (error) {
         console.error('❌ Failed to submit exam attempt:', error);
@@ -986,48 +977,6 @@ const TakeExam = () => {
                         <Upload className="h-4 w-4" />
                         أو ارفع صورة الإجابة
                       </Label>
-<<<<<<< HEAD
-                      <div className="flex items-center gap-3">
-                        <Input
-                          type="file"
-                          accept="image/*"
-                          onChange={async (e) => {
-                            const file = e.target.files?.[0];
-                            if (file) {
-                              const formData = new FormData();
-                              formData.append('image', file);
-
-                              try {
-                                const API_URL = import.meta.env.VITE_API_URL || '/api';
-                                const response = await fetch(`${API_URL}/exams/upload-question-image`, {
-                                  method: 'POST',
-                                  body: formData
-                                });
-
-                                const data = await response.json();
-                                if (data.success) {
-                                  setAnswerImages({
-                                    ...answerImages,
-                                    [exam.questions[currentQuestion].id]: data.imageUrl
-                                  });
-                                  toast({ title: 'تم رفع الصورة بنجاح' });
-                                }
-                              } catch (error) {
-                                toast({ title: 'فشل رفع الصورة', variant: 'destructive' });
-                              }
-                            }
-                          }}
-                          className="max-w-xs"
-                        />
-                        {answerImages[exam.questions[currentQuestion].id] && (
-                          <img
-                            src={`${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://192.168.1.7:3001'}${answerImages[exam.questions[currentQuestion].id]}`}
-                            alt="صورة الإجابة"
-                            className="h-16 w-16 object-cover rounded border"
-                          />
-                        )}
-                      </div>
-=======
                       
                       {answerImages[exam.questions[currentQuestion].id] ? (
                         <div className="relative inline-block">
@@ -1098,7 +1047,6 @@ const TakeExam = () => {
                           </label>
                         </div>
                       )}
->>>>>>> 67094d74cefe28cfaba055cdf05561bb1ef821ba
                     </div>
                   </div>
                 ) : (

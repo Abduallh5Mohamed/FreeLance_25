@@ -1,6 +1,11 @@
 # Start MinIO Server
 Write-Host "🚀 Starting MinIO Server..." -ForegroundColor Cyan
 
+# Define MinIO paths
+$minioDir = "C:\minio"
+$minioExe = "$minioDir\minio.exe"
+$minioData = "$minioDir\data"
+
 # Check if MinIO is already running
 $minioProcess = Get-Process -Name "minio" -ErrorAction SilentlyContinue
 
@@ -11,28 +16,42 @@ if ($minioProcess) {
 }
 
 # Check if MinIO executable exists
-if (!(Test-Path "D:\minio\minio.exe")) {
-    Write-Host "❌ MinIO executable not found at D:\minio\minio.exe" -ForegroundColor Red
-    Write-Host "Please install MinIO first" -ForegroundColor Yellow
-    exit 1
+if (!(Test-Path $minioExe)) {
+    Write-Host "❌ MinIO executable not found at $minioExe" -ForegroundColor Red
+    Write-Host "🔧 Installing MinIO..." -ForegroundColor Cyan
+    
+    # Create directory
+    New-Item -ItemType Directory -Path $minioDir -Force | Out-Null
+    
+    # Download MinIO
+    $minioUrl = "https://dl.min.io/server/minio/release/windows-amd64/minio.exe"
+    Write-Host "📥 Downloading MinIO from $minioUrl" -ForegroundColor Yellow
+    
+    try {
+        Invoke-WebRequest -Uri $minioUrl -OutFile $minioExe
+        Write-Host "✅ MinIO downloaded successfully!" -ForegroundColor Green
+    } catch {
+        Write-Host "❌ Failed to download MinIO: $_" -ForegroundColor Red
+        exit 1
+    }
 }
 
 # Check if data directory exists
-if (!(Test-Path "D:\MinIO\data")) {
-    Write-Host "❌ Data directory not found at D:\MinIO\data" -ForegroundColor Red
+if (!(Test-Path $minioData)) {
+    Write-Host "❌ Data directory not found at $minioData" -ForegroundColor Red
     Write-Host "Creating data directory..." -ForegroundColor Yellow
-    New-Item -ItemType Directory -Path "D:\MinIO\data" -Force | Out-Null
+    New-Item -ItemType Directory -Path $minioData -Force | Out-Null
 }
 
 # Set environment variables and start MinIO
 $env:MINIO_ROOT_USER = "minioadmin"
 $env:MINIO_ROOT_PASSWORD = "minioadmin123"
 
-Set-Location "D:\minio"
+Set-Location $minioDir
 
 # Start MinIO in background
-Start-Process -FilePath ".\minio.exe" `
-    -ArgumentList "server", "D:\MinIO\data", "--console-address", ":9001" `
+Start-Process -FilePath $minioExe `
+    -ArgumentList "server", $minioData, "--console-address", ":9001" `
     -WindowStyle Hidden
 
 # Wait for MinIO to start

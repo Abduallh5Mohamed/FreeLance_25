@@ -53,6 +53,7 @@ const Header = () => {
     { name: "الطلاب الأونلاين", href: "/students", icon: Users },
     { name: "الطلاب الأوفلاين", href: "/offline-students", icon: Users },
     { name: "بطاقات الطلاب", href: "/student-barcodes", icon: Users },
+    { name: "تقارير الطلاب", href: "/student-reports", icon: FileText },
   ];
 
   const coursesMenu = [
