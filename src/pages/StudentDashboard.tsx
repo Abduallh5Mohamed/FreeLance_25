@@ -405,16 +405,6 @@ const StudentDashboard = () => {
                         <p className="text-xs md:text-sm text-muted-foreground leading-relaxed">{groupInfo.description}</p>
                       </div>
 
-                      <div className="flex items-center justify-between p-3 bg-muted/30 rounded-lg">
-                        <span className="text-sm font-medium flex items-center gap-2">
-                          <Users className="w-4 h-4" />
-                          عدد الطلاب
-                        </span>
-                        <Badge className="bg-gradient-to-r from-green-500 to-emerald-500 text-white border-0 text-xs">
-                          {groupInfo.current_students}/{groupInfo.max_students}
-                        </Badge>
-                      </div>
-
                       {groupInfo.courses && (
                         <div className="flex items-center justify-between p-2.5 md:p-3 bg-muted/30 rounded-lg">
                           <span className="text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2">

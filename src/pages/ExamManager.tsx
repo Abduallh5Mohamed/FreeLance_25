@@ -10,14 +10,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { FileQuestion, Plus, Trash2, Edit2, Eye, CalendarIcon, Users } from "lucide-react";
+import { FileQuestion, Plus, Trash2, Edit2, Eye, CalendarIcon, Users, Upload, Image as ImageIcon, X } from "lucide-react";
 import { format } from "date-fns";
 import { ar } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://72.62.35.177:3001/api';
+const API_URL = import.meta.env.VITE_API_URL || 'http://72.62.35.177:3001/api';
+
 import {
   getCourses,
   getGroups,
@@ -26,13 +27,7 @@ import {
   updateExam,
   deleteExam,
   getExamQuestions,
-  createExamQuestion,
-  updateExamQuestion,
-  deleteExamQuestion,
-  Exam,
-  ExamQuestion
-
-const API_URL = import.meta.env.VITE_API_URL || '/api';
+  Exam
 } from "@/lib/api-http";
 
 interface Group {
@@ -68,6 +63,7 @@ const ExamManager = () => {
 
   const [questionForm, setQuestionForm] = useState({
     question_text: "",
+    question_image: "",
     question_type: "multiple_choice",
     correct_answer: "",
     correct_answer_index: -1,
@@ -75,6 +71,7 @@ const ExamManager = () => {
     points: 1,
     explanation: ""
   });
+  const [uploadingImage, setUploadingImage] = useState(false);
 
   const { toast } = useToast();
 
@@ -86,12 +83,7 @@ const ExamManager = () => {
 
   const fetchCourses = async () => {
     try {
-      const { data, error } = await supabase
-        .from('courses')
-        .select('*')
-        .eq('is_active', true);
-
-      if (error) throw error;
+      const data = await getCourses();
       setCourses(data || []);
     } catch (error) {
       console.error('Error fetching courses:', error);
@@ -100,12 +92,7 @@ const ExamManager = () => {
 
   const fetchGroups = async () => {
     try {
-      const { data, error } = await supabase
-        .from('groups')
-        .select('id, name, course_id')
-        .eq('is_active', true);
-
-      if (error) throw error;
+      const data = await getGroups();
       setGroups(data || []);
     } catch (error) {
       console.error('Error fetching groups:', error);
@@ -114,19 +101,7 @@ const ExamManager = () => {
 
   const fetchExams = async () => {
     try {
-      const { data, error } = await supabase
-        .from('exams')
-        .select(`
-          *,
-          courses (
-            id,
-            name,
-            subject
-          )
-        `)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
+      const data = await getExams();
       setExams(data || []);
     } catch (error) {
       console.error('Error fetching exams:', error);
@@ -135,14 +110,8 @@ const ExamManager = () => {
 
   const fetchQuestions = async (examId) => {
     try {
-      const { data, error } = await supabase
-        .from('exam_questions')
-        .select('*')
-        .eq('exam_id', examId)
-        .order('created_at', { ascending: true });
-
-      if (error) throw error;
-      setQuestions(data || []);
+      const data = await getExamQuestions(examId);
+      setQuestions((data as any[]) || []);
     } catch (error) {
       console.error('Error fetching questions:', error);
     }
@@ -244,7 +213,6 @@ const ExamManager = () => {
         total_marks: 100,
         passing_marks: 50,
         total_questions: 10,
-      }); otal_questions: 10,
       });
   } catch (error) {
     console.error('Error:', error);
@@ -263,36 +231,60 @@ const handleQuestionSubmit = async (e) => {
   setLoading(true);
 
   try {
-    // Check if exam has reached question limit
-    const { data: examData } = await supabase
-      .from('exams')
-      .select('questions_count, total_questions')
-      .eq('id', selectedExam.id)
-      .single();
-
-    if (examData && examData.questions_count >= examData.total_questions) {
+    // Validate: must have at least text or image
+    if (!questionForm.question_text && !questionForm.question_image) {
       toast({
-        title: "تحذير",
-        description: `لقد وصلت للحد الأقصى من الأسئلة (${examData.total_questions} سؤال)`,
+        title: "خطأ",
+        description: "يجب إدخال نص السؤال أو رفع صورة على الأقل",
         variant: "destructive",
       });
       setLoading(false);
       return;
     }
 
-    const { error } = await supabase
-      .from('exam_questions')
-      .insert({
-        exam_id: selectedExam.id,
-        question_text: questionForm.question_text,
-        question_type: questionForm.question_type,
-        correct_answer: questionForm.correct_answer,
-        options: questionForm.question_type === 'multiple_choice' ? questionForm.options : null,
-        points: questionForm.points,
-        explanation: questionForm.explanation
+    // For multiple choice, validate correct answer selected
+    if (questionForm.question_type === 'multiple_choice' && questionForm.correct_answer_index === -1) {
+      toast({
+        title: "خطأ",
+        description: "يجب اختيار الإجابة الصحيحة",
+        variant: "destructive",
       });
+      setLoading(false);
+      return;
+    }
 
-    if (error) throw error;
+    // Prepare options - convert to object format for API
+    const optionsData = questionForm.question_type === 'multiple_choice' 
+      ? JSON.stringify({ a: questionForm.options[0], b: questionForm.options[1], c: questionForm.options[2], d: questionForm.options[3] })
+      : null;
+
+    // Convert correct_answer_index to letter (a, b, c, d)
+    const correctAnswerLetter = questionForm.question_type === 'multiple_choice'
+      ? ['a', 'b', 'c', 'd'][questionForm.correct_answer_index]
+      : null;
+
+    // Send to MySQL API
+    const response = await fetch(`${API_URL}/exams/${selectedExam.id}/questions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      },
+      body: JSON.stringify({
+        question_text: questionForm.question_text || null,
+        question_image: questionForm.question_image || null,
+        question_type: questionForm.question_type,
+        options: optionsData,
+        correct_answer: correctAnswerLetter,
+        marks: questionForm.points,
+        display_order: 0
+      })
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.error || 'فشل إضافة السؤال');
+    }
 
     toast({
       title: "تم الإضافة بنجاح",
@@ -300,10 +292,11 @@ const handleQuestionSubmit = async (e) => {
     });
 
     fetchQuestions(selectedExam.id);
-    fetchExams(); // Refresh to update question count
+    fetchExams();
     setIsQuestionOpen(false);
     setQuestionForm({
       question_text: "",
+      question_image: "",
       question_type: "multiple_choice",
       correct_answer: "",
       correct_answer_index: -1,
@@ -325,12 +318,7 @@ const handleQuestionSubmit = async (e) => {
 
 const handleDeleteExam = async (id) => {
   try {
-    const { error } = await supabase
-      .from('exams')
-      .delete()
-      .eq('id', id);
-
-    if (error) throw error;
+    await deleteExam(id);
 
     fetchExams();
     toast({
@@ -348,12 +336,14 @@ const handleDeleteExam = async (id) => {
 
 const handleDeleteQuestion = async (id) => {
   try {
-    const { error } = await supabase
-      .from('exam_questions')
-      .delete()
-      .eq('id', id);
+    const response = await fetch(`${API_URL}/exams/${selectedExam.id}/questions/${id}`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      }
+    });
 
-    if (error) throw error;
+    if (!response.ok) throw new Error('Failed to delete');
 
     fetchQuestions(selectedExam.id);
     toast({
@@ -371,15 +361,7 @@ const handleDeleteQuestion = async (id) => {
 
 const handleEditExam = async (exam) => {
   setEditingExam(exam);
-
-  // Fetch exam groups
-  const { data: examGroupsData } = await supabase
-    .from('exam_groups')
-    .select('group_id')
-    .eq('exam_id', exam.id);
-
-  const groupIds = examGroupsData?.map(eg => eg.group_id) || [];
-  setSelectedGroups(groupIds);
+  setSelectedGroups([]);
 
   setExamForm({
     title: exam.title,
@@ -389,6 +371,7 @@ const handleEditExam = async (exam) => {
     exam_time: exam.exam_time || "",
     duration_minutes: exam.duration_minutes,
     total_marks: exam.total_marks,
+    passing_marks: exam.passing_marks || 50,
     total_questions: exam.total_questions,
   });
   setIsExamOpen(true);
@@ -399,34 +382,12 @@ const handleUpdateExam = async (e) => {
   setLoading(true);
 
   try {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) throw new Error('يجب تسجيل الدخول أولاً');
-
-    const { error } = await supabase
-      .from('exams')
-      .update({
-        ...examForm,
-        exam_date: examForm.exam_date ? format(examForm.exam_date, 'yyyy-MM-dd') : null,
-      })
-      .eq('id', editingExam.id);
-
-    if (error) throw error;
-
-    // Delete old exam-group relationships
-    await supabase
-      .from('exam_groups')
-      .delete()
-      .eq('exam_id', editingExam.id);
-
-    // Insert new exam-group relationships
-    for (const groupId of selectedGroups) {
-      await supabase
-        .from('exam_groups')
-        .insert({
-          exam_id: editingExam.id,
-          group_id: groupId
-        });
-    }
+    await updateExam(editingExam.id, {
+      title: examForm.title,
+      duration_minutes: examForm.duration_minutes,
+      total_marks: examForm.total_marks,
+      passing_marks: examForm.passing_marks,
+    } as any);
 
     toast({
       title: "تم التحديث بنجاح",
@@ -445,6 +406,7 @@ const handleUpdateExam = async (e) => {
       exam_time: "",
       duration_minutes: 60,
       total_marks: 100,
+      passing_marks: 50,
       total_questions: 10,
     });
   } catch (error) {
@@ -462,19 +424,40 @@ const handleUpdateExam = async (e) => {
 const handleEditQuestion = (question) => {
   setEditingQuestion(question);
 
-  // Find the index of the correct answer
+  // Parse options if they're in object format
+  let optionsArray = ["", "", "", ""];
+  if (question.options) {
+    if (typeof question.options === 'string') {
+      try {
+        const parsed = JSON.parse(question.options);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          optionsArray = [parsed.a || "", parsed.b || "", parsed.c || "", parsed.d || ""];
+        } else if (Array.isArray(parsed)) {
+          optionsArray = parsed;
+        }
+      } catch (e) {
+        console.error('Failed to parse options:', e);
+      }
+    } else if (Array.isArray(question.options)) {
+      optionsArray = question.options;
+    }
+  }
+
+  // Find the index of the correct answer (a=0, b=1, c=2, d=3)
   let correctAnswerIndex = -1;
-  if (question.options && question.correct_answer) {
-    correctAnswerIndex = question.options.findIndex(opt => opt === question.correct_answer);
+  if (question.correct_answer) {
+    const letterToIndex = { 'a': 0, 'b': 1, 'c': 2, 'd': 3 };
+    correctAnswerIndex = letterToIndex[question.correct_answer] ?? -1;
   }
 
   setQuestionForm({
-    question_text: question.question_text,
-    question_type: question.question_type,
-    correct_answer: question.correct_answer,
+    question_text: question.question_text || "",
+    question_image: question.question_image || "",
+    question_type: question.question_type || "multiple_choice",
+    correct_answer: question.correct_answer || "",
     correct_answer_index: correctAnswerIndex,
-    options: question.options || ["", "", "", ""],
-    points: question.points,
+    options: optionsArray,
+    points: question.points || 1,
     explanation: question.explanation || ""
   });
   setIsQuestionOpen(true);
@@ -485,19 +468,48 @@ const handleUpdateQuestion = async (e) => {
   setLoading(true);
 
   try {
-    const { error } = await supabase
-      .from('exam_questions')
-      .update({
-        question_text: questionForm.question_text,
-        question_type: questionForm.question_type,
-        correct_answer: questionForm.correct_answer,
-        options: questionForm.question_type === 'multiple_choice' ? questionForm.options : null,
-        points: questionForm.points,
-        explanation: questionForm.explanation
-      })
-      .eq('id', editingQuestion.id);
+    // Validate: must have at least text or image
+    if (!questionForm.question_text && !questionForm.question_image) {
+      toast({
+        title: "خطأ",
+        description: "يجب إدخال نص السؤال أو رفع صورة على الأقل",
+        variant: "destructive",
+      });
+      setLoading(false);
+      return;
+    }
 
-    if (error) throw error;
+    // Prepare options - convert to JSON format for API
+    const optionsData = questionForm.question_type === 'multiple_choice' 
+      ? JSON.stringify({ a: questionForm.options[0], b: questionForm.options[1], c: questionForm.options[2], d: questionForm.options[3] })
+      : null;
+
+    // Convert correct_answer_index to letter
+    const correctAnswerLetter = questionForm.question_type === 'multiple_choice'
+      ? ['a', 'b', 'c', 'd'][questionForm.correct_answer_index]
+      : null;
+
+    const response = await fetch(`${API_URL}/exams/${selectedExam.id}/questions/${editingQuestion.id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      },
+      body: JSON.stringify({
+        question_text: questionForm.question_text || null,
+        question_image: questionForm.question_image || null,
+        question_type: questionForm.question_type,
+        options: optionsData,
+        correct_answer: correctAnswerLetter,
+        points: questionForm.points,
+        explanation: questionForm.explanation || null
+      })
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.error || 'فشل تحديث السؤال');
+    }
 
     toast({
       title: "تم التحديث بنجاح",
@@ -509,6 +521,7 @@ const handleUpdateQuestion = async (e) => {
     setEditingQuestion(null);
     setQuestionForm({
       question_text: "",
+      question_image: "",
       question_type: "multiple_choice",
       correct_answer: "",
       correct_answer_index: -1,
@@ -562,6 +575,7 @@ return (
               exam_time: "",
               duration_minutes: 60,
               total_marks: 100,
+              passing_marks: 50,
               total_questions: 10,
             });
           }
@@ -886,6 +900,7 @@ return (
           setEditingQuestion(null);
           setQuestionForm({
             question_text: "",
+            question_image: "",
             question_type: "multiple_choice",
             correct_answer: "",
             correct_answer_index: -1,
@@ -895,33 +910,103 @@ return (
           });
         }
       }}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingQuestion ? "تعديل السؤال" : "إضافة سؤال جديد"}</DialogTitle>
           </DialogHeader>
           <form onSubmit={editingQuestion ? handleUpdateQuestion : handleQuestionSubmit} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="question_text">نص السؤال</Label>
-              <Textarea
-                id="question_text"
-                value={questionForm.question_text}
-                onChange={(e) => setQuestionForm(prev => ({ ...prev, question_text: e.target.value }))}
-                placeholder="أدخل نص السؤال"
-                required
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="question_type">نوع السؤال</Label>
+              <Label htmlFor="question_type">نوع السؤال *</Label>
               <Select value={questionForm.question_type} onValueChange={(value) => setQuestionForm(prev => ({ ...prev, question_type: value }))}>
                 <SelectTrigger>
                   <SelectValue placeholder="اختر نوع السؤال" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="multiple_choice">اختيار من متعدد</SelectItem>
-                  <SelectItem value="short_answer">إجابة قصيرة</SelectItem>
+                  <SelectItem value="essay">سؤال مقالي</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="question_text">نص السؤال</Label>
+              <Textarea
+                id="question_text"
+                value={questionForm.question_text}
+                onChange={(e) => setQuestionForm(prev => ({ ...prev, question_text: e.target.value }))}
+                placeholder="اكتب السؤال هنا..."
+              />
+              <p className="text-xs text-muted-foreground">يمكنك كتابة نص السؤال أو رفع صورة أو كلاهما</p>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="flex items-center gap-2">
+                <ImageIcon className="w-4 h-4" />
+                صورة السؤال
+              </Label>
+              {questionForm.question_image ? (
+                <div className="relative">
+                  <img 
+                    src={questionForm.question_image} 
+                    alt="صورة السؤال" 
+                    className="w-full max-h-48 object-contain rounded-lg border"
+                  />
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="icon"
+                    className="absolute top-2 left-2 h-6 w-6"
+                    onClick={() => setQuestionForm(prev => ({ ...prev, question_image: "" }))}
+                  >
+                    <X className="w-3 h-3" />
+                  </Button>
+                </div>
+              ) : (
+                <div className="border-2 border-dashed rounded-lg p-4 text-center">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    id="question-image-upload"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        setUploadingImage(true);
+                        try {
+                          const reader = new FileReader();
+                          reader.onload = (event) => {
+                            const base64 = event.target?.result as string;
+                            setQuestionForm(prev => ({ ...prev, question_image: base64 }));
+                            setUploadingImage(false);
+                          };
+                          reader.onerror = () => {
+                            toast({ title: "خطأ", description: "فشل قراءة الصورة", variant: "destructive" });
+                            setUploadingImage(false);
+                          };
+                          reader.readAsDataURL(file);
+                        } catch (err) {
+                          toast({ title: "خطأ", description: "فشل رفع الصورة", variant: "destructive" });
+                          setUploadingImage(false);
+                        }
+                      }
+                    }}
+                  />
+                  <label htmlFor="question-image-upload" className="cursor-pointer">
+                    {uploadingImage ? (
+                      <div className="flex items-center justify-center gap-2 text-muted-foreground">
+                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary"></div>
+                        جاري الرفع...
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center gap-2 text-muted-foreground hover:text-primary transition-colors">
+                        <Upload className="w-8 h-8" />
+                        <span className="text-sm">اضغط لرفع صورة السؤال</span>
+                        <span className="text-xs">(اختياري - يمكنك كتابة نص فقط)</span>
+                      </div>
+                    )}
+                  </label>
+                </div>
+              )}
             </div>
 
             {questionForm.question_type === 'multiple_choice' && (
@@ -968,16 +1053,13 @@ return (
               </div>
             )}
 
-            {questionForm.question_type === 'short_answer' && (
-              <div className="space-y-2">
-                <Label htmlFor="correct_answer">الإجابة الصحيحة</Label>
-                <Input
-                  id="correct_answer"
-                  value={questionForm.correct_answer}
-                  onChange={(e) => setQuestionForm(prev => ({ ...prev, correct_answer: e.target.value }))}
-                  placeholder="أدخل الإجابة الصحيحة"
-                  required
-                />
+            {questionForm.question_type === 'essay' && (
+              <div className="p-4 bg-muted/50 rounded-lg">
+                <p className="text-sm text-muted-foreground">
+                  السؤال المقالي: الطالب سيكتب الإجابة بنفسه أو يرفع صورة للإجابة.
+                  <br />
+                  سيتم تصحيح الإجابة يدوياً من قبل المعلم.
+                </p>
               </div>
             )}
 
@@ -993,7 +1075,7 @@ return (
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="points">النقاط</Label>
+              <Label htmlFor="points">درجة السؤال *</Label>
               <Input
                 id="points"
                 type="number"

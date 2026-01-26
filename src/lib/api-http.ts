@@ -792,10 +792,17 @@ export const startExamAttempt = async (examId: string, studentId: string) => {
 };
 
 // Submit exam attempt
-export const submitExamAttempt = async (examId: string, studentId: string, answers: Record<string, unknown>, score: number) => {
+export const submitExamAttempt = async (
+    examId: string, 
+    studentId: string, 
+    answers: Record<string, unknown>, 
+    score: number,
+    essayAnswers?: Record<string, string>,  // ✅ إجابات مقالية
+    answerImages?: Record<string, string>   // ✅ صور الإجابات
+) => {
     return await request(`/exams/${examId}/submit/${studentId}`, {
         method: 'POST',
-        body: JSON.stringify({ answers, score })
+        body: JSON.stringify({ answers, score, essayAnswers, answerImages })
     });
 };
 

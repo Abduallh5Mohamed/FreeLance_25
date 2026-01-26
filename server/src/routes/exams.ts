@@ -774,7 +774,7 @@ router.post('/:examId/start/:studentId', async (req: Request, res: Response) => 
 router.post('/:examId/submit/:studentId', async (req: Request, res: Response) => {
     try {
         const { examId, studentId } = req.params;
-        const { answers, score } = req.body;
+        const { answers, score, essayAnswers, answerImages } = req.body;  // ✅ دعم الإجابات المقالية وصور الإجابات
 
         // Get exam info for total_marks
         const exam = await queryOne<any>(
@@ -807,6 +807,13 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
 
         const passed = (Number(score) || 0) >= passingMarks;
 
+        // ✅ دمج الإجابات المختلفة
+        const allAnswers = {
+            multipleChoice: answers || {},
+            essay: essayAnswers || {},
+            images: answerImages || {}
+        };
+
         // Update exam_attempts table
         await execute(
             `UPDATE exam_attempts 
@@ -815,7 +822,7 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
                  score = ?,
                  answers = ?
              WHERE exam_id = ? AND student_id = ?`,
-            [passed ? 'passed' : 'failed', score ?? null, JSON.stringify(answers) ?? null, examId, studentId]
+            [passed ? 'passed' : 'failed', score ?? null, JSON.stringify(allAnswers), examId, studentId]
         );
 
         // Insert or update exam_results table for the results page
