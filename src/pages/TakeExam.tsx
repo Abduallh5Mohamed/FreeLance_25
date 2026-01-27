@@ -328,29 +328,43 @@ const TakeExam = () => {
   };
 
   const calculateScore = useCallback(() => {
-    if (!exam) return { score: 0, total: 0, percentage: 0, passed: false };
+    if (!exam) return { score: 0, total: 0, percentage: 0, passed: false, hasEssayQuestions: false, autoScore: 0, manualScore: 0 };
 
-    let score = 0;
+    let autoScore = 0;  // درجة الاختياري (تلقائي)
+    let manualScore = 0;  // درجة المقالي (يدوي)
     let correctCount = 0;
     let wrongCount = 0;
+    let hasEssayQuestions = false;
 
     console.log('=== Calculating Score ===');
     console.log('Exam questions:', exam.questions);
     console.log('User answers:', answers);
+    console.log('Essay answers:', essayAnswers);
 
     exam.questions.forEach((question: Question, idx: number) => {
-      const userAnswer = answers[question.id];
-      const correctAnswer = question.correct_answer;
+      const questionType = question.question_type || 'multiple_choice';
+      const questionPoints = question.marks || question.points || 1;
 
-      console.log(`Q${idx + 1}: User answered: ${userAnswer}, Correct: ${correctAnswer}, Match: ${userAnswer === correctAnswer}`);
-
-      if (userAnswer === correctAnswer) {
-        score += question.marks || question.points || 1;
-        correctCount++;
-        console.log(`✅ Correct! Score: ${question.marks || question.points || 1}`);
+      if (questionType === 'essay') {
+        // سؤال مقالي - لا نحسب درجته الآن
+        hasEssayQuestions = true;
+        manualScore += questionPoints;
+        console.log(`Q${idx + 1}: مقالي - سيُصحح يدوياً (${questionPoints} نقاط)`);
       } else {
-        wrongCount++;
-        console.log(`❌ Wrong!`);
+        // سؤال اختياري - نحسب درجته تلقائياً
+        const userAnswer = answers[question.id];
+        const correctAnswer = question.correct_answer;
+
+        console.log(`Q${idx + 1}: User answered: ${userAnswer}, Correct: ${correctAnswer}, Match: ${userAnswer === correctAnswer}`);
+
+        if (userAnswer === correctAnswer) {
+          autoScore += questionPoints;
+          correctCount++;
+          console.log(`✅ Correct! Score: ${questionPoints}`);
+        } else {
+          wrongCount++;
+          console.log(`❌ Wrong!`);
+        }
       }
     });
 
@@ -359,51 +373,106 @@ const TakeExam = () => {
     if (!totalMarks) {
       totalMarks = exam.questions.reduce((sum, q) => sum + (q.marks || q.points || 1), 0);
     }
+
     let passingMarks = exam.passing_marks || exam.passingMarks || 0;
     // Interpret passing as percentage (e.g., 50 means 50%) if raw passing > total but <=100
     if (totalMarks > 0 && passingMarks > totalMarks && passingMarks <= 100) {
       passingMarks = Math.ceil((passingMarks / 100) * totalMarks);
     }
-    const percentage = totalMarks > 0 ? (score / totalMarks) * 100 : 0;
-    const passed = score >= passingMarks;
 
-    console.log(`Final: ${score}/${totalMarks}, Correct: ${correctCount}, Wrong: ${wrongCount}, Passed: ${passed}`);
+    // إذا كان في أسئلة مقالية، درجة النجاح تُحدد بعد التصحيح اليدوي
+    const currentScore = autoScore;  // الدرجة الحالية (اختياري فقط)
+    const percentage = totalMarks > 0 ? (currentScore / totalMarks) * 100 : 0;
+    const passed = hasEssayQuestions ? false : currentScore >= passingMarks;  // لا نحدد النجاح إذا كان في مقالي
 
-    return { score, total: totalMarks, percentage, passed };
-  }, [exam, answers]);
+    console.log(`Final: Auto: ${autoScore}/${totalMarks - manualScore}, Manual: 0/${manualScore}, Total: ${totalMarks}`);
+    console.log(`Correct: ${correctCount}, Wrong: ${wrongCount}, Has Essay: ${hasEssayQuestions}`);
+
+    return {
+      score: currentScore,
+      total: totalMarks,
+      percentage,
+      passed,
+      hasEssayQuestions,
+      autoScore,
+      manualScore
+    };
+  }, [exam, answers, essayAnswers]);
 
   const handleSubmit = useCallback(async () => {
     const examResult = calculateScore();
-    setResult(examResult);
     setIsSubmitted(true);
 
     // Submit attempt to backend with all answer types
     if (examId && studentId) {
       try {
-<<<<<<< HEAD
         // ✅ Include essay answers and answer images
-        await submitExamAttempt(examId, studentId, {
-          multipleChoice: answers,
-          essayAnswers: essayAnswers,
-          answerImages: answerImages
-        }, examResult.score);
-=======
-        await submitExamAttempt(examId, studentId, answers, examResult.score, essayAnswers, answerImages);
->>>>>>> 67094d74cefe28cfaba055cdf05561bb1ef821ba
-        console.log('✅ Exam attempt submitted successfully');
+        const response = await submitExamAttempt(
+          examId,
+          studentId,
+          answers,  // Multiple choice answers
+          examResult.autoScore,  // Only auto-scored marks
+          essayAnswers,  // Essay text answers
+          answerImages,  // Uploaded images
+          examResult.hasEssayQuestions  // Flag for manual review needed
+        );
+
+        console.log('✅ Exam attempt submitted successfully', {
+          hasEssayQuestions: examResult.hasEssayQuestions,
+          autoScore: examResult.autoScore,
+          manualScore: examResult.manualScore,
+          backendResponse: response
+        });
+
+        // ✅ Update result from backend response
+        const finalScore = response.score || examResult.autoScore;
+        const totalMarks = response.total_marks || examResult.total;
+        const passingMarks = response.passing_marks || exam?.passing_marks || exam?.passingMarks || 0;
+        const passed = response.passed ?? (finalScore >= passingMarks);
+
+        const finalResult = {
+          score: finalScore,
+          total: totalMarks,
+          percentage: totalMarks > 0 ? (finalScore / totalMarks) * 100 : 0,
+          passed: passed,
+          hasEssayQuestions: examResult.hasEssayQuestions,
+          autoScore: examResult.autoScore,
+          manualScore: examResult.manualScore
+        };
+
+        setResult(finalResult);
+
+        // إذا كان في أسئلة مقالية، لا نعرض النتيجة النهائية
+        if (examResult.hasEssayQuestions) {
+          toast({
+            title: "تم تسليم الامتحان ✅",
+            description: "سيتم مراجعة إجاباتك المقالية وإعلان النتيجة النهائية قريباً",
+          });
+        } else {
+          // لا يوجد أسئلة مقالية - نعرض النتيجة مباشرة
+          toast({
+            title: passed ? "تهانينا! 🎉" : "للأسف",
+            description: passed
+              ? `لقد نجحت بدرجة ${finalScore}/${totalMarks}`
+              : `لم تحصل على درجة النجاح. حصلت على ${finalScore}/${totalMarks}`,
+            variant: passed ? "default" : "destructive"
+          });
+        }
       } catch (error) {
         console.error('❌ Failed to submit exam attempt:', error);
+        // If backend fails, fallback to local calculation
+        setResult(examResult);
+        toast({
+          title: "خطأ في الإرسال",
+          description: "حدث خطأ أثناء إرسال الامتحان، يرجى المحاولة مرة أخرى",
+          variant: "destructive"
+        });
       }
+    } else {
+      // No examId or studentId, use local calculation
+      setResult(examResult);
     }
-
-    toast({
-      title: examResult.passed ? "تهانينا! 🎉" : "للأسف",
-      description: examResult.passed
-        ? `لقد نجحت بدرجة ${examResult.score}/${examResult.total}`
-        : `لم تحصل على درجة النجاح. حصلت على ${examResult.score}/${examResult.total}`,
-      variant: examResult.passed ? "default" : "destructive"
-    });
-  }, [calculateScore, toast, examId, studentId, answers, essayAnswers, answerImages]);
+  }, [calculateScore, toast, examId, studentId, answers, essayAnswers, answerImages, exam]);
 
   // Timer countdown
   useEffect(() => {
@@ -578,7 +647,19 @@ const TakeExam = () => {
     return 'text-red-600 animate-pulse'; // < 1 min
   };
 
-  const answeredCount = Object.keys(answers).length;
+  // Count answered questions - include multiple choice answers, essay text, or uploaded images
+  const answeredCount = exam ? exam.questions.filter(q => {
+    if (q.question_type === 'essay') {
+      // Essay question is answered if there's text OR an image
+      const hasText = essayAnswers[q.id] && essayAnswers[q.id].trim().length > 0;
+      const hasImage = answerImages[q.id] && answerImages[q.id].length > 0;
+      return hasText || hasImage;
+    } else {
+      // Multiple choice - check if answered
+      return answers[q.id] !== undefined;
+    }
+  }).length : 0;
+
   const progress = exam ? (answeredCount / exam.questions.length) * 100 : 0;
 
   if (loading) {
@@ -611,20 +692,53 @@ const TakeExam = () => {
           >
             <Card className="shadow-2xl border-2">
               <CardHeader className="text-center pb-4">
-                <div className={`mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4 ${attemptResult.passed ? 'bg-green-100 dark:bg-green-900/20' : 'bg-red-100 dark:bg-red-900/20'}`}>
-                  {attemptResult.passed ? (
+                <div className={`mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4 ${attemptResult.hasEssayQuestions
+                  ? 'bg-blue-100 dark:bg-blue-900/20'
+                  : attemptResult.passed
+                    ? 'bg-green-100 dark:bg-green-900/20'
+                    : 'bg-red-100 dark:bg-red-900/20'
+                  }`}>
+                  {attemptResult.hasEssayQuestions ? (
+                    <AlertCircle className="w-8 h-8 text-blue-600 dark:text-blue-500" />
+                  ) : attemptResult.passed ? (
                     <CheckCircle2 className="w-8 h-8 text-green-600 dark:text-green-500" />
                   ) : (
                     <XCircle className="w-8 h-8 text-red-600 dark:text-red-500" />
                   )}
                 </div>
-                <CardTitle className="text-2xl">نتيجة الامتحان</CardTitle>
+                <CardTitle className="text-2xl">
+                  {attemptResult.hasEssayQuestions ? 'تم تسليم الامتحان' : 'نتيجة الامتحان'}
+                </CardTitle>
               </CardHeader>
               <CardContent className="text-center space-y-4">
-                <p className="text-lg font-semibold">الدرجة: {attemptResult.score} / {attemptResult.total}</p>
-                <p className={attemptResult.passed ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold'}>
-                  {attemptResult.passed ? 'تم النجاح' : `لم تحصل على درجة النجاح (${attemptResult.passingMarks})`}
-                </p>
+                {attemptResult.hasEssayQuestions ? (
+                  <>
+                    <div className="bg-blue-50 dark:bg-blue-900/10 p-4 rounded-lg border border-blue-200 dark:border-blue-800">
+                      <p className="text-lg font-semibold text-blue-700 dark:text-blue-400 mb-2">
+                        قيد المراجعة
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        سيتم مراجعة إجاباتك المقالية من قبل المعلم وإعلان النتيجة النهائية قريباً
+                      </p>
+                    </div>
+                    <div className="bg-muted/50 p-4 rounded-lg">
+                      <p className="text-sm font-medium mb-2">الدرجة المبدئية (الأسئلة الموضوعية):</p>
+                      <p className="text-2xl font-bold text-primary">
+                        {attemptResult.autoScore} / {attemptResult.autoScore + attemptResult.manualScore}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        في انتظار تصحيح الأسئلة المقالية ({attemptResult.manualScore} درجة)
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-lg font-semibold">الدرجة: {attemptResult.score} / {attemptResult.total}</p>
+                    <p className={attemptResult.passed ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold'}>
+                      {attemptResult.passed ? 'تم النجاح' : `لم تحصل على درجة النجاح (${attemptResult.passingMarks})`}
+                    </p>
+                  </>
+                )}
                 <Button
                   onClick={() => navigate('/student-exams')}
                   className="w-full"
@@ -828,24 +942,26 @@ const TakeExam = () => {
 
                 {/* Actions */}
                 <div className="flex flex-col gap-3">
-                  {/* PDF Download Button */}
-                  <Button
-                    onClick={generateExamPDF}
-                    disabled={generatingPDF}
-                    className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
-                  >
-                    {generatingPDF ? (
-                      <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white ml-2" />
-                        جاري إنشاء PDF...
-                      </>
-                    ) : (
-                      <>
-                        <Download className="w-5 h-5 ml-2" />
-                        تحميل النتيجة كـ PDF
-                      </>
-                    )}
-                  </Button>
+                  {/* PDF Download Button - Only show if no essay questions (final result) */}
+                  {!result?.hasEssayQuestions && (
+                    <Button
+                      onClick={generateExamPDF}
+                      disabled={generatingPDF}
+                      className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
+                    >
+                      {generatingPDF ? (
+                        <>
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white ml-2" />
+                          جاري إنشاء PDF...
+                        </>
+                      ) : (
+                        <>
+                          <Download className="w-5 h-5 ml-2" />
+                          تحميل النتيجة كـ PDF
+                        </>
+                      )}
+                    </Button>
+                  )}
 
                   <div className="flex gap-3">
                     <Button
@@ -986,54 +1102,12 @@ const TakeExam = () => {
                         <Upload className="h-4 w-4" />
                         أو ارفع صورة الإجابة
                       </Label>
-<<<<<<< HEAD
-                      <div className="flex items-center gap-3">
-                        <Input
-                          type="file"
-                          accept="image/*"
-                          onChange={async (e) => {
-                            const file = e.target.files?.[0];
-                            if (file) {
-                              const formData = new FormData();
-                              formData.append('image', file);
 
-                              try {
-                                const API_URL = import.meta.env.VITE_API_URL || '/api';
-                                const response = await fetch(`${API_URL}/exams/upload-question-image`, {
-                                  method: 'POST',
-                                  body: formData
-                                });
-
-                                const data = await response.json();
-                                if (data.success) {
-                                  setAnswerImages({
-                                    ...answerImages,
-                                    [exam.questions[currentQuestion].id]: data.imageUrl
-                                  });
-                                  toast({ title: 'تم رفع الصورة بنجاح' });
-                                }
-                              } catch (error) {
-                                toast({ title: 'فشل رفع الصورة', variant: 'destructive' });
-                              }
-                            }
-                          }}
-                          className="max-w-xs"
-                        />
-                        {answerImages[exam.questions[currentQuestion].id] && (
-                          <img
-                            src={`${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://192.168.1.7:3001'}${answerImages[exam.questions[currentQuestion].id]}`}
-                            alt="صورة الإجابة"
-                            className="h-16 w-16 object-cover rounded border"
-                          />
-                        )}
-                      </div>
-=======
-                      
                       {answerImages[exam.questions[currentQuestion].id] ? (
                         <div className="relative inline-block">
-                          <img 
-                            src={answerImages[exam.questions[currentQuestion].id]} 
-                            alt="صورة الإجابة" 
+                          <img
+                            src={answerImages[exam.questions[currentQuestion].id]}
+                            alt="صورة الإجابة"
                             className="max-w-full max-h-64 rounded-lg border"
                           />
                           <Button
@@ -1098,7 +1172,6 @@ const TakeExam = () => {
                           </label>
                         </div>
                       )}
->>>>>>> 67094d74cefe28cfaba055cdf05561bb1ef821ba
                     </div>
                   </div>
                 ) : (

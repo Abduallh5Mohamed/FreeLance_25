@@ -79,29 +79,45 @@ router.get('/student/:studentId', async (req: Request, res: Response) => {
     try {
         const { studentId } = req.params;
 
+        console.log('📊 Fetching exam results for student:', studentId);
+
+        // Get results from BOTH exam_results AND exam_attempts
         const sql = `
             SELECT 
-                er.id,
-                er.exam_id,
+                COALESCE(er.id, ea.id) AS id,
+                COALESCE(er.exam_id, ea.exam_id) AS exam_id,
                 e.title AS exam_title,
-                er.student_id,
-                er.marks_obtained AS score,
-                er.total_marks,
+                COALESCE(er.student_id, ea.student_id) AS student_id,
+                COALESCE(er.marks_obtained, ea.score) AS score,
+                COALESCE(er.total_marks, e.total_marks) AS total_marks,
                 e.passing_marks,
-                CASE 
-                    WHEN er.marks_obtained >= e.passing_marks THEN 'passed'
-                    ELSE 'failed'
-                END AS status,
-                er.submitted_at,
-                er.graded_at,
-                er.remarks AS feedback
-            FROM exam_results er
-            INNER JOIN exams e ON e.id = er.exam_id
-            WHERE er.student_id = ?
-            ORDER BY er.submitted_at DESC
+                COALESCE(ea.status, 
+                    CASE 
+                        WHEN COALESCE(er.marks_obtained, ea.score) >= e.passing_marks THEN 'passed'
+                        ELSE 'failed'
+                    END
+                ) AS status,
+                COALESCE(er.submitted_at, ea.completed_at, ea.created_at) AS submitted_at,
+                COALESCE(er.graded_at, ea.completed_at) AS graded_at,
+                er.remarks AS feedback,
+                CASE WHEN er.id IS NOT NULL THEN 'exam_results' ELSE 'exam_attempts' END AS source
+            FROM exams e
+            LEFT JOIN exam_results er ON er.exam_id = e.id AND er.student_id = ?
+            LEFT JOIN exam_attempts ea ON ea.exam_id = e.id AND ea.student_id = ? AND ea.status IN ('completed', 'passed', 'failed', 'pending_review')
+            WHERE (er.id IS NOT NULL OR ea.id IS NOT NULL)
+            ORDER BY COALESCE(er.submitted_at, ea.completed_at, ea.created_at) DESC
         `;
 
-        const results = await query<ExamResult>(sql, [studentId]);
+        const results = await query<any>(sql, [studentId, studentId]);
+
+        console.log(`📊 Found ${results.length} exam results (from both tables)`);
+        console.log('Results:', results.map((r: any) => ({
+            exam_title: r.exam_title,
+            score: r.score,
+            status: r.status,
+            source: r.source
+        })));
+
         res.json(results);
     } catch (error) {
         console.error('Get student exam results error:', error);

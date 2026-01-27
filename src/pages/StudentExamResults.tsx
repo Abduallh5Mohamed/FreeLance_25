@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Trophy, CheckCircle2, XCircle, Clock, Calendar, FileText, TrendingUp, Award } from "lucide-react";
+import { Trophy, CheckCircle2, XCircle, Clock, Calendar, FileText, TrendingUp, Award, Eye } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import StudentHeader from "@/components/StudentHeader";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
@@ -19,6 +20,7 @@ interface ExamResult {
   total_marks: number;
   passing_marks: number;
   passed: boolean;
+  status?: 'pending_review' | 'passed' | 'failed';  // ✅ Status from backend
   attempted_at: string;
   percentage: number;
 }
@@ -28,7 +30,7 @@ const StudentExamResults = () => {
   const [examResults, setExamResults] = useState<ExamResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [studentId, setStudentId] = useState<string>('');
-  
+
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -40,7 +42,7 @@ const StudentExamResults = () => {
     try {
       // Check if user is logged in and is a student
       const userStr = localStorage.getItem('currentUser');
-      
+
       if (!userStr) {
         navigate('/auth');
         toast({
@@ -87,10 +89,12 @@ const StudentExamResults = () => {
         const totalMarks = result.total_marks || result.exam?.total_marks || 0;
         const passingMarks = result.passing_marks || result.exam?.passing_marks || 0;
         const percentage = totalMarks > 0 ? (score / totalMarks) * 100 : 0;
-        
-        // Calculate passed status based on score vs passing marks
-        const isPassed = score >= passingMarks;
-        
+
+        // Use status from backend (pending_review, passed, failed)
+        const status = result.status || (score >= passingMarks ? 'passed' : 'failed');
+        const isPassed = status === 'passed';
+        const isPending = status === 'pending_review';
+
         return {
           id: result.id,
           exam_id: result.exam_id,
@@ -99,10 +103,11 @@ const StudentExamResults = () => {
           total_marks: totalMarks,
           passing_marks: passingMarks,
           passed: isPassed,
+          status: status as 'pending_review' | 'passed' | 'failed',
           attempted_at: result.attempted_at || result.created_at,
           percentage: percentage
         };
-      }).sort((a: ExamResult, b: ExamResult) => 
+      }).sort((a: ExamResult, b: ExamResult) =>
         new Date(b.attempted_at).getTime() - new Date(a.attempted_at).getTime()
       );
 
@@ -134,12 +139,17 @@ const StudentExamResults = () => {
     return 'ضعيف';
   };
 
-  const averageScore = examResults.length > 0
-    ? examResults.reduce((sum, result) => sum + result.percentage, 0) / examResults.length
+  // Filter out pending results for statistics
+  const gradedResults = examResults.filter(r => r.status !== 'pending_review');
+  const pendingResults = examResults.filter(r => r.status === 'pending_review');
+
+  const averageScore = gradedResults.length > 0
+    ? gradedResults.reduce((sum, result) => sum + result.percentage, 0) / gradedResults.length
     : 0;
 
-  const passedExams = examResults.filter(r => r.passed).length;
+  const passedExams = gradedResults.filter(r => r.passed).length;
   const totalExams = examResults.length;
+  const totalGraded = gradedResults.length;
 
   if (loading) {
     return (
@@ -232,13 +242,28 @@ const StudentExamResults = () => {
                   <div>
                     <p className="text-sm text-muted-foreground mb-1">معدل النجاح</p>
                     <p className="text-3xl font-bold text-orange-600">
-                      {totalExams > 0 ? ((passedExams / totalExams) * 100).toFixed(0) : 0}%
+                      {totalGraded > 0 ? ((passedExams / totalGraded) * 100).toFixed(0) : 0}%
                     </p>
                   </div>
                   <Award className="w-12 h-12 text-orange-500 opacity-50" />
                 </div>
               </CardContent>
             </Card>
+
+            {pendingResults.length > 0 && (
+              <Card className="bg-gradient-to-br from-blue-500/10 to-indigo-500/10 border-blue-500/20">
+                <CardContent className="pt-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-muted-foreground mb-1">قيد المراجعة</p>
+                      <p className="text-3xl font-bold text-blue-600">{pendingResults.length}</p>
+                    </div>
+                    <Clock className="w-12 h-12 text-blue-500 opacity-50" />
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
           </motion.div>
         )}
 
@@ -253,10 +278,19 @@ const StudentExamResults = () => {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: index * 0.1 }}
                 >
-                  <Card className={`relative overflow-hidden border-2 ${result.passed ? 'border-green-500/30 bg-gradient-to-br from-green-500/5 to-emerald-500/5' : 'border-red-500/30 bg-gradient-to-br from-red-500/5 to-pink-500/5'} hover:shadow-xl transition-all duration-300`}>
+                  <Card className={`relative overflow-hidden border-2 ${result.status === 'pending_review'
+                    ? 'border-blue-500/30 bg-gradient-to-br from-blue-500/5 to-indigo-500/5'
+                    : result.passed
+                      ? 'border-green-500/30 bg-gradient-to-br from-green-500/5 to-emerald-500/5'
+                      : 'border-red-500/30 bg-gradient-to-br from-red-500/5 to-pink-500/5'
+                    } hover:shadow-xl transition-all duration-300`}>
                     {/* Status Badge */}
                     <div className="absolute top-3 left-3">
-                      {result.passed ? (
+                      {result.status === 'pending_review' ? (
+                        <Badge className="bg-gradient-to-r from-blue-500 to-indigo-500 text-white border-0">
+                          ⏳ قيد المراجعة
+                        </Badge>
+                      ) : result.passed ? (
                         <Badge className="bg-gradient-to-r from-green-500 to-emerald-500 text-white border-0">
                           ✓ ناجح
                         </Badge>
@@ -269,8 +303,15 @@ const StudentExamResults = () => {
 
                     <CardHeader className="pb-3">
                       <div className="flex items-start gap-3 mt-6">
-                        <div className={`p-2 rounded-lg bg-gradient-to-br ${result.passed ? 'from-green-500/20 to-emerald-500/20' : 'from-red-500/20 to-pink-500/20'}`}>
-                          {result.passed ? (
+                        <div className={`p-2 rounded-lg bg-gradient-to-br ${result.status === 'pending_review'
+                          ? 'from-blue-500/20 to-indigo-500/20'
+                          : result.passed
+                            ? 'from-green-500/20 to-emerald-500/20'
+                            : 'from-red-500/20 to-pink-500/20'
+                          }`}>
+                          {result.status === 'pending_review' ? (
+                            <Clock className="w-6 h-6 text-blue-600" />
+                          ) : result.passed ? (
                             <CheckCircle2 className="w-6 h-6 text-green-600" />
                           ) : (
                             <XCircle className="w-6 h-6 text-red-600" />
@@ -292,34 +333,65 @@ const StudentExamResults = () => {
 
                     <CardContent className="space-y-4">
                       {/* Score Display */}
-                      <div className="text-center py-4 bg-muted/30 rounded-lg">
-                        <p className="text-sm text-muted-foreground mb-2">الدرجة</p>
-                        <div className="flex items-center justify-center gap-2">
-                          <span className={`text-4xl font-bold ${result.passed ? 'text-green-600' : 'text-red-600'}`}>
-                            {result.score}
-                          </span>
-                          <span className="text-2xl text-muted-foreground">/ {result.total_marks}</span>
+                      {result.status === 'pending_review' ? (
+                        <div className="text-center py-4 bg-blue-50 dark:bg-blue-900/10 rounded-lg border border-blue-200 dark:border-blue-800">
+                          <Clock className="w-8 h-8 mx-auto mb-2 text-blue-600" />
+                          <p className="text-sm font-medium text-blue-700 dark:text-blue-400 mb-1">
+                            قيد المراجعة
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            سيتم إعلان النتيجة النهائية قريباً
+                          </p>
+                          <div className="mt-3 pt-3 border-t border-blue-200 dark:border-blue-800">
+                            <p className="text-xs text-muted-foreground mb-1">الدرجة المبدئية</p>
+                            <p className="text-2xl font-bold text-blue-600">
+                              {result.score} / {result.total_marks}
+                            </p>
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        <div className="text-center py-4 bg-muted/30 rounded-lg">
+                          <p className="text-sm text-muted-foreground mb-2">الدرجة</p>
+                          <div className="flex items-center justify-center gap-2">
+                            <span className={`text-4xl font-bold ${result.passed ? 'text-green-600' : 'text-red-600'}`}>
+                              {result.score}
+                            </span>
+                            <span className="text-2xl text-muted-foreground">/ {result.total_marks}</span>
+                          </div>
+                        </div>
+                      )}
 
-                      {/* Percentage & Grade */}
-                      <div className="flex items-center justify-between">
-                        <div className="text-center flex-1">
-                          <p className="text-xs text-muted-foreground mb-1">النسبة المئوية</p>
-                          <p className="text-2xl font-bold">{result.percentage.toFixed(1)}%</p>
-                        </div>
-                        <div className="text-center flex-1">
-                          <p className="text-xs text-muted-foreground mb-1">التقدير</p>
-                          <Badge className={`bg-gradient-to-r ${getGradeColor(result.percentage)} text-white border-0 text-sm px-3 py-1`}>
-                            {getGradeLabel(result.percentage)}
-                          </Badge>
-                        </div>
-                      </div>
+                      {/* Percentage & Grade - Only show if not pending */}
+                      {result.status !== 'pending_review' && (
+                        <>
+                          <div className="flex items-center justify-between">
+                            <div className="text-center flex-1">
+                              <p className="text-xs text-muted-foreground mb-1">النسبة المئوية</p>
+                              <p className="text-2xl font-bold">{result.percentage.toFixed(1)}%</p>
+                            </div>
+                            <div className="text-center flex-1">
+                              <p className="text-xs text-muted-foreground mb-1">التقدير</p>
+                              <Badge className={`bg-gradient-to-r ${getGradeColor(result.percentage)} text-white border-0 text-sm px-3 py-1`}>
+                                {getGradeLabel(result.percentage)}
+                              </Badge>
+                            </div>
+                          </div>
 
-                      {/* Passing Mark Info */}
-                      <div className="text-center text-xs text-muted-foreground pt-2 border-t">
-                        درجة النجاح: {result.passing_marks}
-                      </div>
+                          {/* Passing Mark Info */}
+                          <div className="text-center text-xs text-muted-foreground pt-2 border-t">
+                            درجة النجاح: {result.passing_marks}
+                          </div>
+                        </>
+                      )}
+
+                      {/* View Details Button */}
+                      <Button
+                        onClick={() => navigate(`/exam-review/${result.exam_id}`)}
+                        className="w-full mt-4 bg-gradient-to-r from-primary to-accent hover:opacity-90"
+                      >
+                        <Eye className="w-4 h-4 ml-2" />
+                        عرض التفاصيل
+                      </Button>
                     </CardContent>
                   </Card>
                 </motion.div>

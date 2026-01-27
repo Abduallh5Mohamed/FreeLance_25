@@ -46,6 +46,7 @@ const Header = () => {
     { name: "رفع المحاضرات", href: "/teacher-lectures", icon: Video },
     { name: "إنشاء امتحانات", href: "/teacher-exams", icon: ClipboardCheck },
     { name: "نتائج الامتحانات", href: "/exam-results", icon: ClipboardCheck },
+    { name: "تصحيح المقالي", href: "/manual-grading", icon: ClipboardCheck },
   ];
 
   const studentsMenu = [

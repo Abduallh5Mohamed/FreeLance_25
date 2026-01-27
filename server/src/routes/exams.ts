@@ -244,6 +244,21 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
+        // ✅ Validate that end_time is after start_time
+        if (finalStartTime && finalEndTime) {
+            const startDate = new Date(finalStartTime);
+            const endDate = new Date(finalEndTime);
+            if (endDate <= startDate) {
+                console.error('❌ Invalid time range: end_time must be after start_time');
+                console.error('  Start:', startDate.toISOString());
+                console.error('  End:', endDate.toISOString());
+                return res.status(400).json({
+                    error: 'وقت النهاية يجب أن يكون بعد وقت البداية',
+                    details: 'End time must be after start time'
+                });
+            }
+        }
+
         // Extract date and keep full datetime for start_time/end_time since they are DATETIME columns
         const examDateOnly = finalStartTime ? finalStartTime.split(' ')[0] : null;
 
@@ -323,6 +338,21 @@ router.put('/:id', async (req: Request, res: Response) => {
         const finalStart = start_time || start_date || null;
         const finalEnd = end_time || end_date || null;
         const finalDuration = duration || duration_minutes || null;
+
+        // ✅ Validate that end_time is after start_time
+        if (finalStart && finalEnd) {
+            const startDate = new Date(finalStart);
+            const endDate = new Date(finalEnd);
+            if (endDate <= startDate) {
+                console.error('❌ Invalid time range: end_time must be after start_time');
+                console.error('  Start:', startDate.toISOString());
+                console.error('  End:', endDate.toISOString());
+                return res.status(400).json({
+                    error: 'وقت النهاية يجب أن يكون بعد وقت البداية',
+                    details: 'End time must be after start time'
+                });
+            }
+        }
 
         // Build UPDATE query dynamically to only update provided fields
         const updates: string[] = [];
@@ -635,7 +665,7 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
                 reason: 'already_attempted',
                 message: 'لقد قمت بالامتحان من قبل',
                 score: attempt.score,
-                totalMarks: attempt.total_marks || 0,
+                totalMarks: exam.total_marks || 0,
                 passed: attempt.status === 'passed'
             });
         }
@@ -774,7 +804,15 @@ router.post('/:examId/start/:studentId', async (req: Request, res: Response) => 
 router.post('/:examId/submit/:studentId', async (req: Request, res: Response) => {
     try {
         const { examId, studentId } = req.params;
-        const { answers, score, essayAnswers, answerImages } = req.body;  // ✅ دعم الإجابات المقالية وصور الإجابات
+        const { answers, score, essayAnswers, answerImages, hasEssayQuestions } = req.body;  // ✅ دعم الإجابات المقالية وصور الإجابات
+
+        console.log('🔍 Submit exam attempt - Start');
+        console.log('📝 Exam ID:', examId);
+        console.log('👤 Student ID:', studentId);
+        console.log('📊 Score:', score);
+        console.log('📝 Has Essay Questions:', hasEssayQuestions);
+        console.log('✍️ Essay Answers:', essayAnswers);
+        console.log('🖼️ Answer Images:', answerImages);
 
         // Get exam info for total_marks
         const exam = await queryOne<any>(
@@ -783,8 +821,11 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
         );
 
         if (!exam) {
+            console.error('❌ Exam not found:', examId);
             return res.status(404).json({ error: 'Exam not found' });
         }
+
+        console.log('✅ Exam found:', exam);
 
         // Derive total marks if exam.total_marks missing or zero
         let totalMarks: number = Number(exam.total_marks) || 0;
@@ -798,6 +839,8 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
                 : 0;
         }
 
+        console.log('📊 Total marks:', totalMarks);
+
         // Normalize passing marks (percentage vs absolute)
         const rawPassing: number = Number(exam.passing_marks) || 0;
         let passingMarks = rawPassing;
@@ -805,7 +848,14 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
             passingMarks = Math.ceil((rawPassing / 100) * totalMarks);
         }
 
-        const passed = (Number(score) || 0) >= passingMarks;
+        console.log('✅ Passing marks:', passingMarks);
+
+        // ✅ If essay questions exist, status is 'pending_review' until manually graded
+        const status = hasEssayQuestions ? 'pending_review' : ((Number(score) || 0) >= passingMarks ? 'passed' : 'failed');
+        const passed = status === 'passed';
+
+        console.log('📝 Status:', status);
+        console.log('✅ Passed:', passed);
 
         // ✅ دمج الإجابات المختلفة
         const allAnswers = {
@@ -814,7 +864,10 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
             images: answerImages || {}
         };
 
+        console.log('📝 All answers to save:', JSON.stringify(allAnswers).substring(0, 200) + '...');
+
         // Update exam_attempts table
+        console.log('🔄 Updating exam_attempts table...');
         await execute(
             `UPDATE exam_attempts 
              SET status = ?, 
@@ -822,10 +875,92 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
                  score = ?,
                  answers = ?
              WHERE exam_id = ? AND student_id = ?`,
-            [passed ? 'passed' : 'failed', score ?? null, JSON.stringify(allAnswers), examId, studentId]
+            [status, score ?? null, JSON.stringify(allAnswers), examId, studentId]
         );
 
+        console.log('✅ Exam attempt updated');
+
+        // ✅ Get actual student.id from students table using phone
+        console.log('🔍 Getting student.id from students table...');
+
+        // First get user phone
+        const [userRecord] = await query<any>(
+            'SELECT phone FROM users WHERE id = ?',
+            [studentId]
+        );
+
+        if (!userRecord || !userRecord.phone) {
+            console.error('❌ User not found or has no phone');
+            // Continue with userId as fallback
+        }
+
+        // Then get student by phone
+        const studentRecords = await query<any>(
+            'SELECT id FROM students WHERE phone = ?',
+            [userRecord?.phone || '']
+        );
+
+        const actualStudentId = studentRecords[0]?.id || studentId;
+        console.log(`📊 User ID: ${studentId}`);
+        console.log(`📊 User Phone: ${userRecord?.phone}`);
+        console.log(`📊 Student ID: ${actualStudentId}`);
+
+        // ✅ Fetch all questions for this exam
+        console.log('🔄 Fetching questions for exam...');
+        const questions = await query<any>(
+            'SELECT id, question_type as type, correct_answer, points FROM exam_questions WHERE exam_id = ?',
+            [examId]
+        );
+        console.log(`✅ Found ${questions.length} questions`);
+
+        // ✅ Save each answer individually in exam_student_answers table
+        console.log('🔄 Saving individual answers to exam_student_answers...');
+
+        // Delete old answers first
+        await execute(
+            `DELETE FROM exam_student_answers WHERE exam_id = ? AND student_id = ?`,
+            [examId, actualStudentId]
+        );
+
+        // Insert all answers
+        for (const question of questions) {
+            let studentAnswer: string | null = null;
+            let isCorrect: number = 0;
+            let pointsEarned: number = 0;
+
+            if (question.type === 'multiple_choice') {
+                const rawAnswer = allAnswers.multipleChoice?.[question.id];
+                if (rawAnswer !== undefined && rawAnswer !== null) {
+                    studentAnswer = String.fromCharCode(97 + rawAnswer); // Convert 0->a, 1->b, etc.
+                    isCorrect = (studentAnswer === question.correct_answer) ? 1 : 0;
+                    pointsEarned = isCorrect ? (question.points || 0) : 0;
+                }
+            } else if (question.type === 'essay') {
+                studentAnswer = allAnswers.essay?.[question.id] || null;
+                // Essay questions need manual grading, so is_correct and points_earned will be null initially
+                isCorrect = 0;
+                pointsEarned = 0;
+            }
+
+            if (studentAnswer !== null) {
+                await execute(
+                    `INSERT INTO exam_student_answers 
+                     (exam_id, student_id, question_id, student_answer, is_correct, points_earned)
+                     VALUES (?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE
+                        student_answer = VALUES(student_answer),
+                        is_correct = VALUES(is_correct),
+                        points_earned = VALUES(points_earned)`,
+                    [examId, actualStudentId, question.id, studentAnswer, isCorrect, pointsEarned]
+                );
+            }
+        }
+
+        console.log('✅ Individual answers saved to exam_student_answers');
+
         // Insert or update exam_results table for the results page
+        // ⚠️ IMPORTANT: exam_results.student_id references users.id, NOT students.id
+        console.log('🔄 Inserting/updating exam_results table...');
         await execute(
             `INSERT INTO exam_results (exam_id, student_id, marks_obtained, total_marks, submitted_at)
              VALUES (?, ?, ?, ?, NOW())
@@ -836,14 +971,28 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
             [examId, studentId, score ?? 0, totalMarks]
         );
 
-        const updatedAttempt = await queryOne(
-            'SELECT * FROM exam_attempts WHERE exam_id = ? AND student_id = ?',
-            [examId, studentId]
-        );
+        console.log('✅ Exam results inserted/updated');
 
-        res.json({ ...updatedAttempt, total_marks: totalMarks, passing_marks: passingMarks, passed });
+        // ✅ Build response with fresh data instead of querying again
+        const responseData = {
+            exam_id: examId,
+            student_id: studentId,
+            status: status,
+            completed_at: new Date().toISOString(),
+            score: score ?? null,
+            answers: allAnswers,
+            total_marks: totalMarks,
+            passing_marks: passingMarks,
+            passed: passed
+        };
+
+        console.log('✅ Submit exam attempt - Complete');
+        console.log('📊 Response data:', responseData);
+
+        res.json(responseData);
     } catch (error) {
-        console.error('Submit exam attempt error:', error);
+        console.error('❌ Submit exam attempt error:', error);
+        console.error('❌ Error stack:', (error as Error).stack);
         res.status(500).json({ error: 'Failed to submit exam attempt' });
     }
 });
@@ -936,6 +1085,171 @@ router.delete('/:examId/questions/:questionId', async (req: Request, res: Respon
     } catch (error) {
         console.error('Delete question error:', error);
         res.status(500).json({ error: 'Failed to delete question' });
+    }
+});
+
+// ✅ Get exam attempt review details (questions + answers + grading)
+router.get('/:examId/review/:studentId', async (req: Request, res: Response) => {
+    try {
+        const { examId, studentId } = req.params;
+
+        console.log('📖 Fetching exam review for:', { examId, studentId });
+
+        // Get exam details
+        const exam = await queryOne<any>(
+            'SELECT * FROM exams WHERE id = ?',
+            [examId]
+        );
+
+        if (!exam) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
+
+        // Get exam attempt
+        const attempt = await queryOne<any>(
+            `SELECT * FROM exam_attempts 
+             WHERE exam_id = ? AND student_id = ?
+             ORDER BY started_at DESC LIMIT 1`,
+            [examId, studentId]
+        );
+
+        if (!attempt) {
+            return res.status(404).json({ error: 'Exam attempt not found' });
+        }
+
+        // Get all questions
+        const questions = await query<any>(
+            'SELECT * FROM exam_questions WHERE exam_id = ? ORDER BY id',
+            [examId]
+        );
+
+        // Parse student's answers
+        let studentAnswers: any = {};
+        try {
+            if (typeof attempt.answers === 'string') {
+                studentAnswers = JSON.parse(attempt.answers);
+            } else {
+                studentAnswers = attempt.answers || {};
+            }
+        } catch (e) {
+            console.error('❌ Failed to parse student answers:', e);
+            studentAnswers = {};
+        }
+
+        console.log('📝 Student Answers Structure:', JSON.stringify(studentAnswers, null, 2));
+
+        // Parse essay scores from attempt.essay_scores
+        let essayScores: any = {};
+        try {
+            if (attempt.essay_scores) {
+                if (typeof attempt.essay_scores === 'string') {
+                    essayScores = JSON.parse(attempt.essay_scores);
+                } else {
+                    essayScores = attempt.essay_scores;
+                }
+                console.log('📊 Essay Scores:', JSON.stringify(essayScores, null, 2));
+            } else {
+                console.log('⚠️ No essay scores found in attempt');
+            }
+        } catch (e) {
+            console.error('❌ Failed to parse essay scores:', e);
+            essayScores = {};
+        }
+
+        // Build response with questions and grading
+        const reviewData = {
+            exam: {
+                id: exam.id,
+                title: exam.title,
+                description: exam.description,
+                total_marks: exam.total_marks,
+                passing_marks: exam.passing_marks
+            },
+            attempt: {
+                status: attempt.status,
+                score: attempt.score,
+                started_at: attempt.started_at,
+                completed_at: attempt.completed_at,
+                passed: attempt.score >= exam.passing_marks
+            },
+            questions: questions.map((q: any) => {
+                const isEssay = q.question_type === 'essay';
+                const questionId = String(q.id);
+
+                // Get student's answer
+                let studentAnswer = null;
+                if (isEssay) {
+                    studentAnswer = studentAnswers.essay?.[questionId] || studentAnswers[questionId] || null;
+                } else {
+                    // Use ?? to avoid treating 0 as falsy value
+                    const rawAnswer = studentAnswers.multipleChoice?.[questionId] ?? studentAnswers[questionId] ?? null;
+                    // Convert index (0,1,2,3) to letter (a,b,c,d)
+                    if (rawAnswer !== null && rawAnswer !== undefined && typeof rawAnswer === 'number') {
+                        studentAnswer = String.fromCharCode(97 + rawAnswer); // 97 = 'a'
+                    } else if (typeof rawAnswer === 'string') {
+                        studentAnswer = rawAnswer.toLowerCase(); // Ensure lowercase
+                    } else {
+                        studentAnswer = rawAnswer;
+                    }
+                }
+
+                // Get essay grading if exists
+                const essayGrade = isEssay ? essayScores[questionId] : null;
+
+                const correctAnswer = q.correct_answer ? String(q.correct_answer).toLowerCase() : null;
+                const isCorrect = isEssay ? null : (studentAnswer === correctAnswer);
+
+                console.log(`Question ${questionId}:`, {
+                    question_text: q.question_text.substring(0, 30),
+                    raw_student_answer: studentAnswers.multipleChoice?.[questionId],
+                    converted_student_answer: studentAnswer,
+                    correct_answer: correctAnswer,
+                    is_correct: isCorrect
+                });
+
+                // ✅ Handle both formats: number or object for essay_grade
+                let processedEssayGrade = null;
+                if (essayGrade !== null && essayGrade !== undefined) {
+                    if (typeof essayGrade === 'number') {
+                        // Simple number format: {question_id: 5}
+                        processedEssayGrade = {
+                            score: essayGrade,
+                            feedback: null,
+                            graded_by: null,
+                            graded_at: null
+                        };
+                    } else if (typeof essayGrade === 'object') {
+                        // Object format: {question_id: {score: 5, feedback: "..."}}
+                        processedEssayGrade = {
+                            score: essayGrade.score || 0,
+                            feedback: essayGrade.feedback || null,
+                            graded_by: essayGrade.graded_by || null,
+                            graded_at: essayGrade.graded_at || null
+                        };
+                    }
+                }
+
+                return {
+                    id: q.id,
+                    question_text: q.question_text,
+                    question_image: q.question_image,
+                    question_type: q.question_type,
+                    options: q.options,
+                    correct_answer: correctAnswer,
+                    points: q.points || q.marks || 1,
+                    explanation: q.explanation,
+                    student_answer: studentAnswer,
+                    is_correct: isCorrect,
+                    essay_grade: processedEssayGrade
+                };
+            })
+        };
+
+        console.log('✅ Review data prepared');
+        res.json(reviewData);
+    } catch (error) {
+        console.error('❌ Get exam review error:', error);
+        res.status(500).json({ error: 'Failed to fetch exam review' });
     }
 });
 

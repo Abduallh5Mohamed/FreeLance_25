@@ -29,6 +29,7 @@ import importsRoutes from './routes/imports';
 import migrationsRoutes from './routes/migrations';
 import messagesRoutes from './routes/messages';
 import videosRoutes from './routes/videos';
+import manualGradingRoutes from './routes/manual-grading';
 import { initializeBuckets } from './services/minio';
 
 dotenv.config();
@@ -106,6 +107,7 @@ app.use('/api/imports', importsRoutes);
 app.use('/api/migrations', migrationsRoutes);
 app.use('/api/messages', messagesRoutes);
 app.use('/api/videos', videosRoutes);
+app.use('/api/manual-grading', manualGradingRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {
