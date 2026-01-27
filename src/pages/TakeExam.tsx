@@ -1102,7 +1102,6 @@ const TakeExam = () => {
                         <Upload className="h-4 w-4" />
                         أو ارفع صورة الإجابة
                       </Label>
-
                       {answerImages[exam.questions[currentQuestion].id] ? (
                         <div className="relative inline-block">
                           <img

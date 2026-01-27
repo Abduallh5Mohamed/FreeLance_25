@@ -66,6 +66,7 @@ export async function initializeBuckets(): Promise<void> {
             }
         } catch (error) {
             console.error(`[MinIO] Error with bucket ${bucket}:`, error);
+            throw error;
         }
     }
 }

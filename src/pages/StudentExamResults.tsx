@@ -151,6 +151,87 @@ const StudentExamResults = () => {
   const totalExams = examResults.length;
   const totalGraded = gradedResults.length;
 
+  // Generate PDF for a specific result
+  const generateResultPDF = async (result: ExamResult) => {
+    setGeneratingPDF(result.id);
+    try {
+      const doc = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4'
+      });
+
+      // Get student name from localStorage
+      const userStr = localStorage.getItem('currentUser');
+      const user = userStr ? JSON.parse(userStr) : null;
+      const studentName = user?.name || 'طالب';
+
+      // Arabic font setup
+      doc.setFont('helvetica', 'bold');
+      
+      // Header
+      doc.setFillColor(59, 130, 246);
+      doc.rect(0, 0, 210, 40, 'F');
+      
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(24);
+      doc.text('Exam Result Certificate', 105, 25, { align: 'center' });
+      
+      // Student info
+      doc.setTextColor(0, 0, 0);
+      doc.setFontSize(14);
+      doc.text(`Student: ${studentName}`, 20, 55);
+      doc.text(`Exam: ${result.exam_title}`, 20, 65);
+      doc.text(`Date: ${new Date(result.attempted_at).toLocaleDateString('en-US')}`, 20, 75);
+      
+      // Score box
+      const passed = result.passed;
+      doc.setFillColor(passed ? 34 : 239, passed ? 197 : 68, passed ? 94 : 68);
+      doc.roundedRect(50, 90, 110, 50, 5, 5, 'F');
+      
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(32);
+      doc.text(`${result.score} / ${result.total_marks}`, 105, 115, { align: 'center' });
+      doc.setFontSize(16);
+      doc.text(`${result.percentage.toFixed(1)}%`, 105, 130, { align: 'center' });
+      
+      // Status
+      doc.setTextColor(0, 0, 0);
+      doc.setFontSize(20);
+      doc.text(passed ? 'PASSED' : 'FAILED', 105, 160, { align: 'center' });
+      
+      // Grade
+      doc.setFontSize(16);
+      doc.text(`Grade: ${getGradeLabel(result.percentage)}`, 105, 175, { align: 'center' });
+      
+      // Passing mark info
+      doc.setFontSize(12);
+      doc.setTextColor(100, 100, 100);
+      doc.text(`Passing Score: ${result.passing_marks}`, 105, 190, { align: 'center' });
+      
+      // Footer
+      doc.setFontSize(10);
+      doc.text('Al-Qaed Educational Platform', 105, 280, { align: 'center' });
+      
+      // Save
+      doc.save(`exam-result-${result.exam_title.replace(/\s+/g, '-')}.pdf`);
+      
+      toast({
+        title: "تم التحميل",
+        description: "تم تحميل شهادة نتيجة الامتحان بنجاح",
+      });
+    } catch (error) {
+      console.error('PDF generation error:', error);
+      toast({
+        variant: "destructive",
+        title: "خطأ",
+        description: "فشل إنشاء ملف PDF",
+      });
+    } finally {
+      setGeneratingPDF(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
