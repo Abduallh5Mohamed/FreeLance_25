@@ -819,17 +819,17 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
         console.log('🖼️ Answer Images:', answerImages);
 
         // Get the actual student_id from users table (could be user.id or user.student_id)
-        // First check if userId is a user with student_id, otherwise use userId directly
+        // First check if studentId is a user with student_id, otherwise use studentId directly
         const userRow = await queryOne<any>(
             'SELECT id, student_id FROM users WHERE id = ?',
-            [userId]
+            [studentId]
         );
-        
+
         // Determine the correct student_id for exam_results table
         // exam_attempts uses user.id, but exam_results needs students.id (foreign key)
-        let actualStudentId = userId; // For exam_attempts (uses user.id)
-        let resultsStudentId = userRow?.student_id || userId; // For exam_results (needs students.id)
-        
+        let actualStudentId = studentId; // For exam_attempts (uses user.id)
+        const resultsStudentId = userRow?.student_id || studentId; // For exam_results (needs students.id)
+
         // Verify the student exists in students table for exam_results
         const studentExists = await queryOne<any>(
             'SELECT id FROM students WHERE id = ?',
@@ -895,7 +895,6 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
              SET status = ?, 
                  completed_at = NOW(),
                  score = ?,
-                 total_marks = ?,
                  answers = ?
              WHERE exam_id = ? AND student_id = ?`,
             [status, score ?? null, JSON.stringify(allAnswers), examId, studentId]
@@ -923,7 +922,7 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
             [userRecord?.phone || '']
         );
 
-        const actualStudentId = studentRecords[0]?.id || studentId;
+        actualStudentId = studentRecords[0]?.id || studentId;
         console.log(`📊 User ID: ${studentId}`);
         console.log(`📊 User Phone: ${userRecord?.phone}`);
         console.log(`📊 Student ID: ${actualStudentId}`);
