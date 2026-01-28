@@ -1022,8 +1022,8 @@ export default function EditExam() {
                                 <div
                                   key={opt.key}
                                   className={`p-2 rounded border ${question.correct_answer === opt.key
-                                      ? 'bg-green-50 border-green-500'
-                                      : 'bg-gray-50'
+                                    ? 'bg-green-50 border-green-500'
+                                    : 'bg-gray-50'
                                     }`}
                                 >
                                   <span className="font-bold">{opt.key.toUpperCase()}:</span> {opt.value}
