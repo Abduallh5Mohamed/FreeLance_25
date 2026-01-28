@@ -361,12 +361,17 @@ const TakeExam = () => {
         console.log(`Q${idx + 1}: مقالي - سيُصحح يدوياً (${questionPoints} نقاط)`);
       } else {
         // سؤال اختياري - نحسب درجته تلقائياً
-        const userAnswer = answers[question.id];
+        const userAnswerIndex = answers[question.id];
         const correctAnswer = question.correct_answer;
+        
+        // Convert user answer index (0,1,2,3) to letter (a,b,c,d)
+        const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
+          ? String.fromCharCode(97 + userAnswerIndex) 
+          : null;
 
-        console.log(`Q${idx + 1}: User answered: ${userAnswer}, Correct: ${correctAnswer}, Match: ${userAnswer === correctAnswer}`);
+        console.log(`Q${idx + 1}: User answered index: ${userAnswerIndex}, letter: ${userAnswerLetter}, Correct: ${correctAnswer}, Match: ${userAnswerLetter === correctAnswer}`);
 
-        if (userAnswer === correctAnswer) {
+        if (userAnswerLetter === correctAnswer) {
           autoScore += questionPoints;
           correctCount++;
           console.log(`✅ Correct! Score: ${questionPoints}`);
