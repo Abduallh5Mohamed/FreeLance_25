@@ -55,17 +55,17 @@ const VideoPlayerComponent = ({ url, title, userId, onClose }: VideoPlayerProps)
     }, [url]);
 
     return (
-        <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="bg-background rounded-2xl w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl border-2 border-purple-500/20">
-                {/* Header */}
-                <div className="flex items-center justify-between p-5 border-b bg-gradient-to-r from-purple-50 to-pink-50 dark:from-gray-800 dark:to-gray-700">
-                    <div className="flex items-center gap-3">
-                        <div className="p-2 bg-purple-500 rounded-lg">
-                            <svg className="h-5 w-5 text-white" fill="currentColor" viewBox="0 0 20 20">
+        <div className="fixed inset-0 z-50 bg-black flex items-center justify-center">
+            <div className="relative w-full h-full flex flex-col">
+                {/* Header - Minimal & Compact */}
+                <div className="flex items-center justify-between px-4 py-2 bg-gradient-to-r from-purple-900/50 to-pink-900/50 backdrop-blur-sm border-b border-purple-500/20 absolute top-0 left-0 right-0 z-10">
+                    <div className="flex items-center gap-2">
+                        <div className="p-1.5 bg-purple-500 rounded-md">
+                            <svg className="h-4 w-4 text-white" fill="currentColor" viewBox="0 0 20 20">
                                 <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
                             </svg>
                         </div>
-                        <h3 className="text-xl font-bold truncate flex-1 bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+                        <h3 className="text-sm font-bold truncate text-white drop-shadow-md">
                             {title || 'عرض الفيديو'}
                         </h3>
                     </div>
@@ -73,14 +73,14 @@ const VideoPlayerComponent = ({ url, title, userId, onClose }: VideoPlayerProps)
                         variant="ghost"
                         size="sm"
                         onClick={onClose}
-                        className="shrink-0 hover:bg-red-100 dark:hover:bg-red-900/20 hover:text-red-600 transition-colors rounded-full h-10 w-10 p-0"
+                        className="shrink-0 hover:bg-red-500/20 hover:text-red-400 text-white transition-colors rounded-full h-8 w-8 p-0"
                     >
                         <X className="h-5 w-5" />
                     </Button>
                 </div>
 
-                {/* Video Player */}
-                <div className="flex-1 relative bg-black min-h-[400px] md:min-h-[500px]">
+                {/* Video Player - Full Screen */}
+                <div className="flex-1 relative flex items-center justify-center">
                     {isMinIOVideo && videoId && userId ? (
                         <HLSVideoPlayer
                             videoId={videoId}
@@ -92,7 +92,7 @@ const VideoPlayerComponent = ({ url, title, userId, onClose }: VideoPlayerProps)
                         <>
                             <iframe
                                 src={embedUrl}
-                                className="w-full h-full min-h-[400px] md:min-h-[600px]"
+                                className="w-full h-full"
                                 allow="autoplay; encrypted-media; fullscreen"
                                 allowFullScreen
                                 title={title || 'Video Player'}
@@ -121,10 +121,10 @@ const VideoPlayerComponent = ({ url, title, userId, onClose }: VideoPlayerProps)
                     )}
                 </div>
 
-                {/* Footer Info */}
-                <div className="px-5 py-3 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-700 border-t text-center">
-                    <p className="text-sm text-muted-foreground">
-                        💡 استخدم زر ESC للخروج أو انقر على ✕ في الأعلى{isMinIOVideo && ' • يتم البث من خوادم المنصة'}
+                {/* Footer - Minimal */}
+                <div className="px-4 py-1.5 bg-gradient-to-r from-purple-900/50 to-pink-900/50 backdrop-blur-sm border-t border-purple-500/20 text-center absolute bottom-0 left-0 right-0 z-10">
+                    <p className="text-xs text-gray-300">
+                        💡 ESC للخروج{isMinIOVideo && ' • بث مباشر'}
                     </p>
                 </div>
             </div>
