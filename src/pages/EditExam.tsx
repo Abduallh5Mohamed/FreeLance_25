@@ -35,6 +35,17 @@ export default function EditExam() {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
   const [editingExamDetails, setEditingExamDetails] = useState(false);
+  const [addingNewQuestion, setAddingNewQuestion] = useState(false);
+  const [newQuestion, setNewQuestion] = useState<Question>({
+    question_text: '',
+    question_type: 'multiple_choice',
+    option_a: '',
+    option_b: '',
+    option_c: '',
+    option_d: '',
+    correct_answer: 'a',
+    points: 1
+  });
 
   // Lists for dropdowns
   const [courses, setCourses] = useState<Course[]>([]);
@@ -285,6 +296,63 @@ export default function EditExam() {
     }
   };
 
+  const handleAddNewQuestion = async () => {
+    try {
+      const options = newQuestion.question_type === 'multiple_choice'
+        ? JSON.stringify({
+          a: newQuestion.option_a,
+          b: newQuestion.option_b,
+          c: newQuestion.option_c,
+          d: newQuestion.option_d
+        })
+        : null;
+
+      const response = await fetch(`${API_URL}/exams/${examId}/questions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
+        },
+        body: JSON.stringify({
+          question_text: newQuestion.question_text,
+          question_image: newQuestion.question_image || null,
+          question_type: newQuestion.question_type,
+          options: options,
+          correct_answer: newQuestion.correct_answer || null,
+          points: newQuestion.points,
+          explanation: null
+        })
+      });
+
+      if (!response.ok) throw new Error('Failed to add question');
+
+      toast({
+        title: 'تم الإضافة',
+        description: 'تم إضافة السؤال بنجاح'
+      });
+
+      // Reset form
+      setNewQuestion({
+        question_text: '',
+        question_type: 'multiple_choice',
+        option_a: '',
+        option_b: '',
+        option_c: '',
+        option_d: '',
+        correct_answer: 'a',
+        points: 1
+      });
+      setAddingNewQuestion(false);
+      loadExamData();
+    } catch (error) {
+      toast({
+        title: 'خطأ',
+        description: 'فشل إضافة السؤال',
+        variant: 'destructive'
+      });
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -506,13 +574,232 @@ export default function EditExam() {
 
         <Card className="shadow-lg">
           <CardHeader className="bg-gradient-to-r from-cyan-50 to-teal-50">
-            <CardTitle className="flex items-center gap-2">
-              <ClipboardCheck className="h-5 w-5 text-cyan-600" />
-              الأسئلة ({questions.length})
-            </CardTitle>
+            <div className="flex justify-between items-center">
+              <CardTitle className="flex items-center gap-2">
+                <ClipboardCheck className="h-5 w-5 text-cyan-600" />
+                الأسئلة ({questions.length})
+              </CardTitle>
+              {!addingNewQuestion && (
+                <Button
+                  onClick={() => setAddingNewQuestion(true)}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  <Plus className="h-4 w-4 ml-2" />
+                  إضافة سؤال جديد
+                </Button>
+              )}
+            </div>
           </CardHeader>
           <CardContent className="pt-6">
             <div className="space-y-4">
+              {/* Add New Question Form */}
+              {addingNewQuestion && (
+                <div className="border-2 border-green-200 rounded-lg p-4 bg-green-50">
+                  <h3 className="text-lg font-semibold mb-4 text-green-700">إضافة سؤال جديد</h3>
+                  <div className="space-y-4">
+                    <div>
+                      <Label>نوع السؤال</Label>
+                      <Select
+                        value={newQuestion.question_type}
+                        onValueChange={(value: 'multiple_choice' | 'essay') =>
+                          setNewQuestion({ ...newQuestion, question_type: value })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="multiple_choice">اختيار من متعدد</SelectItem>
+                          <SelectItem value="essay">سؤال مقالي</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div>
+                      <Label>نص السؤال</Label>
+                      <Textarea
+                        value={newQuestion.question_text}
+                        onChange={(e) =>
+                          setNewQuestion({ ...newQuestion, question_text: e.target.value })
+                        }
+                        placeholder="اكتب نص السؤال هنا"
+                      />
+                    </div>
+
+                    <div>
+                      <Label>صورة السؤال (اختياري)</Label>
+                      <div className="space-y-2">
+                        <Input
+                          type="file"
+                          accept="image/*"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              try {
+                                const formData = new FormData();
+                                formData.append('image', file);
+
+                                const response = await fetch(`${API_URL}/exams/upload-question-image`, {
+                                  method: 'POST',
+                                  body: formData
+                                });
+
+                                const result = await response.json();
+
+                                if (result.success) {
+                                  setNewQuestion({ ...newQuestion, question_image: result.imageUrl });
+                                  toast({
+                                    title: 'تم الرفع',
+                                    description: 'تم رفع الصورة بنجاح'
+                                  });
+                                }
+                              } catch (error) {
+                                toast({
+                                  title: 'خطأ',
+                                  description: 'فشل رفع الصورة',
+                                  variant: 'destructive'
+                                });
+                              }
+                            }
+                          }}
+                        />
+                        {newQuestion.question_image && (
+                          <div className="relative">
+                            <img
+                              src={newQuestion.question_image.startsWith('http')
+                                ? newQuestion.question_image
+                                : `${API_URL.replace('/api', '')}${newQuestion.question_image}`
+                              }
+                              alt="معاينة"
+                              className="max-w-xs rounded border"
+                            />
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              className="absolute top-2 right-2"
+                              onClick={() => setNewQuestion({ ...newQuestion, question_image: '' })}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {newQuestion.question_type === 'multiple_choice' && (
+                      <>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <Label>الخيار أ</Label>
+                            <Input
+                              value={newQuestion.option_a || ''}
+                              onChange={(e) =>
+                                setNewQuestion({ ...newQuestion, option_a: e.target.value })
+                              }
+                              placeholder="أدخل الخيار أ"
+                            />
+                          </div>
+                          <div>
+                            <Label>الخيار ب</Label>
+                            <Input
+                              value={newQuestion.option_b || ''}
+                              onChange={(e) =>
+                                setNewQuestion({ ...newQuestion, option_b: e.target.value })
+                              }
+                              placeholder="أدخل الخيار ب"
+                            />
+                          </div>
+                          <div>
+                            <Label>الخيار ج</Label>
+                            <Input
+                              value={newQuestion.option_c || ''}
+                              onChange={(e) =>
+                                setNewQuestion({ ...newQuestion, option_c: e.target.value })
+                              }
+                              placeholder="أدخل الخيار ج"
+                            />
+                          </div>
+                          <div>
+                            <Label>الخيار د</Label>
+                            <Input
+                              value={newQuestion.option_d || ''}
+                              onChange={(e) =>
+                                setNewQuestion({ ...newQuestion, option_d: e.target.value })
+                              }
+                              placeholder="أدخل الخيار د"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <Label>الإجابة الصحيحة</Label>
+                          <Select
+                            value={newQuestion.correct_answer || 'a'}
+                            onValueChange={(value: 'a' | 'b' | 'c' | 'd') =>
+                              setNewQuestion({ ...newQuestion, correct_answer: value })
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="a">أ</SelectItem>
+                              <SelectItem value="b">ب</SelectItem>
+                              <SelectItem value="c">ج</SelectItem>
+                              <SelectItem value="d">د</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </>
+                    )}
+
+                    <div>
+                      <Label>الدرجة</Label>
+                      <Input
+                        type="number"
+                        value={newQuestion.points}
+                        onChange={(e) =>
+                          setNewQuestion({ ...newQuestion, points: parseInt(e.target.value) || 1 })
+                        }
+                        placeholder="الدرجة المخصصة للسؤال"
+                        min="1"
+                      />
+                    </div>
+
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={handleAddNewQuestion}
+                        className="bg-green-600 hover:bg-green-700"
+                        disabled={!newQuestion.question_text.trim()}
+                      >
+                        <Plus className="h-4 w-4 ml-2" />
+                        إضافة السؤال
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          setAddingNewQuestion(false);
+                          setNewQuestion({
+                            question_text: '',
+                            question_type: 'multiple_choice',
+                            option_a: '',
+                            option_b: '',
+                            option_c: '',
+                            option_d: '',
+                            correct_answer: 'a',
+                            points: 1
+                          });
+                        }}
+                      >
+                        إلغاء
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Existing Questions */}
               {questions.map((question, index) => (
                 <div key={question.id} className="border rounded-lg p-4 bg-white">
                   {editingQuestion?.id === question.id ? (
