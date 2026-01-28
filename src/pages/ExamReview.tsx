@@ -99,15 +99,34 @@ const ExamReview = () => {
     };
 
     const parseOptions = (options: any): string[] => {
-        if (Array.isArray(options)) return options;
+        if (Array.isArray(options)) {
+            console.log('✅ Options is already array:', options);
+            return options;
+        }
         if (typeof options === 'string') {
             try {
                 const parsed = JSON.parse(options);
-                return Array.isArray(parsed) ? parsed : [];
-            } catch {
+                if (Array.isArray(parsed)) {
+                    console.log('✅ Parsed options from string:', parsed);
+                    return parsed;
+                }
+                if (parsed && typeof parsed === 'object') {
+                    const arr = [parsed.a, parsed.b, parsed.c, parsed.d].filter(Boolean);
+                    console.log('✅ Parsed options from object:', arr);
+                    return arr;
+                }
+                return [];
+            } catch (e) {
+                console.error('❌ Failed to parse options:', e);
                 return [];
             }
         }
+        if (options && typeof options === 'object' && !Array.isArray(options)) {
+            const arr = [options.a, options.b, options.c, options.d].filter(Boolean);
+            console.log('✅ Converted object to array:', arr);
+            return arr;
+        }
+        console.warn('⚠️ Options format unknown:', options);
         return [];
     };
 
@@ -532,7 +551,7 @@ const ExamReview = () => {
                 <FloatingParticles />
                 <div className="container mx-auto px-4 py-12 text-center">
                     <p className="text-lg text-red-500">لم يتم العثور على بيانات المراجعة</p>
-                    <Button onClick={() => navigate('/student/exam-results')} className="mt-4">
+                    <Button onClick={() => navigate('/student-exam-results')} className="mt-4">
                         العودة للنتائج
                     </Button>
                 </div>
@@ -559,7 +578,7 @@ const ExamReview = () => {
                 >
                     <Button
                         variant="ghost"
-                        onClick={() => navigate('/student/exam-results')}
+                        onClick={() => navigate('/student-exam-results')}
                         className="mb-4"
                     >
                         <ArrowRight className="w-4 h-4 ml-2" />
@@ -617,18 +636,18 @@ const ExamReview = () => {
                                 transition={{ delay: index * 0.1 }}
                             >
                                 <Card className={`border-2 ${isEssay
-                                        ? 'border-blue-500/30'
-                                        : question.is_correct
-                                            ? 'border-green-500/30'
-                                            : 'border-red-500/30'
+                                    ? 'border-blue-500/30'
+                                    : question.is_correct
+                                        ? 'border-green-500/30'
+                                        : 'border-red-500/30'
                                     }`}>
                                     <CardHeader>
                                         <div className="flex items-start gap-3">
                                             <div className={`p-2 rounded-lg shrink-0 ${isEssay
-                                                    ? 'bg-blue-500/20'
-                                                    : question.is_correct
-                                                        ? 'bg-green-500/20'
-                                                        : 'bg-red-500/20'
+                                                ? 'bg-blue-500/20'
+                                                : question.is_correct
+                                                    ? 'bg-green-500/20'
+                                                    : 'bg-red-500/20'
                                                 }`}>
                                                 {isEssay ? (
                                                     <FileText className="w-5 h-5 text-blue-600" />
@@ -668,19 +687,31 @@ const ExamReview = () => {
 
                                     <CardContent className="space-y-4">
                                         {/* Multiple Choice Question */}
-                                        {!isEssay && options.length > 0 && (
+                                        {!isEssay && (
                                             <div className="space-y-4">
-                                                {/* Your Answer */}
-                                                <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border-2 border-blue-300 dark:border-blue-700">
+                                                {/* Question Text - Always Show */}
+                                                <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border-2 border-blue-200 dark:border-blue-800">
                                                     <p className="text-sm font-bold text-blue-700 dark:text-blue-400 mb-2 flex items-center gap-2">
+                                                        <span className="text-lg">📝</span>
+                                                        نص السؤال:
+                                                    </p>
+                                                    <p className="text-xl font-bold text-gray-900 dark:text-gray-100">
+                                                        {question.question_text}
+                                                    </p>
+                                                </div>
+
+                                                {/* Your Answer */}
+                                                <div className="bg-yellow-50 dark:bg-yellow-900/20 p-4 rounded-lg border-2 border-yellow-300 dark:border-yellow-700">
+                                                    <p className="text-sm font-bold text-yellow-700 dark:text-yellow-400 mb-2 flex items-center gap-2">
                                                         <span className="text-lg">✍️</span>
                                                         إجابتك:
                                                     </p>
                                                     <div className="flex items-center justify-between">
                                                         <p className="text-lg font-bold">
-                                                            {question.student_answer ?
-                                                                `${question.student_answer}. ${options[question.student_answer.charCodeAt(0) - 65] || 'غير محدد'}`
-                                                                : 'لم يتم الإجابة'}
+                                                            {question.student_answer && options.length > 0 ?
+                                                                `${question.student_answer.toUpperCase()}. ${options[question.student_answer.charCodeAt(0) - 97] || options[question.student_answer.charCodeAt(0) - 65] || question.student_answer}`
+                                                                : question.student_answer ? `${question.student_answer.toUpperCase()}`
+                                                                    : 'لم يتم الإجابة'}
                                                         </p>
                                                         {question.is_correct !== null && (
                                                             <Badge className={`${question.is_correct ? 'bg-green-500' : 'bg-red-500'} text-white text-sm`}>
@@ -698,7 +729,9 @@ const ExamReview = () => {
                                                             الإجابة الصحيحة:
                                                         </p>
                                                         <p className="text-lg font-bold">
-                                                            {question.correct_answer}. {options[question.correct_answer.charCodeAt(0) - 65] || ''}
+                                                            {options.length > 0
+                                                                ? `${question.correct_answer.toUpperCase()}. ${options[question.correct_answer.charCodeAt(0) - 97] || options[question.correct_answer.charCodeAt(0) - 65] || question.correct_answer}`
+                                                                : question.correct_answer.toUpperCase()}
                                                         </p>
                                                     </div>
                                                 )}
@@ -714,54 +747,54 @@ const ExamReview = () => {
                                                     </p>
                                                 </div>
 
-                                                {/* All Options */}
-                                                <div className="border-t pt-4">
-                                                    <p className="text-sm font-bold text-muted-foreground mb-3">جميع الخيارات:</p>
-                                                    <div className="space-y-2">
-                                                        {options.map((option: string, optIndex: number) => {
-                                                            const optionLabel = getOptionLabel(optIndex);
-                                                            const isStudentAnswer = question.student_answer === optionLabel;
-                                                            const isCorrectAnswer = question.correct_answer === optionLabel;
+                                                {/* All Options - Only if available */}
+                                                {options.length > 0 && (
+                                                    <div className="border-t pt-4">
+                                                        <p className="text-sm font-bold text-muted-foreground mb-3">جميع الخيارات:</p>
+                                                        <div className="space-y-2">
+                                                            {options.map((option: string, optIndex: number) => {
+                                                                const optionLabel = getOptionLabel(optIndex).toLowerCase();
+                                                                const isStudentAnswer = question.student_answer?.toLowerCase() === optionLabel;
+                                                                const isCorrectAnswer = question.correct_answer?.toLowerCase() === optionLabel;
 
-                                                            return (
-                                                                <div
-                                                                    key={optIndex}
-                                                                    className={`p-3 rounded-lg border-2 ${isCorrectAnswer
+                                                                return (
+                                                                    <div
+                                                                        key={optIndex}
+                                                                        className={`p-3 rounded-lg border-2 ${isCorrectAnswer
                                                                             ? 'border-green-500 bg-green-500/10'
                                                                             : isStudentAnswer
                                                                                 ? 'border-red-500 bg-red-500/10'
                                                                                 : 'border-border'
-                                                                        }`}
-                                                                >
-                                                                    <div className="flex items-center gap-3">
-                                                                        <span className="font-bold text-lg">{optionLabel}.</span>
-                                                                        <span>{option}</span>
-                                                                        {isCorrectAnswer && (
-                                                                            <Badge className="bg-green-500 text-white mr-auto text-xs">
-                                                                                <CheckCircle2 className="w-3 h-3 ml-1" />
-                                                                                الإجابة الصحيحة
-                                                                            </Badge>
-                                                                        )}
-                                                                        {isStudentAnswer && !isCorrectAnswer && (
-                                                                            <Badge variant="destructive" className="mr-auto text-xs">
-                                                                                <XCircle className="w-3 h-3 ml-1" />
-                                                                                اخترتها
-                                                                            </Badge>
-                                                                        )}
-                                                                        {isStudentAnswer && isCorrectAnswer && (
-                                                                            <Badge className="bg-green-500 text-white mr-auto text-xs">
-                                                                                ✓ اخترتها
-                                                                            </Badge>
-                                                                        )}
+                                                                            }`}
+                                                                    >
+                                                                        <div className="flex items-center gap-3">
+                                                                            <span className="font-bold text-lg">{optionLabel.toUpperCase()}.</span>
+                                                                            <span>{option}</span>
+                                                                            {isCorrectAnswer && (
+                                                                                <Badge className="bg-green-500 text-white mr-auto text-xs">
+                                                                                    <CheckCircle2 className="w-3 h-3 ml-1" />
+                                                                                    الإجابة الصحيحة
+                                                                                </Badge>
+                                                                            )}
+                                                                            {isStudentAnswer && !isCorrectAnswer && (
+                                                                                <Badge variant="destructive" className="mr-auto text-xs">
+                                                                                    <XCircle className="w-3 h-3 ml-1" />
+                                                                                    اخترتها
+                                                                                </Badge>
+                                                                            )}
+                                                                            {isStudentAnswer && isCorrectAnswer && (
+                                                                                <Badge className="bg-green-500 text-white mr-auto text-xs">
+                                                                                    ✓ اخترتها
+                                                                                </Badge>
+                                                                            )}
+                                                                        </div>
                                                                     </div>
-                                                                </div>
-                                                            );
-                                                        })}
+                                                                );
+                                                            })}
+                                                        </div>
                                                     </div>
-                                                </div>
-                                            </div>
+                                                )}                                            </div>
                                         )}
-
                                         {/* Essay Question */}
                                         {isEssay && (
                                             <div className="space-y-4">

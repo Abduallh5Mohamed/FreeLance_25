@@ -975,49 +975,215 @@ const TakeExam = () => {
 
                 {/* Detailed Results */}
                 <div className="space-y-4">
-                  <h3 className="font-bold text-lg">الإجابات التفصيلية:</h3>
+                  <h3 className="font-bold text-lg border-b pb-2 mb-4">الإجابات التفصيلية:</h3>
                   {exam.questions.map((question, idx) => {
                     const userAnswer = answers[question.id];
                     const isCorrect = userAnswer === question.correct_answer;
                     const wasAnswered = userAnswer !== undefined;
 
+                    // Parse options properly
+                    let questionOptions: string[] = [];
+                    if (Array.isArray(question.options)) {
+                      questionOptions = question.options;
+                    } else if (typeof question.options === 'string') {
+                      try {
+                        const parsed = JSON.parse(question.options);
+                        if (Array.isArray(parsed)) {
+                          questionOptions = parsed;
+                        } else if (parsed && typeof parsed === 'object') {
+                          questionOptions = [parsed.a, parsed.b, parsed.c, parsed.d].filter(Boolean);
+                        }
+                      } catch (e) {
+                        console.error('Failed to parse options:', e);
+                      }
+                    } else if (question.options && typeof question.options === 'object') {
+                      const opts = question.options as Record<string, string>;
+                      questionOptions = [opts.a, opts.b, opts.c, opts.d].filter(Boolean);
+                    }
+
+                    console.log(`Q${idx + 1} Debug - Full Details:`, {
+                      id: question.id,
+                      question: question.question_text || question.question,
+                      rawOptions: question.options,
+                      rawOptionsType: typeof question.options,
+                      rawOptionsIsArray: Array.isArray(question.options),
+                      parsedOptions: questionOptions,
+                      parsedOptionsLength: questionOptions.length,
+                      userAnswer,
+                      userAnswerType: typeof userAnswer,
+                      correctAnswer: question.correct_answer,
+                      correctAnswerType: typeof question.correct_answer,
+                      isCorrect,
+                      wasAnswered,
+                      questionType: question.question_type
+                    });
+
                     return (
-                      <Card key={question.id} className={`p-4 ${isCorrect ? 'border-green-500' : wasAnswered ? 'border-red-500' : 'border-gray-300'}`}>
-                        <div className="flex items-start gap-3">
-                          <div className="mt-1">
-                            {isCorrect ? (
-                              <CheckCircle2 className="w-5 h-5 text-green-600" />
-                            ) : wasAnswered ? (
-                              <XCircle className="w-5 h-5 text-red-600" />
-                            ) : (
-                              <AlertCircle className="w-5 h-5 text-gray-400" />
+                      <Card key={question.id} className={`p-5 ${isCorrect ? 'border-2 border-green-500 bg-green-50/50' : wasAnswered ? 'border-2 border-red-500 bg-red-50/50' : 'border-2 border-gray-300'}`}>
+                        <div className="space-y-3">
+                          {/* Question Header */}
+                          <div className="flex items-start gap-3">
+                            <div className="flex-shrink-0 mt-1">
+                              {isCorrect ? (
+                                <CheckCircle2 className="w-6 h-6 text-green-600" />
+                              ) : wasAnswered ? (
+                                <XCircle className="w-6 h-6 text-red-600" />
+                              ) : (
+                                <AlertCircle className="w-6 h-6 text-gray-400" />
+                              )}
+                            </div>
+                            <div className="flex-1">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="font-bold text-lg">السؤال {idx + 1}</span>
+                                <Badge variant={isCorrect ? "default" : "destructive"} className="text-sm">
+                                  {question.points || question.marks || 1} نقطة
+                                </Badge>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Question Text - Always visible */}
+                          <div className="bg-blue-50 p-4 rounded-lg border-2 border-blue-200">
+                            <div className="flex items-start gap-2 mb-3">
+                              <span className="text-blue-700 font-bold text-sm bg-blue-100 px-3 py-1 rounded">📝 نص السؤال</span>
+                            </div>
+                            <div className="font-bold text-xl mb-3 text-gray-900 leading-relaxed">
+                              {question.question_text || question.question || 'لا يوجد نص للسؤال'}
+                            </div>
+
+                            {/* Question Image if exists */}
+                            {question.question_image && (
+                              <div className="my-3">
+                                <img
+                                  src={question.question_image}
+                                  alt="صورة السؤال"
+                                  className="max-w-full h-auto rounded-lg border"
+                                />
+                              </div>
                             )}
                           </div>
-                          <div className="flex-1">
-                            <div className="font-medium mb-2">
-                              السؤال {idx + 1}: {question.question_text || question.question}
-                            </div>
-                            {wasAnswered && (
-                              <div className="text-sm space-y-1">
-                                <div className={userAnswer === question.correct_answer ? 'text-green-600' : 'text-red-600'}>
-                                  إجابتك: {Array.isArray(question.options) ? question.options[userAnswer] : 'خيار غير معروف'}
+
+                          {/* Student Answer Section - Always visible for multiple choice */}
+                          {question.question_type === 'multiple_choice' || userAnswer !== undefined ? (
+                            <div className="bg-yellow-50 p-4 rounded-lg border-2 border-yellow-200">
+                              <div className="flex items-start gap-2 mb-3">
+                                <span className="text-yellow-700 font-bold text-sm bg-yellow-100 px-3 py-1 rounded">✍️ إجابة الطالب</span>
+                              </div>
+
+                              {wasAnswered ? (
+                                <div className="space-y-2">
+                                  {questionOptions.length > 0 ? (
+                                    // Multiple Choice Answer with options
+                                    <div className="font-bold text-lg text-gray-900">
+                                      {questionOptions[userAnswer] || `الخيار رقم ${userAnswer + 1}`}
+                                    </div>
+                                  ) : (
+                                    // Fallback if no options parsed
+                                    <div className="font-bold text-lg text-gray-900">
+                                      الخيار رقم {userAnswer + 1}
+                                      <div className="text-sm text-gray-600 mt-1">
+                                        (الخيارات غير متاحة - فقط رقم الإجابة)
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
-                                {!isCorrect && (
-                                  <div className="text-green-600">
-                                    الإجابة الصحيحة: {Array.isArray(question.options) ? question.options[question.correct_answer as number] : 'خيار غير معروف'}
+                              ) : (
+                                <div className="text-gray-600 font-medium">
+                                  ⚠️ لم يجب الطالب على هذا السؤال
+                                </div>
+                              )}
+                            </div>
+                          ) : null}
+
+                          {/* Correct Answer Section - Show for multiple choice */}
+                          {(question.question_type === 'multiple_choice' || question.correct_answer !== undefined) && (
+                            <div className="bg-green-50 p-4 rounded-lg border-2 border-green-200">
+                              <div className="flex items-start gap-2 mb-3">
+                                <span className="text-green-700 font-bold text-sm bg-green-100 px-3 py-1 rounded">✅ الإجابة الصحيحة</span>
+                              </div>
+                              <div className="font-bold text-lg text-green-900">
+                                {questionOptions.length > 0 && questionOptions[question.correct_answer as number]
+                                  ? questionOptions[question.correct_answer as number]
+                                  : `الخيار رقم ${(question.correct_answer as number) + 1}`}
+                                {questionOptions.length === 0 && (
+                                  <div className="text-sm text-gray-600 mt-1">
+                                    (الخيارات غير متاحة - فقط رقم الإجابة)
                                   </div>
                                 )}
                               </div>
-                            )}
-                            {!wasAnswered && (
-                              <div className="text-sm text-gray-500">
-                                لم تجب على هذا السؤال
+                            </div>
+                          )}
+
+                          {/* All Options Display */}
+                          {questionOptions.length > 0 && (
+                            <div className="bg-white p-4 rounded-lg border-2">
+                              <div className="text-sm font-semibold text-gray-700 mb-3">جميع الخيارات:</div>
+                              <div className="space-y-2">
+                                {questionOptions.map((option, optIdx) => {
+                                  const isUserAnswer = userAnswer === optIdx;
+                                  const isCorrectAnswer = question.correct_answer === optIdx;
+
+                                  let borderColor = 'border-gray-300';
+                                  let bgColor = 'bg-gray-50';
+                                  let textColor = 'text-gray-700';
+                                  let icon = '○';
+
+                                  if (isCorrectAnswer) {
+                                    borderColor = 'border-green-500';
+                                    bgColor = 'bg-green-100';
+                                    textColor = 'text-green-900';
+                                    icon = '✓';
+                                  }
+
+                                  if (isUserAnswer && !isCorrectAnswer) {
+                                    borderColor = 'border-red-500';
+                                    bgColor = 'bg-red-100';
+                                    textColor = 'text-red-900';
+                                    icon = '✗';
+                                  }
+
+                                  return (
+                                    <div key={optIdx} className={`p-3 rounded-lg border-2 ${borderColor} ${bgColor}`}>
+                                      <div className="flex items-start gap-3">
+                                        <span className={`font-bold text-lg ${isCorrectAnswer ? 'text-green-600' : isUserAnswer ? 'text-red-600' : 'text-gray-400'}`}>
+                                          {icon}
+                                        </span>
+                                        <div className={`flex-1 font-medium text-base ${textColor}`}>
+                                          {option}
+                                          {isUserAnswer && <span className="mr-2 text-sm font-bold">(اختيار الطالب)</span>}
+                                          {isCorrectAnswer && <span className="mr-2 text-sm font-bold">(الإجابة الصحيحة)</span>}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Summary */}
+                          <div className="mt-3 p-4 rounded-lg bg-gray-100 border-2">
+                            {wasAnswered ? (
+                              <div className="flex items-center gap-2">
+                                {isCorrect ? (
+                                  <>
+                                    <CheckCircle2 className="w-6 h-6 text-green-600" />
+                                    <span className="font-bold text-lg text-green-700">✅ إجابة صحيحة! +{question.points || question.marks || 1} نقطة</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <XCircle className="w-6 h-6 text-red-600" />
+                                    <span className="font-bold text-lg text-red-700">❌ إجابة خاطئة - 0 نقطة</span>
+                                  </>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                <AlertCircle className="w-6 h-6 text-gray-500" />
+                                <span className="font-bold text-lg text-gray-600">⚠️ لم يجب على هذا السؤال</span>
                               </div>
                             )}
                           </div>
-                          <Badge variant={isCorrect ? "default" : "destructive"}>
-                            {question.points || question.marks || 1} نقطة
-                          </Badge>
                         </div>
                       </Card>
                     );

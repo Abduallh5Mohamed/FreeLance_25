@@ -173,7 +173,10 @@ export async function convertToHLS(
                     // Optimize for streaming
                     '-movflags +faststart',
                     '-g 48',
-                    '-keyint_min 48'
+                    '-keyint_min 48',
+
+                    // Force pixel format for compatibility
+                    '-pix_fmt yuv420p'
                 ])
                 .output(outputPlaylist)
                 .on('progress', (progress) => {

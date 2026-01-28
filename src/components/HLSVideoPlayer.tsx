@@ -494,14 +494,14 @@ const HLSVideoPlayerComponent = ({
     return (
         <div
             ref={containerRef}
-            className={`relative bg-black group ${className}`}
-            style={{ minHeight: '400px' }}
+            className={`relative bg-black w-full h-full flex items-center justify-center ${className}`}
             onContextMenu={handleContextMenu}
         >
             {/* Video Element */}
             <video
                 ref={videoRef}
-                className="w-full h-full object-contain absolute inset-0"
+                className="h-full w-auto"
+                style={{ maxWidth: '100vw' }}
                 playsInline
                 preload="auto"
                 onClick={togglePlay}

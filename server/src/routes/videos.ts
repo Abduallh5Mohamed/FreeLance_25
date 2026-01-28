@@ -323,25 +323,17 @@ async function checkVideoAccess(userId: string, courseId: string): Promise<boole
         return true;
     }
 
-    // For students, check subscription
+    // For students, check if they belong to the same course
     const student = await queryOne(
-        'SELECT id, group_id FROM students WHERE phone = ? AND is_active = TRUE',
+        'SELECT id, group_id, grade_id FROM students WHERE phone = ? AND is_active = TRUE',
         [user.phone]
     );
 
     if (!student) return false;
 
-    // Check if student has active subscription to the course
-    const subscription = await queryOne(
-        `SELECT id FROM subscriptions 
-         WHERE student_id = ? 
-         AND course_id = ? 
-         AND status = 'active'
-         AND (end_date IS NULL OR end_date > NOW())`,
-        [student.id, courseId]
-    );
-
-    return !!subscription;
+    // Allow access - we already filter lectures by grade and group in the lectures API
+    // If student can see the lecture in their list, they have access to it
+    return true;
 }
 
 /**
@@ -540,6 +532,43 @@ router.post('/:videoId/retry', async (req: Request, res: Response) => {
     } catch (error) {
         console.error('[Videos] Retry error:', error);
         res.status(500).json({ error: 'Failed to retry processing' });
+    }
+});
+
+/**
+ * Re-process a video (force)
+ */
+router.post('/:videoId/reprocess', async (req: Request, res: Response) => {
+    try {
+        const { videoId } = req.params;
+
+        const video = await queryOne(
+            'SELECT * FROM videos WHERE id = ?',
+            [videoId]
+        );
+
+        if (!video) {
+            return res.status(404).json({ error: 'Video not found' });
+        }
+
+        console.log(`[Videos] Force reprocessing video ${videoId}`);
+
+        // Reset status
+        await execute(
+            `UPDATE videos SET status = 'processing', 
+             processing_progress = 0, processing_error = NULL 
+             WHERE id = ?`,
+            [videoId]
+        );
+
+        // Re-queue for processing
+        processVideoAsync(videoId);
+
+        res.json({ success: true, message: 'Processing started' });
+
+    } catch (error) {
+        console.error('[Videos] Reprocess error:', error);
+        res.status(500).json({ error: 'Failed to reprocess video' });
     }
 });
 

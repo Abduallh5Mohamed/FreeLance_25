@@ -37,16 +37,8 @@ const StudentLectures = () => {
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Check authentication
+  // Load lectures on component mount
   useEffect(() => {
-    const userStr = localStorage.getItem('currentUser');
-    const user: User | null = userStr ? JSON.parse(userStr) : null;
-
-    if (!user || user.role !== 'student') {
-      navigate('/auth');
-      return;
-    }
-
     loadLectures();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -54,20 +46,27 @@ const StudentLectures = () => {
   const loadLectures = async () => {
     try {
       setLoading(true);
-      
+
       // Get current user from localStorage
       const userStr = localStorage.getItem('currentUser');
       const user: User | null = userStr ? JSON.parse(userStr) : null;
-      
+
       if (!user) {
-        console.error('No user found');
+        console.error('❌ No user found in localStorage');
+        toast({
+          title: 'خطأ',
+          description: 'يرجى تسجيل الدخول مرة أخرى',
+          variant: 'destructive'
+        });
         setLectures([]);
         return;
       }
-      
+
+      console.log('✅ User found:', user.name, 'ID:', user.id);
+
       // Use student_id if available, otherwise use user id
       const studentIdentifier = user.student_id || user.id;
-      
+
       // Get lectures for this student's group only
       const data = await getStudentLectures(studentIdentifier);
       const lecturesData = data?.map(m => ({
@@ -132,13 +131,73 @@ const StudentLectures = () => {
     return matchesSearch && matchesLevel;
   });
 
-  const handlePlayLecture = (lecture: Lecture) => {
-    console.log('Playing lecture:', {
+  const handlePlayLecture = async (lecture: Lecture) => {
+    console.log('🎬 Playing lecture:', {
       title: lecture.title,
       video_url: lecture.video_url,
     });
+
+    // Check if video_url starts with video:// (MinIO stored video)
+    let videoUrl = lecture.video_url;
+    if (videoUrl.startsWith('video://')) {
+      // Extract video ID from video://uuid format
+      const videoId = videoUrl.replace('video://', '');
+      console.log('📹 Video ID:', videoId);
+
+      // Get user ID from localStorage
+      const userStr = localStorage.getItem('currentUser');
+      console.log('👤 User from localStorage:', userStr);
+
+      if (!userStr) {
+        console.error('❌ No user in localStorage!');
+        toast({
+          variant: "destructive",
+          title: "خطأ",
+          description: "يجب تسجيل الدخول أولاً"
+        });
+        return;
+      }
+
+      const user = JSON.parse(userStr);
+      const userId = user.id;
+      console.log('✅ User ID:', userId);
+
+      // Request signed URL from backend
+      try {
+        const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+        const response = await fetch(`${API_BASE_URL}/videos/stream/${videoId}?userId=${userId}`, {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          }
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          videoUrl = data.streamUrl; // Use the signed streaming URL from backend
+          console.log('✅ Got signed stream URL:', videoUrl);
+        } else {
+          const errorData = await response.json();
+          console.error('❌ Failed to get signed URL:', errorData);
+          toast({
+            variant: "destructive",
+            title: "خطأ",
+            description: errorData.error || "فشل في تحميل الفيديو"
+          });
+          return;
+        }
+      } catch (error) {
+        console.error('❌ Error getting signed URL:', error);
+        toast({
+          variant: "destructive",
+          title: "خطأ",
+          description: "فشل في الاتصال بالخادم"
+        });
+        return;
+      }
+    }
+
     setPlayingVideo({
-      url: lecture.video_url,
+      url: videoUrl,
       title: lecture.title
     });
     toast({
