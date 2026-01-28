@@ -243,7 +243,7 @@ export default function EditExam() {
                 description: 'تم حفظ التعديلات بنجاح'
             });
 
-            navigate('/teacher/exams');
+            navigate('/teacher-exams');
         } catch (error) {
             console.error('Error saving exam:', error);
             toast({
@@ -298,7 +298,7 @@ export default function EditExam() {
                     <div>
                         <Button
                             variant="outline"
-                            onClick={() => navigate('/teacher/exams')}
+                            onClick={() => navigate('/teacher-exams')}
                             className="mb-4"
                         >
                             <ArrowLeft className="h-4 w-4 ml-2" />
