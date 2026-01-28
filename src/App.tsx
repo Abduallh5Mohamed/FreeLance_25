@@ -48,6 +48,7 @@ import StudentExamResults from "./pages/StudentExamResults";
 import ExamReview from "./pages/ExamReview";
 import ManualGrading from "./pages/ManualGrading";
 import ChatAssistant from "./pages/ChatAssistant";
+import StudentReports from "./pages/StudentReports";
 import TestVideo from "./pages/TestVideo";
 import AuthGuard from "./components/AuthGuard";
 import { UploadProvider } from "./contexts/UploadContext";
@@ -101,6 +102,7 @@ const App = () => (
             <Route path="/exam-reports/:examId" element={<AuthGuard requiredRole="teacher"><ExamReports /></AuthGuard>} />
             <Route path="/exam-results" element={<AuthGuard requiredRole="teacher"><ExamResults /></AuthGuard>} />
             <Route path="/manual-grading" element={<AuthGuard requiredRole="teacher"><ManualGrading /></AuthGuard>} />
+            <Route path="/student-reports" element={<AuthGuard requiredRole="teacher"><StudentReports /></AuthGuard>} />
             <Route path="/chat-assistant" element={<AuthGuard requiredRole="teacher"><ChatAssistant /></AuthGuard>} />
 
             {/* Student Routes - Protected */}
