@@ -259,16 +259,25 @@ const TakeExam = () => {
             // Convert correct_answer from letter to index if needed
             let correctAnswer: string | number | undefined = q.correct_answer;
             if (typeof correctAnswer === 'string') {
-              const letterToIndex = { 'a': 0, 'b': 1, 'c': 2, 'd': 3 };
-              correctAnswer = letterToIndex[correctAnswer as keyof typeof letterToIndex];
-              if (correctAnswer === undefined) {
-                console.warn(`⚠️ Unknown letter for correct_answer: ${q.correct_answer}, defaulting to 0`);
-                correctAnswer = 0;
+              const letterToIndex: Record<string, number> = { 'a': 0, 'b': 1, 'c': 2, 'd': 3 };
+              const normalizedAnswer = correctAnswer.toLowerCase().trim();
+              
+              if (letterToIndex[normalizedAnswer] !== undefined) {
+                correctAnswer = letterToIndex[normalizedAnswer];
+              } else {
+                // Try to parse as number if it's a numeric string
+                const parsed = parseInt(normalizedAnswer, 10);
+                if (!isNaN(parsed)) {
+                  correctAnswer = parsed;
+                } else {
+                  console.warn(`⚠️ Unknown format for correct_answer: "${q.correct_answer}", defaulting to 0`);
+                  correctAnswer = 0;
+                }
               }
             } else if (typeof correctAnswer === 'number') {
               // Already a number, keep it
             } else {
-              console.warn(`⚠️ Unexpected correct_answer type: ${typeof correctAnswer}, value: ${correctAnswer}`);
+              console.warn(`⚠️ Unexpected correct_answer type: ${typeof correctAnswer}, value: ${correctAnswer}, defaulting to 0`);
               correctAnswer = 0;
             }
 
@@ -550,59 +559,134 @@ const TakeExam = () => {
 
       yPos += 45;
 
-      // Questions & Answers
+      // Questions & Answers - تحسين العرض
       doc.setFontSize(16);
       doc.setTextColor(13, 148, 136);
-      doc.text("تفاصيل الاجابات", pageWidth - 20, yPos, { align: 'right' });
-      yPos += 10;
+      doc.text("تفاصيل الأسئلة والإجابات", pageWidth - 20, yPos, { align: 'right' });
+      yPos += 12;
 
-      doc.setFontSize(11);
+      doc.setFontSize(10);
       doc.setTextColor(0, 0, 0);
 
       exam.questions.forEach((question, idx) => {
         const userAnswer = answers[question.id];
         const isCorrect = userAnswer === question.correct_answer;
         const wasAnswered = userAnswer !== undefined;
+        const questionType = question.question_type || 'multiple_choice';
 
         // Check if we need a new page
-        if (yPos > pageHeight - 40) {
+        if (yPos > pageHeight - 60) {
           doc.addPage();
           yPos = 20;
         }
 
-        // Question background
-        doc.setFillColor(isCorrect ? 220 : wasAnswered ? 254 : 245, isCorrect ? 252 : wasAnswered ? 226 : 245, isCorrect ? 231 : wasAnswered ? 226 : 245);
-        doc.roundedRect(15, yPos - 5, pageWidth - 30, 25, 2, 2, 'F');
-
-        // Status icon (text representation)
-        const statusText = isCorrect ? "✓" : wasAnswered ? "✗" : "○";
-        doc.setTextColor(isCorrect ? 34 : wasAnswered ? 239 : 128, isCorrect ? 197 : wasAnswered ? 68 : 128, isCorrect ? 94 : wasAnswered ? 68 : 128);
-        doc.text(statusText, pageWidth - 20, yPos + 3, { align: 'right' });
-
-        // Question text
-        doc.setTextColor(0, 0, 0);
-        const questionText = `${idx + 1}. ${question.question_text || question.question}`;
-        doc.text(questionText.substring(0, 60) + (questionText.length > 60 ? '...' : ''), pageWidth - 30, yPos + 3, { align: 'right' });
-
-        // Answer
-        doc.setFontSize(9);
-        if (wasAnswered) {
-          const userAnswerText = Array.isArray(question.options) ? question.options[userAnswer] : 'غير معروف';
-          doc.setTextColor(isCorrect ? 34 : 239, isCorrect ? 197 : 68, isCorrect ? 94 : 68);
-          doc.text(`اجابتك: ${userAnswerText.substring(0, 40)}`, pageWidth - 30, yPos + 12, { align: 'right' });
-
-          if (!isCorrect) {
-            const correctAnswerText = Array.isArray(question.options) ? question.options[question.correct_answer as number] : 'غير معروف';
-            doc.setTextColor(34, 197, 94);
-            doc.text(`الصحيح: ${correctAnswerText.substring(0, 40)}`, pageWidth - 30, yPos + 17, { align: 'right' });
-          }
-        } else {
-          doc.setTextColor(128, 128, 128);
-          doc.text("لم تجب على هذا السؤال", pageWidth - 30, yPos + 12, { align: 'right' });
-        }
+        // Question number and points
+        doc.setFillColor(250, 250, 250);
+        doc.roundedRect(15, yPos - 5, pageWidth - 30, 8, 2, 2, 'F');
+        
+        doc.setTextColor(13, 148, 136);
         doc.setFontSize(11);
+        const pointsText = `(${question.points || question.marks || 1} نقطة)`;
+        doc.text(`${pointsText} :${idx + 1} السؤال`, pageWidth - 20, yPos, { align: 'right' });
 
-        yPos += 30;
+        yPos += 10;
+
+        // Question text - مع دعم النصوص الطويلة
+        doc.setTextColor(0, 0, 0);
+        doc.setFontSize(10);
+        const questionText = question.question_text || question.question || '';
+        const maxWidth = pageWidth - 35;
+        const lines = doc.splitTextToSize(questionText, maxWidth);
+        
+        lines.forEach((line: string, lineIdx: number) => {
+          if (yPos > pageHeight - 40) {
+            doc.addPage();
+            yPos = 20;
+          }
+          doc.text(line, pageWidth - 20, yPos, { align: 'right' });
+          yPos += 5;
+        });
+
+        yPos += 3;
+
+        // Show options for multiple choice
+        if (questionType === 'multiple_choice' && Array.isArray(question.options)) {
+          doc.setFontSize(9);
+          question.options.forEach((option: string, optIdx: number) => {
+            if (yPos > pageHeight - 30) {
+              doc.addPage();
+              yPos = 20;
+            }
+            
+            const optionLetter = String.fromCharCode(97 + optIdx); // a, b, c, d
+            const isUserAnswer = userAnswer === optIdx;
+            const isCorrectAnswer = question.correct_answer === optIdx;
+            
+            // تلوين الخيار
+            if (isUserAnswer && isCorrectAnswer) {
+              doc.setTextColor(34, 197, 94); // أخضر - إجابة صحيحة
+            } else if (isUserAnswer && !isCorrectAnswer) {
+              doc.setTextColor(239, 68, 68); // أحمر - إجابة خاطئة
+            } else if (isCorrectAnswer) {
+              doc.setTextColor(34, 197, 94); // أخضر - الإجابة الصحيحة
+            } else {
+              doc.setTextColor(100, 100, 100); // رمادي - خيار عادي
+            }
+
+            const marker = isUserAnswer ? '● ' : '○ ';
+            const correctMarker = isCorrectAnswer ? ' ✓' : '';
+            doc.text(`${correctMarker} ${option} :${optionLetter}) ${marker}`, pageWidth - 25, yPos, { align: 'right' });
+            yPos += 5;
+          });
+        }
+
+        // Answer summary
+        yPos += 2;
+        doc.setFontSize(9);
+        if (questionType === 'multiple_choice') {
+          if (wasAnswered) {
+            if (isCorrect) {
+              doc.setTextColor(34, 197, 94);
+              doc.text('✓ إجابتك صحيحة', pageWidth - 20, yPos, { align: 'right' });
+            } else {
+              doc.setTextColor(239, 68, 68);
+              const userAnswerLetter = String.fromCharCode(97 + userAnswer);
+              const correctAnswerLetter = String.fromCharCode(97 + (question.correct_answer as number));
+              doc.text(`✗ إجابتك: ${userAnswerLetter} | الصحيحة: ${correctAnswerLetter}`, pageWidth - 20, yPos, { align: 'right' });
+            }
+          } else {
+            doc.setTextColor(128, 128, 128);
+            doc.text('لم تجب على هذا السؤال', pageWidth - 20, yPos, { align: 'right' });
+          }
+        } else if (questionType === 'essay') {
+          const essayAnswer = essayAnswers[question.id];
+          if (essayAnswer) {
+            doc.setTextColor(13, 148, 136);
+            doc.text('إجابتك (مقالي):', pageWidth - 20, yPos, { align: 'right' });
+            yPos += 5;
+            doc.setTextColor(0, 0, 0);
+            const essayLines = doc.splitTextToSize(essayAnswer.substring(0, 200), maxWidth - 10);
+            essayLines.forEach((line: string) => {
+              if (yPos > pageHeight - 30) {
+                doc.addPage();
+                yPos = 20;
+              }
+              doc.text(line, pageWidth - 25, yPos, { align: 'right' });
+              yPos += 5;
+            });
+          } else {
+            doc.setTextColor(128, 128, 128);
+            doc.text('لم تجب على هذا السؤال', pageWidth - 20, yPos, { align: 'right' });
+          }
+        }
+
+        yPos += 10;
+
+        // Separator line
+        doc.setDrawColor(200, 200, 200);
+        doc.setLineWidth(0.5);
+        doc.line(20, yPos, pageWidth - 20, yPos);
+        yPos += 8;
       });
 
       // Footer
@@ -620,8 +704,8 @@ const TakeExam = () => {
       doc.save(fileName);
 
       toast({
-        title: "تم التحميل بنجاح",
-        description: "تم تحميل نتيجة الامتحان كملف PDF",
+        title: "تم التحميل بنجاح ✅",
+        description: "تم تحميل نتيجة الامتحان مع جميع الأسئلة والإجابات",
       });
     } catch (error) {
       console.error('Error generating PDF:', error);
@@ -942,25 +1026,30 @@ const TakeExam = () => {
 
                 {/* Actions */}
                 <div className="flex flex-col gap-3">
-                  {/* PDF Download Button - Only show if no essay questions (final result) */}
-                  {!result?.hasEssayQuestions && (
-                    <Button
-                      onClick={generateExamPDF}
-                      disabled={generatingPDF}
-                      className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
-                    >
-                      {generatingPDF ? (
-                        <>
-                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white ml-2" />
-                          جاري إنشاء PDF...
-                        </>
-                      ) : (
-                        <>
-                          <Download className="w-5 h-5 ml-2" />
-                          تحميل النتيجة كـ PDF
-                        </>
-                      )}
-                    </Button>
+                  {/* PDF Download Button - Always show after submission */}
+                  <Button
+                    onClick={generateExamPDF}
+                    disabled={generatingPDF}
+                    className="w-full bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white shadow-lg"
+                    size="lg"
+                  >
+                    {generatingPDF ? (
+                      <>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white ml-2" />
+                        جاري إنشاء PDF...
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="w-5 h-5 ml-2" />
+                        تحميل الامتحان كاملاً (PDF)
+                      </>
+                    )}
+                  </Button>
+
+                  {result?.hasEssayQuestions && (
+                    <p className="text-sm text-center text-muted-foreground">
+                      💡 يمكنك تحميل الامتحان الآن وستظهر النتيجة النهائية بعد التصحيح
+                    </p>
                   )}
 
                   <div className="flex gap-3">

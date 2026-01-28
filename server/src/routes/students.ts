@@ -243,17 +243,17 @@ router.post('/', async (req: Request, res: Response) => {
                 const passwordHash = await bcrypt.hash(passwordToHash, 10);
 
                 await execute(
-                    `INSERT INTO users (email, password_hash, role, phone, name, student_id) 
-                     VALUES (?, ?, 'student', ?, ?, ?)`,
-                    [email, passwordHash, phone || null, name, studentId]
+                    `INSERT INTO users (email, password_hash, role, phone, name) 
+                     VALUES (?, ?, 'student', ?, ?)`,
+                    [email, passwordHash, phone || null, name]
                 );
 
                 console.log(`User created successfully for student ${name} with email ${email}`);
             } catch (userError: unknown) {
                 if (typeof userError === 'object' && userError !== null && 'code' in userError && (userError as any).code === 'ER_DUP_ENTRY') {
                     await execute(
-                        `UPDATE users SET student_id = ?, phone = ?, name = ? WHERE email = ?`,
-                        [studentId, phone || null, name, email]
+                        `UPDATE users SET phone = ?, name = ? WHERE email = ?`,
+                        [phone || null, name, email]
                     );
                     console.log(`User updated for existing email ${email}`);
                 } else {

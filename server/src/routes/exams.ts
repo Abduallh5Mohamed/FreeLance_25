@@ -60,12 +60,12 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
             return res.json([]); // Student has no group, return empty
         }
 
-        // Get exams assigned to this group
+        // Get exams assigned to this group (only active exams)
         const exams = await query<Exam>(
             `SELECT DISTINCT e.* 
              FROM exams e
              INNER JOIN exam_groups eg ON e.id = eg.exam_id
-             WHERE eg.group_id = ?
+             WHERE eg.group_id = ? AND e.is_active = TRUE
              ORDER BY e.created_at DESC`,
             [student.group_id]
         );
@@ -818,17 +818,23 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
         console.log('✍️ Essay Answers:', essayAnswers);
         console.log('🖼️ Answer Images:', answerImages);
 
-        // Get the actual student_id from users table (could be user.id or user.student_id)
-        // First check if studentId is a user with student_id, otherwise use studentId directly
+        // Get user info and find matching student by phone
         const userRow = await queryOne<any>(
-            'SELECT id, student_id FROM users WHERE id = ?',
+            'SELECT id, phone FROM users WHERE id = ?',
             [studentId]
         );
 
-        // Determine the correct student_id for exam_results table
-        // exam_attempts uses user.id, but exam_results needs students.id (foreign key)
-        let actualStudentId = studentId; // For exam_attempts (uses user.id)
-        const resultsStudentId = userRow?.student_id || studentId; // For exam_results (needs students.id)
+        // Find student ID by phone for exam_results table
+        let resultsStudentId = studentId; // Default to user ID
+        if (userRow?.phone) {
+            const studentRow = await queryOne<any>(
+                'SELECT id FROM students WHERE phone = ?',
+                [userRow.phone]
+            );
+            if (studentRow?.id) {
+                resultsStudentId = studentRow.id;
+            }
+        }
 
         // Verify the student exists in students table for exam_results
         const studentExists = await queryOne<any>(
@@ -906,25 +912,58 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
         console.log('🔍 Getting student.id from students table...');
 
         // First get user phone
-        const [userRecord] = await query<any>(
+        const userRecordArray = await query<any>(
             'SELECT phone FROM users WHERE id = ?',
             [studentId]
         );
 
+        const userRecord = userRecordArray[0];
+
         if (!userRecord || !userRecord.phone) {
             console.error('❌ User not found or has no phone');
-            // Continue with userId as fallback
+            return res.status(400).json({ 
+                error: 'لا يمكن العثور على بيانات المستخدم. يرجى التواصل مع الإدارة.' 
+            });
         }
 
         // Then get student by phone
         const studentRecords = await query<any>(
             'SELECT id FROM students WHERE phone = ?',
-            [userRecord?.phone || '']
+            [userRecord.phone]
         );
 
-        actualStudentId = studentRecords[0]?.id || studentId;
+        let actualStudentId = studentRecords[0]?.id;
+        
+        // If student doesn't exist in students table, skip exam_student_answers (only save to exam_attempts and exam_results)
+        if (!actualStudentId) {
+            console.warn(`⚠️ Student not found in students table for phone ${userRecord.phone}. Skipping exam_student_answers.`);
+            
+            // Still save to exam_results (uses user ID)
+            await execute(
+                `INSERT INTO exam_results (exam_id, student_id, marks_obtained, total_marks, submitted_at)
+                 VALUES (?, ?, ?, ?, NOW())
+                 ON DUPLICATE KEY UPDATE 
+                    marks_obtained = VALUES(marks_obtained),
+                    total_marks = VALUES(total_marks),
+                    submitted_at = VALUES(submitted_at)`,
+                [examId, studentId, score ?? 0, exam.total_marks || 0]
+            );
+
+            const responseData = {
+                exam_id: examId,
+                student_id: studentId,
+                status: status,
+                completed_at: new Date().toISOString(),
+                score: score ?? null,
+                total_marks: exam.total_marks || 0,
+                passed: status === 'passed'
+            };
+
+            return res.status(201).json(responseData);
+        }
+
         console.log(`📊 User ID: ${studentId}`);
-        console.log(`📊 User Phone: ${userRecord?.phone}`);
+        console.log(`📊 User Phone: ${userRecord.phone}`);
         console.log(`📊 Student ID: ${actualStudentId}`);
 
         // ✅ Fetch all questions for this exam

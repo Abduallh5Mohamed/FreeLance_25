@@ -5,8 +5,8 @@
 ### 1. تثبيت MySQL وإنشاء قاعدة البيانات
 
 ```powershell
-# تشغيل MySQL Schema
-mysql -u root -p educational_platform < database\mysql-schema.sql
+# تشغيل MySQL Schema (ينشئ قاعدة بيانات باسم Freelance)
+mysql -u root -p < database\mysql-schema.sql
 ```
 
 ### 2. تحديث package.json وتثبيت الحزم
@@ -29,7 +29,7 @@ DB_HOST=localhost
 DB_PORT=3306
 DB_USER=root
 DB_PASSWORD=your_password
-DB_NAME=educational_platform
+DB_NAME=Freelance
 ```
 
 ### 4. اختبار الاتصال

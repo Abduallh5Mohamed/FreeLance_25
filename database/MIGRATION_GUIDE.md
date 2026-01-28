@@ -37,7 +37,7 @@ DB_HOST=localhost
 DB_PORT=3306
 DB_USER=root
 DB_PASSWORD=your_password
-DB_NAME=educational_platform
+DB_NAME=Freelance
 ```
 
 ### 4. تثبيت الحزم الجديدة

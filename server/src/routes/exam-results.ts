@@ -46,8 +46,8 @@ router.get('/', async (req: Request, res: Response) => {
             FROM exam_results er
             INNER JOIN exams e ON e.id = er.exam_id
             LEFT JOIN users u ON u.id = er.student_id AND u.role = 'student'
-            /* Try to locate matching student row by explicit link, or fallback by phone, or by id match */
-            LEFT JOIN students s ON (s.id = u.student_id OR (u.student_id IS NULL AND s.phone = u.phone) OR s.id = u.id)
+            /* Match student by phone since users table doesn't have student_id */
+            LEFT JOIN students s ON s.phone = u.phone
             LEFT JOIN grades gr ON gr.id = s.grade_id
             LEFT JOIN \`groups\` grp ON grp.id = s.group_id
             WHERE 1=1
@@ -153,7 +153,7 @@ router.get('/:id', async (req: Request, res: Response) => {
             FROM exam_results er
             INNER JOIN exams e ON e.id = er.exam_id
             LEFT JOIN users u ON u.id = er.student_id AND u.role = 'student'
-            LEFT JOIN students s ON (s.id = u.student_id OR (u.student_id IS NULL AND s.phone = u.phone) OR s.id = u.id)
+            LEFT JOIN students s ON s.phone = u.phone
             LEFT JOIN grades gr ON gr.id = s.grade_id
             LEFT JOIN \`groups\` grp ON grp.id = s.group_id
             WHERE er.id = ?

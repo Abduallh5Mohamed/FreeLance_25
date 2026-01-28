@@ -81,10 +81,10 @@ router.post('/', async (req: Request, res: Response) => {
 
         // Guardian phone required uniqueness (if provided)
         if (guardian_phone) {
-            // Check guardian phone in existing students (using both guardian_phone and parent_phone for compatibility)
+            // Check guardian phone in existing students (using parent_phone column)
             const [existingGuardianStudents] = await pool.query<RowDataPacket[]>(
-                'SELECT id FROM students WHERE guardian_phone = ? OR parent_phone = ?',
-                [guardian_phone, guardian_phone]
+                'SELECT id FROM students WHERE parent_phone = ?',
+                [guardian_phone]
             );
             if (existingGuardianStudents.length > 0) {
                 return res.status(400).json({ error: 'رقم ولي الأمر مستخدم بالفعل مع طالب آخر' });
@@ -234,7 +234,7 @@ router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthReq
         // Ensure guardian phone still unique before approval (race-condition safety)
         if (request.guardian_phone) {
             const [guardianConflict] = await connection.query<RowDataPacket[]>(
-                'SELECT id FROM students WHERE guardian_phone = ?',
+                'SELECT id FROM students WHERE parent_phone = ?',
                 [request.guardian_phone]
             );
             if (guardianConflict.length > 0) {
@@ -257,9 +257,9 @@ router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthReq
         // Create student record with UUID and barcode
         const studentId = randomUUID();
         await connection.query(
-            `INSERT INTO students (id, name, phone, guardian_phone, grade_id, group_id, password_hash, approval_status, is_offline, created_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-            [studentId, request.name, request.phone, request.guardian_phone || null, request.grade_id, request.group_id, request.password_hash, 'approved', request.is_offline || false]
+            `INSERT INTO students (id, name, phone, parent_phone, grade_id, group_id, barcode, password_hash, approval_status, is_offline, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+            [studentId, request.name, request.phone, request.guardian_phone || null, request.grade_id, request.group_id, barcode, request.password_hash, 'approved', request.is_offline || false]
         );
 
         // If requested courses, create student_courses entries

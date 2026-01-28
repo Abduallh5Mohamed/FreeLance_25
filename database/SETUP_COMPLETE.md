@@ -252,8 +252,8 @@ cat .env
 
 ### خطأ: Table doesn't exist
 ```powershell
-# أعد تشغيل Schema
-mysql -u root -p educational_platform < database\mysql-schema.sql
+# أعد تشغيل Schema (ينشئ قاعدة بيانات Freelance)
+mysql -u root -p < database\mysql-schema.sql
 ```
 
 ### خطأ: Module not found 'mysql2'

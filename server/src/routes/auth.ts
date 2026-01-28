@@ -11,7 +11,6 @@ interface User {
     phone?: string;
     name: string;
     role: 'admin' | 'teacher' | 'student';
-    student_id?: string;
     is_active: boolean;
     email_verified?: number;
     phone_verified?: number;
@@ -35,29 +34,37 @@ interface QueryResult {
 // Login endpoint
 router.post('/login', async (req: Request, res: Response) => {
     try {
+        console.log('🔐 Login attempt:', req.body);
         // Prefer phone-based login; fall back to email for backwards compatibility
         const { phone, email, password } = req.body;
 
         if ((!phone && !email) || !password) {
+            console.log('❌ Missing credentials');
             return res.status(400).json({ error: 'Phone (or email) and password are required' });
         }
 
         const identifier = phone ? phone.trim() : (email || '').toLowerCase().trim();
         const where = phone ? 'phone = ?' : 'email = ?';
+        console.log('🔍 Looking for user with:', where, identifier);
 
         const user = await queryOne<User>(
-            `SELECT id, email, phone, name, role, student_id, is_active, email_verified, phone_verified, created_at, updated_at, password_hash 
-             FROM users WHERE ${where} AND is_active = TRUE`,
+            `SELECT id, email, phone, name, role, is_active, email_verified, phone_verified, created_at, updated_at, password_hash 
+             FROM users WHERE ${where} AND is_active = 1`,
             [identifier]
         );
 
+        console.log('👤 User found:', user ? 'Yes' : 'No');
+
         if (!user || !user.password_hash) {
+            console.log('❌ No user or no password hash');
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
         const isValidPassword = await bcrypt.compare(password, user.password_hash);
+        console.log('🔑 Password valid:', isValidPassword);
 
         if (!isValidPassword) {
+            console.log('❌ Invalid password');
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
@@ -73,12 +80,13 @@ router.post('/login', async (req: Request, res: Response) => {
         // Remove password hash from response
         const { password_hash, ...userWithoutPassword } = user;
 
+        console.log('✅ Login successful for:', user.phone);
         res.json({
             user: userWithoutPassword,
             token,
         });
     } catch (error) {
-        console.error('Login error:', error);
+        console.error('❌ Login error:', error);
         res.status(500).json({ error: 'Authentication failed' });
     }
 });
@@ -192,19 +200,19 @@ router.delete('/users/student/:studentId', async (req: Request, res: Response) =
             return res.status(404).json({ error: 'Student not found' });
         }
 
-        // Try to delete user by student_id first, then fallback to phone or email
+        // Delete user by phone (users table doesn't have student_id)
         let result = await query(
-            'DELETE FROM users WHERE student_id = ?',
-            [studentId]
+            'DELETE FROM users WHERE phone = ? AND role = "student"',
+            [student.phone]
         );
 
         let affectedRows = (result as unknown as QueryResult).affectedRows;
 
-        // If no rows deleted and student has phone, try deleting by phone
-        if (affectedRows === 0 && student.phone) {
+        // If no rows deleted and student has email, try deleting by email
+        if (affectedRows === 0 && student.email) {
             result = await query(
-                'DELETE FROM users WHERE phone = ? AND role = "student"',
-                [student.phone]
+                'DELETE FROM users WHERE email = ? AND role = "student"',
+                [student.email]
             );
             affectedRows = (result as unknown as QueryResult).affectedRows;
         }
