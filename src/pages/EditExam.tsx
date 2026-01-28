@@ -382,7 +382,7 @@ export default function EditExam() {
         <div className="mb-6">
           <Button
             variant="outline"
-            onClick={() => navigate('/teacher/exams')}
+            onClick={() => navigate('/teacher-exams')}
             className="mb-4"
           >
             <ArrowLeft className="h-4 w-4 ml-2" />

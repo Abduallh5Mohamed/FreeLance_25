@@ -102,6 +102,7 @@ const App = () => (
             <Route path="/exam-results" element={<AuthGuard requiredRole="teacher"><ExamResults /></AuthGuard>} />
             <Route path="/manual-grading" element={<AuthGuard requiredRole="teacher"><ManualGrading /></AuthGuard>} />
             <Route path="/chat-assistant" element={<AuthGuard requiredRole="teacher"><ChatAssistant /></AuthGuard>} />
+            <Route path="/student-reports" element={<AuthGuard requiredRole="teacher"><Reports /></AuthGuard>} />
 
             {/* Student Routes - Protected */}
             <Route path="/student" element={<AuthGuard requiredRole="student"><StudentDashboard /></AuthGuard>} />
