@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { existsSync, mkdirSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
 import {
     downloadFile,
     uploadFile,
@@ -23,6 +24,10 @@ if (process.env.FFPROBE_PATH) {
 const TEMP_DIR = process.env.VIDEO_TEMP_DIR || '/tmp/video-processing';
 const FFMPEG_THREADS = parseInt(process.env.FFMPEG_THREADS || '2');
 const HLS_SEGMENT_DURATION = parseInt(process.env.HLS_SEGMENT_DURATION || '10');
+
+// AES-128 Encryption settings
+const ENABLE_ENCRYPTION = process.env.ENABLE_VIDEO_ENCRYPTION !== 'false'; // Enabled by default
+const ENCRYPTION_KEY_URL = process.env.ENCRYPTION_KEY_URL || '/api/videos/key'; // URL where key is served
 
 // Quality presets (optimized for educational content)
 interface QualityPreset {
@@ -116,12 +121,14 @@ export async function generateThumbnail(
 
 /**
  * Convert video to HLS format with multiple quality levels
+ * Now with AES-128 encryption support!
  */
 export async function convertToHLS(
     videoId: string,
     inputPath: string,
     outputDir: string,
-    onProgress?: (progress: number) => void
+    onProgress?: (progress: number) => void,
+    encryptionKeyInfo?: string
 ): Promise<string[]> {
     const qualities: string[] = [];
 
@@ -145,39 +152,48 @@ export async function convertToHLS(
         await new Promise<void>((resolve, reject) => {
             const outputPlaylist = path.join(qualityDir, 'playlist.m3u8');
 
+            // Build output options
+            const outputOptions = [
+                // Video encoding
+                '-c:v libx264',
+                '-preset medium',
+                '-profile:v main',
+                `-vf scale=-2:${preset.height}`,
+                `-b:v ${preset.videoBitrate}`,
+                `-maxrate ${preset.maxrate}`,
+                `-bufsize ${preset.bufsize}`,
+
+                // Audio encoding
+                '-c:a aac',
+                `-b:a ${preset.audioBitrate}`,
+                '-ar 44100',
+
+                // HLS options
+                '-f hls',
+                `-hls_time ${HLS_SEGMENT_DURATION}`,
+                '-hls_playlist_type vod',
+                '-hls_segment_filename', path.join(qualityDir, 'segment_%03d.ts'),
+
+                // Threading
+                `-threads ${FFMPEG_THREADS}`,
+
+                // Optimize for streaming
+                '-movflags +faststart',
+                '-g 48',
+                '-keyint_min 48',
+
+                // Force pixel format for compatibility
+                '-pix_fmt yuv420p'
+            ];
+
+            // Add encryption if key info is provided
+            if (encryptionKeyInfo && ENABLE_ENCRYPTION) {
+                outputOptions.push('-hls_key_info_file', encryptionKeyInfo);
+                console.log(`[FFmpeg] Encryption enabled for ${preset.name}`);
+            }
+
             ffmpeg(inputPath)
-                .outputOptions([
-                    // Video encoding
-                    '-c:v libx264',
-                    '-preset medium',
-                    '-profile:v main',
-                    `-vf scale=-2:${preset.height}`,
-                    `-b:v ${preset.videoBitrate}`,
-                    `-maxrate ${preset.maxrate}`,
-                    `-bufsize ${preset.bufsize}`,
-
-                    // Audio encoding
-                    '-c:a aac',
-                    `-b:a ${preset.audioBitrate}`,
-                    '-ar 44100',
-
-                    // HLS options
-                    '-f hls',
-                    `-hls_time ${HLS_SEGMENT_DURATION}`,
-                    '-hls_playlist_type vod',
-                    '-hls_segment_filename', path.join(qualityDir, 'segment_%03d.ts'),
-
-                    // Threading
-                    `-threads ${FFMPEG_THREADS}`,
-
-                    // Optimize for streaming
-                    '-movflags +faststart',
-                    '-g 48',
-                    '-keyint_min 48',
-
-                    // Force pixel format for compatibility
-                    '-pix_fmt yuv420p'
-                ])
+                .outputOptions(outputOptions)
                 .output(outputPlaylist)
                 .on('progress', (progress) => {
                     if (onProgress && progress.percent) {
@@ -234,10 +250,54 @@ function getResolution(height: number): string {
 }
 
 /**
+ * Generate AES-128 encryption key and key info file for HLS
+ */
+async function generateEncryptionKey(videoId: string, outputDir: string): Promise<{
+    keyPath: string;
+    keyInfoPath: string;
+    keyHex: string;
+    ivHex: string;
+}> {
+    // Generate random 16-byte key
+    const key = crypto.randomBytes(16);
+    const keyHex = key.toString('hex');
+    
+    // Generate random IV
+    const iv = crypto.randomBytes(16);
+    const ivHex = iv.toString('hex');
+    
+    // Save key file
+    const keyPath = path.join(outputDir, 'encryption.key');
+    await fs.writeFile(keyPath, key);
+    
+    // Create key info file for FFmpeg
+    // Format: key URL\nkey file path\nIV (optional)
+    const apiBase = process.env.API_BASE_URL || 'http://localhost:3001';
+    const keyUrl = `${apiBase}/api/videos/key/${videoId}`;
+    const keyInfoContent = `${keyUrl}\n${keyPath}\n${ivHex}`;
+    const keyInfoPath = path.join(outputDir, 'enc.keyinfo');
+    await fs.writeFile(keyInfoPath, keyInfoContent);
+    
+    console.log(`[Encryption] Generated AES-128 key for video ${videoId}`);
+    
+    return { keyPath, keyInfoPath, keyHex, ivHex };
+}
+
+/**
  * Process a video: download, convert to HLS, upload to MinIO
+ * In dev mode without FFmpeg, just mark as ready with original URL
  */
 export async function processVideo(videoId: string): Promise<void> {
     console.log(`[VideoProcessor] Starting processing for video ${videoId}`);
+
+    // Check if FFmpeg is available
+    const ffmpegAvailable = await checkFfmpegAvailable();
+    
+    if (!ffmpegAvailable) {
+        console.log(`[VideoProcessor] FFmpeg not available - using simple upload mode`);
+        await processVideoSimple(videoId);
+        return;
+    }
 
     await ensureTempDir();
     const workDir = path.join(TEMP_DIR, videoId);
@@ -288,7 +348,18 @@ export async function processVideo(videoId: string): Promise<void> {
         const hlsDir = path.join(workDir, 'hls');
         await fs.mkdir(hlsDir, { recursive: true });
 
-        console.log(`[VideoProcessor] Converting to HLS...`);
+        // Generate encryption key if encryption is enabled
+        let encryptionKeyInfo: string | undefined;
+        let encryptionData: { keyHex: string; ivHex: string } | undefined;
+        
+        if (ENABLE_ENCRYPTION) {
+            console.log(`[VideoProcessor] Generating encryption key...`);
+            const encryption = await generateEncryptionKey(videoId, workDir);
+            encryptionKeyInfo = encryption.keyInfoPath;
+            encryptionData = { keyHex: encryption.keyHex, ivHex: encryption.ivHex };
+        }
+
+        console.log(`[VideoProcessor] Converting to HLS${ENABLE_ENCRYPTION ? ' with AES-128 encryption' : ''}...`);
         const qualities = await convertToHLS(videoId, originalPath, hlsDir, async (progress) => {
             // Progress from 20% to 90% during conversion
             const adjustedProgress = 20 + (progress * 0.7);
@@ -296,30 +367,39 @@ export async function processVideo(videoId: string): Promise<void> {
                 'UPDATE videos SET processing_progress = ? WHERE id = ?',
                 [Math.floor(adjustedProgress), videoId]
             );
-        });
+        }, encryptionKeyInfo);
 
         // Upload HLS files to MinIO
         console.log(`[VideoProcessor] Uploading HLS files to MinIO...`);
         await uploadHLSFiles(videoId, hlsDir);
 
-        // Update database with final info
-        await execute(
-            `UPDATE videos SET 
+        // Update database with final info (including encryption key if encrypted)
+        const updateQuery = encryptionData 
+            ? `UPDATE videos SET 
+                status = ?, 
+                processing_progress = 100,
+                hls_key = ?,
+                qualities_available = ?,
+                encryption_key = ?,
+                encryption_iv = ?,
+                is_encrypted = 1,
+                processed_at = NOW()
+            WHERE id = ?`
+            : `UPDATE videos SET 
                 status = ?, 
                 processing_progress = 100,
                 hls_key = ?,
                 qualities_available = ?,
                 processed_at = NOW()
-            WHERE id = ?`,
-            [
-                'ready',
-                `${videoId}/playlist.m3u8`,
-                JSON.stringify(qualities),
-                videoId
-            ]
-        );
+            WHERE id = ?`;
+        
+        const updateParams = encryptionData
+            ? ['ready', `${videoId}/playlist.m3u8`, JSON.stringify(qualities), encryptionData.keyHex, encryptionData.ivHex, videoId]
+            : ['ready', `${videoId}/playlist.m3u8`, JSON.stringify(qualities), videoId];
 
-        console.log(`[VideoProcessor] Completed processing for video ${videoId}`);
+        await execute(updateQuery, updateParams);
+
+        console.log(`[VideoProcessor] Completed processing for video ${videoId}${ENABLE_ENCRYPTION ? ' (encrypted)' : ''}`);
 
     } catch (error) {
         console.error(`[VideoProcessor] Error processing video ${videoId}:`, error);
@@ -412,6 +492,78 @@ export async function deleteVideoFiles(videoId: string): Promise<void> {
         } catch (e) {
             console.warn(`[VideoProcessor] Could not delete HLS files:`, e);
         }
+    }
+}
+
+/**
+ * Check if FFmpeg is available
+ */
+async function checkFfmpegAvailable(): Promise<boolean> {
+    return new Promise((resolve) => {
+        try {
+            ffmpeg.getAvailableFormats((err, formats) => {
+                if (err) {
+                    console.log('[VideoProcessor] FFmpeg check failed:', err.message);
+                    resolve(false);
+                } else {
+                    resolve(true);
+                }
+            });
+        } catch (e) {
+            resolve(false);
+        }
+    });
+}
+
+/**
+ * Simple video processing without FFmpeg
+ * Just marks the video as ready using the original file
+ */
+async function processVideoSimple(videoId: string): Promise<void> {
+    console.log(`[VideoProcessor] Simple processing for video ${videoId}`);
+
+    try {
+        // Update status to processing
+        await execute(
+            'UPDATE videos SET status = ?, processing_progress = ? WHERE id = ?',
+            ['processing', 50, videoId]
+        );
+
+        // Get video info from database
+        const video = await queryOne('SELECT * FROM videos WHERE id = ?', [videoId]);
+        if (!video) {
+            throw new Error(`Video ${videoId} not found in database`);
+        }
+
+        // Mark as ready without HLS conversion
+        // The original file will be used for playback
+        await execute(
+            `UPDATE videos SET 
+                status = ?, 
+                processing_progress = 100,
+                hls_key = ?,
+                qualities_available = ?,
+                processed_at = NOW()
+            WHERE id = ?`,
+            [
+                'ready',
+                video.original_key, // Use original as playback source
+                JSON.stringify(['original']),
+                videoId
+            ]
+        );
+
+        console.log(`[VideoProcessor] Simple processing completed for video ${videoId}`);
+
+    } catch (error) {
+        console.error(`[VideoProcessor] Error in simple processing for video ${videoId}:`, error);
+
+        await execute(
+            'UPDATE videos SET status = ?, processing_error = ? WHERE id = ?',
+            ['error', error instanceof Error ? error.message : 'Unknown error', videoId]
+        );
+
+        throw error;
     }
 }
 

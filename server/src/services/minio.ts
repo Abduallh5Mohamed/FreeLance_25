@@ -6,27 +6,49 @@ import { networkInterfaces } from 'os';
 // Detect local IP for MinIO configuration
 const getLocalIp = () => {
     const nets = networkInterfaces();
-    const results: string[] = [];
+    const results: { name: string; address: string }[] = [];
 
     for (const name of Object.keys(nets)) {
+        // Skip VirtualBox, VMware, Docker, and other virtual adapters
+        const lowerName = name.toLowerCase();
+        if (lowerName.includes('virtualbox') || 
+            lowerName.includes('vmware') || 
+            lowerName.includes('docker') ||
+            lowerName.includes('vethernet') ||
+            lowerName.includes('hyper-v')) {
+            continue;
+        }
+
         for (const net of nets[name]!) {
             if (net.family === 'IPv4' && !net.internal) {
-                results.push(net.address);
+                results.push({ name, address: net.address });
             }
         }
     }
 
+    // Filter out VirtualBox IPs (192.168.56.x is VirtualBox Host-Only Network)
+    const filtered = results.filter(r => !r.address.startsWith('192.168.56.'));
+    
     // Prioritize common home WiFi subnets
-    const wifiIp = results.find(ip => ip.startsWith('192.168.1.') || ip.startsWith('192.168.0.'));
-    return wifiIp || results[0] || 'localhost';
+    const wifiIp = filtered.find(r => 
+        r.address.startsWith('192.168.1.') || 
+        r.address.startsWith('192.168.0.') ||
+        r.address.startsWith('10.')
+    );
+    
+    console.log('[MinIO] Network interfaces found:', results.map(r => `${r.name}: ${r.address}`));
+    console.log('[MinIO] Selected IP:', wifiIp?.address || filtered[0]?.address || 'localhost');
+    
+    return wifiIp?.address || filtered[0]?.address || 'localhost';
 };
 
 const localIp = getLocalIp();
 const configuredEndpoint = process.env.MINIO_ENDPOINT || 'localhost';
-// If endpoint is strictly localhost, swap it with the real IP to ensure signatures match
-// what the browser sees (except for docker/internal usage, assuming 'localhost' means local dev)
+// If endpoint is strictly localhost, use localhost for browser access (same machine)
+// This ensures the browser can reach MinIO on the same machine
 const usePublicIp = configuredEndpoint === 'localhost';
-const minioEndpoint = usePublicIp ? localIp : configuredEndpoint;
+// For local development, always use localhost since frontend and MinIO are on the same machine
+const minioEndpoint = usePublicIp ? 'localhost' : configuredEndpoint;
 
 console.log(`📱 MinIO Service: Configured endpoint: ${minioEndpoint} (Original: ${configuredEndpoint})`);
 
@@ -143,12 +165,13 @@ export async function completeMultipartUpload(
 }
 
 /**
- * Generate a URL for streaming HLS content
+ * Generate a URL for streaming HLS content or original video
  * Since bucket is public, we use direct URLs for proper relative path resolution
  */
 export async function getSignedStreamUrl(
     videoId: string,
-    fileName: string = 'playlist.m3u8'
+    fileName: string = 'playlist.m3u8',
+    bucket: string = BUCKETS.HLS
 ): Promise<string> {
     // Use direct URL for public bucket - this allows relative paths in m3u8 to work correctly
     // Use the dynamically detected endpoint
@@ -157,9 +180,17 @@ export async function getSignedStreamUrl(
     const protocol = useSSL ? 'https' : 'http';
 
     // The endpoint here must be the IP address we detected
-    const directUrl = `${protocol}://${minioEndpoint}:${port}/${BUCKETS.HLS}/${videoId}/360p/playlist.m3u8`;
-
-    return directUrl;
+    if (bucket === BUCKETS.ORIGINALS) {
+        // For original files, the fileName is the full objectKey (originals/videoId.ext)
+        // We need to keep it as-is since that's how it was stored
+        const directUrl = `${protocol}://${minioEndpoint}:${port}/${bucket}/${fileName}`;
+        console.log('[MinIO] Original video URL:', directUrl);
+        return directUrl;
+    } else {
+        // For HLS, use videoId/quality/playlist.m3u8 structure
+        const directUrl = `${protocol}://${minioEndpoint}:${port}/${bucket}/${videoId}/360p/playlist.m3u8`;
+        return directUrl;
+    }
 }
 
 /**

@@ -12,7 +12,7 @@ import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
 import { getStudentLectures, Lecture as APILecture, User } from "@/lib/api-http";
-import { VideoPlayer } from "@/components/VideoPlayer";
+import { SecureVideoPlayer } from "@/components/SecureVideoPlayer";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 
 interface Lecture extends APILecture {
@@ -32,7 +32,8 @@ const StudentLectures = () => {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLecture, setSelectedLecture] = useState<Lecture | null>(null);
-  const [playingVideo, setPlayingVideo] = useState<{ url: string; title: string } | null>(null);
+  const [playingVideo, setPlayingVideo] = useState<{ videoId: string; title: string } | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [filterLevel, setFilterLevel] = useState<string>('all');
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [loading, setLoading] = useState(true);
@@ -63,6 +64,7 @@ const StudentLectures = () => {
       }
 
       console.log('✅ User found:', user.name, 'ID:', user.id);
+      setCurrentUser(user);
 
       // Use student_id if available, otherwise use user id
       const studentIdentifier = user.student_id || user.id;
@@ -159,51 +161,26 @@ const StudentLectures = () => {
       }
 
       const user = JSON.parse(userStr);
-      const userId = user.id;
-      console.log('✅ User ID:', userId);
+      setCurrentUser(user);
 
-      // Request signed URL from backend
-      try {
-        const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
-        const response = await fetch(`${API_BASE_URL}/videos/stream/${videoId}?userId=${userId}`, {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          }
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          videoUrl = data.streamUrl; // Use the signed streaming URL from backend
-          console.log('✅ Got signed stream URL:', videoUrl);
-        } else {
-          const errorData = await response.json();
-          console.error('❌ Failed to get signed URL:', errorData);
-          toast({
-            variant: "destructive",
-            title: "خطأ",
-            description: errorData.error || "فشل في تحميل الفيديو"
-          });
-          return;
-        }
-      } catch (error) {
-        console.error('❌ Error getting signed URL:', error);
-        toast({
-          variant: "destructive",
-          title: "خطأ",
-          description: "فشل في الاتصال بالخادم"
-        });
-        return;
-      }
+      // Use SecureVideoPlayer with video ID directly
+      setPlayingVideo({
+        videoId: videoId,
+        title: lecture.title
+      });
+      
+      toast({
+        title: "جاري تشغيل المحاضرة",
+        description: lecture.title
+      });
+    } else {
+      // External video URL - still try to play in secure player
+      toast({
+        variant: "destructive",
+        title: "خطأ",
+        description: "هذا الفيديو غير مدعوم"
+      });
     }
-
-    setPlayingVideo({
-      url: videoUrl,
-      title: lecture.title
-    });
-    toast({
-      title: "جاري تشغيل المحاضرة",
-      description: lecture.title
-    });
   };
 
   const renderStars = (rating?: number) => {
@@ -227,10 +204,12 @@ const StudentLectures = () => {
       <StudentHeader />
 
       {/* Video Player Modal */}
-      {playingVideo && (
-        <VideoPlayer
-          url={playingVideo.url}
-          title={playingVideo.title}
+      {playingVideo && currentUser && (
+        <SecureVideoPlayer
+          videoId={playingVideo.videoId}
+          userId={currentUser.id}
+          studentName={currentUser.name || 'طالب'}
+          groupName={'المجموعة'}
           onClose={() => setPlayingVideo(null)}
         />
       )}

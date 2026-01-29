@@ -34,7 +34,10 @@ export function SimpleVideoPlayer({ videoId, userId }: SimpleVideoPlayerProps) {
 
                 const streamUrl = data.streamUrl;
 
-                if (Hls.isSupported()) {
+                // Check if HLS or direct video
+                const isHLS = streamUrl.includes('.m3u8');
+
+                if (isHLS && Hls.isSupported()) {
                     const hls = new Hls({
                         enableWorker: true,
                         lowLatencyMode: false,
@@ -59,11 +62,21 @@ export function SimpleVideoPlayer({ videoId, userId }: SimpleVideoPlayerProps) {
 
                     hls.loadSource(streamUrl);
                     hls.attachMedia(video);
-                } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                } else if (isHLS && video.canPlayType('application/vnd.apple.mpegurl')) {
+                    // Safari native HLS support
                     video.src = streamUrl;
                     video.addEventListener('loadedmetadata', () => {
                         setLoading(false);
                         video.play();
+                    });
+                } else {
+                    // Direct video file (mp4, webm, etc.)
+                    video.src = streamUrl;
+                    video.addEventListener('loadedmetadata', () => {
+                        setLoading(false);
+                    });
+                    video.addEventListener('canplay', () => {
+                        setLoading(false);
                     });
                 }
             } catch (err) {
