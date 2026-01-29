@@ -50,6 +50,8 @@ import ManualGrading from "./pages/ManualGrading";
 import ChatAssistant from "./pages/ChatAssistant";
 import StudentReports from "./pages/StudentReports";
 import TestVideo from "./pages/TestVideo";
+import TeacherPremiumLectures from "./pages/TeacherPremiumLectures";
+import StudentPremiumLectures from "./pages/StudentPremiumLectures";
 import AuthGuard from "./components/AuthGuard";
 import { UploadProvider } from "./contexts/UploadContext";
 import { UploadNotification } from "./components/UploadNotification";
@@ -105,6 +107,7 @@ const App = () => (
             <Route path="/student-reports" element={<AuthGuard requiredRole="teacher"><StudentReports /></AuthGuard>} />
             <Route path="/chat-assistant" element={<AuthGuard requiredRole="teacher"><ChatAssistant /></AuthGuard>} />
             <Route path="/student-reports" element={<AuthGuard requiredRole="teacher"><Reports /></AuthGuard>} />
+            <Route path="/teacher-premium-lectures" element={<AuthGuard requiredRole="teacher"><TeacherPremiumLectures /></AuthGuard>} />
 
             {/* Student Routes - Protected */}
             <Route path="/student" element={<AuthGuard requiredRole="student"><StudentDashboard /></AuthGuard>} />
@@ -115,6 +118,7 @@ const App = () => (
             <Route path="/student-exams" element={<AuthGuard requiredRole="student"><StudentExams /></AuthGuard>} />
             <Route path="/student-exam-results" element={<AuthGuard requiredRole="student"><StudentExamResults /></AuthGuard>} />
             <Route path="/exam-review/:examId" element={<AuthGuard requiredRole="student"><ExamReview /></AuthGuard>} />
+            <Route path="/student-premium-lectures" element={<AuthGuard requiredRole="student"><StudentPremiumLectures /></AuthGuard>} />
             <Route path="/exam-access" element={<AuthGuard requiredRole="student"><ExamAccess /></AuthGuard>} />
             <Route path="/take-exam/:examId" element={<AuthGuard requiredRole="student"><TakeExam /></AuthGuard>} />
 
