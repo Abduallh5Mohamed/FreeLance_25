@@ -44,7 +44,7 @@ const upload = multer({
 router.get('/', async (req: Request, res: Response) => {
     try {
         const { grade_id, group_id } = req.query;
-        
+
         let sql = `
             SELECT 
                 pl.*,
@@ -162,7 +162,7 @@ router.post('/payments/:id/approve', async (req: Request, res: Response) => {
         const { reviewed_by } = req.body;
 
         const payment = await queryOne('SELECT * FROM premium_lecture_payments WHERE id = ?', [id]);
-        
+
         if (!payment) {
             return res.status(404).json({ error: 'طلب الدفع غير موجود' });
         }
@@ -199,7 +199,7 @@ router.post('/payments/:id/reject', async (req: Request, res: Response) => {
         const { reviewed_by, rejection_reason } = req.body;
 
         const payment = await queryOne('SELECT * FROM premium_lecture_payments WHERE id = ?', [id]);
-        
+
         if (!payment) {
             return res.status(404).json({ error: 'طلب الدفع غير موجود' });
         }
@@ -334,7 +334,7 @@ router.get('/student/:studentId/available', async (req: Request, res: Response) 
 
         // Get student's grade and group
         const student = await queryOne('SELECT id, grade_id, group_id FROM students WHERE id = ?', [studentId]);
-        
+
         if (!student) {
             return res.status(404).json({ error: 'الطالب غير موجود' });
         }

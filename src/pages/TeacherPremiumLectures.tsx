@@ -7,14 +7,14 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { 
-  Video, Trash2, Play, DollarSign, Clock, Eye, X, Check, 
+import {
+  Video, Trash2, Play, DollarSign, Clock, Eye, X, Check,
   AlertCircle, Users, Plus, Search
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
+import {
   getPremiumLectures, createPremiumLecture, updatePremiumLecture, deletePremiumLecture,
   getPendingPremiumPayments, getAllPremiumPayments, approvePremiumPayment, rejectPremiumPayment,
   getGrades, getGroups, PremiumLecture, PremiumLecturePayment, User, Grade, Group
@@ -119,7 +119,7 @@ export default function TeacherPremiumLectures() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!formData.title || !formData.video_url || !formData.price) {
       toast({
         variant: "destructive",
@@ -273,7 +273,7 @@ export default function TeacherPremiumLectures() {
     }));
   };
 
-  const filteredLectures = lectures.filter(lecture => 
+  const filteredLectures = lectures.filter(lecture =>
     lecture.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
@@ -293,7 +293,7 @@ export default function TeacherPremiumLectures() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900" dir="rtl">
       <Header />
-      
+
       {/* Video Player Modal */}
       <AnimatePresence>
         {playingVideo && (
@@ -358,9 +358,9 @@ export default function TeacherPremiumLectures() {
               >
                 <X className="w-6 h-6" />
               </Button>
-              <img 
-                src={viewingReceipt} 
-                alt="إيصال الدفع" 
+              <img
+                src={viewingReceipt}
+                alt="إيصال الدفع"
                 className="max-w-full max-h-[85vh] object-contain rounded-lg"
               />
             </motion.div>
@@ -398,7 +398,7 @@ export default function TeacherPremiumLectures() {
             <h1 className="text-3xl font-bold text-white mb-2">الحصص المدفوعة</h1>
             <p className="text-white/60">إدارة الحصص الإضافية المدفوعة وطلبات الدفع</p>
           </div>
-          <Button 
+          <Button
             onClick={() => setShowAddDialog(true)}
             className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700"
           >
@@ -458,8 +458,8 @@ export default function TeacherPremiumLectures() {
                     <Card className="bg-white/5 border-white/10 hover:bg-white/10 transition-all overflow-hidden">
                       <div className="relative h-40 bg-gradient-to-br from-purple-600/30 to-pink-600/30">
                         {lecture.thumbnail_url ? (
-                          <img 
-                            src={lecture.thumbnail_url} 
+                          <img
+                            src={lecture.thumbnail_url}
                             alt={lecture.title}
                             className="w-full h-full object-cover"
                           />
@@ -566,11 +566,11 @@ export default function TeacherPremiumLectures() {
                     <CardContent className="p-6">
                       <div className="flex flex-col md:flex-row gap-6">
                         {/* Receipt Image */}
-                        <div 
+                        <div
                           className="w-full md:w-48 h-48 bg-white/10 rounded-lg overflow-hidden cursor-pointer hover:opacity-80 transition-opacity"
                           onClick={() => setViewingReceipt(`http://localhost:3001${payment.receipt_image_url}`)}
                         >
-                          <img 
+                          <img
                             src={`http://localhost:3001${payment.receipt_image_url}`}
                             alt="إيصال الدفع"
                             className="w-full h-full object-cover"
@@ -807,7 +807,7 @@ export default function TeacherPremiumLectures() {
                     className="bg-white/10 border-white/20 text-white"
                   />
                   <p className="text-white/40 text-sm">يمكنك إدخال رابط يوتيوب أو فيميو أو رابط فيديو مباشر</p>
-              </div>
+                </div>
               </div>
 
               <div className="md:col-span-2">
@@ -832,8 +832,8 @@ export default function TeacherPremiumLectures() {
 
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={resetForm}>إلغاء</Button>
-              <Button 
-                type="submit" 
+              <Button
+                type="submit"
                 disabled={loading}
                 className="bg-gradient-to-r from-purple-600 to-pink-600"
               >
