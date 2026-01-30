@@ -6,32 +6,32 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Users, Plus, Edit2, Trash2, Mail, Phone } from "lucide-react";
+import { Users, Plus, Edit2, Trash2, Phone } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
+import { getStaff, createStaff, updateStaff, deleteStaff, Staff as StaffType } from "@/lib/api";
 
 const AVAILABLE_PAGES = [
-  { id: "students", label: "إدارة الطلاب" },
-  { id: "courses", label: "إدارة الكورسات" },
-  { id: "groups", label: "إدارة المجموعات" },
-  { id: "attendance", label: "الحضور والغياب" },
-  { id: "fees", label: "المصروفات" },
-  { id: "messages", label: "الرسائل" },
-  { id: "reports", label: "التقارير" },
-  { id: "expenses", label: "مصروفات السنتر" },
+  { id: "students", label: "إدارة الطلاب", route: "/students" },
+  { id: "courses", label: "إدارة الكورسات", route: "/courses" },
+  { id: "groups", label: "إدارة المجموعات", route: "/groups" },
+  { id: "attendance", label: "الحضور والغياب", route: "/attendance" },
+  { id: "fees", label: "المصروفات", route: "/fees" },
+  { id: "messages", label: "الرسائل", route: "/messages" },
+  { id: "reports", label: "التقارير", route: "/reports" },
+  { id: "expenses", label: "مصروفات السنتر", route: "/expenses" },
 ];
 
 const Staff = () => {
-  const [staff, setStaff] = useState([]);
+  const [staff, setStaff] = useState<StaffType[]>([]);
   const [isOpen, setIsOpen] = useState(false);
-  const [editingStaff, setEditingStaff] = useState(null);
+  const [editingStaff, setEditingStaff] = useState<StaffType | null>(null);
   const [formData, setFormData] = useState({
     name: "",
-    email: "",
     phone: "",
     password: "",
   });
-  const [selectedPages, setSelectedPages] = useState([]);
+  const [selectedPages, setSelectedPages] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
 
@@ -42,14 +42,15 @@ const Staff = () => {
 
   const fetchStaff = async () => {
     try {
-      // TODO: Add staff API endpoint
-      setStaff([]);
-      toast({
-        title: "قريباً",
-        description: "سيتم إضافة إدارة الموظفين قريباً",
-      });
+      const data = await getStaff();
+      setStaff(data || []);
     } catch (error) {
       console.error('Error fetching staff:', error);
+      toast({
+        title: "خطأ",
+        description: "حدث خطأ في جلب بيانات الموظفين",
+        variant: "destructive",
+      });
     }
   };
 
@@ -58,20 +59,87 @@ const Staff = () => {
     setLoading(true);
 
     try {
-      toast({
-        title: "قريباً",
-        description: "سيتم إضافة هذه الميزة قريباً",
-      });
+      if (!formData.name.trim()) {
+        toast({
+          title: "خطأ",
+          description: "يجب إدخال اسم الموظف",
+          variant: "destructive",
+        });
+        setLoading(false);
+        return;
+      }
+
+      if (!formData.phone.trim()) {
+        toast({
+          title: "خطأ",
+          description: "يجب إدخال رقم الهاتف",
+          variant: "destructive",
+        });
+        setLoading(false);
+        return;
+      }
+
+      if (!editingStaff && !formData.password.trim()) {
+        toast({
+          title: "خطأ",
+          description: "يجب إدخال كلمة المرور",
+          variant: "destructive",
+        });
+        setLoading(false);
+        return;
+      }
+
+      if (selectedPages.length === 0) {
+        toast({
+          title: "خطأ",
+          description: "يجب اختيار صلاحية واحدة على الأقل",
+          variant: "destructive",
+        });
+        setLoading(false);
+        return;
+      }
+
+      if (editingStaff) {
+        // Update existing staff
+        const updateData: Parameters<typeof updateStaff>[1] = {
+          name: formData.name.trim(),
+          phone: formData.phone.trim(),
+          accessible_pages: selectedPages,
+        };
+
+        if (formData.password.trim()) {
+          updateData.password = formData.password.trim();
+        }
+
+        await updateStaff(editingStaff.id, updateData);
+        toast({
+          title: "تم بنجاح",
+          description: "تم تحديث بيانات الموظف بنجاح",
+        });
+      } else {
+        // Create new staff
+        await createStaff({
+          name: formData.name.trim(),
+          phone: formData.phone.trim(),
+          password: formData.password.trim(),
+          accessible_pages: selectedPages,
+        });
+        toast({
+          title: "تم بنجاح",
+          description: "تم إضافة الموظف بنجاح",
+        });
+      }
 
       fetchStaff();
       setIsOpen(false);
       setEditingStaff(null);
-      setFormData({ name: "", email: "", phone: "", password: "" });
+      setFormData({ name: "", phone: "", password: "" });
       setSelectedPages([]);
-    } catch (error) {
+    } catch (error: any) {
+      console.error('Error saving staff:', error);
       toast({
         title: "خطأ",
-        description: "حدث خطأ في العملية",
+        description: error.message || "حدث خطأ في العملية",
         variant: "destructive",
       });
     } finally {
@@ -79,11 +147,10 @@ const Staff = () => {
     }
   };
 
-  const handleEdit = (staffMember: { name: string; email: string; phone?: string; accessible_pages?: string[] }) => {
+  const handleEdit = (staffMember: StaffType) => {
     setEditingStaff(staffMember);
     setFormData({
       name: staffMember.name,
-      email: staffMember.email,
       phone: staffMember.phone || "",
       password: "",
     });
@@ -92,18 +159,33 @@ const Staff = () => {
   };
 
   const handleDelete = async (id: string) => {
+    if (!confirm("هل أنت متأكد من حذف هذا الموظف؟")) {
+      return;
+    }
+
     try {
-      // TODO: Add staff delete API endpoint
+      await deleteStaff(id);
       toast({
-        title: "قريباً",
-        description: "سيتم إضافة هذه الميزة قريباً",
+        title: "تم بنجاح",
+        description: "تم حذف الموظف بنجاح",
       });
-    } catch (error) {
+      fetchStaff();
+    } catch (error: any) {
+      console.error('Error deleting staff:', error);
       toast({
         title: "خطأ",
-        description: "حدث خطأ في الحذف",
+        description: error.message || "حدث خطأ في الحذف",
         variant: "destructive",
       });
+    }
+  };
+
+  const handleDialogClose = (open: boolean) => {
+    setIsOpen(open);
+    if (!open) {
+      setEditingStaff(null);
+      setFormData({ name: "", phone: "", password: "" });
+      setSelectedPages([]);
     }
   };
 
@@ -123,7 +205,7 @@ const Staff = () => {
             </div>
           </div>
 
-          <Dialog open={isOpen} onOpenChange={setIsOpen}>
+          <Dialog open={isOpen} onOpenChange={handleDialogClose}>
             <DialogTrigger asChild>
               <Button className="shadow-medium">
                 <Plus className="w-4 h-4 ml-2" />
@@ -147,21 +229,12 @@ const Staff = () => {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="email">البريد الإلكتروني</Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    value={formData.email}
-                    onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
                   <Label htmlFor="phone">رقم الهاتف</Label>
                   <Input
                     id="phone"
                     value={formData.phone}
                     onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
+                    required
                   />
                 </div>
                 <div className="space-y-2">
@@ -239,10 +312,10 @@ const Staff = () => {
                           <div>
                             <h3 className="font-bold text-white text-lg">{staffMember.name}</h3>
                             <div className="flex items-center gap-2 text-xs text-cyan-50">
-                              {staffMember.email && (
+                              {staffMember.phone && (
                                 <>
-                                  <Mail className="w-3 h-3" />
-                                  <span>{staffMember.email}</span>
+                                  <Phone className="w-3 h-3" />
+                                  <span>{staffMember.phone}</span>
                                 </>
                               )}
                             </div>
@@ -268,12 +341,7 @@ const Staff = () => {
                         </div>
                       </div>
 
-                      <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        <div>
-                          <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📧 البريد الإلكتروني</div>
-                          <div className="text-sm font-medium">{staffMember.email}</div>
-                        </div>
-
+                      <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                           <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📱 رقم الهاتف</div>
                           <div className="text-sm font-medium flex items-center gap-2">

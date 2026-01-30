@@ -31,7 +31,19 @@ interface QueryResult {
     affectedRows: number;
 }
 
-// Login endpoint
+// Staff interface for login
+interface Staff {
+    id: string;
+    name: string;
+    email?: string;
+    phone?: string;
+    password_hash?: string;
+    role: string;
+    accessible_pages: string | string[];
+    is_active: boolean;
+}
+
+// Login endpoint - checks both users and staff tables
 router.post('/login', async (req: Request, res: Response) => {
     try {
         console.log('🔐 Login attempt:', req.body);
@@ -47,44 +59,94 @@ router.post('/login', async (req: Request, res: Response) => {
         const where = phone ? 'phone = ?' : 'email = ?';
         console.log('🔍 Looking for user with:', where, identifier);
 
+        // First, check in users table
         const user = await queryOne<User>(
             `SELECT id, email, phone, name, role, is_active, email_verified, phone_verified, created_at, updated_at, password_hash 
              FROM users WHERE ${where} AND is_active = 1`,
             [identifier]
         );
 
-        console.log('👤 User found:', user ? 'Yes' : 'No');
+        console.log('👤 User found in users table:', user ? 'Yes' : 'No');
 
-        if (!user || !user.password_hash) {
-            console.log('❌ No user or no password hash');
-            return res.status(401).json({ error: 'Invalid credentials' });
+        // If user found in users table
+        if (user && user.password_hash) {
+            const isValidPassword = await bcrypt.compare(password, user.password_hash);
+            console.log('🔑 Password valid:', isValidPassword);
+
+            if (isValidPassword) {
+                // Generate JWT token
+                const jwtSecret: Secret = process.env.JWT_SECRET || 'secret';
+                const jwtExpiry = process.env.JWT_EXPIRES_IN || '7d';
+                const token = jwt.sign(
+                    { id: user.id, email: user.email || null, phone: user.phone || null, role: user.role },
+                    jwtSecret,
+                    { expiresIn: jwtExpiry } as jwt.SignOptions
+                );
+
+                // Remove password hash from response
+                const { password_hash, ...userWithoutPassword } = user;
+
+                console.log('✅ Login successful for user:', user.phone);
+                return res.json({
+                    user: userWithoutPassword,
+                    token,
+                });
+            }
         }
 
-        const isValidPassword = await bcrypt.compare(password, user.password_hash);
-        console.log('🔑 Password valid:', isValidPassword);
-
-        if (!isValidPassword) {
-            console.log('❌ Invalid password');
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
-
-        // Generate JWT token
-        const jwtSecret: Secret = process.env.JWT_SECRET || 'secret';
-        const jwtExpiry = process.env.JWT_EXPIRES_IN || '7d';
-        const token = jwt.sign(
-            { id: user.id, email: user.email || null, phone: user.phone || null, role: user.role },
-            jwtSecret,
-            { expiresIn: jwtExpiry } as jwt.SignOptions
+        // If not found in users or password invalid, check staff table
+        console.log('🔍 Looking for staff with phone:', identifier);
+        const staff = await queryOne<Staff>(
+            `SELECT id, name, email, phone, password_hash, role, accessible_pages, is_active 
+             FROM staff WHERE phone = ? AND is_active = 1`,
+            [identifier]
         );
 
-        // Remove password hash from response
-        const { password_hash, ...userWithoutPassword } = user;
+        console.log('👤 Staff found:', staff ? 'Yes' : 'No');
 
-        console.log('✅ Login successful for:', user.phone);
-        res.json({
-            user: userWithoutPassword,
-            token,
-        });
+        if (staff && staff.password_hash) {
+            const isValidPassword = await bcrypt.compare(password, staff.password_hash);
+            console.log('🔑 Staff password valid:', isValidPassword);
+
+            if (isValidPassword) {
+                // Parse accessible_pages
+                const accessiblePages = typeof staff.accessible_pages === 'string'
+                    ? JSON.parse(staff.accessible_pages)
+                    : (staff.accessible_pages || []);
+
+                // Generate JWT token
+                const jwtSecret: Secret = process.env.JWT_SECRET || 'secret';
+                const jwtExpiry = process.env.JWT_EXPIRES_IN || '7d';
+                const token = jwt.sign(
+                    {
+                        id: staff.id,
+                        phone: staff.phone,
+                        role: 'staff',
+                        accessible_pages: accessiblePages
+                    },
+                    jwtSecret,
+                    { expiresIn: jwtExpiry } as jwt.SignOptions
+                );
+
+                console.log('✅ Staff login successful for:', staff.phone);
+                return res.json({
+                    user: {
+                        id: staff.id,
+                        name: staff.name,
+                        email: staff.email,
+                        phone: staff.phone,
+                        role: 'staff',
+                        accessible_pages: accessiblePages,
+                        is_active: staff.is_active
+                    },
+                    token
+                });
+            }
+        }
+
+        // Neither user nor staff found/matched
+        console.log('❌ No valid user or staff found');
+        return res.status(401).json({ error: 'Invalid credentials' });
     } catch (error) {
         console.error('❌ Login error:', error);
         res.status(500).json({ error: 'Authentication failed' });

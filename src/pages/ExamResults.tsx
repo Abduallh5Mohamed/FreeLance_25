@@ -80,7 +80,7 @@ const ExamResults = () => {
     const userStr = localStorage.getItem('currentUser');
     const user: User | null = userStr ? JSON.parse(userStr) : null;
 
-    if (!user || (user.role !== 'admin' && user.role !== 'teacher')) {
+    if (!user || (user.role !== 'admin' && user.role !== 'teacher' && user.role !== 'staff')) {
       navigate('/auth');
       return;
     }
