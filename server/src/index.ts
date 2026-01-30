@@ -110,11 +110,8 @@ app.use('/api/migrations', migrationsRoutes);
 app.use('/api/messages', messagesRoutes);
 app.use('/api/videos', videosRoutes);
 app.use('/api/manual-grading', manualGradingRoutes);
-<<<<<<< HEAD
 app.use('/api/staff', staffRoutes);
-=======
 app.use('/api/premium-lectures', premiumLecturesRoutes);
->>>>>>> 8ba7aaf37351fadea4210d414c335e2e81a7a40c
 
 // 404 handler
 app.use((req: Request, res: Response) => {
