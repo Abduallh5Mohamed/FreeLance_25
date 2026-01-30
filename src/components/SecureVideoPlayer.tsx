@@ -184,31 +184,16 @@ export function SecureVideoPlayer({
 
         detectScreenCapture();
 
-        // Monitor window blur events - Print Screen causes blur in some browsers
+        // Monitor window blur events - Immediate logout on ANY visibility change (ALT+TAB)
         const handleVisibilityChange = () => {
-            const now = Date.now();
-            
             if (document.hidden) {
                 setIsSecurityBlurred(true);
                 setIsWindowFocused(false);
                 setShowBlackScreen(true);
                 if (videoRef.current) videoRef.current.pause();
                 
-                // Track blur frequency - rapid blurs = screenshot attempts
-                if (now - lastBlurTime.current < 1500) {
-                    blurCount.current++;
-                    if (blurCount.current >= 2) {
-                        forceLogout('نشاط مشبوه - تبديل سريع للنوافذ');
-                    }
-                } else {
-                    blurCount.current = 1;
-                }
-                lastBlurTime.current = now;
-                
-                suspiciousActivityCount.current++;
-                if (suspiciousActivityCount.current > 3) {
-                    forceLogout('نشاط مشبوه متكرر - محاولة تسجيل محتملة');
-                }
+                // Immediate logout on any tab/window switch
+                forceLogout('تبديل التبويب أو النافذة محظور');
             } else {
                 setTimeout(() => {
                     setIsSecurityBlurred(false);
@@ -225,16 +210,8 @@ export function SecureVideoPlayer({
             setShowBlackScreen(true);
             if (videoRef.current) videoRef.current.pause();
             
-            // Rapid window blur = screenshot tool
-            if (now - lastBlurTime.current < 1000) {
-                blurCount.current++;
-                if (blurCount.current >= 2) {
-                    forceLogout('محاولة تصوير الشاشة - Window Blur');
-                }
-            } else {
-                blurCount.current = 1;
-            }
-            lastBlurTime.current = now;
+            // Immediate logout on ANY window blur (ALT+TAB, switching apps, etc.)
+            forceLogout('تبديل النافذة أو التطبيق محظور (ALT+TAB)');
         };
 
         const handleWindowFocus = () => {
@@ -314,12 +291,236 @@ export function SecureVideoPlayer({
         window.addEventListener('blur', handleWindowBlur);
         window.addEventListener('focus', handleWindowFocus);
 
+        // ========= MOBILE SECURITY - ANDROID & iOS =========
+        
+        // 1. Detect screen recording on mobile devices
+        const detectMobileRecording = () => {
+            // Check if MediaRecorder API is being accessed (screen recording)
+            if ('mediaDevices' in navigator && navigator.mediaDevices.getDisplayMedia) {
+                const originalGetDisplayMedia = navigator.mediaDevices.getDisplayMedia;
+                navigator.mediaDevices.getDisplayMedia = function(...args) {
+                    forceLogout('محاولة تسجيل الشاشة على الموبايل');
+                    return originalGetDisplayMedia.apply(this, args);
+                };
+            }
+            
+            // Detect MediaRecorder usage (video recording)
+            const OriginalMediaRecorder = window.MediaRecorder;
+            if (OriginalMediaRecorder) {
+                (window as any).MediaRecorder = class extends OriginalMediaRecorder {
+                    constructor(stream: MediaStream, options?: MediaRecorderOptions) {
+                        super(stream, options);
+                        forceLogout('محاولة تسجيل فيديو - MediaRecorder على الموبايل');
+                    }
+                };
+            }
+            
+            // Monitor getUserMedia (camera/mic access - often used by recording apps)
+            if (navigator.mediaDevices?.getUserMedia) {
+                const originalGetUserMedia = navigator.mediaDevices.getUserMedia;
+                navigator.mediaDevices.getUserMedia = async function(constraints) {
+                    // If requesting video while watching - suspicious
+                    if (constraints?.video) {
+                        forceLogout('محاولة الوصول للكاميرا أثناء المشاهدة - تسجيل محتمل');
+                    }
+                    return originalGetUserMedia.call(this, constraints);
+                };
+            }
+            
+            // Block captureStream on video element (can be used for recording)
+            const videoCaptureStream = (HTMLVideoElement.prototype as any).captureStream || 
+                                      (HTMLVideoElement.prototype as any).mozCaptureStream;
+            if (videoCaptureStream) {
+                (HTMLVideoElement.prototype as any).captureStream = function() {
+                    forceLogout('محاولة التقاط stream الفيديو للتسجيل');
+                    throw new Error('captureStream blocked');
+                };
+            }
+            
+            // Block Canvas drawImage on video (used for frame capture and recording)
+            const originalDrawImage = CanvasRenderingContext2D.prototype.drawImage;
+            CanvasRenderingContext2D.prototype.drawImage = function(...args: any[]) {
+                // Check if drawing from our video element
+                if (args[0] instanceof HTMLVideoElement && args[0] === videoRef.current) {
+                    forceLogout('محاولة التقاط إطارات الفيديو عبر Canvas');
+                    throw new Error('Canvas capture blocked');
+                }
+                return originalDrawImage.apply(this, args);
+            };
+            
+            // Block WebRTC Data Channel (can be used to send video stream)
+            const originalCreateDataChannel = RTCPeerConnection.prototype.createDataChannel;
+            RTCPeerConnection.prototype.createDataChannel = function(...args: any[]) {
+                forceLogout('محاولة إرسال البيانات عبر WebRTC - تسجيل محتمل');
+                throw new Error('Data channel blocked');
+            };
+        };
+        
+        // 2. Detect when user leaves app (goes to home screen or switches apps)
+        const handleAppStateChange = () => {
+            if (document.hidden || document.visibilityState === 'hidden') {
+                forceLogout('الخروج من التطبيق على الموبايل محظور');
+            }
+        };
+        
+        // 3. Detect screenshot attempts on Android/iOS
+        // Screenshots cause a quick blur/visibility change
+        let mobileBlurCount = 0;
+        let lastMobileBlurTime = 0;
+        
+        const handleMobileBlur = () => {
+            const now = Date.now();
+            if (now - lastMobileBlurTime < 500) {
+                mobileBlurCount++;
+                if (mobileBlurCount >= 1) {
+                    forceLogout('محاولة أخذ لقطة شاشة على الموبايل');
+                }
+            } else {
+                mobileBlurCount = 0;
+            }
+            lastMobileBlurTime = now;
+        };
+        
+        // 4. Detect volume button press (often used for screenshot)
+        const handleVolumeButton = (e: KeyboardEvent) => {
+            if (e.key === 'VolumeUp' || e.key === 'VolumeDown') {
+                // Check if Power button is also pressed (Screenshot combo on Android)
+                handleMobileBlur();
+            }
+        };
+        
+        // 5. Block long press on mobile (screenshot gesture)
+        let touchStartTime = 0;
+        const handleTouchStart = () => {
+            touchStartTime = Date.now();
+        };
+        
+        const handleTouchEnd = () => {
+            const touchDuration = Date.now() - touchStartTime;
+            if (touchDuration > 1000) {
+                // Long press detected - might be screenshot gesture
+                forceLogout('ضغطة طويلة مشبوهة على الموبايل');
+            }
+        };
+        
+        // 6. Monitor page freeze (iOS screenshot causes brief freeze)
+        let lastFrameTime = Date.now();
+        const checkFrameRate = () => {
+            const now = Date.now();
+            const timeSinceLastFrame = now - lastFrameTime;
+            
+            // If more than 200ms passed, might be screenshot
+            if (timeSinceLastFrame > 200 && document.visibilityState === 'visible') {
+                forceLogout('تجميد الشاشة - محاولة لقطة شاشة محتملة');
+            }
+            
+            lastFrameTime = now;
+            requestAnimationFrame(checkFrameRate);
+        };
+        
+        // 7. Monitor battery drain (recording consumes a lot of battery)
+        const monitorBattery = async () => {
+            if ('getBattery' in navigator) {
+                try {
+                    const battery = await (navigator as any).getBattery();
+                    let lastBatteryLevel = battery.level;
+                    let batteryCheckCount = 0;
+                    
+                    const checkBatteryDrain = () => {
+                        const currentLevel = battery.level;
+                        const drain = lastBatteryLevel - currentLevel;
+                        
+                        // If battery drains more than 0.5% in 30 seconds while charging is off
+                        if (drain > 0.005 && !battery.charging) {
+                            batteryCheckCount++;
+                            if (batteryCheckCount >= 2) {
+                                forceLogout('استهلاك بطارية مشبوه - تسجيل محتمل');
+                            }
+                        } else {
+                            batteryCheckCount = 0;
+                        }
+                        
+                        lastBatteryLevel = currentLevel;
+                    };
+                    
+                    setInterval(checkBatteryDrain, 30000); // Check every 30 seconds
+                } catch (e) {
+                    console.log('Battery API not available');
+                }
+            }
+        };
+        
+        // 8. Detect Picture-in-Picture attempts (used to record while browsing)
+        const blockPiP = () => {
+            if (videoRef.current) {
+                videoRef.current.addEventListener('enterpictureinpicture', () => {
+                    forceLogout('محاولة استخدام Picture-in-Picture للتسجيل');
+                    if (document.pictureInPictureElement) {
+                        document.exitPictureInPicture();
+                    }
+                });
+            }
+        };
+        
+        // 9. Monitor screen orientation changes (some recording apps rotate screen)
+        let orientationChangeCount = 0;
+        let lastOrientationChange = Date.now();
+        
+        const handleOrientationChange = () => {
+            const now = Date.now();
+            if (now - lastOrientationChange < 2000) {
+                orientationChangeCount++;
+                if (orientationChangeCount >= 2) {
+                    forceLogout('تغيير اتجاه الشاشة المتكرر - نشاط مشبوه');
+                }
+            } else {
+                orientationChangeCount = 0;
+            }
+            lastOrientationChange = now;
+        };
+        
+        // 10. Block Web Share API (can be used to save video)
+        if (navigator.share) {
+            const originalShare = navigator.share;
+            navigator.share = async function(data) {
+                if (data.files || data.url) {
+                    forceLogout('محاولة مشاركة المحتوى');
+                }
+                return originalShare.call(this, data);
+            };
+        }
+        
+        // Detect if running on mobile
+        const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+        
+        if (isMobile) {
+            detectMobileRecording();
+            monitorBattery();
+            blockPiP();
+            document.addEventListener('visibilitychange', handleAppStateChange, true);
+            window.addEventListener('blur', handleMobileBlur, true);
+            document.addEventListener('keydown', handleVolumeButton, true);
+            document.addEventListener('touchstart', handleTouchStart, true);
+            document.addEventListener('touchend', handleTouchEnd, true);
+            window.addEventListener('orientationchange', handleOrientationChange, true);
+            requestAnimationFrame(checkFrameRate);
+        }
+
         return () => {
             if (performanceCheckInterval.current) clearInterval(performanceCheckInterval.current);
             clearInterval(devToolsInterval);
             document.removeEventListener('visibilitychange', handleVisibilityChange);
             window.removeEventListener('blur', handleWindowBlur);
             window.removeEventListener('focus', handleWindowFocus);
+            
+            if (isMobile) {
+                document.removeEventListener('visibilitychange', handleAppStateChange, true);
+                window.removeEventListener('blur', handleMobileBlur, true);
+                document.removeEventListener('keydown', handleVolumeButton, true);
+                document.removeEventListener('touchstart', handleTouchStart, true);
+                document.removeEventListener('touchend', handleTouchEnd, true);
+                window.removeEventListener('orientationchange', handleOrientationChange, true);
+            }
         };
     }, [forceLogout]);
 
@@ -862,9 +1063,18 @@ export function SecureVideoPlayer({
             style={{
                 userSelect: 'none',
                 WebkitUserSelect: 'none',
-                // CSS protection against screenshots
+                // CSS protection against screenshots on mobile & desktop
                 WebkitTouchCallout: 'none',
+                touchAction: 'none',
+                // Prevent screenshot flag on Android
+                // @ts-ignore
+                '-webkit-user-select': 'none',
+                '-moz-user-select': 'none',
+                '-ms-user-select': 'none',
             }}
+            // Prevent screenshot attributes for mobile browsers
+            data-html2canvas-ignore="true"
+            data-screenshot-prevent="true"
         >
             {/* Security blur overlay when window loses focus */}
             {isSecurityBlurred && (
@@ -910,10 +1120,20 @@ export function SecureVideoPlayer({
                 disablePictureInPicture
                 onContextMenu={(e) => e.preventDefault()}
                 onClick={togglePlay}
+                // Mobile security attributes
+                data-html2canvas-ignore="true"
+                data-screenshot-prevent="true"
+                // @ts-ignore - Android FLAG_SECURE equivalent
+                x-webkit-airplay="deny"
+                webkit-playsinline="true"
                 style={{
                     // Make video harder to capture
                     filter: isSecurityBlurred || showBlackScreen ? 'blur(50px) brightness(0)' : 'none',
                     transition: 'filter 0.3s ease',
+                    // Mobile-specific security styles
+                    WebkitUserSelect: 'none',
+                    WebkitTouchCallout: 'none',
+                    touchAction: 'none',
                 }}
             />
 
