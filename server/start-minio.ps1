@@ -2,7 +2,7 @@
 Write-Host "🚀 Starting MinIO Server..." -ForegroundColor Cyan
 
 # Define MinIO paths
-$minioDir = "C:\minio"
+$minioDir = "D:\MinIO"
 $minioExe = "$minioDir\minio.exe"
 $minioData = "$minioDir\data"
 

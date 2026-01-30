@@ -79,6 +79,169 @@ router.get('/', async (req: Request, res: Response) => {
     }
 });
 
+// ===============================
+// PAYMENTS ROUTES - MUST BE BEFORE /:id
+// ===============================
+
+// Get all pending payment requests (for teacher)
+router.get('/payments/pending', async (req: Request, res: Response) => {
+    try {
+        const sql = `
+            SELECT 
+                plp.*,
+                pl.title as lecture_title,
+                pl.price as lecture_price,
+                s.name as student_name,
+                s.phone as student_phone,
+                gr.name as grade_name,
+                g.name as group_name
+            FROM premium_lecture_payments plp
+            JOIN premium_lectures pl ON plp.premium_lecture_id = pl.id
+            JOIN students s ON plp.student_id = s.id
+            LEFT JOIN grades gr ON s.grade_id = gr.id
+            LEFT JOIN \`groups\` g ON s.group_id = g.id
+            WHERE plp.status = 'pending'
+            ORDER BY plp.created_at ASC
+        `;
+
+        const payments = await query(sql);
+        res.json(payments || []);
+    } catch (error) {
+        console.error('Get pending payments error:', error);
+        res.status(500).json({ error: 'فشل في جلب طلبات الدفع المعلقة' });
+    }
+});
+
+// Get all payment requests (for teacher)
+router.get('/payments', async (req: Request, res: Response) => {
+    try {
+        const { status, lecture_id } = req.query;
+
+        let sql = `
+            SELECT 
+                plp.*,
+                pl.title as lecture_title,
+                pl.price as lecture_price,
+                s.name as student_name,
+                s.phone as student_phone,
+                gr.name as grade_name,
+                g.name as group_name
+            FROM premium_lecture_payments plp
+            JOIN premium_lectures pl ON plp.premium_lecture_id = pl.id
+            JOIN students s ON plp.student_id = s.id
+            LEFT JOIN grades gr ON s.grade_id = gr.id
+            LEFT JOIN \`groups\` g ON s.group_id = g.id
+            WHERE 1=1
+        `;
+        const params: string[] = [];
+
+        if (status && typeof status === 'string') {
+            sql += ' AND plp.status = ?';
+            params.push(status);
+        }
+
+        if (lecture_id && typeof lecture_id === 'string') {
+            sql += ' AND plp.premium_lecture_id = ?';
+            params.push(lecture_id);
+        }
+
+        sql += ' ORDER BY plp.created_at DESC';
+
+        const payments = await query(sql, params);
+        res.json(payments || []);
+    } catch (error) {
+        console.error('Get all payments error:', error);
+        res.status(500).json({ error: 'فشل في جلب طلبات الدفع' });
+    }
+});
+
+// Approve payment request
+router.post('/payments/:id/approve', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { reviewed_by } = req.body;
+
+        const payment = await queryOne('SELECT * FROM premium_lecture_payments WHERE id = ?', [id]);
+        
+        if (!payment) {
+            return res.status(404).json({ error: 'طلب الدفع غير موجود' });
+        }
+
+        if (payment.status !== 'pending') {
+            return res.status(400).json({ error: 'تم مراجعة هذا الطلب مسبقاً' });
+        }
+
+        // Update payment status
+        await execute(`
+            UPDATE premium_lecture_payments 
+            SET status = 'approved', reviewed_by = ?, reviewed_at = NOW()
+            WHERE id = ?
+        `, [reviewed_by || null, id]);
+
+        // Grant access to the lecture
+        const accessId = uuidv4();
+        await execute(`
+            INSERT INTO premium_lecture_access (id, student_id, premium_lecture_id, payment_id)
+            VALUES (?, ?, ?, ?)
+        `, [accessId, payment.student_id, payment.premium_lecture_id, id]);
+
+        res.json({ success: true, message: 'تمت الموافقة على طلب الدفع وتم منح الوصول للحصة' });
+    } catch (error) {
+        console.error('Approve payment error:', error);
+        res.status(500).json({ error: 'فشل في الموافقة على طلب الدفع' });
+    }
+});
+
+// Reject payment request
+router.post('/payments/:id/reject', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { reviewed_by, rejection_reason } = req.body;
+
+        const payment = await queryOne('SELECT * FROM premium_lecture_payments WHERE id = ?', [id]);
+        
+        if (!payment) {
+            return res.status(404).json({ error: 'طلب الدفع غير موجود' });
+        }
+
+        if (payment.status !== 'pending') {
+            return res.status(400).json({ error: 'تم مراجعة هذا الطلب مسبقاً' });
+        }
+
+        await execute(`
+            UPDATE premium_lecture_payments 
+            SET status = 'rejected', reviewed_by = ?, reviewed_at = NOW(), rejection_reason = ?
+            WHERE id = ?
+        `, [reviewed_by || null, rejection_reason || null, id]);
+
+        res.json({ success: true, message: 'تم رفض طلب الدفع' });
+    } catch (error) {
+        console.error('Reject payment error:', error);
+        res.status(500).json({ error: 'فشل في رفض طلب الدفع' });
+    }
+});
+
+// Check if student has access to a premium lecture
+router.get('/access/check/:studentId/:lectureId', async (req: Request, res: Response) => {
+    try {
+        const { studentId, lectureId } = req.params;
+
+        const access = await queryOne(`
+            SELECT * FROM premium_lecture_access 
+            WHERE student_id = ? AND premium_lecture_id = ?
+        `, [studentId, lectureId]);
+
+        res.json({ hasAccess: !!access, access });
+    } catch (error) {
+        console.error('Check access error:', error);
+        res.status(500).json({ error: 'فشل في التحقق من الوصول' });
+    }
+});
+
+// ===============================
+// SINGLE LECTURE ROUTES - AFTER SPECIFIC ROUTES
+// ===============================
+
 // Get single premium lecture
 router.get('/:id', async (req: Request, res: Response) => {
     try {
@@ -295,165 +458,6 @@ router.get('/payments/student/:studentId', async (req: Request, res: Response) =
     } catch (error) {
         console.error('Get student payments error:', error);
         res.status(500).json({ error: 'فشل في جلب طلبات الدفع' });
-    }
-});
-
-// Get all pending payment requests (for teacher)
-router.get('/payments/pending', async (req: Request, res: Response) => {
-    try {
-        const sql = `
-            SELECT 
-                plp.*,
-                pl.title as lecture_title,
-                pl.price as lecture_price,
-                s.name as student_name,
-                s.phone as student_phone,
-                gr.name as grade_name,
-                g.name as group_name
-            FROM premium_lecture_payments plp
-            JOIN premium_lectures pl ON plp.premium_lecture_id = pl.id
-            JOIN students s ON plp.student_id = s.id
-            LEFT JOIN grades gr ON s.grade_id = gr.id
-            LEFT JOIN \`groups\` g ON s.group_id = g.id
-            WHERE plp.status = 'pending'
-            ORDER BY plp.created_at ASC
-        `;
-
-        const payments = await query(sql);
-        res.json(payments || []);
-    } catch (error) {
-        console.error('Get pending payments error:', error);
-        res.status(500).json({ error: 'فشل في جلب طلبات الدفع المعلقة' });
-    }
-});
-
-// Get all payment requests (for teacher)
-router.get('/payments', async (req: Request, res: Response) => {
-    try {
-        const { status, lecture_id } = req.query;
-
-        let sql = `
-            SELECT 
-                plp.*,
-                pl.title as lecture_title,
-                pl.price as lecture_price,
-                s.name as student_name,
-                s.phone as student_phone,
-                gr.name as grade_name,
-                g.name as group_name
-            FROM premium_lecture_payments plp
-            JOIN premium_lectures pl ON plp.premium_lecture_id = pl.id
-            JOIN students s ON plp.student_id = s.id
-            LEFT JOIN grades gr ON s.grade_id = gr.id
-            LEFT JOIN \`groups\` g ON s.group_id = g.id
-            WHERE 1=1
-        `;
-        const params: string[] = [];
-
-        if (status && typeof status === 'string') {
-            sql += ' AND plp.status = ?';
-            params.push(status);
-        }
-
-        if (lecture_id && typeof lecture_id === 'string') {
-            sql += ' AND plp.premium_lecture_id = ?';
-            params.push(lecture_id);
-        }
-
-        sql += ' ORDER BY plp.created_at DESC';
-
-        const payments = await query(sql, params);
-        res.json(payments || []);
-    } catch (error) {
-        console.error('Get all payments error:', error);
-        res.status(500).json({ error: 'فشل في جلب طلبات الدفع' });
-    }
-});
-
-// Approve payment request
-router.post('/payments/:id/approve', async (req: Request, res: Response) => {
-    try {
-        const { id } = req.params;
-        const { reviewed_by } = req.body;
-
-        const payment = await queryOne('SELECT * FROM premium_lecture_payments WHERE id = ?', [id]);
-        
-        if (!payment) {
-            return res.status(404).json({ error: 'طلب الدفع غير موجود' });
-        }
-
-        if (payment.status !== 'pending') {
-            return res.status(400).json({ error: 'تم مراجعة هذا الطلب مسبقاً' });
-        }
-
-        // Update payment status
-        await execute(`
-            UPDATE premium_lecture_payments 
-            SET status = 'approved', reviewed_by = ?, reviewed_at = NOW()
-            WHERE id = ?
-        `, [reviewed_by || null, id]);
-
-        // Grant access to the lecture
-        const accessId = uuidv4();
-        await execute(`
-            INSERT INTO premium_lecture_access (id, student_id, premium_lecture_id, payment_id)
-            VALUES (?, ?, ?, ?)
-        `, [accessId, payment.student_id, payment.premium_lecture_id, id]);
-
-        res.json({ success: true, message: 'تمت الموافقة على طلب الدفع وتم منح الوصول للحصة' });
-    } catch (error) {
-        console.error('Approve payment error:', error);
-        res.status(500).json({ error: 'فشل في الموافقة على طلب الدفع' });
-    }
-});
-
-// Reject payment request
-router.post('/payments/:id/reject', async (req: Request, res: Response) => {
-    try {
-        const { id } = req.params;
-        const { reviewed_by, rejection_reason } = req.body;
-
-        const payment = await queryOne('SELECT * FROM premium_lecture_payments WHERE id = ?', [id]);
-        
-        if (!payment) {
-            return res.status(404).json({ error: 'طلب الدفع غير موجود' });
-        }
-
-        if (payment.status !== 'pending') {
-            return res.status(400).json({ error: 'تم مراجعة هذا الطلب مسبقاً' });
-        }
-
-        await execute(`
-            UPDATE premium_lecture_payments 
-            SET status = 'rejected', reviewed_by = ?, reviewed_at = NOW(), rejection_reason = ?
-            WHERE id = ?
-        `, [reviewed_by || null, rejection_reason || null, id]);
-
-        res.json({ success: true, message: 'تم رفض طلب الدفع' });
-    } catch (error) {
-        console.error('Reject payment error:', error);
-        res.status(500).json({ error: 'فشل في رفض طلب الدفع' });
-    }
-});
-
-// ===============================
-// ACCESS CHECK
-// ===============================
-
-// Check if student has access to a premium lecture
-router.get('/access/check/:studentId/:lectureId', async (req: Request, res: Response) => {
-    try {
-        const { studentId, lectureId } = req.params;
-
-        const access = await queryOne(`
-            SELECT * FROM premium_lecture_access 
-            WHERE student_id = ? AND premium_lecture_id = ?
-        `, [studentId, lectureId]);
-
-        res.json({ hasAccess: !!access, access });
-    } catch (error) {
-        console.error('Check access error:', error);
-        res.status(500).json({ error: 'فشل في التحقق من الوصول' });
     }
 });
 

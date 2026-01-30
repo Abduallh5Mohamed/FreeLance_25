@@ -768,12 +768,12 @@ export default function TeacherPremiumLectures() {
 
               <div>
                 <Label>الصف الدراسي</Label>
-                <Select value={formData.grade_id} onValueChange={(v) => setFormData({ ...formData, grade_id: v })}>
+                <Select value={formData.grade_id || 'all'} onValueChange={(v) => setFormData({ ...formData, grade_id: v === 'all' ? '' : v })}>
                   <SelectTrigger className="bg-white/10 border-white/20 text-white mt-2">
                     <SelectValue placeholder="اختر الصف" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">الكل</SelectItem>
+                    <SelectItem value="all">الكل</SelectItem>
                     {grades.map((grade) => (
                       <SelectItem key={grade.id} value={grade.id}>{grade.name}</SelectItem>
                     ))}
@@ -783,12 +783,12 @@ export default function TeacherPremiumLectures() {
 
               <div>
                 <Label>المجموعة</Label>
-                <Select value={formData.group_id} onValueChange={(v) => setFormData({ ...formData, group_id: v })}>
+                <Select value={formData.group_id || 'all'} onValueChange={(v) => setFormData({ ...formData, group_id: v === 'all' ? '' : v })}>
                   <SelectTrigger className="bg-white/10 border-white/20 text-white mt-2">
                     <SelectValue placeholder="اختر المجموعة" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">الكل</SelectItem>
+                    <SelectItem value="all">الكل</SelectItem>
                     {groups.map((group) => (
                       <SelectItem key={group.id} value={group.id}>{group.name}</SelectItem>
                     ))}
