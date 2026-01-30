@@ -66,7 +66,7 @@ export default function TeacherExams() {
     const userStr = localStorage.getItem('currentUser');
     const user: User | null = userStr ? JSON.parse(userStr) : null;
 
-    if (!user || (user.role !== 'teacher' && user.role !== 'admin')) {
+    if (!user || (user.role !== 'teacher' && user.role !== 'admin' && user.role !== 'staff')) {
       navigate('/auth');
       return;
     }

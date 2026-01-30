@@ -108,6 +108,18 @@ const Auth = () => {
             setTimeout(() => {
               navigate("/teacher");
             }, 300);
+          } else if (result.user.role === 'staff') {
+            // Staff login - redirect to teacher dashboard (with limited access based on permissions)
+            toast({
+              title: "تم تسجيل الدخول بنجاح",
+              description: `مرحباً بك ${result.user.name}`,
+            });
+            console.log('✅ Staff user, accessible pages:', (result.user as any).accessible_pages);
+            console.log('✅ Navigating to /teacher...');
+            // Small delay to ensure localStorage is updated before navigation
+            setTimeout(() => {
+              navigate("/teacher");
+            }, 300);
           } else {
             // Student login - check if student exists
             const student = await getStudentByPhone(phone.trim());
@@ -522,33 +534,33 @@ const Auth = () => {
                             return course.grade === gradeName;
                           })
                           .map((course) => (
-                          <div key={course.id} className="flex items-center justify-end gap-2">
-                            <Label htmlFor={course.id} className="text-white text-sm cursor-pointer">
-                              {course.name}
-                            </Label>
-                            <Checkbox
-                              id={course.id}
-                              checked={selectedCourses.includes(course.id)}
-                              onCheckedChange={(checked) => {
-                                if (checked) {
-                                  setSelectedCourses([...selectedCourses, course.id]);
-                                } else {
-                                  setSelectedCourses(selectedCourses.filter(id => id !== course.id));
-                                }
-                              }}
-                              className="border-white/30"
-                            />
-                          </div>
-                        ))}
+                            <div key={course.id} className="flex items-center justify-end gap-2">
+                              <Label htmlFor={course.id} className="text-white text-sm cursor-pointer">
+                                {course.name}
+                              </Label>
+                              <Checkbox
+                                id={course.id}
+                                checked={selectedCourses.includes(course.id)}
+                                onCheckedChange={(checked) => {
+                                  if (checked) {
+                                    setSelectedCourses([...selectedCourses, course.id]);
+                                  } else {
+                                    setSelectedCourses(selectedCourses.filter(id => id !== course.id));
+                                  }
+                                }}
+                                className="border-white/30"
+                              />
+                            </div>
+                          ))}
                         {(() => {
                           const selectedGrade = grades.find(g => g.id === gradeId);
                           const gradeName = selectedGrade?.name;
                           return courses.filter(c => c.grade === gradeName).length === 0;
                         })() && (
-                          <div className="p-2 text-sm text-gray-400 text-center">
-                            لا توجد كورسات لهذا الصف
-                          </div>
-                        )}
+                            <div className="p-2 text-sm text-gray-400 text-center">
+                              لا توجد كورسات لهذا الصف
+                            </div>
+                          )}
                       </>
                     ) : (
                       <div className="p-2 text-sm text-gray-400 text-center">

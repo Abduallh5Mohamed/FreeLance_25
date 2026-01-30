@@ -1314,3 +1314,63 @@ export const deleteImport = async (id: string): Promise<void> => {
         method: 'DELETE',
     });
 };
+// ==================== Staff ====================
+export interface Staff {
+    id: string;
+    name: string;
+    email?: string;
+    phone?: string;
+    role: string;
+    accessible_pages: string[];
+    is_active: boolean;
+    created_at?: string;
+    updated_at?: string;
+}
+
+export const getStaff = async (): Promise<Staff[]> => {
+    return request<Staff[]>('/staff', {
+        method: 'GET',
+    });
+};
+
+export const getStaffById = async (id: string): Promise<Staff | null> => {
+    try {
+        return await request<Staff>(`/staff/${id}`, {
+            method: 'GET',
+        });
+    } catch {
+        return null;
+    }
+};
+
+export const createStaff = async (staffData: {
+    name: string;
+    email?: string;
+    phone: string;
+    password: string;
+    accessible_pages: string[];
+}): Promise<Staff> => {
+    return request<Staff>('/staff', {
+        method: 'POST',
+        body: JSON.stringify(staffData),
+    });
+};
+
+export const updateStaff = async (id: string, staffData: {
+    name?: string;
+    email?: string;
+    phone?: string;
+    password?: string;
+    accessible_pages?: string[];
+}): Promise<Staff> => {
+    return request<Staff>(`/staff/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(staffData),
+    });
+};
+
+export const deleteStaff = async (id: string): Promise<void> => {
+    await request<void>(`/staff/${id}`, {
+        method: 'DELETE',
+    });
+};

@@ -90,7 +90,7 @@ const TeacherDashboard = () => {
         }
 
         const user = JSON.parse(userStr) as User;
-        if (user.role !== 'admin' && user.role !== 'teacher') {
+        if (user.role !== 'admin' && user.role !== 'teacher' && user.role !== 'staff') {
           navigate('/auth');
           toast({
             variant: "destructive",
