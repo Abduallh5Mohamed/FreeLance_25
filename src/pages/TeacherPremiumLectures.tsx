@@ -7,12 +7,15 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import {
-  Video, Trash2, Play, DollarSign, Clock, Eye, X, Check,
-  AlertCircle, Users, Plus, Search
+
+import { 
+  Video, Trash2, Play, DollarSign, Clock, Eye, X, Check, 
+  AlertCircle, Users, Plus, Search, Upload
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
+import { VideoUploader } from '@/components/VideoUploader';
+import { SecureVideoPlayer } from '@/components/SecureVideoPlayer';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   getPremiumLectures, createPremiumLecture, updatePremiumLecture, deletePremiumLecture,
@@ -33,7 +36,7 @@ export default function TeacherPremiumLectures() {
   const [grades, setGrades] = useState<Grade[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(false);
-  const [playingVideo, setPlayingVideo] = useState<{ url: string; title: string } | null>(null);
+  const [playingVideo, setPlayingVideo] = useState<{ videoId: string; title: string } | null>(null);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [editingLecture, setEditingLecture] = useState<PremiumLecture | null>(null);
   const [viewingReceipt, setViewingReceipt] = useState<string | null>(null);
@@ -42,6 +45,7 @@ export default function TeacherPremiumLectures() {
   const [rejectionReason, setRejectionReason] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState('lectures');
+  const [uploadMethod, setUploadMethod] = useState<'url' | 'upload'>('upload');
 
   const [formData, setFormData] = useState({
     title: '',
@@ -280,58 +284,30 @@ export default function TeacherPremiumLectures() {
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'pending':
-        return <Badge variant="secondary" className="bg-yellow-500/20 text-yellow-300">قيد المراجعة</Badge>;
+        return <Badge variant="secondary" className="bg-yellow-100 text-yellow-700 dark:bg-yellow-500/20 dark:text-yellow-300">قيد المراجعة</Badge>;
       case 'approved':
-        return <Badge variant="secondary" className="bg-green-500/20 text-green-300">تمت الموافقة</Badge>;
+        return <Badge variant="secondary" className="bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300">تمت الموافقة</Badge>;
       case 'rejected':
-        return <Badge variant="secondary" className="bg-red-500/20 text-red-300">مرفوض</Badge>;
+        return <Badge variant="secondary" className="bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300">مرفوض</Badge>;
       default:
         return null;
     }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
       <Header />
 
       {/* Video Player Modal */}
-      <AnimatePresence>
-        {playingVideo && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4"
-            onClick={handleCloseVideo}
-          >
-            <motion.div
-              initial={{ scale: 0.9 }}
-              animate={{ scale: 1 }}
-              exit={{ scale: 0.9 }}
-              className="relative w-full max-w-4xl"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <Button
-                variant="ghost"
-                size="icon"
-                className="absolute -top-12 left-0 text-white hover:bg-white/20"
-                onClick={handleCloseVideo}
-              >
-                <X className="w-6 h-6" />
-              </Button>
-              <h3 className="text-white text-xl mb-4">{playingVideo.title}</h3>
-              <div className="aspect-video bg-black rounded-lg overflow-hidden">
-                <video
-                  src={playingVideo.url}
-                  controls
-                  autoPlay
-                  className="w-full h-full"
-                />
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {playingVideo && currentUser && (
+        <SecureVideoPlayer
+          videoId={playingVideo.videoId}
+          userId={currentUser.id}
+          studentName={currentUser.name || 'معاينة'}
+          groupName={'معاينة المدرس'}
+          onClose={handleCloseVideo}
+        />
+      )}
 
       {/* Receipt Viewer Modal */}
       <AnimatePresence>
@@ -394,13 +370,18 @@ export default function TeacherPremiumLectures() {
 
       <main className="container mx-auto px-4 py-8">
         <div className="flex justify-between items-center mb-8">
-          <div>
-            <h1 className="text-3xl font-bold text-white mb-2">الحصص المدفوعة</h1>
-            <p className="text-white/60">إدارة الحصص الإضافية المدفوعة وطلبات الدفع</p>
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-gradient-to-br from-cyan-500 to-teal-600 rounded-xl shadow-lg">
+              <DollarSign className="h-8 w-8 text-white" />
+            </div>
+            <div>
+              <h1 className="text-3xl font-bold bg-gradient-to-r from-cyan-600 to-teal-600 bg-clip-text text-transparent">الحصص المدفوعة</h1>
+              <p className="text-sm text-muted-foreground mt-1">إدارة الحصص الإضافية المدفوعة وطلبات الدفع</p>
+            </div>
           </div>
           <Button
             onClick={() => setShowAddDialog(true)}
-            className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700"
+            className="bg-gradient-to-r from-cyan-500 to-teal-600 hover:from-cyan-600 hover:to-teal-700"
           >
             <Plus className="w-4 h-4 ml-2" />
             إضافة حصة جديدة
@@ -408,16 +389,16 @@ export default function TeacherPremiumLectures() {
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="bg-white/10 border-white/20 mb-6">
-            <TabsTrigger value="lectures" className="data-[state=active]:bg-purple-600">
+          <TabsList className="mb-6">
+            <TabsTrigger value="lectures" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white">
               <Video className="w-4 h-4 ml-2" />
               الحصص ({lectures.length})
             </TabsTrigger>
-            <TabsTrigger value="pending" className="data-[state=active]:bg-purple-600">
+            <TabsTrigger value="pending" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white">
               <AlertCircle className="w-4 h-4 ml-2" />
               طلبات معلقة ({pendingPayments.length})
             </TabsTrigger>
-            <TabsTrigger value="all-payments" className="data-[state=active]:bg-purple-600">
+            <TabsTrigger value="all-payments" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white">
               <DollarSign className="w-4 h-4 ml-2" />
               جميع الطلبات ({allPayments.length})
             </TabsTrigger>
@@ -427,24 +408,24 @@ export default function TeacherPremiumLectures() {
           <TabsContent value="lectures">
             <div className="mb-4">
               <div className="relative">
-                <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-white/40 w-5 h-5" />
+                <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-5 h-5" />
                 <Input
                   type="text"
                   placeholder="البحث في الحصص..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pr-10 bg-white/10 border-white/20 text-white placeholder:text-white/40"
+                  className="pr-10"
                 />
               </div>
             </div>
 
             {loading ? (
-              <div className="text-center text-white py-12">جاري التحميل...</div>
+              <div className="text-center text-muted-foreground py-12">جاري التحميل...</div>
             ) : filteredLectures.length === 0 ? (
-              <Card className="bg-white/5 border-white/10">
+              <Card className="shadow-lg">
                 <CardContent className="py-12 text-center">
-                  <Video className="w-16 h-16 mx-auto text-white/20 mb-4" />
-                  <p className="text-white/60">لا توجد حصص مدفوعة بعد</p>
+                  <Video className="w-16 h-16 mx-auto text-muted-foreground/40 mb-4" />
+                  <p className="text-muted-foreground">لا توجد حصص مدفوعة بعد</p>
                 </CardContent>
               </Card>
             ) : (
@@ -455,8 +436,8 @@ export default function TeacherPremiumLectures() {
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                   >
-                    <Card className="bg-white/5 border-white/10 hover:bg-white/10 transition-all overflow-hidden">
-                      <div className="relative h-40 bg-gradient-to-br from-purple-600/30 to-pink-600/30">
+                    <Card className="shadow-lg hover:shadow-xl transition-all overflow-hidden">
+                      <div className="relative h-40 bg-gradient-to-br from-cyan-500/20 to-teal-500/20">
                         {lecture.thumbnail_url ? (
                           <img
                             src={lecture.thumbnail_url}
@@ -465,7 +446,7 @@ export default function TeacherPremiumLectures() {
                           />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center">
-                            <Video className="w-16 h-16 text-white/30" />
+                            <Video className="w-16 h-16 text-cyan-500/30" />
                           </div>
                         )}
                         <div className="absolute top-2 left-2">
@@ -474,42 +455,42 @@ export default function TeacherPremiumLectures() {
                           </Badge>
                         </div>
                         <div className="absolute bottom-2 right-2">
-                          <Badge className="bg-purple-600">
+                          <Badge className="bg-cyan-600">
                             <DollarSign className="w-3 h-3 ml-1" />
                             {lecture.price} جنيه
                           </Badge>
                         </div>
                       </div>
                       <CardContent className="p-4">
-                        <h3 className="text-lg font-semibold text-white mb-2 line-clamp-2">{lecture.title}</h3>
+                        <h3 className="text-lg font-semibold mb-2 line-clamp-2">{lecture.title}</h3>
                         {lecture.description && (
-                          <p className="text-white/60 text-sm mb-3 line-clamp-2">{lecture.description}</p>
+                          <p className="text-muted-foreground text-sm mb-3 line-clamp-2">{lecture.description}</p>
                         )}
                         <div className="flex flex-wrap gap-2 mb-3">
                           {lecture.grade_name && (
-                            <Badge variant="outline" className="text-white/70 border-white/20">
+                            <Badge variant="outline">
                               {lecture.grade_name}
                             </Badge>
                           )}
                           {lecture.group_name && (
-                            <Badge variant="outline" className="text-white/70 border-white/20">
+                            <Badge variant="outline">
                               {lecture.group_name}
                             </Badge>
                           )}
                           {lecture.duration_minutes && lecture.duration_minutes > 0 && (
-                            <Badge variant="outline" className="text-white/70 border-white/20">
+                            <Badge variant="outline">
                               <Clock className="w-3 h-3 ml-1" />
                               {lecture.duration_minutes} دقيقة
                             </Badge>
                           )}
                         </div>
-                        <div className="flex items-center justify-between text-sm text-white/50 mb-4">
+                        <div className="flex items-center justify-between text-sm text-muted-foreground mb-4">
                           <span className="flex items-center">
                             <Users className="w-4 h-4 ml-1" />
                             {lecture.enrolled_count || 0} مشترك
                           </span>
                           {lecture.pending_payments && lecture.pending_payments > 0 && (
-                            <span className="flex items-center text-yellow-400">
+                            <span className="flex items-center text-yellow-600">
                               <AlertCircle className="w-4 h-4 ml-1" />
                               {lecture.pending_payments} طلب معلق
                             </span>
@@ -519,8 +500,14 @@ export default function TeacherPremiumLectures() {
                           <Button
                             variant="outline"
                             size="sm"
-                            className="flex-1 border-white/20 text-white hover:bg-white/10"
-                            onClick={() => setPlayingVideo({ url: lecture.video_url, title: lecture.title })}
+                            className="flex-1"
+                            onClick={() => {
+                              // Extract video ID from video:// URL
+                              const videoId = lecture.video_url?.startsWith('video://') 
+                                ? lecture.video_url.replace('video://', '')
+                                : lecture.video_url;
+                              setPlayingVideo({ videoId, title: lecture.title });
+                            }}
                           >
                             <Play className="w-4 h-4 ml-1" />
                             تشغيل
@@ -528,7 +515,6 @@ export default function TeacherPremiumLectures() {
                           <Button
                             variant="outline"
                             size="sm"
-                            className="border-white/20 text-white hover:bg-white/10"
                             onClick={() => handleEdit(lecture)}
                           >
                             تعديل
@@ -536,7 +522,7 @@ export default function TeacherPremiumLectures() {
                           <Button
                             variant="outline"
                             size="sm"
-                            className="border-red-500/50 text-red-400 hover:bg-red-500/20"
+                            className="border-red-500/50 text-red-600 hover:bg-red-500/20"
                             onClick={() => handleDelete(lecture.id)}
                           >
                             <Trash2 className="w-4 h-4" />
@@ -553,21 +539,26 @@ export default function TeacherPremiumLectures() {
           {/* Pending Payments Tab */}
           <TabsContent value="pending">
             {pendingPayments.length === 0 ? (
-              <Card className="bg-white/5 border-white/10">
+              <Card className="shadow-lg">
                 <CardContent className="py-12 text-center">
-                  <Check className="w-16 h-16 mx-auto text-green-400 mb-4" />
-                  <p className="text-white/60">لا توجد طلبات دفع معلقة</p>
+                  <Check className="w-16 h-16 mx-auto text-green-500 mb-4" />
+                  <p className="text-muted-foreground">لا توجد طلبات دفع معلقة</p>
                 </CardContent>
               </Card>
             ) : (
               <div className="space-y-4">
                 {pendingPayments.map((payment) => (
-                  <Card key={payment.id} className="bg-white/5 border-white/10">
+                  <Card key={payment.id} className="shadow-lg">
                     <CardContent className="p-6">
                       <div className="flex flex-col md:flex-row gap-6">
                         {/* Receipt Image */}
+<<<<<<< HEAD
                         <div
                           className="w-full md:w-48 h-48 bg-white/10 rounded-lg overflow-hidden cursor-pointer hover:opacity-80 transition-opacity"
+=======
+                        <div 
+                          className="w-full md:w-48 h-48 bg-muted rounded-lg overflow-hidden cursor-pointer hover:opacity-80 transition-opacity"
+>>>>>>> 9fabd86239f66b5355fd3e397ff8e700778633d1
                           onClick={() => setViewingReceipt(`http://localhost:3001${payment.receipt_image_url}`)}
                         >
                           <img
@@ -581,35 +572,35 @@ export default function TeacherPremiumLectures() {
                         <div className="flex-1">
                           <div className="flex items-start justify-between mb-4">
                             <div>
-                              <h3 className="text-xl font-semibold text-white mb-1">{payment.lecture_title}</h3>
-                              <p className="text-white/60">{payment.student_name}</p>
+                              <h3 className="text-xl font-semibold mb-1">{payment.lecture_title}</h3>
+                              <p className="text-muted-foreground">{payment.student_name}</p>
                             </div>
                             {getStatusBadge(payment.status)}
                           </div>
 
                           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                             <div>
-                              <p className="text-white/40 text-sm">رقم الهاتف</p>
-                              <p className="text-white">{payment.student_phone}</p>
+                              <p className="text-muted-foreground text-sm">رقم الهاتف</p>
+                              <p>{payment.student_phone}</p>
                             </div>
                             <div>
-                              <p className="text-white/40 text-sm">الصف</p>
-                              <p className="text-white">{payment.grade_name || '-'}</p>
+                              <p className="text-muted-foreground text-sm">الصف</p>
+                              <p>{payment.grade_name || '-'}</p>
                             </div>
                             <div>
-                              <p className="text-white/40 text-sm">المجموعة</p>
-                              <p className="text-white">{payment.group_name || '-'}</p>
+                              <p className="text-muted-foreground text-sm">المجموعة</p>
+                              <p>{payment.group_name || '-'}</p>
                             </div>
                             <div>
-                              <p className="text-white/40 text-sm">المبلغ</p>
-                              <p className="text-white font-bold">{payment.lecture_price} جنيه</p>
+                              <p className="text-muted-foreground text-sm">المبلغ</p>
+                              <p className="font-bold">{payment.lecture_price} جنيه</p>
                             </div>
                           </div>
 
                           {payment.notes && (
                             <div className="mb-4">
-                              <p className="text-white/40 text-sm">ملاحظات الطالب</p>
-                              <p className="text-white/80">{payment.notes}</p>
+                              <p className="text-muted-foreground text-sm">ملاحظات الطالب</p>
+                              <p>{payment.notes}</p>
                             </div>
                           )}
 
@@ -633,7 +624,6 @@ export default function TeacherPremiumLectures() {
                             </Button>
                             <Button
                               variant="outline"
-                              className="border-white/20 text-white hover:bg-white/10"
                               onClick={() => setViewingReceipt(`http://localhost:3001${payment.receipt_image_url}`)}
                             >
                               <Eye className="w-4 h-4 ml-2" />
@@ -652,47 +642,46 @@ export default function TeacherPremiumLectures() {
           {/* All Payments Tab */}
           <TabsContent value="all-payments">
             {allPayments.length === 0 ? (
-              <Card className="bg-white/5 border-white/10">
+              <Card className="shadow-lg">
                 <CardContent className="py-12 text-center">
-                  <DollarSign className="w-16 h-16 mx-auto text-white/20 mb-4" />
-                  <p className="text-white/60">لا توجد طلبات دفع</p>
+                  <DollarSign className="w-16 h-16 mx-auto text-muted-foreground/40 mb-4" />
+                  <p className="text-muted-foreground">لا توجد طلبات دفع</p>
                 </CardContent>
               </Card>
             ) : (
-              <Card className="bg-white/5 border-white/10">
+              <Card className="shadow-lg">
                 <CardContent className="p-0">
                   <div className="overflow-x-auto">
                     <table className="w-full">
                       <thead>
-                        <tr className="border-b border-white/10">
-                          <th className="text-right text-white/60 p-4">الطالب</th>
-                          <th className="text-right text-white/60 p-4">الحصة</th>
-                          <th className="text-right text-white/60 p-4">المبلغ</th>
-                          <th className="text-right text-white/60 p-4">الحالة</th>
-                          <th className="text-right text-white/60 p-4">التاريخ</th>
-                          <th className="text-right text-white/60 p-4">إجراءات</th>
+                        <tr className="border-b">
+                          <th className="text-right text-muted-foreground p-4">الطالب</th>
+                          <th className="text-right text-muted-foreground p-4">الحصة</th>
+                          <th className="text-right text-muted-foreground p-4">المبلغ</th>
+                          <th className="text-right text-muted-foreground p-4">الحالة</th>
+                          <th className="text-right text-muted-foreground p-4">التاريخ</th>
+                          <th className="text-right text-muted-foreground p-4">إجراءات</th>
                         </tr>
                       </thead>
                       <tbody>
                         {allPayments.map((payment) => (
-                          <tr key={payment.id} className="border-b border-white/5 hover:bg-white/5">
+                          <tr key={payment.id} className="border-b hover:bg-muted/50">
                             <td className="p-4">
                               <div>
-                                <p className="text-white font-medium">{payment.student_name}</p>
-                                <p className="text-white/50 text-sm">{payment.student_phone}</p>
+                                <p className="font-medium">{payment.student_name}</p>
+                                <p className="text-muted-foreground text-sm">{payment.student_phone}</p>
                               </div>
                             </td>
-                            <td className="p-4 text-white">{payment.lecture_title}</td>
-                            <td className="p-4 text-white">{payment.lecture_price} جنيه</td>
+                            <td className="p-4">{payment.lecture_title}</td>
+                            <td className="p-4">{payment.lecture_price} جنيه</td>
                             <td className="p-4">{getStatusBadge(payment.status)}</td>
-                            <td className="p-4 text-white/60">
+                            <td className="p-4 text-muted-foreground">
                               {payment.created_at ? new Date(payment.created_at).toLocaleDateString('ar-EG') : '-'}
                             </td>
                             <td className="p-4">
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                className="text-white/60 hover:text-white"
                                 onClick={() => setViewingReceipt(`http://localhost:3001${payment.receipt_image_url}`)}
                               >
                                 <Eye className="w-4 h-4" />
@@ -712,47 +701,60 @@ export default function TeacherPremiumLectures() {
 
       {/* Add/Edit Dialog */}
       <Dialog open={showAddDialog} onOpenChange={(open) => { if (!open) resetForm(); else setShowAddDialog(true); }}>
-        <DialogContent className="bg-slate-800 border-white/10 text-white max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingLecture ? 'تعديل الحصة المدفوعة' : 'إضافة حصة مدفوعة جديدة'}</DialogTitle>
           </DialogHeader>
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="grid md:grid-cols-2 gap-4">
-              <div className="md:col-span-2">
-                <Label>عنوان الحصة *</Label>
-                <Input
-                  value={formData.title}
-                  onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                  placeholder="أدخل عنوان الحصة"
-                  className="bg-white/10 border-white/20 text-white mt-2"
-                  required
-                />
-              </div>
+          
+          {/* Upload Method Tabs */}
+          <Tabs value={uploadMethod} onValueChange={(v) => setUploadMethod(v as 'url' | 'upload')} className="w-full">
+            <TabsList className="grid w-full grid-cols-2 mb-4">
+              <TabsTrigger value="upload" className="flex items-center gap-2">
+                <Upload className="h-4 w-4" />
+                رفع فيديو
+              </TabsTrigger>
+              <TabsTrigger value="url" className="flex items-center gap-2">
+                <Video className="h-4 w-4" />
+                رابط Google Drive
+              </TabsTrigger>
+            </TabsList>
 
-              <div className="md:col-span-2">
-                <Label>الوصف</Label>
-                <Textarea
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="وصف الحصة..."
-                  className="bg-white/10 border-white/20 text-white mt-2"
-                  rows={3}
-                />
-              </div>
+            {/* Tab 1: Upload Video */}
+            <TabsContent value="upload" className="space-y-4">
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <Label>الصف الدراسي *</Label>
+                  <Select value={formData.grade_id} onValueChange={(v) => setFormData({ ...formData, grade_id: v, group_id: '' })}>
+                    <SelectTrigger className="mt-2">
+                      <SelectValue placeholder="اختر الصف الدراسي" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {grades.map((grade) => (
+                        <SelectItem key={grade.id} value={grade.id}>{grade.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-              <div>
-                <Label>السعر (جنيه) *</Label>
-                <Input
-                  type="number"
-                  value={formData.price}
-                  onChange={(e) => setFormData({ ...formData, price: e.target.value })}
-                  placeholder="0"
-                  className="bg-white/10 border-white/20 text-white mt-2"
-                  min="0"
-                  step="0.01"
-                  required
-                />
-              </div>
+                <div>
+                  <Label>المجموعة *</Label>
+                  <Select 
+                    value={formData.group_id} 
+                    onValueChange={(v) => setFormData({ ...formData, group_id: v })}
+                    disabled={!formData.grade_id}
+                  >
+                    <SelectTrigger className="mt-2">
+                      <SelectValue placeholder={formData.grade_id ? "اختر المجموعة" : "اختر الصف أولاً"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {groups
+                        .filter(group => group.grade_id === formData.grade_id)
+                        .map((group) => (
+                          <SelectItem key={group.id} value={group.id}>{group.name}</SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
               <div>
                 <Label>المدة (دقيقة)</Label>
@@ -800,35 +802,98 @@ export default function TeacherPremiumLectures() {
                 <Label>رابط الفيديو *</Label>
                 <div className="mt-2 space-y-4">
                   {/* Video URL input - for simplicity, use direct URL */}
+                <div className="md:col-span-2">
+                  <Label>عنوان الحصة *</Label>
                   <Input
-                    value={formData.video_url}
-                    onChange={(e) => setFormData({ ...formData, video_url: e.target.value })}
-                    placeholder="أدخل رابط الفيديو (YouTube, Vimeo, أو رابط مباشر)"
-                    className="bg-white/10 border-white/20 text-white"
+                    value={formData.title}
+                    onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                    placeholder="أدخل عنوان الحصة"
+                    className="mt-2"
+                    required
                   />
                   <p className="text-white/40 text-sm">يمكنك إدخال رابط يوتيوب أو فيميو أو رابط فيديو مباشر</p>
                 </div>
+
+                <div className="md:col-span-2">
+                  <Label>الوصف</Label>
+                  <Textarea
+                    value={formData.description}
+                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                    placeholder="وصف الحصة..."
+                    className="mt-2"
+                    rows={3}
+                  />
+                </div>
+
+                <div>
+                  <Label>السعر (جنيه) *</Label>
+                  <Input
+                    type="number"
+                    value={formData.price}
+                    onChange={(e) => setFormData({ ...formData, price: e.target.value })}
+                    placeholder="0"
+                    className="mt-2"
+                    min="0"
+                    step="0.01"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <Label>المدة (دقيقة)</Label>
+                  <Input
+                    type="number"
+                    value={formData.duration_minutes}
+                    onChange={(e) => setFormData({ ...formData, duration_minutes: e.target.value })}
+                    placeholder="0"
+                    className="mt-2"
+                    min="0"
+                  />
+                </div>
+
+                <div className="md:col-span-2 flex items-center gap-3">
+                  <Switch
+                    id="is_published_upload"
+                    checked={formData.is_published}
+                    onCheckedChange={(checked) => setFormData({ ...formData, is_published: checked })}
+                  />
+                  <Label htmlFor="is_published_upload">نشر الحصة (جعلها مرئية للطلاب)</Label>
+                </div>
               </div>
 
-              <div className="md:col-span-2">
-                <Label>رابط الصورة المصغرة</Label>
-                <Input
-                  value={formData.thumbnail_url}
-                  onChange={(e) => setFormData({ ...formData, thumbnail_url: e.target.value })}
-                  placeholder="رابط صورة الغلاف (اختياري)"
-                  className="bg-white/10 border-white/20 text-white mt-2"
-                />
-              </div>
+              {/* Show upload section */}
+              {formData.grade_id && formData.group_id && formData.title && formData.price && (
+                <div className="border-t pt-4 mt-4">
+                  <div className="p-4 bg-cyan-50 dark:bg-cyan-950 rounded-lg mb-4">
+                    <h3 className="font-bold text-cyan-700 dark:text-cyan-300 mb-2">📋 ملخص الحصة</h3>
+                    <div className="space-y-1 text-sm">
+                      <p><strong>الصف:</strong> {grades.find(g => g.id === formData.grade_id)?.name}</p>
+                      <p><strong>المجموعة:</strong> {groups.find(g => g.id === formData.group_id)?.name}</p>
+                      <p><strong>العنوان:</strong> {formData.title}</p>
+                      <p><strong>السعر:</strong> {formData.price} جنيه</p>
+                      {formData.description && <p><strong>الوصف:</strong> {formData.description}</p>}
+                    </div>
+                  </div>
 
-              <div className="md:col-span-2 flex items-center gap-3">
-                <Switch
-                  id="is_published"
-                  checked={formData.is_published}
-                  onCheckedChange={(checked) => setFormData({ ...formData, is_published: checked })}
-                />
-                <Label htmlFor="is_published">نشر الحصة (جعلها مرئية للطلاب)</Label>
-              </div>
-            </div>
+                  <VideoUploader
+                    courseId="premium"
+                    uploadedBy={currentUser?.id || ''}
+                    title={formData.title}
+                    description={formData.description}
+                    onUploadComplete={async (videoId) => {
+                      try {
+                        const lectureData = {
+                          title: formData.title,
+                          description: formData.description || undefined,
+                          video_url: `video://${videoId}`,
+                          thumbnail_url: formData.thumbnail_url || undefined,
+                          duration_minutes: formData.duration_minutes ? parseInt(formData.duration_minutes) : 0,
+                          price: parseFloat(formData.price),
+                          grade_id: formData.grade_id || undefined,
+                          group_id: formData.group_id || undefined,
+                          is_published: formData.is_published,
+                          created_by: currentUser?.id
+                        };
 
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={resetForm}>إلغاء</Button>
@@ -841,6 +906,167 @@ export default function TeacherPremiumLectures() {
               </Button>
             </DialogFooter>
           </form>
+                        if (editingLecture) {
+                          await updatePremiumLecture(editingLecture.id, lectureData);
+                        } else {
+                          await createPremiumLecture(lectureData);
+                        }
+
+                        toast({
+                          title: 'نجح',
+                          description: 'تم رفع الحصة والفيديو بنجاح'
+                        });
+
+                        resetForm();
+                        loadData();
+                      } catch (error) {
+                        console.error('Error creating lecture:', error);
+                        toast({
+                          title: 'خطأ',
+                          description: 'الفيديو تم رفعه لكن فشل حفظ بيانات الحصة',
+                          variant: 'destructive'
+                        });
+                      }
+                    }}
+                    onCancel={resetForm}
+                  />
+                </div>
+              )}
+            </TabsContent>
+
+            {/* Tab 2: Google Drive URL */}
+            <TabsContent value="url">
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div>
+                    <Label>الصف الدراسي *</Label>
+                    <Select value={formData.grade_id} onValueChange={(v) => setFormData({ ...formData, grade_id: v, group_id: '' })}>
+                      <SelectTrigger className="mt-2">
+                        <SelectValue placeholder="اختر الصف الدراسي" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {grades.map((grade) => (
+                          <SelectItem key={grade.id} value={grade.id}>{grade.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>المجموعة *</Label>
+                    <Select 
+                      value={formData.group_id} 
+                      onValueChange={(v) => setFormData({ ...formData, group_id: v })}
+                      disabled={!formData.grade_id}
+                    >
+                      <SelectTrigger className="mt-2">
+                        <SelectValue placeholder={formData.grade_id ? "اختر المجموعة" : "اختر الصف أولاً"} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {groups
+                          .filter(group => group.grade_id === formData.grade_id)
+                          .map((group) => (
+                            <SelectItem key={group.id} value={group.id}>{group.name}</SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <Label>عنوان الحصة *</Label>
+                    <Input
+                      value={formData.title}
+                      onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                      placeholder="أدخل عنوان الحصة"
+                      className="mt-2"
+                      required
+                    />
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <Label>الوصف</Label>
+                    <Textarea
+                      value={formData.description}
+                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                      placeholder="وصف الحصة..."
+                      className="mt-2"
+                      rows={3}
+                    />
+                  </div>
+
+                  <div>
+                    <Label>السعر (جنيه) *</Label>
+                    <Input
+                      type="number"
+                      value={formData.price}
+                      onChange={(e) => setFormData({ ...formData, price: e.target.value })}
+                      placeholder="0"
+                      className="mt-2"
+                      min="0"
+                      step="0.01"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <Label>المدة (دقيقة)</Label>
+                    <Input
+                      type="number"
+                      value={formData.duration_minutes}
+                      onChange={(e) => setFormData({ ...formData, duration_minutes: e.target.value })}
+                      placeholder="0"
+                      className="mt-2"
+                      min="0"
+                    />
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <Label>رابط الفيديو من Google Drive *</Label>
+                    <Input
+                      value={formData.video_url}
+                      onChange={(e) => setFormData({ ...formData, video_url: e.target.value })}
+                      placeholder="https://drive.google.com/file/d/..."
+                      className="mt-2"
+                      required
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      الصق رابط الفيديو من Google Drive
+                    </p>
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <Label>رابط الصورة المصغرة</Label>
+                    <Input
+                      value={formData.thumbnail_url}
+                      onChange={(e) => setFormData({ ...formData, thumbnail_url: e.target.value })}
+                      placeholder="رابط صورة الغلاف (اختياري)"
+                      className="mt-2"
+                    />
+                  </div>
+
+                  <div className="md:col-span-2 flex items-center gap-3">
+                    <Switch
+                      id="is_published"
+                      checked={formData.is_published}
+                      onCheckedChange={(checked) => setFormData({ ...formData, is_published: checked })}
+                    />
+                    <Label htmlFor="is_published">نشر الحصة (جعلها مرئية للطلاب)</Label>
+                  </div>
+                </div>
+
+                <DialogFooter>
+                  <Button type="button" variant="ghost" onClick={resetForm}>إلغاء</Button>
+                  <Button 
+                    type="submit" 
+                    disabled={loading}
+                    className="bg-gradient-to-r from-cyan-500 to-teal-600"
+                  >
+                    {loading ? 'جاري الحفظ...' : (editingLecture ? 'تحديث' : 'إنشاء')}
+                  </Button>
+                </DialogFooter>
+              </form>
+            </TabsContent>
+          </Tabs>
         </DialogContent>
       </Dialog>
     </div>

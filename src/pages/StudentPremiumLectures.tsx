@@ -14,6 +14,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
+import { SecureVideoPlayer } from "@/components/SecureVideoPlayer";
 import { 
   getStudentAvailablePremiumLectures, getStudentPurchasedPremiumLectures,
   getStudentPremiumPayments, submitPremiumLecturePayment,
@@ -218,11 +219,11 @@ const StudentPremiumLectures = () => {
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'pending':
-        return <Badge className="bg-yellow-500/20 text-yellow-300 border-yellow-500/30">قيد المراجعة</Badge>;
+        return <Badge className="bg-gradient-to-r from-yellow-500 to-orange-500 text-white border-0">قيد المراجعة</Badge>;
       case 'approved':
-        return <Badge className="bg-green-500/20 text-green-300 border-green-500/30">تمت الموافقة</Badge>;
+        return <Badge className="bg-gradient-to-r from-green-500 to-emerald-500 text-white border-0">تمت الموافقة</Badge>;
       case 'rejected':
-        return <Badge className="bg-red-500/20 text-red-300 border-red-500/30">مرفوض</Badge>;
+        return <Badge className="bg-gradient-to-r from-red-500 to-pink-500 text-white border-0">مرفوض</Badge>;
       default:
         return null;
     }
@@ -238,66 +239,40 @@ const StudentPremiumLectures = () => {
   );
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 relative overflow-hidden" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
       <FloatingParticles />
       <StudentHeader />
       
       {/* Video Player Modal */}
-      <AnimatePresence>
-        {playingVideo && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/95 z-50 flex items-center justify-center p-4"
-          >
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="relative w-full max-w-5xl"
-            >
-              <Button
-                variant="ghost"
-                size="icon"
-                className="absolute -top-12 left-0 text-white hover:bg-white/20 z-10"
-                onClick={handleCloseVideo}
-              >
-                <X className="w-6 h-6" />
-              </Button>
-              <h3 className="text-white text-xl font-bold mb-4">{playingVideo.title}</h3>
-              <div className="aspect-video rounded-xl overflow-hidden bg-black">
-                <video
-                  src={playingVideo.videoId}
-                  controls
-                  autoPlay
-                  className="w-full h-full"
-                />
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {playingVideo && currentUser && (
+        <SecureVideoPlayer
+          videoId={playingVideo.videoId}
+          userId={currentUser.id}
+          studentName={currentUser.name || 'طالب'}
+          groupName={currentStudent?.group_id || 'المجموعة'}
+          onClose={handleCloseVideo}
+        />
+      )}
 
       {/* Payment Dialog */}
       <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
-        <DialogContent className="bg-slate-800 border-white/10 text-white max-w-md">
+        <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="text-xl">إرسال إيصال الدفع</DialogTitle>
           </DialogHeader>
           
           {selectedLecture && (
             <div className="space-y-4">
-              <div className="p-4 bg-white/5 rounded-lg">
+              <div className="p-4 bg-muted rounded-lg">
                 <h4 className="font-semibold text-lg mb-2">{selectedLecture.title}</h4>
-                <div className="flex items-center gap-2 text-purple-400">
+                <div className="flex items-center gap-2 text-primary">
                   <DollarSign className="w-5 h-5" />
                   <span className="text-xl font-bold">{selectedLecture.price} جنيه</span>
                 </div>
               </div>
 
               <div>
-                <Label className="text-white/80">صورة إيصال الدفع *</Label>
+                <Label>صورة إيصال الدفع *</Label>
                 <div className="mt-2">
                   {imagePreview ? (
                     <div className="relative">
@@ -319,7 +294,7 @@ const StudentPremiumLectures = () => {
                       </Button>
                     </div>
                   ) : (
-                    <label className="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-white/20 rounded-lg cursor-pointer hover:border-purple-500/50 transition-colors bg-white/5">
+                    <label className="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed rounded-lg cursor-pointer hover:border-primary/50 transition-colors bg-muted/50">
                       <Upload className="w-10 h-10 text-white/40 mb-2" />
                       <span className="text-white/60">اضغط لرفع صورة الإيصال</span>
                       <span className="text-white/40 text-sm mt-1">PNG, JPG حتى 5MB</span>
@@ -335,12 +310,12 @@ const StudentPremiumLectures = () => {
               </div>
 
               <div>
-                <Label className="text-white/80">ملاحظات (اختياري)</Label>
+                <Label>ملاحظات (اختياري)</Label>
                 <Textarea
                   value={paymentNotes}
                   onChange={(e) => setPaymentNotes(e.target.value)}
                   placeholder="أي ملاحظات إضافية..."
-                  className="mt-2 bg-white/10 border-white/20 text-white placeholder:text-white/40"
+                  className="mt-2"
                   rows={3}
                 />
               </div>
@@ -351,14 +326,13 @@ const StudentPremiumLectures = () => {
             <Button 
               variant="ghost" 
               onClick={() => setShowPaymentDialog(false)}
-              className="text-white/70 hover:text-white hover:bg-white/10"
             >
               إلغاء
             </Button>
             <Button 
               onClick={handleSubmitPayment}
               disabled={!receiptImage || submitting}
-              className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700"
+              className="bg-gradient-to-r from-primary to-accent hover:shadow-glow"
             >
               {submitting ? 'جاري الإرسال...' : 'إرسال طلب الدفع'}
             </Button>
@@ -373,10 +347,10 @@ const StudentPremiumLectures = () => {
           animate={{ opacity: 1, y: 0 }}
           className="text-center mb-8"
         >
-          <h1 className="text-3xl md:text-4xl font-bold text-white mb-3">
+          <h1 className="text-3xl md:text-4xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent mb-3">
             الحصص الإضافية المدفوعة
           </h1>
-          <p className="text-white/60">
+          <p className="text-muted-foreground">
             حصص إضافية مميزة لتعزيز مستواك الدراسي
           </p>
         </motion.div>
@@ -389,27 +363,27 @@ const StudentPremiumLectures = () => {
           className="mb-6"
         >
           <div className="relative max-w-md mx-auto">
-            <Search className="absolute right-4 top-1/2 transform -translate-y-1/2 text-white/40 w-5 h-5" />
+            <Search className="absolute right-4 top-1/2 transform -translate-y-1/2 text-muted-foreground w-5 h-5" />
             <Input
               type="text"
               placeholder="ابحث عن حصة..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pr-12 py-6 bg-white/10 border-white/20 text-white placeholder:text-white/40 rounded-xl"
+              className="pr-12 py-6 rounded-xl"
             />
           </div>
         </motion.div>
 
         {/* Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="bg-white/10 border-white/20 mb-6 w-full max-w-lg mx-auto grid grid-cols-3">
-            <TabsTrigger value="available" className="data-[state=active]:bg-purple-600">
+          <TabsList className="mb-6 w-full max-w-lg mx-auto grid grid-cols-3">
+            <TabsTrigger value="available" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-primary data-[state=active]:to-accent data-[state=active]:text-white">
               المتاحة
             </TabsTrigger>
-            <TabsTrigger value="purchased" className="data-[state=active]:bg-purple-600">
+            <TabsTrigger value="purchased" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-primary data-[state=active]:to-accent data-[state=active]:text-white">
               المشتراة ({purchasedLectures.length})
             </TabsTrigger>
-            <TabsTrigger value="payments" className="data-[state=active]:bg-purple-600">
+            <TabsTrigger value="payments" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-primary data-[state=active]:to-accent data-[state=active]:text-white">
               طلباتي ({myPayments.length})
             </TabsTrigger>
           </TabsList>
@@ -417,11 +391,11 @@ const StudentPremiumLectures = () => {
           {/* Available Lectures */}
           <TabsContent value="available">
             {loading ? (
-              <div className="text-center text-white py-12">جاري التحميل...</div>
+              <div className="text-center text-muted-foreground py-12">جاري التحميل...</div>
             ) : filteredAvailable.length === 0 ? (
               <GlassmorphicCard className="py-12 text-center">
-                <Lock className="w-16 h-16 mx-auto text-white/20 mb-4" />
-                <p className="text-white/60">لا توجد حصص مدفوعة متاحة حالياً</p>
+                <Lock className="w-16 h-16 mx-auto text-muted-foreground/40 mb-4" />
+                <p className="text-muted-foreground">لا توجد حصص مدفوعة متاحة حالياً</p>
               </GlassmorphicCard>
             ) : (
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -436,7 +410,7 @@ const StudentPremiumLectures = () => {
                     >
                       <GlassmorphicCard className="overflow-hidden hover:scale-[1.02] transition-transform">
                         {/* Thumbnail */}
-                        <div className="relative h-44 bg-gradient-to-br from-purple-600/30 to-pink-600/30">
+                        <div className="relative h-44 bg-gradient-to-br from-primary/20 to-accent/20">
                           {lecture.thumbnail_url ? (
                             <img 
                               src={lecture.thumbnail_url} 
@@ -449,14 +423,14 @@ const StudentPremiumLectures = () => {
                             </div>
                           )}
                           <div className="absolute top-3 left-3">
-                            <Badge className="bg-purple-600 text-white">
+                            <Badge className="bg-gradient-to-r from-primary to-accent text-white border-0">
                               <DollarSign className="w-3 h-3 ml-1" />
                               {lecture.price} جنيه
                             </Badge>
                           </div>
                           {status === 'pending' && (
                             <div className="absolute top-3 right-3">
-                              <Badge className="bg-yellow-500/80 text-white">
+                              <Badge className="bg-gradient-to-r from-yellow-500 to-orange-500 text-white border-0">
                                 <AlertCircle className="w-3 h-3 ml-1" />
                                 قيد المراجعة
                               </Badge>
@@ -466,23 +440,23 @@ const StudentPremiumLectures = () => {
 
                         {/* Content */}
                         <div className="p-5">
-                          <h3 className="text-lg font-bold text-white mb-2 line-clamp-2">
+                          <h3 className="text-lg font-bold mb-2 line-clamp-2">
                             {lecture.title}
                           </h3>
                           {lecture.description && (
-                            <p className="text-white/60 text-sm mb-4 line-clamp-2">
+                            <p className="text-muted-foreground text-sm mb-4 line-clamp-2">
                               {lecture.description}
                             </p>
                           )}
 
                           <div className="flex flex-wrap gap-2 mb-4">
                             {lecture.grade_name && (
-                              <Badge variant="outline" className="text-white/70 border-white/20">
+                              <Badge variant="outline">
                                 {lecture.grade_name}
                               </Badge>
                             )}
                             {lecture.duration_minutes && lecture.duration_minutes > 0 && (
-                              <Badge variant="outline" className="text-white/70 border-white/20">
+                              <Badge variant="outline">
                                 <Clock className="w-3 h-3 ml-1" />
                                 {lecture.duration_minutes} دقيقة
                               </Badge>
@@ -492,7 +466,7 @@ const StudentPremiumLectures = () => {
                           {status === 'pending' ? (
                             <Button
                               disabled
-                              className="w-full bg-yellow-600/50"
+                              className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 opacity-60"
                             >
                               <AlertCircle className="w-4 h-4 ml-2" />
                               طلب الدفع قيد المراجعة
@@ -500,7 +474,7 @@ const StudentPremiumLectures = () => {
                           ) : (
                             <Button
                               onClick={() => handleOpenPaymentDialog(lecture)}
-                              className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700"
+                              className="w-full bg-gradient-to-r from-primary to-accent hover:shadow-glow"
                             >
                               <Upload className="w-4 h-4 ml-2" />
                               رفع إيصال الدفع
@@ -519,8 +493,8 @@ const StudentPremiumLectures = () => {
           <TabsContent value="purchased">
             {purchasedLectures.length === 0 ? (
               <GlassmorphicCard className="py-12 text-center">
-                <Unlock className="w-16 h-16 mx-auto text-white/20 mb-4" />
-                <p className="text-white/60">لم تشترِ أي حصص بعد</p>
+                <Unlock className="w-16 h-16 mx-auto text-muted-foreground/40 mb-4" />
+                <p className="text-muted-foreground">لم تشترِ أي حصص بعد</p>
               </GlassmorphicCard>
             ) : (
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -533,7 +507,7 @@ const StudentPremiumLectures = () => {
                   >
                     <GlassmorphicCard className="overflow-hidden hover:scale-[1.02] transition-transform">
                       {/* Thumbnail */}
-                      <div className="relative h-44 bg-gradient-to-br from-green-600/30 to-teal-600/30">
+                      <div className="relative h-44 bg-gradient-to-br from-green-500/20 to-emerald-500/20">
                         {lecture.thumbnail_url ? (
                           <img 
                             src={lecture.thumbnail_url} 
@@ -546,7 +520,7 @@ const StudentPremiumLectures = () => {
                           </div>
                         )}
                         <div className="absolute top-3 left-3">
-                          <Badge className="bg-green-600 text-white">
+                          <Badge className="bg-gradient-to-r from-green-500 to-emerald-500 text-white border-0">
                             <Unlock className="w-3 h-3 ml-1" />
                             مفتوحة
                           </Badge>
@@ -579,7 +553,11 @@ const StudentPremiumLectures = () => {
                         </div>
 
                         <Button
-                          onClick={() => setPlayingVideo({ videoId: lecture.video_url, title: lecture.title })}
+                          onClick={() => {
+                            // Extract video ID from video:// URL
+                            const videoId = lecture.video_url.replace('video://', '');
+                            setPlayingVideo({ videoId, title: lecture.title });
+                          }}
                           className="w-full bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-700 hover:to-teal-700"
                         >
                           <Play className="w-4 h-4 ml-2" />
