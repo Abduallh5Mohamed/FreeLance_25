@@ -6,6 +6,60 @@
 All colors MUST be HSL for consistency and theme support.
 */
 
+/* Anti-Screen-Capture Protection Animations */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.02);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
+/* Video Player Security Styles */
+.secure-video-container {
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+  user-select: none !important;
+  -webkit-user-drag: none !important;
+}
+
+/* Prevent screenshot in some browsers */
+.secure-video-container video {
+  -webkit-touch-callout: none !important;
+  pointer-events: auto;
+}
+
+/* Make content harder to capture */
+.screenshot-protection {
+  position: relative;
+}
+
+.screenshot-protection::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: transparent;
+  z-index: 1;
+}
+
 @layer base {
   :root {
     /* Light Mode - Golden & White Theme */

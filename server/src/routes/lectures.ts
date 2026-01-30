@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query, queryOne, execute } from '../db';
+import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
@@ -201,11 +202,13 @@ router.post('/', async (req: Request, res: Response) => {
 
         console.log('[Lectures] Creating lecture:', { course_id, grade_id, group_id, title, video_url });
 
+        const lectureId = uuidv4();
         const result = await execute(
             `INSERT INTO lectures 
-            (course_id, grade_id, group_id, title, description, video_url, duration_minutes, display_order, is_free, is_published) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (id, course_id, grade_id, group_id, title, description, video_url, duration_minutes, display_order, is_free, is_published) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
+                lectureId,
                 course_id,
                 grade_id || null,
                 group_id || null,
@@ -221,7 +224,7 @@ router.post('/', async (req: Request, res: Response) => {
 
         const newLecture = await queryOne(
             'SELECT * FROM lectures WHERE id = ?',
-            [result.insertId]
+            [lectureId]
         );
 
         console.log('[Lectures] Created lecture:', newLecture?.id);

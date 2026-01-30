@@ -140,6 +140,7 @@ const StudentHeader = () => {
   const studentNavigation = [
     { name: "البروفايل", href: "/student", icon: User },
     { name: "المحاضرات", href: "/student-lectures", icon: Video },
+    { name: "الحصص المدفوعة", href: "/student-premium-lectures", icon: CreditCard },
     { name: "المحتوى التعليمي", href: "/student-content", icon: File },
     { name: "الامتحانات", href: "/student-exams", icon: FileText },
     { name: "نتائج الامتحانات", href: "/student-exam-results", icon: ClipboardCheck },

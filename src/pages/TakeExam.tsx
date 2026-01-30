@@ -665,20 +665,59 @@ const TakeExam = () => {
           }
         } else if (questionType === 'essay') {
           const essayAnswer = essayAnswers[question.id];
-          if (essayAnswer) {
+          const answerImage = answerImages[question.id];
+          
+          if (essayAnswer || answerImage) {
             doc.setTextColor(13, 148, 136);
-            doc.text('إجابتك (مقالي):', pageWidth - 20, yPos, { align: 'right' });
-            yPos += 5;
-            doc.setTextColor(0, 0, 0);
-            const essayLines = doc.splitTextToSize(essayAnswer.substring(0, 200), maxWidth - 10);
-            essayLines.forEach((line: string) => {
-              if (yPos > pageHeight - 30) {
-                doc.addPage();
-                yPos = 20;
-              }
-              doc.text(line, pageWidth - 25, yPos, { align: 'right' });
+            doc.setFontSize(10);
+            doc.text('📝 إجابتك المقالية:', pageWidth - 20, yPos, { align: 'right' });
+            yPos += 7;
+            
+            // عرض الإجابة النصية كاملة
+            if (essayAnswer) {
+              doc.setTextColor(0, 0, 0);
+              doc.setFontSize(9);
+              
+              // عرض الإجابة الكاملة مع دعم الأسطر المتعددة
+              const essayLines = doc.splitTextToSize(essayAnswer, maxWidth - 10);
+              essayLines.forEach((line: string) => {
+                if (yPos > pageHeight - 30) {
+                  doc.addPage();
+                  yPos = 20;
+                }
+                doc.text(line, pageWidth - 25, yPos, { align: 'right' });
+                yPos += 5;
+              });
+              yPos += 3;
+            }
+            
+            // عرض صورة الإجابة إن وجدت
+            if (answerImage) {
+              doc.setTextColor(13, 148, 136);
+              doc.setFontSize(9);
+              doc.text('🖼️ صورة الإجابة مرفقة', pageWidth - 25, yPos, { align: 'right' });
               yPos += 5;
-            });
+              
+              // محاولة إضافة الصورة للـ PDF
+              try {
+                if (answerImage.startsWith('data:image')) {
+                  if (yPos > pageHeight - 60) {
+                    doc.addPage();
+                    yPos = 20;
+                  }
+                  doc.addImage(answerImage, 'JPEG', 20, yPos, 60, 45);
+                  yPos += 50;
+                }
+              } catch (imgError) {
+                console.log('Could not add image to PDF');
+              }
+            }
+            
+            // ملاحظة أن السؤال يحتاج تصحيح يدوي
+            doc.setTextColor(255, 152, 0);
+            doc.setFontSize(8);
+            doc.text('⏳ هذا السؤال يحتاج تصحيح يدوي من المعلم', pageWidth - 25, yPos, { align: 'right' });
+            yPos += 5;
           } else {
             doc.setTextColor(128, 128, 128);
             doc.text('لم تجب على هذا السؤال', pageWidth - 20, yPos, { align: 'right' });

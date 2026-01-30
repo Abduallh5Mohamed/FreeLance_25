@@ -1374,3 +1374,155 @@ export const deleteStaff = async (id: string): Promise<void> => {
         method: 'DELETE',
     });
 };
+
+// ==================== Premium Lectures ====================
+export interface PremiumLecture {
+    id: string;
+    title: string;
+    description?: string;
+    video_url: string;
+    thumbnail_url?: string;
+    duration_minutes?: number;
+    price: number;
+    grade_id?: string;
+    group_id?: string;
+    is_published: boolean;
+    created_by?: string;
+    created_at?: string;
+    updated_at?: string;
+    grade_name?: string;
+    group_name?: string;
+    enrolled_count?: number;
+    pending_payments?: number;
+    // For student view
+    access_id?: string;
+    payment_id?: string;
+    payment_status?: 'pending' | 'approved' | 'rejected';
+    granted_at?: string;
+}
+
+export interface PremiumLecturePayment {
+    id: string;
+    student_id: string;
+    premium_lecture_id: string;
+    receipt_image_url: string;
+    amount: number;
+    status: 'pending' | 'approved' | 'rejected';
+    notes?: string;
+    rejection_reason?: string;
+    reviewed_by?: string;
+    reviewed_at?: string;
+    created_at?: string;
+    updated_at?: string;
+    // Joined data
+    lecture_title?: string;
+    lecture_price?: number;
+    student_name?: string;
+    student_phone?: string;
+    grade_name?: string;
+    group_name?: string;
+}
+
+// Get all premium lectures (for teacher)
+export const getPremiumLectures = async (params?: { grade_id?: string; group_id?: string }): Promise<PremiumLecture[]> => {
+    const searchParams = new URLSearchParams();
+    if (params?.grade_id) searchParams.append('grade_id', params.grade_id);
+    if (params?.group_id) searchParams.append('group_id', params.group_id);
+    const queryStr = searchParams.toString();
+    return request<PremiumLecture[]>(`/premium-lectures${queryStr ? '?' + queryStr : ''}`);
+};
+
+// Get single premium lecture
+export const getPremiumLecture = async (id: string): Promise<PremiumLecture> => {
+    return request<PremiumLecture>(`/premium-lectures/${id}`);
+};
+
+// Create premium lecture
+export const createPremiumLecture = async (lecture: Omit<PremiumLecture, 'id' | 'created_at' | 'updated_at'>): Promise<PremiumLecture> => {
+    return request<PremiumLecture>('/premium-lectures', {
+        method: 'POST',
+        body: JSON.stringify(lecture),
+    });
+};
+
+// Update premium lecture
+export const updatePremiumLecture = async (id: string, lecture: Partial<PremiumLecture>): Promise<PremiumLecture> => {
+    return request<PremiumLecture>(`/premium-lectures/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(lecture),
+    });
+};
+
+// Delete premium lecture
+export const deletePremiumLecture = async (id: string): Promise<void> => {
+    await request<void>(`/premium-lectures/${id}`, {
+        method: 'DELETE',
+    });
+};
+
+// Get available premium lectures for student
+export const getStudentAvailablePremiumLectures = async (studentId: string): Promise<PremiumLecture[]> => {
+    return request<PremiumLecture[]>(`/premium-lectures/student/${studentId}/available`);
+};
+
+// Get student's purchased premium lectures
+export const getStudentPurchasedPremiumLectures = async (studentId: string): Promise<PremiumLecture[]> => {
+    return request<PremiumLecture[]>(`/premium-lectures/student/${studentId}/purchased`);
+};
+
+// Submit payment request with receipt
+export const submitPremiumLecturePayment = async (formData: FormData): Promise<PremiumLecturePayment> => {
+    const token = localStorage.getItem('authToken');
+    const response = await fetch(`${API_BASE_URL}/premium-lectures/payments`, {
+        method: 'POST',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        body: formData,
+    });
+    
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: 'Request failed' }));
+        throw new Error(error.error || `HTTP ${response.status}`);
+    }
+    
+    return response.json();
+};
+
+// Get student's payment requests
+export const getStudentPremiumPayments = async (studentId: string): Promise<PremiumLecturePayment[]> => {
+    return request<PremiumLecturePayment[]>(`/premium-lectures/payments/student/${studentId}`);
+};
+
+// Get pending payments (for teacher)
+export const getPendingPremiumPayments = async (): Promise<PremiumLecturePayment[]> => {
+    return request<PremiumLecturePayment[]>('/premium-lectures/payments/pending');
+};
+
+// Get all payments (for teacher)
+export const getAllPremiumPayments = async (params?: { status?: string; lecture_id?: string }): Promise<PremiumLecturePayment[]> => {
+    const searchParams = new URLSearchParams();
+    if (params?.status) searchParams.append('status', params.status);
+    if (params?.lecture_id) searchParams.append('lecture_id', params.lecture_id);
+    const queryStr = searchParams.toString();
+    return request<PremiumLecturePayment[]>(`/premium-lectures/payments${queryStr ? '?' + queryStr : ''}`);
+};
+
+// Approve payment
+export const approvePremiumPayment = async (paymentId: string, reviewedBy?: string): Promise<{ success: boolean; message: string }> => {
+    return request<{ success: boolean; message: string }>(`/premium-lectures/payments/${paymentId}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({ reviewed_by: reviewedBy }),
+    });
+};
+
+// Reject payment
+export const rejectPremiumPayment = async (paymentId: string, rejectionReason?: string, reviewedBy?: string): Promise<{ success: boolean; message: string }> => {
+    return request<{ success: boolean; message: string }>(`/premium-lectures/payments/${paymentId}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ reviewed_by: reviewedBy, rejection_reason: rejectionReason }),
+    });
+};
+
+// Check student access to premium lecture
+export const checkPremiumLectureAccess = async (studentId: string, lectureId: string): Promise<{ hasAccess: boolean }> => {
+    return request<{ hasAccess: boolean }>(`/premium-lectures/access/check/${studentId}/${lectureId}`);
+};

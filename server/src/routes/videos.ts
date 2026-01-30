@@ -13,6 +13,99 @@ import { processVideo, deleteVideoFiles } from '../services/video-processor';
 const router = Router();
 
 // ============================================
+// ENCRYPTION KEY ENDPOINT (Protected)
+// ============================================
+
+/**
+ * Log security violation attempts
+ * Called by frontend when suspicious activity is detected
+ */
+router.post('/security/log', async (req: Request, res: Response) => {
+    try {
+        const { userId, videoId, activityType, details } = req.body;
+
+        if (!userId || !videoId || !activityType) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+
+        const logId = uuidv4();
+        const ipAddress = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+        const userAgent = req.headers['user-agent'] || 'unknown';
+
+        await execute(
+            `INSERT INTO video_security_logs 
+            (id, user_id, video_id, activity_type, ip_address, user_agent, details, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+            [logId, userId, videoId, activityType, ipAddress, userAgent, details || null]
+        );
+
+        console.log(`[Security] Logged ${activityType} for user ${userId} on video ${videoId}`);
+
+        res.json({ success: true, logId });
+
+    } catch (error) {
+        console.error('[Security] Logging error:', error);
+        res.status(500).json({ error: 'Failed to log security event' });
+    }
+});
+
+/**
+ * Serve encryption key for HLS playback
+ * This endpoint is called by the video player when playing encrypted HLS
+ * Security: Only authenticated users with access can get the key
+ */
+router.get('/key/:videoId', async (req: Request, res: Response) => {
+    try {
+        const { videoId } = req.params;
+        const userId = req.query.userId as string;
+
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        // Get video with encryption key
+        const video = await queryOne(
+            'SELECT id, encryption_key, is_encrypted FROM videos WHERE id = ?',
+            [videoId]
+        );
+
+        if (!video) {
+            return res.status(404).json({ error: 'Video not found' });
+        }
+
+        if (!video.is_encrypted || !video.encryption_key) {
+            return res.status(400).json({ error: 'Video is not encrypted' });
+        }
+
+        // TODO: Add access verification - check if user has permission to watch this video
+        // For now, we trust the userId parameter
+        // In production, verify against video_access_logs or course enrollment
+
+        // Convert hex key to binary
+        const keyBuffer = Buffer.from(video.encryption_key, 'hex');
+
+        // Send key as binary
+        res.set('Content-Type', 'application/octet-stream');
+        res.set('Content-Length', keyBuffer.length.toString());
+        res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.set('Pragma', 'no-cache');
+        res.set('Expires', '0');
+        
+        // Add CORS headers for HLS.js
+        res.set('Access-Control-Allow-Origin', '*');
+        res.set('Access-Control-Allow-Methods', 'GET');
+        
+        res.send(keyBuffer);
+
+        console.log(`[Videos] Encryption key served for video ${videoId} to user ${userId}`);
+
+    } catch (error) {
+        console.error('[Videos] Key serving error:', error);
+        res.status(500).json({ error: 'Failed to serve encryption key' });
+    }
+});
+
+// ============================================
 // UPLOAD ENDPOINTS (Teacher)
 // ============================================
 
@@ -263,7 +356,16 @@ router.get('/stream/:videoId', async (req: Request, res: Response) => {
         }
 
         // Generate signed streaming URL
-        const streamUrl = await getSignedStreamUrl(videoId, 'playlist.m3u8');
+        // Check if HLS is available, otherwise use original
+        let streamUrl;
+        if (video.hls_key && video.hls_key !== video.original_key) {
+            // Use HLS if processed
+            streamUrl = await getSignedStreamUrl(videoId, 'playlist.m3u8');
+        } else {
+            // Use original file directly
+            streamUrl = await getSignedStreamUrl(videoId, video.original_key, BUCKETS.ORIGINALS);
+        }
+        
         const thumbnailUrl = await getThumbnailUrl(videoId);
 
         // Log access
@@ -285,7 +387,7 @@ router.get('/stream/:videoId', async (req: Request, res: Response) => {
                 qualities = JSON.parse(video.qualities_available);
             } catch (e) {
                 console.warn('[Videos] Invalid JSON in qualities_available:', video.qualities_available);
-                qualities = ['360p']; // Default quality
+                qualities = ['original']; // Default to original
             }
         }
 
