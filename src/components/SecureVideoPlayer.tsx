@@ -13,19 +13,19 @@ interface SecureVideoPlayerProps {
     onClose: () => void;
 }
 
-export function SecureVideoPlayer({ 
-    videoId, 
-    userId, 
-    studentName, 
-    groupName, 
-    onClose 
+export function SecureVideoPlayer({
+    videoId,
+    userId,
+    studentName,
+    groupName,
+    onClose
 }: SecureVideoPlayerProps) {
     const navigate = useNavigate();
     const videoRef = useRef<HTMLVideoElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const progressRef = useRef<HTMLDivElement>(null);
     const hlsRef = useRef<Hls | null>(null);
-    
+
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [isPlaying, setIsPlaying] = useState(false);
@@ -42,7 +42,7 @@ export function SecureVideoPlayer({
     const [isWindowFocused, setIsWindowFocused] = useState(true);
     const [isSecurityBlurred, setIsSecurityBlurred] = useState(false);
     const [recordingDetected, setRecordingDetected] = useState(false);
-    
+
     const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const isLoggedOutRef = useRef(false);
     const suspiciousActivityCount = useRef(0);
@@ -97,7 +97,7 @@ export function SecureVideoPlayer({
     const forceLogout = useCallback((reason: string) => {
         if (isLoggedOutRef.current) return;
         isLoggedOutRef.current = true;
-        
+
         // Log security violation to backend
         fetch(`${API_BASE}/videos/security/log`, {
             method: 'POST',
@@ -105,34 +105,34 @@ export function SecureVideoPlayer({
             body: JSON.stringify({
                 userId,
                 videoId,
-                activityType: reason.includes('تصوير') ? 'screenshot_attempt' : 
-                              reason.includes('تسجيل') ? 'recording_attempt' :
-                              reason.includes('أدوات المطور') ? 'devtools_attempt' :
-                              'forced_logout',
+                activityType: reason.includes('تصوير') ? 'screenshot_attempt' :
+                    reason.includes('تسجيل') ? 'recording_attempt' :
+                        reason.includes('أدوات المطور') ? 'devtools_attempt' :
+                            'forced_logout',
                 details: reason
             })
         }).catch(err => console.error('Failed to log security event:', err));
-        
+
         if (videoRef.current) {
             videoRef.current.pause();
             videoRef.current.src = '';
         }
-        
+
         if (hlsRef.current) {
             hlsRef.current.destroy();
         }
-        
+
         setSecurityViolation(reason);
-        
+
         setTimeout(() => {
             localStorage.removeItem('user');
             localStorage.removeItem('token');
             sessionStorage.clear();
-            
+
             if (document.fullscreenElement) {
-                document.exitFullscreen().catch(() => {});
+                document.exitFullscreen().catch(() => { });
             }
-            
+
             navigate('/auth', { replace: true });
             window.location.reload();
         }, 2000);
@@ -146,7 +146,7 @@ export function SecureVideoPlayer({
                 // Check if getDisplayMedia (screen recording API) is being used
                 const originalGetDisplayMedia = navigator.mediaDevices?.getDisplayMedia;
                 if (originalGetDisplayMedia) {
-                    navigator.mediaDevices.getDisplayMedia = function(...args) {
+                    navigator.mediaDevices.getDisplayMedia = function (...args) {
                         setShowBlackScreen(true);
                         forceLogout('محاولة تسجيل الشاشة - Screen Capture API');
                         throw new Error('Screen capture blocked');
@@ -168,7 +168,7 @@ export function SecureVideoPlayer({
                 // Block Chrome Extensions APIs that might be used for recording
                 if ((window as any).chrome?.runtime) {
                     const originalSendMessage = (window as any).chrome.runtime.sendMessage;
-                    (window as any).chrome.runtime.sendMessage = function(...args: any[]) {
+                    (window as any).chrome.runtime.sendMessage = function (...args: any[]) {
                         console.warn('Extension communication blocked');
                         setShowBlackScreen(true);
                         suspiciousActivityCount.current += 5;
@@ -191,7 +191,7 @@ export function SecureVideoPlayer({
                 setIsWindowFocused(false);
                 setShowBlackScreen(true);
                 if (videoRef.current) videoRef.current.pause();
-                
+
                 // Immediate logout on any tab/window switch
                 forceLogout('تبديل التبويب أو النافذة محظور');
             } else {
@@ -209,7 +209,7 @@ export function SecureVideoPlayer({
             setIsWindowFocused(false);
             setShowBlackScreen(true);
             if (videoRef.current) videoRef.current.pause();
-            
+
             // Immediate logout on ANY window blur (ALT+TAB, switching apps, etc.)
             forceLogout('تبديل النافذة أو التطبيق محظور (ALT+TAB)');
         };
@@ -228,7 +228,7 @@ export function SecureVideoPlayer({
                 const memory = (performance as any).memory;
                 const usedMemoryMB = memory.usedJSHeapSize / 1048576;
                 const totalMemoryMB = memory.jsHeapSizeLimit / 1048576;
-                
+
                 // If memory usage is abnormally high, might be recording
                 if (usedMemoryMB > totalMemoryMB * 0.75) {
                     suspiciousActivityCount.current++;
@@ -247,10 +247,10 @@ export function SecureVideoPlayer({
             const threshold = 160;
             const widthThreshold = window.outerWidth - window.innerWidth > threshold;
             const heightThreshold = window.outerHeight - window.innerHeight > threshold;
-            
+
             // Also check for orientation changes that might indicate DevTools
             const orientation = window.screen.orientation?.type;
-            
+
             if (widthThreshold || heightThreshold) {
                 setShowBlackScreen(true);
                 forceLogout('أدوات المطور مفتوحة');
@@ -292,18 +292,18 @@ export function SecureVideoPlayer({
         window.addEventListener('focus', handleWindowFocus);
 
         // ========= MOBILE SECURITY - ANDROID & iOS =========
-        
+
         // 1. Detect screen recording on mobile devices
         const detectMobileRecording = () => {
             // Check if MediaRecorder API is being accessed (screen recording)
             if ('mediaDevices' in navigator && navigator.mediaDevices.getDisplayMedia) {
                 const originalGetDisplayMedia = navigator.mediaDevices.getDisplayMedia;
-                navigator.mediaDevices.getDisplayMedia = function(...args) {
+                navigator.mediaDevices.getDisplayMedia = function (...args) {
                     forceLogout('محاولة تسجيل الشاشة على الموبايل');
                     return originalGetDisplayMedia.apply(this, args);
                 };
             }
-            
+
             // Detect MediaRecorder usage (video recording)
             const OriginalMediaRecorder = window.MediaRecorder;
             if (OriginalMediaRecorder) {
@@ -314,11 +314,11 @@ export function SecureVideoPlayer({
                     }
                 };
             }
-            
+
             // Monitor getUserMedia (camera/mic access - often used by recording apps)
             if (navigator.mediaDevices?.getUserMedia) {
                 const originalGetUserMedia = navigator.mediaDevices.getUserMedia;
-                navigator.mediaDevices.getUserMedia = async function(constraints) {
+                navigator.mediaDevices.getUserMedia = async function (constraints) {
                     // If requesting video while watching - suspicious
                     if (constraints?.video) {
                         forceLogout('محاولة الوصول للكاميرا أثناء المشاهدة - تسجيل محتمل');
@@ -326,20 +326,20 @@ export function SecureVideoPlayer({
                     return originalGetUserMedia.call(this, constraints);
                 };
             }
-            
+
             // Block captureStream on video element (can be used for recording)
-            const videoCaptureStream = (HTMLVideoElement.prototype as any).captureStream || 
-                                      (HTMLVideoElement.prototype as any).mozCaptureStream;
+            const videoCaptureStream = (HTMLVideoElement.prototype as any).captureStream ||
+                (HTMLVideoElement.prototype as any).mozCaptureStream;
             if (videoCaptureStream) {
-                (HTMLVideoElement.prototype as any).captureStream = function() {
+                (HTMLVideoElement.prototype as any).captureStream = function () {
                     forceLogout('محاولة التقاط stream الفيديو للتسجيل');
                     throw new Error('captureStream blocked');
                 };
             }
-            
+
             // Block Canvas drawImage on video (used for frame capture and recording)
             const originalDrawImage = CanvasRenderingContext2D.prototype.drawImage;
-            CanvasRenderingContext2D.prototype.drawImage = function(...args: any[]) {
+            CanvasRenderingContext2D.prototype.drawImage = function (...args: any[]) {
                 // Check if drawing from our video element
                 if (args[0] instanceof HTMLVideoElement && args[0] === videoRef.current) {
                     forceLogout('محاولة التقاط إطارات الفيديو عبر Canvas');
@@ -347,27 +347,27 @@ export function SecureVideoPlayer({
                 }
                 return originalDrawImage.apply(this, args);
             };
-            
+
             // Block WebRTC Data Channel (can be used to send video stream)
             const originalCreateDataChannel = RTCPeerConnection.prototype.createDataChannel;
-            RTCPeerConnection.prototype.createDataChannel = function(...args: any[]) {
+            RTCPeerConnection.prototype.createDataChannel = function (...args: any[]) {
                 forceLogout('محاولة إرسال البيانات عبر WebRTC - تسجيل محتمل');
                 throw new Error('Data channel blocked');
             };
         };
-        
+
         // 2. Detect when user leaves app (goes to home screen or switches apps)
         const handleAppStateChange = () => {
             if (document.hidden || document.visibilityState === 'hidden') {
                 forceLogout('الخروج من التطبيق على الموبايل محظور');
             }
         };
-        
+
         // 3. Detect screenshot attempts on Android/iOS
         // Screenshots cause a quick blur/visibility change
         let mobileBlurCount = 0;
         let lastMobileBlurTime = 0;
-        
+
         const handleMobileBlur = () => {
             const now = Date.now();
             if (now - lastMobileBlurTime < 500) {
@@ -380,7 +380,7 @@ export function SecureVideoPlayer({
             }
             lastMobileBlurTime = now;
         };
-        
+
         // 4. Detect volume button press (often used for screenshot)
         const handleVolumeButton = (e: KeyboardEvent) => {
             if (e.key === 'VolumeUp' || e.key === 'VolumeDown') {
@@ -388,13 +388,13 @@ export function SecureVideoPlayer({
                 handleMobileBlur();
             }
         };
-        
+
         // 5. Block long press on mobile (screenshot gesture)
         let touchStartTime = 0;
         const handleTouchStart = () => {
             touchStartTime = Date.now();
         };
-        
+
         const handleTouchEnd = () => {
             const touchDuration = Date.now() - touchStartTime;
             if (touchDuration > 1000) {
@@ -402,22 +402,22 @@ export function SecureVideoPlayer({
                 forceLogout('ضغطة طويلة مشبوهة على الموبايل');
             }
         };
-        
+
         // 6. Monitor page freeze (iOS screenshot causes brief freeze)
         let lastFrameTime = Date.now();
         const checkFrameRate = () => {
             const now = Date.now();
             const timeSinceLastFrame = now - lastFrameTime;
-            
+
             // If more than 200ms passed, might be screenshot
             if (timeSinceLastFrame > 200 && document.visibilityState === 'visible') {
                 forceLogout('تجميد الشاشة - محاولة لقطة شاشة محتملة');
             }
-            
+
             lastFrameTime = now;
             requestAnimationFrame(checkFrameRate);
         };
-        
+
         // 7. Monitor battery drain (recording consumes a lot of battery)
         const monitorBattery = async () => {
             if ('getBattery' in navigator) {
@@ -425,11 +425,11 @@ export function SecureVideoPlayer({
                     const battery = await (navigator as any).getBattery();
                     let lastBatteryLevel = battery.level;
                     let batteryCheckCount = 0;
-                    
+
                     const checkBatteryDrain = () => {
                         const currentLevel = battery.level;
                         const drain = lastBatteryLevel - currentLevel;
-                        
+
                         // If battery drains more than 0.5% in 30 seconds while charging is off
                         if (drain > 0.005 && !battery.charging) {
                             batteryCheckCount++;
@@ -439,17 +439,17 @@ export function SecureVideoPlayer({
                         } else {
                             batteryCheckCount = 0;
                         }
-                        
+
                         lastBatteryLevel = currentLevel;
                     };
-                    
+
                     setInterval(checkBatteryDrain, 30000); // Check every 30 seconds
                 } catch (e) {
                     console.log('Battery API not available');
                 }
             }
         };
-        
+
         // 8. Detect Picture-in-Picture attempts (used to record while browsing)
         const blockPiP = () => {
             if (videoRef.current) {
@@ -461,11 +461,11 @@ export function SecureVideoPlayer({
                 });
             }
         };
-        
+
         // 9. Monitor screen orientation changes (some recording apps rotate screen)
         let orientationChangeCount = 0;
         let lastOrientationChange = Date.now();
-        
+
         const handleOrientationChange = () => {
             const now = Date.now();
             if (now - lastOrientationChange < 2000) {
@@ -478,21 +478,21 @@ export function SecureVideoPlayer({
             }
             lastOrientationChange = now;
         };
-        
+
         // 10. Block Web Share API (can be used to save video)
         if (navigator.share) {
             const originalShare = navigator.share;
-            navigator.share = async function(data) {
+            navigator.share = async function (data) {
                 if (data.files || data.url) {
                     forceLogout('محاولة مشاركة المحتوى');
                 }
                 return originalShare.call(this, data);
             };
         }
-        
+
         // Detect if running on mobile
         const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-        
+
         if (isMobile) {
             detectMobileRecording();
             monitorBattery();
@@ -512,7 +512,7 @@ export function SecureVideoPlayer({
             document.removeEventListener('visibilitychange', handleVisibilityChange);
             window.removeEventListener('blur', handleWindowBlur);
             window.removeEventListener('focus', handleWindowFocus);
-            
+
             if (isMobile) {
                 document.removeEventListener('visibilitychange', handleAppStateChange, true);
                 window.removeEventListener('blur', handleMobileBlur, true);
@@ -556,7 +556,7 @@ export function SecureVideoPlayer({
 
     const toggleFullscreen = useCallback(async () => {
         if (!containerRef.current) return;
-        
+
         if (document.fullscreenElement) {
             await document.exitFullscreen();
         } else {
@@ -567,7 +567,7 @@ export function SecureVideoPlayer({
     // Security: Block screenshot shortcuts and recording
     useEffect(() => {
         let screenshotAttempts = 0;
-        
+
         const handleKeyDown = (e: KeyboardEvent) => {
             // Block Alt+Tab - Window switching is INSTANT LOGOUT
             if (e.altKey && e.key === 'Tab') {
@@ -599,7 +599,7 @@ export function SecureVideoPlayer({
                 forceLogout('محاولة تصوير الشاشة - Print Screen');
                 return false;
             }
-            
+
             // Block Snipping Tool (Win + Shift + S) - INSTANT LOGOUT
             if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'S' || e.key === 's')) {
                 e.preventDefault();
@@ -609,7 +609,7 @@ export function SecureVideoPlayer({
                 forceLogout('محاولة تصوير الشاشة - Snipping Tool');
                 return false;
             }
-            
+
             // Block Mac screenshots - INSTANT LOGOUT
             if (e.metaKey && e.shiftKey && ['3', '4', '5', '6'].includes(e.key)) {
                 e.preventDefault();
@@ -820,7 +820,7 @@ export function SecureVideoPlayer({
         const handleFullscreenChange = () => {
             const isNowFullscreen = !!document.fullscreenElement;
             setIsFullscreen(isNowFullscreen);
-            
+
             if (!isNowFullscreen) {
                 onClose();
             }
@@ -893,7 +893,7 @@ export function SecureVideoPlayer({
 
                     hls.on(Hls.Events.MANIFEST_PARSED, () => {
                         setLoading(false);
-                        video.play().catch(() => {});
+                        video.play().catch(() => { });
                     });
 
                     hls.loadSource(streamUrl);
@@ -902,19 +902,19 @@ export function SecureVideoPlayer({
                     video.src = streamUrl;
                     video.addEventListener('loadedmetadata', () => {
                         setLoading(false);
-                        video.play().catch(() => {});
+                        video.play().catch(() => { });
                     });
                 } else {
                     video.src = streamUrl;
-                    
+
                     video.addEventListener('loadedmetadata', () => {
                         setDuration(video.duration);
                         setLoading(false);
                     });
-                    
+
                     video.addEventListener('canplay', () => {
                         setLoading(false);
-                        video.play().catch(() => {});
+                        video.play().catch(() => { });
                     });
 
                     video.addEventListener('error', (e) => {
@@ -1055,7 +1055,7 @@ export function SecureVideoPlayer({
     };
 
     return (
-        <div 
+        <div
             ref={containerRef}
             className="fixed inset-0 z-[9999] bg-black flex items-center justify-center"
             onMouseMove={resetControlsTimeout}
@@ -1063,14 +1063,11 @@ export function SecureVideoPlayer({
             style={{
                 userSelect: 'none',
                 WebkitUserSelect: 'none',
+                MozUserSelect: 'none',
+                msUserSelect: 'none',
                 // CSS protection against screenshots on mobile & desktop
                 WebkitTouchCallout: 'none',
                 touchAction: 'none',
-                // Prevent screenshot flag on Android
-                // @ts-ignore
-                '-webkit-user-select': 'none',
-                '-moz-user-select': 'none',
-                '-ms-user-select': 'none',
             }}
             // Prevent screenshot attributes for mobile browsers
             data-html2canvas-ignore="true"
@@ -1139,7 +1136,7 @@ export function SecureVideoPlayer({
 
             {/* Multiple watermarks covering entire screen - like barcode pattern */}
             {watermarks.map((mark, index) => (
-                <div 
+                <div
                     key={index}
                     className="absolute pointer-events-none select-none z-[5]"
                     style={{
@@ -1160,7 +1157,7 @@ export function SecureVideoPlayer({
             ))}
 
             {/* Large prominent watermarks */}
-            <div 
+            <div
                 className="absolute top-1/4 left-1/2 -translate-x-1/2 pointer-events-none select-none z-10 text-center"
                 style={{
                     color: 'rgba(255, 255, 255, 0.08)',
@@ -1173,7 +1170,7 @@ export function SecureVideoPlayer({
                 {watermarkText}
             </div>
 
-            <div 
+            <div
                 className="absolute bottom-1/4 left-1/4 pointer-events-none select-none z-10"
                 style={{
                     color: 'rgba(255, 255, 255, 0.06)',
@@ -1185,7 +1182,7 @@ export function SecureVideoPlayer({
                 {watermarkText}
             </div>
 
-            <div 
+            <div
                 className="absolute top-1/3 right-1/4 pointer-events-none select-none z-10"
                 style={{
                     color: 'rgba(255, 255, 255, 0.07)',
@@ -1253,7 +1250,7 @@ export function SecureVideoPlayer({
                                 <X className="h-5 w-5" />
                                 <span className="font-medium">إغلاق</span>
                             </button>
-                            
+
                             <div className="text-white/70 text-sm bg-black/40 px-4 py-2 rounded-full">
                                 🎓 {studentName} • {groupName}
                             </div>
@@ -1262,7 +1259,7 @@ export function SecureVideoPlayer({
 
                     {/* Center play button */}
                     {!isPlaying && (
-                        <div 
+                        <div
                             className="absolute inset-0 flex items-center justify-center z-10 cursor-pointer"
                             onClick={togglePlay}
                         >
@@ -1276,7 +1273,7 @@ export function SecureVideoPlayer({
                     <div className="absolute bottom-0 left-0 right-0 px-8 py-6 bg-gradient-to-t from-black/95 via-black/80 to-transparent z-30">
                         {/* YouTube-style Progress bar */}
                         <div className="mb-6" dir="ltr">
-                            <div 
+                            <div
                                 ref={progressRef}
                                 className="w-full bg-white/30 cursor-pointer relative group"
                                 onMouseDown={handleProgressMouseDown}
@@ -1292,18 +1289,18 @@ export function SecureVideoPlayer({
                             >
                                 {/* Buffered background */}
                                 <div className="absolute inset-0 bg-white/40" style={{ borderRadius: '2px' }} />
-                                
+
                                 {/* Progress - YouTube Red */}
-                                <div 
+                                <div
                                     className="h-full bg-red-600 relative"
-                                    style={{ 
-                                        width: `${progress}%`, 
+                                    style={{
+                                        width: `${progress}%`,
                                         transition: isDragging ? 'none' : 'width 0.1s linear',
                                         borderRadius: '2px'
                                     }}
                                 >
                                     {/* Scrubber Handle - YouTube style */}
-                                    <div 
+                                    <div
                                         className="absolute right-0 top-1/2 bg-red-600 rounded-full shadow-xl"
                                         style={{
                                             width: isHoveringProgress || isDragging ? '14px' : '0px',
@@ -1315,10 +1312,10 @@ export function SecureVideoPlayer({
                                         }}
                                     />
                                 </div>
-                                
+
                                 {/* Hover time preview - YouTube style */}
                                 {isHoveringProgress && (
-                                    <div 
+                                    <div
                                         className="absolute bottom-full mb-3 px-2.5 py-1.5 bg-black/95 text-white text-xs font-medium rounded shadow-xl pointer-events-none"
                                         style={{
                                             left: `${progress}%`,
@@ -1333,7 +1330,7 @@ export function SecureVideoPlayer({
                                     </div>
                                 )}
                             </div>
-                            
+
                             {/* Time display - YouTube style */}
                             <div className="flex items-center gap-2 mt-3 text-white/90 text-sm font-medium">
                                 <span className="tabular-nums">{formatTime(currentTime)}</span>
@@ -1346,7 +1343,7 @@ export function SecureVideoPlayer({
                         <div className="flex items-center justify-between mt-2">{/* Left controls */}
                             <div className="flex items-center gap-3">
                                 {/* Skip backward */}
-                                <button 
+                                <button
                                     onClick={skipBackward}
                                     className="p-2.5 hover:bg-white/10 rounded-full text-white transition-all"
                                     title="رجوع 5 ثواني (j)"
@@ -1355,7 +1352,7 @@ export function SecureVideoPlayer({
                                 </button>
 
                                 {/* Play/Pause - YouTube style */}
-                                <button 
+                                <button
                                     onClick={togglePlay}
                                     className="p-3 hover:bg-white/10 rounded-full text-white transition-all"
                                     title={isPlaying ? 'إيقاف (k)' : 'تشغيل (k)'}
@@ -1364,7 +1361,7 @@ export function SecureVideoPlayer({
                                 </button>
 
                                 {/* Skip forward */}
-                                <button 
+                                <button
                                     onClick={skipForward}
                                     className="p-2.5 hover:bg-white/10 rounded-full text-white transition-all"
                                     title="تقديم 5 ثواني (l)"
@@ -1373,19 +1370,19 @@ export function SecureVideoPlayer({
                                 </button>
 
                                 {/* Volume control - YouTube style */}
-                                <div 
+                                <div
                                     className="relative flex items-center group"
                                     onMouseEnter={() => setShowVolumeSlider(true)}
                                     onMouseLeave={() => setShowVolumeSlider(false)}
                                 >
-                                    <button 
+                                    <button
                                         onClick={toggleMute}
                                         className="p-2.5 hover:bg-white/10 rounded-full text-white transition-all"
                                         title={isMuted ? 'تشغيل الصوت (m)' : 'كتم الصوت (m)'}
                                     >
                                         {isMuted || volume === 0 ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
                                     </button>
-                                    
+
                                     {/* Volume slider - YouTube vertical style */}
                                     <div className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-2 bg-black/90 rounded-lg px-2 py-3 transition-all ${showVolumeSlider ? 'opacity-100 visible' : 'opacity-0 invisible'}`}>
                                         <input
@@ -1410,7 +1407,7 @@ export function SecureVideoPlayer({
 
                             {/* Right controls */}
                             <div className="flex items-center gap-2">{/* Fullscreen */}
-                                <button 
+                                <button
                                     onClick={toggleFullscreen}
                                     className="p-2.5 hover:bg-white/10 rounded-full text-white transition-all"
                                     title={isFullscreen ? 'الخروج من ملء الشاشة (f)' : 'ملء الشاشة (f)'}
@@ -1429,7 +1426,7 @@ export function SecureVideoPlayer({
             </div>
 
             {/* Invisible protection layers - make screen capture show black */}
-            <div 
+            <div
                 className="absolute inset-0 pointer-events-none z-[1]"
                 style={{
                     background: 'transparent',

@@ -32,6 +32,7 @@ import videosRoutes from './routes/videos';
 import manualGradingRoutes from './routes/manual-grading';
 import staffRoutes from './routes/staff';
 import premiumLecturesRoutes from './routes/premium-lectures';
+import aiChatRoutes from './routes/ai-chat';
 import { initializeBuckets } from './services/minio';
 
 dotenv.config();
@@ -112,6 +113,7 @@ app.use('/api/videos', videosRoutes);
 app.use('/api/manual-grading', manualGradingRoutes);
 app.use('/api/staff', staffRoutes);
 app.use('/api/premium-lectures', premiumLecturesRoutes);
+app.use('/api/ai-chat', aiChatRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {

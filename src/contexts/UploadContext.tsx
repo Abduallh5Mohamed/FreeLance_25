@@ -141,7 +141,8 @@ export function UploadProvider({ children }: { children: ReactNode }) {
                     setUploads(prev => {
                         const upload = prev.get(videoId);
                         if (upload?.onComplete) {
-                            upload.onComplete(videoId);
+                            // Use setTimeout to avoid render phase update
+                            setTimeout(() => upload.onComplete(videoId), 0);
                         }
                         return prev;
                     });

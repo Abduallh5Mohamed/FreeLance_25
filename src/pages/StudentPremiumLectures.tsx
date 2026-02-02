@@ -5,8 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { 
-  Search, Play, Clock, DollarSign, Lock, Unlock, Upload, 
+import {
+  Search, Play, Clock, DollarSign, Lock, Unlock, Upload,
   X, AlertCircle
 } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
@@ -15,13 +15,13 @@ import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
 import { SecureVideoPlayer } from "@/components/SecureVideoPlayer";
-import { 
+import {
   getStudentAvailablePremiumLectures, getStudentPurchasedPremiumLectures,
   getStudentPremiumPayments, submitPremiumLecturePayment,
-  PremiumLecture, PremiumLecturePayment, User 
+  PremiumLecture, PremiumLecturePayment, User
 } from "@/lib/api-http";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface Student {
@@ -45,7 +45,7 @@ const StudentPremiumLectures = () => {
   const [loading, setLoading] = useState(true);
   const [playingVideo, setPlayingVideo] = useState<{ videoId: string; title: string } | null>(null);
   const [activeTab, setActiveTab] = useState('available');
-  
+
   // Payment Dialog State
   const [showPaymentDialog, setShowPaymentDialog] = useState(false);
   const [selectedLecture, setSelectedLecture] = useState<PremiumLecture | null>(null);
@@ -61,10 +61,10 @@ const StudentPremiumLectures = () => {
   const loadUserAndData = async () => {
     try {
       setLoading(true);
-      
+
       const userStr = localStorage.getItem('currentUser');
       const studentStr = localStorage.getItem('currentStudent');
-      
+
       if (!userStr) {
         toast({
           title: 'خطأ',
@@ -107,7 +107,7 @@ const StudentPremiumLectures = () => {
         getStudentPurchasedPremiumLectures(studentId),
         getStudentPremiumPayments(studentId)
       ]);
-      
+
       setAvailableLectures(available || []);
       setPurchasedLectures(purchased || []);
       setMyPayments(payments || []);
@@ -180,7 +180,7 @@ const StudentPremiumLectures = () => {
       }
 
       await submitPremiumLecturePayment(formData);
-      
+
       toast({
         title: "تم الإرسال",
         description: "تم إرسال طلب الدفع بنجاح، سيتم مراجعته قريباً",
@@ -229,7 +229,7 @@ const StudentPremiumLectures = () => {
     }
   };
 
-  const filteredAvailable = availableLectures.filter(l => 
+  const filteredAvailable = availableLectures.filter(l =>
     l.title.toLowerCase().includes(searchQuery.toLowerCase()) &&
     !l.access_id // Not already purchased
   );
@@ -242,7 +242,7 @@ const StudentPremiumLectures = () => {
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
       <FloatingParticles />
       <StudentHeader />
-      
+
       {/* Video Player Modal */}
       {playingVideo && currentUser && (
         <SecureVideoPlayer
@@ -259,8 +259,11 @@ const StudentPremiumLectures = () => {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="text-xl">إرسال إيصال الدفع</DialogTitle>
+            <DialogDescription>
+              قم برفع صورة إيصال الدفع للحصة
+            </DialogDescription>
           </DialogHeader>
-          
+
           {selectedLecture && (
             <div className="space-y-4">
               <div className="p-4 bg-muted rounded-lg">
@@ -276,9 +279,9 @@ const StudentPremiumLectures = () => {
                 <div className="mt-2">
                   {imagePreview ? (
                     <div className="relative">
-                      <img 
-                        src={imagePreview} 
-                        alt="معاينة الإيصال" 
+                      <img
+                        src={imagePreview}
+                        alt="معاينة الإيصال"
                         className="w-full h-48 object-cover rounded-lg"
                       />
                       <Button
@@ -323,13 +326,13 @@ const StudentPremiumLectures = () => {
           )}
 
           <DialogFooter className="gap-2">
-            <Button 
-              variant="ghost" 
+            <Button
+              variant="ghost"
               onClick={() => setShowPaymentDialog(false)}
             >
               إلغاء
             </Button>
-            <Button 
+            <Button
               onClick={handleSubmitPayment}
               disabled={!receiptImage || submitting}
               className="bg-gradient-to-r from-primary to-accent hover:shadow-glow"
@@ -412,8 +415,8 @@ const StudentPremiumLectures = () => {
                         {/* Thumbnail */}
                         <div className="relative h-44 bg-gradient-to-br from-primary/20 to-accent/20">
                           {lecture.thumbnail_url ? (
-                            <img 
-                              src={lecture.thumbnail_url} 
+                            <img
+                              src={lecture.thumbnail_url}
                               alt={lecture.title}
                               className="w-full h-full object-cover"
                             />
@@ -509,8 +512,8 @@ const StudentPremiumLectures = () => {
                       {/* Thumbnail */}
                       <div className="relative h-44 bg-gradient-to-br from-green-500/20 to-emerald-500/20">
                         {lecture.thumbnail_url ? (
-                          <img 
-                            src={lecture.thumbnail_url} 
+                          <img
+                            src={lecture.thumbnail_url}
                             alt={lecture.title}
                             className="w-full h-full object-cover"
                           />

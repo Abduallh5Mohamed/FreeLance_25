@@ -8,8 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 
-import { 
-  Video, Trash2, Play, DollarSign, Clock, Eye, X, Check, 
+import {
+  Video, Trash2, Play, DollarSign, Clock, Eye, X, Check,
   AlertCircle, Users, Plus, Search, Upload
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -23,7 +23,7 @@ import {
   getGrades, getGroups, PremiumLecture, PremiumLecturePayment, User, Grade, Group
 } from '@/lib/api-http';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Switch } from '@/components/ui/switch';
 
 export default function TeacherPremiumLectures() {
@@ -349,6 +349,9 @@ export default function TeacherPremiumLectures() {
         <DialogContent className="bg-slate-800 border-white/10 text-white">
           <DialogHeader>
             <DialogTitle>رفض طلب الدفع</DialogTitle>
+            <DialogDescription>
+              أدخل سبب رفض طلب الدفع
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div>
@@ -503,7 +506,7 @@ export default function TeacherPremiumLectures() {
                             className="flex-1"
                             onClick={() => {
                               // Extract video ID from video:// URL
-                              const videoId = lecture.video_url?.startsWith('video://') 
+                              const videoId = lecture.video_url?.startsWith('video://')
                                 ? lecture.video_url.replace('video://', '')
                                 : lecture.video_url;
                               setPlayingVideo({ videoId, title: lecture.title });
@@ -552,13 +555,8 @@ export default function TeacherPremiumLectures() {
                     <CardContent className="p-6">
                       <div className="flex flex-col md:flex-row gap-6">
                         {/* Receipt Image */}
-<<<<<<< HEAD
                         <div
-                          className="w-full md:w-48 h-48 bg-white/10 rounded-lg overflow-hidden cursor-pointer hover:opacity-80 transition-opacity"
-=======
-                        <div 
                           className="w-full md:w-48 h-48 bg-muted rounded-lg overflow-hidden cursor-pointer hover:opacity-80 transition-opacity"
->>>>>>> 9fabd86239f66b5355fd3e397ff8e700778633d1
                           onClick={() => setViewingReceipt(`http://localhost:3001${payment.receipt_image_url}`)}
                         >
                           <img
@@ -704,8 +702,11 @@ export default function TeacherPremiumLectures() {
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingLecture ? 'تعديل الحصة المدفوعة' : 'إضافة حصة مدفوعة جديدة'}</DialogTitle>
+            <DialogDescription>
+              قم برفع فيديو أو إدخال رابط Google Drive
+            </DialogDescription>
           </DialogHeader>
-          
+
           {/* Upload Method Tabs */}
           <Tabs value={uploadMethod} onValueChange={(v) => setUploadMethod(v as 'url' | 'upload')} className="w-full">
             <TabsList className="grid w-full grid-cols-2 mb-4">
@@ -738,8 +739,8 @@ export default function TeacherPremiumLectures() {
 
                 <div>
                   <Label>المجموعة *</Label>
-                  <Select 
-                    value={formData.group_id} 
+                  <Select
+                    value={formData.group_id}
                     onValueChange={(v) => setFormData({ ...formData, group_id: v })}
                     disabled={!formData.grade_id}
                   >
@@ -756,52 +757,6 @@ export default function TeacherPremiumLectures() {
                   </Select>
                 </div>
 
-              <div>
-                <Label>المدة (دقيقة)</Label>
-                <Input
-                  type="number"
-                  value={formData.duration_minutes}
-                  onChange={(e) => setFormData({ ...formData, duration_minutes: e.target.value })}
-                  placeholder="0"
-                  className="bg-white/10 border-white/20 text-white mt-2"
-                  min="0"
-                />
-              </div>
-
-              <div>
-                <Label>الصف الدراسي</Label>
-                <Select value={formData.grade_id || 'all'} onValueChange={(v) => setFormData({ ...formData, grade_id: v === 'all' ? '' : v })}>
-                  <SelectTrigger className="bg-white/10 border-white/20 text-white mt-2">
-                    <SelectValue placeholder="اختر الصف" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">الكل</SelectItem>
-                    {grades.map((grade) => (
-                      <SelectItem key={grade.id} value={grade.id}>{grade.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div>
-                <Label>المجموعة</Label>
-                <Select value={formData.group_id || 'all'} onValueChange={(v) => setFormData({ ...formData, group_id: v === 'all' ? '' : v })}>
-                  <SelectTrigger className="bg-white/10 border-white/20 text-white mt-2">
-                    <SelectValue placeholder="اختر المجموعة" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">الكل</SelectItem>
-                    {groups.map((group) => (
-                      <SelectItem key={group.id} value={group.id}>{group.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="md:col-span-2">
-                <Label>رابط الفيديو *</Label>
-                <div className="mt-2 space-y-4">
-                  {/* Video URL input - for simplicity, use direct URL */}
                 <div className="md:col-span-2">
                   <Label>عنوان الحصة *</Label>
                   <Input
@@ -811,7 +766,6 @@ export default function TeacherPremiumLectures() {
                     className="mt-2"
                     required
                   />
-                  <p className="text-white/40 text-sm">يمكنك إدخال رابط يوتيوب أو فيميو أو رابط فيديو مباشر</p>
                 </div>
 
                 <div className="md:col-span-2">
@@ -895,17 +849,6 @@ export default function TeacherPremiumLectures() {
                           created_by: currentUser?.id
                         };
 
-            <DialogFooter>
-              <Button type="button" variant="ghost" onClick={resetForm}>إلغاء</Button>
-              <Button
-                type="submit"
-                disabled={loading}
-                className="bg-gradient-to-r from-purple-600 to-pink-600"
-              >
-                {loading ? 'جاري الحفظ...' : (editingLecture ? 'تحديث' : 'إنشاء')}
-              </Button>
-            </DialogFooter>
-          </form>
                         if (editingLecture) {
                           await updatePremiumLecture(editingLecture.id, lectureData);
                         } else {
@@ -954,8 +897,8 @@ export default function TeacherPremiumLectures() {
 
                   <div>
                     <Label>المجموعة *</Label>
-                    <Select 
-                      value={formData.group_id} 
+                    <Select
+                      value={formData.group_id}
                       onValueChange={(v) => setFormData({ ...formData, group_id: v })}
                       disabled={!formData.grade_id}
                     >
@@ -1056,8 +999,8 @@ export default function TeacherPremiumLectures() {
 
                 <DialogFooter>
                   <Button type="button" variant="ghost" onClick={resetForm}>إلغاء</Button>
-                  <Button 
-                    type="submit" 
+                  <Button
+                    type="submit"
                     disabled={loading}
                     className="bg-gradient-to-r from-cyan-500 to-teal-600"
                   >

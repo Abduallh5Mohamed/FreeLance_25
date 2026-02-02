@@ -126,10 +126,6 @@ export function VideoUploader({
             // Add to global upload context with onComplete callback
             addUpload(videoId, file.name, title, (completedVideoId) => {
                 // This will be called when upload finishes successfully
-                toast({
-                    title: 'تم بنجاح',
-                    description: 'تم رفع ومعالجة الفيديو بنجاح'
-                });
                 onUploadComplete?.(completedVideoId);
             });
 
