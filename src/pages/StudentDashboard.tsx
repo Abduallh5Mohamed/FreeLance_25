@@ -28,7 +28,7 @@ const StudentDashboard = () => {
   const [groupInfo, setGroupInfo] = useState(null);
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
-  
+
   // Filter states
   const [selectedExam, setSelectedExam] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -189,12 +189,12 @@ const StudentDashboard = () => {
   const filteredExamResults = examResults.filter((result) => {
     // Filter by selected exam
     const examFilter = selectedExam === "all" || result.exam_id?.toString() === selectedExam;
-    
+
     // Filter by search query (search in exam title and course name)
-    const searchFilter = !searchQuery || 
+    const searchFilter = !searchQuery ||
       result.exams?.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       result.exams?.courses?.name?.toLowerCase().includes(searchQuery.toLowerCase());
-    
+
     return examFilter && searchFilter;
   });
 
@@ -328,7 +328,7 @@ const StudentDashboard = () => {
                   <div className="space-y-2 md:space-y-3">
                     {/* Exams Quick Link */}
                     <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                      <Card 
+                      <Card
                         className="p-3 md:p-4 bg-gradient-to-br from-blue-500/10 to-cyan-500/10 border-blue-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
                         onClick={() => navigate('/student-exams')}
                       >
@@ -346,7 +346,7 @@ const StudentDashboard = () => {
 
                     {/* Lectures Quick Link */}
                     <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                      <Card 
+                      <Card
                         className="p-3 md:p-4 bg-gradient-to-br from-purple-500/10 to-pink-500/10 border-purple-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
                         onClick={() => navigate('/student-lectures')}
                       >
@@ -364,7 +364,7 @@ const StudentDashboard = () => {
 
                     {/* Results Quick Link */}
                     <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                      <Card 
+                      <Card
                         className="p-3 md:p-4 bg-gradient-to-br from-green-500/10 to-emerald-500/10 border-green-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
                         onClick={() => navigate('/student-exam-results')}
                       >
@@ -382,7 +382,7 @@ const StudentDashboard = () => {
 
                     {/* Materials Quick Link */}
                     <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                      <Card 
+                      <Card
                         className="p-3 md:p-4 bg-gradient-to-br from-orange-500/10 to-amber-500/10 border-orange-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
                         onClick={() => navigate('/student-content')}
                       >
@@ -400,7 +400,7 @@ const StudentDashboard = () => {
 
                     {/* Online Meetings Quick Link */}
                     <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                      <Card 
+                      <Card
                         className="p-3 md:p-4 bg-gradient-to-br from-red-500/10 to-rose-500/10 border-red-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
                         onClick={() => navigate('/student-meetings')}
                       >
@@ -579,7 +579,7 @@ const StudentDashboard = () => {
                         className="pr-10"
                       />
                     </div>
-                    
+
                     {/* Filter by exam */}
                     <Select value={selectedExam} onValueChange={setSelectedExam}>
                       <SelectTrigger>
@@ -595,7 +595,7 @@ const StudentDashboard = () => {
                       </SelectContent>
                     </Select>
                   </div>
-                  
+
                   {/* Results count */}
                   <div className="text-xs text-muted-foreground text-center">
                     عرض {filteredExamResults.length} من {examResults.length} نتيجة
@@ -647,8 +647,8 @@ const StudentDashboard = () => {
                         <div className="space-y-2">
                           <Award className="w-12 h-12 mx-auto text-muted-foreground/50" />
                           <p>لا توجد نتائج</p>
-                          <Button 
-                            variant="outline" 
+                          <Button
+                            variant="outline"
                             size="sm"
                             onClick={() => {
                               setSelectedExam("all");

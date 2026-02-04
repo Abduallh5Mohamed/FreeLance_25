@@ -170,7 +170,7 @@ const StudentLectures = () => {
         videoId: videoId,
         title: lecture.title
       });
-      
+
       toast({
         title: "جاري تشغيل المحاضرة",
         description: lecture.title
@@ -184,7 +184,7 @@ const StudentLectures = () => {
       } else if (videoUrl.includes('youtu.be/')) {
         videoId = videoUrl.split('youtu.be/')[1]?.split('?')[0] || '';
       }
-      
+
       if (videoId) {
         const embedUrl = `https://www.youtube.com/embed/${videoId}`;
         setExternalVideo({ url: embedUrl, title: lecture.title });

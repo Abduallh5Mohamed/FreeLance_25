@@ -15,7 +15,8 @@ import {
   CreditCard,
   Upload,
   Image as ImageIcon,
-  ClipboardCheck
+  ClipboardCheck,
+  Calendar
 } from "lucide-react";
 import {
   Dialog,
@@ -144,7 +145,7 @@ const StudentHeader = () => {
     { name: "المحتوى التعليمي", href: "/student-content", icon: File },
     { name: "الامتحانات", href: "/student-exams", icon: FileText },
     { name: "نتائج الامتحانات", href: "/student-exam-results", icon: ClipboardCheck },
-    { name: "الاجتماعات المباشرة", href: "/student-meetings", icon: Video },
+    { name: "الاجتماعات المباشرة", href: "/student-meetings", icon: Calendar },
     { name: "المحادثات", href: "/student-chat", icon: MessageCircle },
   ];
 

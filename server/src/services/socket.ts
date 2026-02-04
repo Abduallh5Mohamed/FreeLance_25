@@ -79,7 +79,7 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
                         `SELECT id, name, phone, role FROM users WHERE role = 'admin' LIMIT 5`
                     );
                     console.log('📋 Found admin users:', JSON.stringify(teachers));
-                    
+
                     // Find the main admin
                     const mainAdmin = teachers.find((t: any) => t.phone === '01024083057');
                     if (mainAdmin) {
@@ -97,7 +97,7 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
                 // Insert message into database - Generate UUID first since table uses uuid() default
                 const [uuidResult] = await getPool().query<RowDataPacket[]>('SELECT UUID() as uuid');
                 const messageId = uuidResult[0].uuid;
-                
+
                 await getPool().query(`
                     INSERT INTO messages (id, sender_id, receiver_id, content, message_type, image_url)
                     VALUES (?, ?, ?, ?, ?, ?)

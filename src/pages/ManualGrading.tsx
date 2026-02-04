@@ -79,12 +79,17 @@ const ManualGrading = () => {
     };
 
     const fetchPendingAttempts = async () => {
-        if (!selectedGrade || !selectedGroup) return;
+        if (!selectedGrade) return;
 
         setLoading(true);
         try {
+            const params = new URLSearchParams({ grade_id: selectedGrade });
+            if (selectedGroup && selectedGroup !== 'all') {
+                params.set('group_id', selectedGroup);
+            }
+
             const response = await fetch(
-                `${API_BASE_URL}/manual-grading/pending?grade_id=${selectedGrade}&group_id=${selectedGroup}`
+                `${API_BASE_URL}/manual-grading/pending?${params.toString()}`
             );
             const data = await response.json();
 
@@ -233,6 +238,7 @@ const ManualGrading = () => {
                                         <SelectValue placeholder="اختر المجموعة" />
                                     </SelectTrigger>
                                     <SelectContent>
+                                        <SelectItem value="all">الكل</SelectItem>
                                         {filteredGroups.map(group => (
                                             <SelectItem key={group.id} value={group.id}>
                                                 {group.name}
@@ -253,9 +259,9 @@ const ManualGrading = () => {
                 ) : students.length === 0 ? (
                     <Card>
                         <CardContent className="py-12 text-center text-muted-foreground">
-                            {selectedGrade && selectedGroup
-                                ? "لا توجد امتحانات تحتاج تصحيح في هذه المجموعة"
-                                : "اختر الصف والمجموعة لعرض الطلاب"
+                            {selectedGrade
+                                ? "لا توجد امتحانات تحتاج تصحيح لهذه الصفوف/المجموعات"
+                                : "اختر الصف (ويمكنك اختيار المجموعة أو الكل)"
                             }
                         </CardContent>
                     </Card>

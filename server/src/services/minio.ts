@@ -11,8 +11,8 @@ const getLocalIp = () => {
     for (const name of Object.keys(nets)) {
         // Skip VirtualBox, VMware, Docker, and other virtual adapters
         const lowerName = name.toLowerCase();
-        if (lowerName.includes('virtualbox') || 
-            lowerName.includes('vmware') || 
+        if (lowerName.includes('virtualbox') ||
+            lowerName.includes('vmware') ||
             lowerName.includes('docker') ||
             lowerName.includes('vethernet') ||
             lowerName.includes('hyper-v')) {
@@ -28,17 +28,17 @@ const getLocalIp = () => {
 
     // Filter out VirtualBox IPs (192.168.56.x is VirtualBox Host-Only Network)
     const filtered = results.filter(r => !r.address.startsWith('192.168.56.'));
-    
+
     // Prioritize common home WiFi subnets
-    const wifiIp = filtered.find(r => 
-        r.address.startsWith('192.168.1.') || 
+    const wifiIp = filtered.find(r =>
+        r.address.startsWith('192.168.1.') ||
         r.address.startsWith('192.168.0.') ||
         r.address.startsWith('10.')
     );
-    
+
     console.log('[MinIO] Network interfaces found:', results.map(r => `${r.name}: ${r.address}`));
     console.log('[MinIO] Selected IP:', wifiIp?.address || filtered[0]?.address || 'localhost');
-    
+
     return wifiIp?.address || filtered[0]?.address || 'localhost';
 };
 

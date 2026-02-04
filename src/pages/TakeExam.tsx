@@ -53,6 +53,22 @@ const TakeExam = () => {
   const { toast } = useToast();
   const resultRef = useRef<HTMLDivElement>(null);
 
+  const getApiBase = () => {
+    const envApiUrl = import.meta.env.VITE_API_URL as string | undefined;
+    if (envApiUrl) return envApiUrl.replace('/api', '');
+    const host = window.location.hostname;
+    if (host !== 'localhost' && host !== '127.0.0.1') {
+      return window.location.origin;
+    }
+    return 'http://localhost:3001';
+  };
+
+  const resolveQuestionImage = (url?: string) => {
+    if (!url) return '';
+    if (url.startsWith('http') || url.startsWith('data:')) return url;
+    return `${getApiBase()}${url}`;
+  };
+
   const [exam, setExam] = useState<ExamData | null>(null);
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [essayAnswers, setEssayAnswers] = useState<Record<string, string>>({});  // ✅ إجابات مقالية
@@ -1364,7 +1380,7 @@ const TakeExam = () => {
                     {exam.questions[currentQuestion].question_image && (
                       <div className="mt-4">
                         <img
-                          src={`${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://192.168.1.7:3001'}${exam.questions[currentQuestion].question_image}`}
+                          src={resolveQuestionImage(exam.questions[currentQuestion].question_image)}
                           alt="صورة السؤال"
                           className="max-w-full max-h-96 object-contain rounded-lg border shadow-sm"
                           onError={(e) => {
