@@ -1,0 +1,15 @@
+[Unit]
+Description=MinIO Object Storage
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Environment="MINIO_ROOT_USER=minioadmin"
+Environment="MINIO_ROOT_PASSWORD=minioadmin123"
+ExecStart=/usr/local/bin/minio server /data/minio --console-address ":9001"
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

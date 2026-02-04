@@ -22,7 +22,18 @@ import {
     DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+const getApiUrl = () => {
+    const envApiUrl = import.meta.env.VITE_API_URL;
+    if (envApiUrl) return envApiUrl;
+
+    const currentHost = window.location.hostname;
+    if (currentHost !== 'localhost' && currentHost !== '127.0.0.1') {
+        return '/api';
+    }
+    return 'http://localhost:3001/api';
+};
+
+const API_BASE = getApiUrl();
 
 interface HLSVideoPlayerProps {
     videoId: string;

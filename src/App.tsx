@@ -52,6 +52,7 @@ import StudentReports from "./pages/StudentReports";
 import TestVideo from "./pages/TestVideo";
 import TeacherPremiumLectures from "./pages/TeacherPremiumLectures";
 import StudentPremiumLectures from "./pages/StudentPremiumLectures";
+import StudentMeetings from "./pages/StudentMeetings";
 import AuthGuard from "./components/AuthGuard";
 import { UploadProvider } from "./contexts/UploadContext";
 import { UploadNotification } from "./components/UploadNotification";
@@ -119,6 +120,7 @@ const App = () => (
             <Route path="/student-exam-results" element={<AuthGuard requiredRole="student"><StudentExamResults /></AuthGuard>} />
             <Route path="/exam-review/:examId" element={<AuthGuard requiredRole="student"><ExamReview /></AuthGuard>} />
             <Route path="/student-premium-lectures" element={<AuthGuard requiredRole="student"><StudentPremiumLectures /></AuthGuard>} />
+            <Route path="/student-meetings" element={<AuthGuard requiredRole="student"><StudentMeetings /></AuthGuard>} />
             <Route path="/exam-access" element={<AuthGuard requiredRole="student"><ExamAccess /></AuthGuard>} />
             <Route path="/take-exam/:examId" element={<AuthGuard requiredRole="student"><TakeExam /></AuthGuard>} />
 

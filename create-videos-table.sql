@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS videos (
+    id VARCHAR(36) PRIMARY KEY,
+    course_id VARCHAR(36),
+    lecture_id VARCHAR(36),
+    material_id VARCHAR(36),
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    file_size_bytes BIGINT,
+    original_key VARCHAR(500),
+    hls_key VARCHAR(500),
+    thumbnail_key VARCHAR(500),
+    duration_seconds INT,
+    resolution VARCHAR(20),
+    status ENUM('uploading', 'processing', 'ready', 'failed') DEFAULT 'uploading',
+    processing_progress INT DEFAULT 0,
+    uploaded_by VARCHAR(36),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_course (course_id),
+    INDEX idx_lecture (lecture_id),
+    INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

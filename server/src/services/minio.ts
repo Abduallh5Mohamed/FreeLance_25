@@ -44,6 +44,7 @@ const getLocalIp = () => {
 
 const localIp = getLocalIp();
 const configuredEndpoint = process.env.MINIO_ENDPOINT || 'localhost';
+const publicEndpoint = process.env.MINIO_PUBLIC_ENDPOINT || configuredEndpoint;
 // If endpoint is strictly localhost, use localhost for browser access (same machine)
 // This ensures the browser can reach MinIO on the same machine
 const usePublicIp = configuredEndpoint === 'localhost';
@@ -183,12 +184,12 @@ export async function getSignedStreamUrl(
     if (bucket === BUCKETS.ORIGINALS) {
         // For original files, the fileName is the full objectKey (originals/videoId.ext)
         // We need to keep it as-is since that's how it was stored
-        const directUrl = `${protocol}://${minioEndpoint}:${port}/${bucket}/${fileName}`;
+        const directUrl = `${protocol}://${publicEndpoint}:${port}/${bucket}/${fileName}`;
         console.log('[MinIO] Original video URL:', directUrl);
         return directUrl;
     } else {
         // For HLS, use videoId/quality/playlist.m3u8 structure
-        const directUrl = `${protocol}://${minioEndpoint}:${port}/${bucket}/${videoId}/360p/playlist.m3u8`;
+        const directUrl = `${protocol}://${publicEndpoint}:${port}/${bucket}/${videoId}/360p/playlist.m3u8`;
         return directUrl;
     }
 }

@@ -3,243 +3,249 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Video, ExternalLink } from "lucide-react";
+import { Video, ExternalLink, Trash2, Edit2, Calendar, Clock, Users } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import axios from "axios";
 
-interface Group {
+// Helper to get API URL - same pattern as other pages
+const getApiUrl = () => {
+  const envApiUrl = import.meta.env.VITE_API_URL;
+  if (envApiUrl) return envApiUrl;
+  
+  // In production, use relative path (nginx proxies /api to backend)
+  const currentHost = window.location.hostname;
+  if (currentHost !== 'localhost' && currentHost !== '127.0.0.1') {
+    return '/api';
+  }
+  return 'http://localhost:3001/api';
+};
+
+const API_URL = getApiUrl();
+
+interface Grade {
   id: string;
   name: string;
 }
 
-interface OnlineMeeting {
+interface Group {
   id: string;
-  group_id: string;
+  name: string;
+  grade_id: string;
+}
+
+interface Meeting {
+  id: string;
+  title: string;
+  description: string;
   meeting_link: string;
   meeting_type: string;
-  created_at: string;
-  groups: {
-    name: string;
-  };
+  meeting_password: string;
+  grade_id: string;
+  group_id: string | null;
+  scheduled_at: string;
+  duration_minutes: number;
+  is_active: boolean;
+  grade_name: string;
+  group_name: string | null;
+  created_by_name: string;
 }
 
 const OnlineMeeting = () => {
-  const [googleMeetLink, setGoogleMeetLink] = useState("");
-  const [zoomLink, setZoomLink] = useState("");
+  const [grades, setGrades] = useState<Grade[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
-  const [selectedGroupGoogleMeet, setSelectedGroupGoogleMeet] = useState<string>("");
-  const [selectedGroupZoom, setSelectedGroupZoom] = useState<string>("");
-  const [savedMeetings, setSavedMeetings] = useState<OnlineMeeting[]>([]);
+  const [filteredGroups, setFilteredGroups] = useState<Group[]>([]);
+  const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [loading, setLoading] = useState(false);
   const { toast } = useToast();
 
+  // Form state
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [meetingLink, setMeetingLink] = useState("");
+  const [meetingType, setMeetingType] = useState("zoom");
+  const [meetingPassword, setMeetingPassword] = useState("");
+  const [selectedGrade, setSelectedGrade] = useState("");
+  const [selectedGroup, setSelectedGroup] = useState("");
+  const [scheduledAt, setScheduledAt] = useState("");
+  const [durationMinutes, setDurationMinutes] = useState("60");
+  const [editingId, setEditingId] = useState<string | null>(null);
+
   useEffect(() => {
+    fetchGrades();
     fetchGroups();
-    fetchSavedMeetings();
+    fetchMeetings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Filter groups when grade changes
+  useEffect(() => {
+    if (selectedGrade) {
+      const filtered = groups.filter(g => g.grade_id === selectedGrade);
+      setFilteredGroups(filtered);
+    } else {
+      setFilteredGroups([]);
+    }
+    setSelectedGroup(""); // Reset group when grade changes
+  }, [selectedGrade, groups]);
+
+  const getToken = () => localStorage.getItem('token');
+  const getUser = () => {
+    const userData = localStorage.getItem('currentUser');
+    return userData ? JSON.parse(userData) : null;
+  };
+
+  const fetchGrades = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/grades`, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      });
+      setGrades(res.data);
+    } catch (error) {
+      console.error('Error fetching grades:', error);
+    }
+  };
+
   const fetchGroups = async () => {
-    const { data, error } = await supabase
-      .from("groups")
-      .select("id, name")
-      .eq("is_active", true)
-      .order("name");
-
-    if (error) {
-      toast({
-        title: "خطأ",
-        description: "فشل تحميل المجموعات",
-        variant: "destructive",
+    try {
+      const res = await axios.get(`${API_URL}/groups`, {
+        headers: { Authorization: `Bearer ${getToken()}` }
       });
-      return;
-    }
-
-    setGroups(data || []);
-  };
-
-  const fetchSavedMeetings = async () => {
-    const { data, error } = await supabase
-      .from("online_meetings")
-      .select(`
-        id,
-        group_id,
-        meeting_link,
-        meeting_type,
-        created_at,
-        groups (
-          name
-        )
-      `)
-      .eq("is_active", true)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      console.error("Failed to fetch meetings:", error);
-      return;
-    }
-
-    setSavedMeetings(data || []);
-  };
-
-  const sendMeetingLinkToStudents = async (groupId: string, meetingLink: string, meetingType: string) => {
-    // Get all students in the selected group
-    const { data: students, error: studentsError } = await supabase
-      .from("students")
-      .select("id, name, email")
-      .eq("group_id", groupId)
-      .eq("approval_status", "approved");
-
-    if (studentsError || !students || students.length === 0) {
-      console.error("Failed to fetch students:", studentsError);
-      return;
-    }
-
-    const groupName = groups.find(g => g.id === groupId)?.name;
-    const meetingTypeName = meetingType === "google_meet" ? "Google Meet" : "Zoom";
-    const messageText = `تم إنشاء اجتماع ${meetingTypeName} جديد للمجموعة: ${groupName}\n\nرابط الاجتماع:\n${meetingLink}`;
-
-    // Send message to each student
-    const messages = students.map(student => ({
-      student_id: student.id,
-      message_text: messageText,
-      sent_at: new Date().toISOString(),
-    }));
-
-    const { error: messageError } = await supabase
-      .from("teacher_messages")
-      .insert(messages);
-
-    if (messageError) {
-      console.error("Failed to send messages:", messageError);
-      toast({
-        title: "تحذير",
-        description: "تم حفظ الاجتماع لكن فشل إرسال الرسائل للطلاب",
-        variant: "destructive",
-      });
-    } else {
-      toast({
-        title: "تم الإرسال",
-        description: `تم إرسال رابط الاجتماع لـ ${students.length} طالب`,
-      });
+      setGroups(res.data);
+    } catch (error) {
+      console.error('Error fetching groups:', error);
     }
   };
 
-  const saveGoogleMeetMeeting = async () => {
-    if (!selectedGroupGoogleMeet) {
-      toast({
-        title: "خطأ",
-        description: "يجب اختيار المجموعة أولاً",
-        variant: "destructive",
+  const fetchMeetings = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/meetings`, {
+        headers: { Authorization: `Bearer ${getToken()}` }
       });
+      setMeetings(res.data);
+    } catch (error) {
+      console.error('Error fetching meetings:', error);
+    }
+  };
+
+  const resetForm = () => {
+    setTitle("");
+    setDescription("");
+    setMeetingLink("");
+    setMeetingType("zoom");
+    setMeetingPassword("");
+    setSelectedGrade("");
+    setSelectedGroup("");
+    setScheduledAt("");
+    setDurationMinutes("60");
+    setEditingId(null);
+  };
+
+  const saveMeeting = async () => {
+    if (!title.trim()) {
+      toast({ title: "خطأ", description: "يجب إدخال عنوان الاجتماع", variant: "destructive" });
+      return;
+    }
+    if (!meetingLink.trim()) {
+      toast({ title: "خطأ", description: "يجب إدخال رابط الاجتماع", variant: "destructive" });
+      return;
+    }
+    if (!selectedGrade) {
+      toast({ title: "خطأ", description: "يجب اختيار الصف", variant: "destructive" });
+      return;
+    }
+    if (!scheduledAt) {
+      toast({ title: "خطأ", description: "يجب تحديد موعد الاجتماع", variant: "destructive" });
       return;
     }
 
-    if (!googleMeetLink) {
-      toast({
-        title: "خطأ",
-        description: "يجب إدخال رابط الاجتماع",
-        variant: "destructive",
-      });
-      return;
+    const user = getUser();
+    setLoading(true);
+
+    try {
+      const payload = {
+        title,
+        description,
+        meeting_link: meetingLink,
+        meeting_type: meetingType,
+        meeting_password: meetingPassword || null,
+        grade_id: selectedGrade,
+        group_id: selectedGroup || null,
+        scheduled_at: scheduledAt,
+        duration_minutes: parseInt(durationMinutes),
+        created_by: user?.id
+      };
+
+      if (editingId) {
+        await axios.put(`${API_URL}/meetings/${editingId}`, payload, {
+          headers: { Authorization: `Bearer ${getToken()}` }
+        });
+        toast({ title: "تم التحديث", description: "تم تحديث الاجتماع بنجاح" });
+      } else {
+        await axios.post(`${API_URL}/meetings`, payload, {
+          headers: { Authorization: `Bearer ${getToken()}` }
+        });
+        toast({ title: "تم الحفظ", description: "تم إنشاء الاجتماع بنجاح" });
+      }
+
+      resetForm();
+      fetchMeetings();
+    } catch (error) {
+      console.error('Error saving meeting:', error);
+      toast({ title: "خطأ", description: "فشل حفظ الاجتماع", variant: "destructive" });
+    } finally {
+      setLoading(false);
     }
+  };
 
-    const { data: { user } } = await supabase.auth.getUser();
-    const { error } = await supabase
-      .from("online_meetings")
-      .insert({
-        group_id: selectedGroupGoogleMeet,
-        meeting_link: googleMeetLink,
-        meeting_type: "google_meet",
-        created_by: user?.id,
-      });
+  const editMeeting = (meeting: Meeting) => {
+    setTitle(meeting.title);
+    setDescription(meeting.description || "");
+    setMeetingLink(meeting.meeting_link);
+    setMeetingType(meeting.meeting_type);
+    setMeetingPassword(meeting.meeting_password || "");
+    setSelectedGrade(meeting.grade_id);
+    setSelectedGroup(meeting.group_id || "");
+    setScheduledAt(meeting.scheduled_at?.slice(0, 16) || "");
+    setDurationMinutes(String(meeting.duration_minutes));
+    setEditingId(meeting.id);
+  };
 
-    if (error) {
-      toast({
-        title: "خطأ",
-        description: "فشل حفظ الاجتماع",
-        variant: "destructive",
+  const deleteMeeting = async (id: string) => {
+    if (!confirm("هل أنت متأكد من حذف هذا الاجتماع؟")) return;
+
+    try {
+      await axios.delete(`${API_URL}/meetings/${id}`, {
+        headers: { Authorization: `Bearer ${getToken()}` }
       });
-      return;
+      toast({ title: "تم الحذف", description: "تم حذف الاجتماع بنجاح" });
+      fetchMeetings();
+    } catch (error) {
+      console.error('Error deleting meeting:', error);
+      toast({ title: "خطأ", description: "فشل حذف الاجتماع", variant: "destructive" });
     }
+  };
 
-    const selectedGroupName = groups.find(g => g.id === selectedGroupGoogleMeet)?.name;
-    
-    toast({
-      title: "تم الحفظ",
-      description: `تم حفظ اجتماع Google Meet للمجموعة: ${selectedGroupName}`,
+  const formatDate = (dateString: string) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    return date.toLocaleDateString('ar-EG', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
     });
-
-    // Send link to students
-    await sendMeetingLinkToStudents(selectedGroupGoogleMeet, googleMeetLink, "google_meet");
-
-    setGoogleMeetLink("");
-    setSelectedGroupGoogleMeet("");
-    fetchSavedMeetings();
   };
 
-  const saveZoomMeeting = async () => {
-    if (!selectedGroupZoom) {
-      toast({
-        title: "خطأ",
-        description: "يجب اختيار المجموعة أولاً",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (!zoomLink) {
-      toast({
-        title: "خطأ",
-        description: "يجب إدخال رابط الاجتماع",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const { data: { user } } = await supabase.auth.getUser();
-    const { error } = await supabase
-      .from("online_meetings")
-      .insert({
-        group_id: selectedGroupZoom,
-        meeting_link: zoomLink,
-        meeting_type: "zoom",
-        created_by: user?.id,
-      });
-
-    if (error) {
-      toast({
-        title: "خطأ",
-        description: "فشل حفظ الاجتماع",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const selectedGroupName = groups.find(g => g.id === selectedGroupZoom)?.name;
-    
-    toast({
-      title: "تم الحفظ",
-      description: `تم حفظ اجتماع Zoom للمجموعة: ${selectedGroupName}`,
-    });
-
-    // Send link to students
-    await sendMeetingLinkToStudents(selectedGroupZoom, zoomLink, "zoom");
-
-    setZoomLink("");
-    setSelectedGroupZoom("");
-    fetchSavedMeetings();
-  };
-
-  const openMeeting = (link: string) => {
-    if (link) {
-      window.open(link, '_blank');
-    } else {
-      toast({
-        title: "خطأ",
-        description: "يجب إنشاء رابط أولاً",
-        variant: "destructive",
-      });
+  const getMeetingTypeLabel = (type: string) => {
+    switch (type) {
+      case 'zoom': return 'Zoom';
+      case 'google_meet': return 'Google Meet';
+      default: return 'أخرى';
     }
   };
 
@@ -260,174 +266,250 @@ const OnlineMeeting = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Google Meet Card */}
-          <Card className="shadow-soft">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Video className="w-5 h-5" />
-                Google Meet
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
+        {/* Create/Edit Meeting Form */}
+        <Card className="shadow-soft mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Video className="w-5 h-5" />
+              {editingId ? 'تعديل الاجتماع' : 'إنشاء اجتماع جديد'}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Title */}
               <div className="space-y-2">
-                <Label>اختر المجموعة</Label>
-                <Select value={selectedGroupGoogleMeet} onValueChange={setSelectedGroupGoogleMeet}>
+                <Label>عنوان الاجتماع *</Label>
+                <Input
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="مثال: مراجعة الفصل الأول"
+                />
+              </div>
+
+              {/* Meeting Type */}
+              <div className="space-y-2">
+                <Label>نوع الاجتماع</Label>
+                <Select value={meetingType} onValueChange={setMeetingType}>
                   <SelectTrigger>
-                    <SelectValue placeholder="اختر المجموعة" />
+                    <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {groups.map((group) => (
-                      <SelectItem key={group.id} value={group.id}>
-                        {group.name}
+                    <SelectItem value="zoom">Zoom</SelectItem>
+                    <SelectItem value="google_meet">Google Meet</SelectItem>
+                    <SelectItem value="other">أخرى</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Meeting Link */}
+              <div className="space-y-2">
+                <Label>رابط الاجتماع *</Label>
+                <Input
+                  value={meetingLink}
+                  onChange={(e) => setMeetingLink(e.target.value)}
+                  placeholder="https://zoom.us/j/... أو https://meet.google.com/..."
+                />
+              </div>
+
+              {/* Meeting Password */}
+              <div className="space-y-2">
+                <Label>كلمة مرور الاجتماع (اختياري)</Label>
+                <Input
+                  value={meetingPassword}
+                  onChange={(e) => setMeetingPassword(e.target.value)}
+                  placeholder="كلمة المرور إن وجدت"
+                />
+              </div>
+
+              {/* Grade Selection - Required */}
+              <div className="space-y-2">
+                <Label>الصف الدراسي * (إجباري)</Label>
+                <Select value={selectedGrade} onValueChange={setSelectedGrade}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="اختر الصف" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {grades.map((grade) => (
+                      <SelectItem key={grade.id} value={grade.id}>
+                        {grade.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
 
+              {/* Group Selection - Optional */}
               <div className="space-y-2">
-                <Label>رابط Google Meet</Label>
-                <div className="flex gap-2">
-                  <Input
-                    value={googleMeetLink}
-                    onChange={(e) => setGoogleMeetLink(e.target.value)}
-                    placeholder="https://meet.google.com/..."
-                  />
-                  <Button onClick={saveGoogleMeetMeeting}>
-                    حفظ
-                  </Button>
-                </div>
-              </div>
-
-              <div className="text-sm text-muted-foreground">
-                <p>• الصق رابط Google Meet الخاص بك</p>
-                <p>• اختر المجموعة وانقر حفظ</p>
-                <p>• سيتم إرسال الرابط تلقائياً لجميع الطلاب في المجموعة</p>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Zoom Card */}
-          <Card className="shadow-soft">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Video className="w-5 h-5" />
-                Zoom
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label>اختر المجموعة</Label>
-                <Select value={selectedGroupZoom} onValueChange={setSelectedGroupZoom}>
+                <Label>المجموعة (اختياري - اتركه فارغ لكل الصف)</Label>
+                <Select value={selectedGroup} onValueChange={setSelectedGroup} disabled={!selectedGrade}>
                   <SelectTrigger>
-                    <SelectValue placeholder="اختر المجموعة" />
+                    <SelectValue placeholder={selectedGrade ? "كل المجموعات" : "اختر الصف أولاً"} />
                   </SelectTrigger>
                   <SelectContent>
-                    {groups.map((group) => (
+                    <SelectItem value="all">كل المجموعات في الصف</SelectItem>
+                    {filteredGroups.map((group) => (
                       <SelectItem key={group.id} value={group.id}>
                         {group.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground">
+                  إذا لم تختر مجموعة، سيظهر الاجتماع لكل طلاب الصف
+                </p>
               </div>
 
+              {/* Scheduled At */}
               <div className="space-y-2">
-                <Label>رابط Zoom</Label>
-                <div className="flex gap-2">
-                  <Input
-                    value={zoomLink}
-                    onChange={(e) => setZoomLink(e.target.value)}
-                    placeholder="https://zoom.us/j/..."
-                  />
-                  <Button onClick={saveZoomMeeting}>
-                    حفظ
-                  </Button>
-                </div>
+                <Label>موعد الاجتماع *</Label>
+                <Input
+                  type="datetime-local"
+                  value={scheduledAt}
+                  onChange={(e) => setScheduledAt(e.target.value)}
+                />
               </div>
 
-              <div className="text-sm text-muted-foreground">
-                <p>• الصق رابط اجتماع Zoom الخاص بك</p>
-                <p>• اختر المجموعة وانقر حفظ</p>
-                <p>• سيتم إرسال الرابط تلقائياً لجميع الطلاب في المجموعة</p>
+              {/* Duration */}
+              <div className="space-y-2">
+                <Label>مدة الاجتماع (بالدقائق)</Label>
+                <Select value={durationMinutes} onValueChange={setDurationMinutes}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="30">30 دقيقة</SelectItem>
+                    <SelectItem value="45">45 دقيقة</SelectItem>
+                    <SelectItem value="60">ساعة</SelectItem>
+                    <SelectItem value="90">ساعة ونصف</SelectItem>
+                    <SelectItem value="120">ساعتين</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
-            </CardContent>
-          </Card>
-        </div>
+            </div>
 
-        {/* Saved Meetings List */}
-        {savedMeetings.length > 0 && (
-          <Card className="shadow-soft mt-6">
-            <CardHeader>
-              <CardTitle>الاجتماعات المحفوظة</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                {savedMeetings.map((meeting) => (
-                  <div key={meeting.id} className="flex items-center justify-between p-4 border rounded-lg">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
-                        <Video className="w-5 h-5 text-primary" />
+            {/* Description */}
+            <div className="space-y-2">
+              <Label>وصف الاجتماع (اختياري)</Label>
+              <Textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="وصف موجز للاجتماع..."
+                rows={3}
+              />
+            </div>
+
+            <div className="flex gap-2">
+              <Button onClick={saveMeeting} disabled={loading}>
+                {loading ? 'جاري الحفظ...' : (editingId ? 'تحديث الاجتماع' : 'إنشاء الاجتماع')}
+              </Button>
+              {editingId && (
+                <Button variant="outline" onClick={resetForm}>
+                  إلغاء التعديل
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Meetings List */}
+        <Card className="shadow-soft">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Calendar className="w-5 h-5" />
+              الاجتماعات المجدولة ({meetings.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {meetings.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                لا توجد اجتماعات مجدولة حالياً
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {meetings.map((meeting) => (
+                  <div key={meeting.id} className="border rounded-lg p-4 hover:bg-muted/50 transition-colors">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-2">
+                          <h3 className="font-semibold text-lg">{meeting.title}</h3>
+                          <span className={`text-xs px-2 py-1 rounded-full ${
+                            meeting.meeting_type === 'zoom' ? 'bg-blue-100 text-blue-700' :
+                            meeting.meeting_type === 'google_meet' ? 'bg-green-100 text-green-700' :
+                            'bg-gray-100 text-gray-700'
+                          }`}>
+                            {getMeetingTypeLabel(meeting.meeting_type)}
+                          </span>
+                        </div>
+                        
+                        {meeting.description && (
+                          <p className="text-sm text-muted-foreground mb-2">{meeting.description}</p>
+                        )}
+
+                        <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
+                          <div className="flex items-center gap-1">
+                            <Users className="w-4 h-4" />
+                            <span>{meeting.grade_name}</span>
+                            {meeting.group_name && <span>- {meeting.group_name}</span>}
+                            {!meeting.group_id && <span className="text-primary">(كل المجموعات)</span>}
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Calendar className="w-4 h-4" />
+                            <span>{formatDate(meeting.scheduled_at)}</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Clock className="w-4 h-4" />
+                            <span>{meeting.duration_minutes} دقيقة</span>
+                          </div>
+                        </div>
+
+                        {meeting.meeting_password && (
+                          <p className="text-sm text-muted-foreground mt-2">
+                            كلمة المرور: <code className="bg-muted px-2 py-1 rounded">{meeting.meeting_password}</code>
+                          </p>
+                        )}
                       </div>
-                      <div>
-                        <p className="font-semibold">{meeting.groups.name}</p>
-                        <p className="text-sm text-muted-foreground">
-                          {meeting.meeting_type === 'google_meet' ? 'Google Meet' : 'Zoom'}
-                        </p>
+
+                      <div className="flex flex-col gap-2 mr-4">
+                        <Button
+                          size="sm"
+                          onClick={() => window.open(meeting.meeting_link, '_blank')}
+                        >
+                          <ExternalLink className="w-4 h-4 ml-1" />
+                          انضم
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            navigator.clipboard.writeText(meeting.meeting_link);
+                            toast({ title: "تم النسخ", description: "تم نسخ الرابط" });
+                          }}
+                        >
+                          نسخ الرابط
+                        </Button>
+                        <div className="flex gap-1">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => editMeeting(meeting)}
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="text-destructive"
+                            onClick={() => deleteMeeting(meeting.id)}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        onClick={() => openMeeting(meeting.meeting_link)}
-                      >
-                        <ExternalLink className="w-4 h-4 ml-2" />
-                        انضم
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          navigator.clipboard.writeText(meeting.meeting_link);
-                          toast({
-                            title: "تم النسخ",
-                            description: "تم نسخ الرابط للحافظة",
-                          });
-                        }}
-                      >
-                        نسخ
-                      </Button>
                     </div>
                   </div>
                 ))}
               </div>
-            </CardContent>
-          </Card>
-        )}
-
-        <Card className="shadow-soft mt-6">
-          <CardHeader>
-            <CardTitle>تعليمات الاستخدام</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2 text-sm text-muted-foreground">
-              <p><strong>Google Meet:</strong></p>
-              <ul className="list-disc list-inside mr-4">
-                <li>أنشئ اجتماع Google Meet من حسابك</li>
-                <li>انسخ الرابط والصقه في الحقل</li>
-                <li>اختر المجموعة واضغط "حفظ"</li>
-                <li>سيتم إرسال الرابط تلقائياً لجميع طلاب المجموعة</li>
-              </ul>
-              
-              <p className="mt-4"><strong>Zoom:</strong></p>
-              <ul className="list-disc list-inside mr-4">
-                <li>أنشئ اجتماع Zoom من حسابك</li>
-                <li>انسخ الرابط والصقه في الحقل</li>
-                <li>اختر المجموعة واضغط "حفظ"</li>
-                <li>سيتم إرسال الرابط تلقائياً لجميع طلاب المجموعة</li>
-              </ul>
-            </div>
+            )}
           </CardContent>
         </Card>
       </div>

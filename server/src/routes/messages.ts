@@ -120,31 +120,90 @@ router.get('/conversations', authenticateToken, async (req: AuthRequest, res: Re
 router.get('/:userId', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const currentUserId = req.user?.id;
+        const currentUserRole = req.user?.role;
         const otherUserId = req.params.userId;
 
         if (!currentUserId) {
             return res.status(401).json({ error: 'Unauthorized' });
         }
 
-        const [messages] = await getPool().query<RowDataPacket[]>(`
-            SELECT 
-                m.*,
-                ms.is_delivered,
-                ms.delivered_at,
-                ms.is_read,
-                ms.read_at,
-                u.name as sender_name,
-                u.role as sender_role
-            FROM messages m
-            LEFT JOIN message_status ms ON m.id = ms.message_id
-            LEFT JOIN users u ON m.sender_id = u.id
-            WHERE 
-                (m.sender_id = ? AND m.receiver_id = ?) OR
-                (m.sender_id = ? AND m.receiver_id = ?)
-            AND m.is_deleted = FALSE
-            ORDER BY m.created_at ASC
-        `, [currentUserId, otherUserId, otherUserId, currentUserId]);
+        let query = '';
+        let params: string[] = [];
 
+        // Staff can see messages between teacher and students
+        if (currentUserRole === 'staff') {
+            // Get teacher's ID (admin with phone 01024083057)
+            const [teachers] = await getPool().query<RowDataPacket[]>(
+                `SELECT id FROM users WHERE role = 'admin' AND phone = '01024083057' LIMIT 1`
+            );
+            const teacherId = teachers.length > 0 ? teachers[0].id : null;
+
+            if (teacherId) {
+                // Staff sees messages between teacher and selected student
+                query = `
+                    SELECT 
+                        m.*,
+                        ms.is_delivered,
+                        ms.delivered_at,
+                        ms.is_read,
+                        ms.read_at,
+                        u.name as sender_name,
+                        u.role as sender_role
+                    FROM messages m
+                    LEFT JOIN message_status ms ON m.id = ms.message_id
+                    LEFT JOIN users u ON m.sender_id = u.id
+                    WHERE 
+                        ((m.sender_id = ? AND m.receiver_id = ?) OR
+                        (m.sender_id = ? AND m.receiver_id = ?))
+                        AND m.is_deleted = FALSE
+                    ORDER BY m.created_at ASC
+                `;
+                params = [teacherId, otherUserId, otherUserId, teacherId];
+            } else {
+                // Fallback: show all messages involving the student
+                query = `
+                    SELECT 
+                        m.*,
+                        ms.is_delivered,
+                        ms.delivered_at,
+                        ms.is_read,
+                        ms.read_at,
+                        u.name as sender_name,
+                        u.role as sender_role
+                    FROM messages m
+                    LEFT JOIN message_status ms ON m.id = ms.message_id
+                    LEFT JOIN users u ON m.sender_id = u.id
+                    WHERE 
+                        (m.sender_id = ? OR m.receiver_id = ?)
+                        AND m.is_deleted = FALSE
+                    ORDER BY m.created_at ASC
+                `;
+                params = [otherUserId, otherUserId];
+            }
+        } else {
+            // Normal behavior: messages between current user and other user
+            query = `
+                SELECT 
+                    m.*,
+                    ms.is_delivered,
+                    ms.delivered_at,
+                    ms.is_read,
+                    ms.read_at,
+                    u.name as sender_name,
+                    u.role as sender_role
+                FROM messages m
+                LEFT JOIN message_status ms ON m.id = ms.message_id
+                LEFT JOIN users u ON m.sender_id = u.id
+                WHERE 
+                    ((m.sender_id = ? AND m.receiver_id = ?) OR
+                    (m.sender_id = ? AND m.receiver_id = ?))
+                    AND m.is_deleted = FALSE
+                ORDER BY m.created_at ASC
+            `;
+            params = [currentUserId, otherUserId, otherUserId, currentUserId];
+        }
+
+        const [messages] = await getPool().query<RowDataPacket[]>(query, params);
         res.json(messages);
     } catch (error) {
         console.error('Error fetching messages:', error);
@@ -155,7 +214,8 @@ router.get('/:userId', authenticateToken, async (req: AuthRequest, res: Response
 // POST /api/messages/send - Send a new message
 router.post('/send', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
-        const senderId = req.user?.id;
+        let senderId = req.user?.id;
+        const senderRole = req.user?.role;
         const { receiver_id, content, message_type = 'text' } = req.body;
 
         if (!senderId) {
@@ -164,6 +224,17 @@ router.post('/send', authenticateToken, async (req: AuthRequest, res: Response) 
 
         if (!receiver_id || (!content && message_type === 'text')) {
             return res.status(400).json({ error: 'Missing required fields' });
+        }
+
+        // If staff is sending, use teacher's ID instead (staff acts as teacher)
+        if (senderRole === 'staff') {
+            const [teachers] = await getPool().query<RowDataPacket[]>(
+                `SELECT id FROM users WHERE role = 'admin' AND phone = '01024083057' LIMIT 1`
+            );
+            if (teachers.length > 0) {
+                senderId = teachers[0].id;
+                console.log('📨 Staff sending as teacher:', senderId);
+            }
         }
 
         // Insert message
@@ -486,8 +557,8 @@ router.get('/users/available', authenticateToken, async (req: AuthRequest, res: 
         }
 
         let query = '';
-        if (userRole === 'teacher') {
-            // Teachers can chat with students
+        if (userRole === 'teacher' || userRole === 'staff') {
+            // Teachers and Staff can chat with students (same dashboard)
             query = `
                 SELECT 
                     u.id,
