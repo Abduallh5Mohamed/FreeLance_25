@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://72.62.35.177:3001/api';
+const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 import {
   getCourses,

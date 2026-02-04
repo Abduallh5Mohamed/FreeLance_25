@@ -198,16 +198,16 @@ const StudentHeader = () => {
     <header className="bg-primary shadow-2xl border-b-2 border-white/10 sticky top-0 z-50 backdrop-blur-sm" dir="rtl">
       <div className="container mx-auto px-4 py-3">
         <div className="flex items-center justify-between gap-4">
-          {/* Brand Text Only */}
+          {/* Brand Text */}
           <div className="flex items-center gap-3 min-w-fit">
-            <div className="hidden md:block">
-              <h1 className="text-xl font-bold text-white drop-shadow-lg">منصة القائد</h1>
-              <p className="text-blue-100 text-xs font-medium">الأستاذ محمد رمضان - التاريخ</p>
+            <div>
+              <h1 className="text-base sm:text-lg md:text-xl font-bold text-white drop-shadow-lg">منصة القائد</h1>
+              <p className="text-blue-100 text-[10px] sm:text-xs font-medium hidden sm:block">الأستاذ محمد رمضان - التاريخ</p>
             </div>
           </div>
 
           {/* Desktop Navigation */}
-          <nav className="hidden md:flex items-center gap-2">
+          <nav className="hidden md:flex items-center gap-2 flex-1 justify-center overflow-x-auto scrollbar-hide">
             {studentNavigation.map((item) => {
               const Icon = item.icon;
               return (
@@ -215,7 +215,7 @@ const StudentHeader = () => {
                   key={item.name}
                   variant="ghost"
                   onClick={() => handleNavigate(item.href, item.name)}
-                  className="flex items-center gap-2 px-4 py-2 text-white hover:bg-white/20 hover:text-white rounded-xl transition-all duration-300 font-medium"
+                  className="flex items-center gap-2 px-3 py-2 text-white hover:bg-white/20 hover:text-white rounded-xl transition-all duration-300 font-medium text-sm whitespace-nowrap"
                 >
                   <Icon className="w-4 h-4" />
                   {item.name}
@@ -233,12 +233,12 @@ const StudentHeader = () => {
                   className="text-white hover:bg-green-500/20 hover:text-white rounded-xl font-medium transition-all duration-300 border border-white/20"
                 >
                   <CreditCard className="w-4 h-4 ml-2" />
-                  💰 دفع الاشتراك
+                  دفع الاشتراك
                 </Button>
               </DialogTrigger>
               <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto" dir="rtl">
                 <DialogHeader>
-                  <DialogTitle className="text-xl">💳 دفع الاشتراك</DialogTitle>
+                  <DialogTitle className="text-xl">دفع الاشتراك</DialogTitle>
                 </DialogHeader>
                 <form className="space-y-4 mt-4">
                   <div>
@@ -459,7 +459,7 @@ const StudentHeader = () => {
                       }
                     }}
                   >
-                    💳 دفع الآن
+                    دفع الآن
                   </Button>
                 </form>
               </DialogContent>
@@ -493,7 +493,7 @@ const StudentHeader = () => {
         {/* Mobile Navigation */}
         <div className="relative">
           {isMenuOpen && (
-            <div className="md:hidden absolute top-4 left-0 right-0 bg-primary border-t-2 border-white/20 shadow-2xl rounded-b-3xl backdrop-blur-lg z-50">
+            <div className="md:hidden absolute top-4 left-0 right-0 bg-primary border-t-2 border-white/20 shadow-2xl rounded-b-3xl backdrop-blur-lg z-50 max-h-[80vh] overflow-y-auto">
               <div className="px-4 py-4 space-y-2">
                 {studentNavigation.map((item) => {
                   const Icon = item.icon;

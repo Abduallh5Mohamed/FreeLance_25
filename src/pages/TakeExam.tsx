@@ -962,7 +962,32 @@ const TakeExam = () => {
     );
   }
 
+  // ✅ حساب عدد الأسئلة المقالية والاختيارية
+  const essayQuestionsCount = exam?.questions.filter(q => q.question_type === 'essay').length || 0;
+  const multipleChoiceCount = exam?.questions.filter(q => q.question_type !== 'essay').length || 0;
+  const hasEssayQuestions = essayQuestionsCount > 0;
+  
+  // ✅ حساب درجة الاختياري فقط
+  const multipleChoiceScore = exam?.questions
+    .filter(q => q.question_type !== 'essay')
+    .filter(q => {
+      const userAnswerIndex = answers[q.id];
+      const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
+        ? String.fromCharCode(97 + userAnswerIndex) 
+        : null;
+      return userAnswerLetter === q.correct_answer;
+    })
+    .reduce((sum, q) => sum + (q.marks || q.points || 1), 0) || 0;
+    
+  const multipleChoiceTotal = exam?.questions
+    .filter(q => q.question_type !== 'essay')
+    .reduce((sum, q) => sum + (q.marks || q.points || 1), 0) || 0;
+
   if (isSubmitted && result) {
+    // ✅ تحديد حالة العرض بناءً على وجود أسئلة مقالية
+    const isPendingReview = hasEssayQuestions;
+    const showPassFail = !isPendingReview;
+    
     return (
       <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
         <FloatingParticles />
@@ -971,10 +996,18 @@ const TakeExam = () => {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
           >
-            <Card className={`border-4 ${result.passed ? 'border-green-500' : 'border-red-500'}`}>
+            <Card className={`border-4 ${isPendingReview ? 'border-blue-500' : result.passed ? 'border-green-500' : 'border-red-500'}`}>
               <CardHeader className="text-center pb-8">
                 <div className="mx-auto mb-4">
-                  {result.passed ? (
+                  {isPendingReview ? (
+                    <motion.div
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      transition={{ type: "spring", stiffness: 200 }}
+                    >
+                      <Clock className="w-24 h-24 text-blue-500 mx-auto" />
+                    </motion.div>
+                  ) : result.passed ? (
                     <motion.div
                       initial={{ scale: 0 }}
                       animate={{ scale: 1 }}
@@ -987,35 +1020,122 @@ const TakeExam = () => {
                   )}
                 </div>
                 <CardTitle className="text-3xl">
-                  {result.passed ? 'نجحت في الامتحان! 🎉' : 'للأسف، لم تنجح'}
+                  {isPendingReview 
+                    ? 'تم تسليم الامتحان ✅' 
+                    : result.passed 
+                      ? 'نجحت في الامتحان! 🎉' 
+                      : 'للأسف، لم تنجح'}
                 </CardTitle>
+                {isPendingReview && (
+                  <p className="text-muted-foreground mt-2">
+                    سيتم مراجعة إجاباتك المقالية وإعلان النتيجة النهائية قريباً
+                  </p>
+                )}
               </CardHeader>
               <CardContent className="space-y-6">
                 {/* Score Display */}
-                <div className="text-center">
-                  <div className={`text-6xl font-bold mb-2 ${result.passed ? 'text-green-600' : 'text-red-600'}`}>
-                    {result.score}/{result.total}
+                {isPendingReview ? (
+                  <div className="space-y-4">
+                    {/* درجة الاختياري */}
+                    <div className="text-center p-4 bg-green-50 dark:bg-green-900/10 rounded-lg border border-green-200 dark:border-green-800">
+                      <p className="text-sm text-muted-foreground mb-2">درجة الأسئلة الاختيارية</p>
+                      <div className="text-4xl font-bold text-green-600">
+                        {multipleChoiceScore}/{multipleChoiceTotal}
+                      </div>
+                    </div>
+                    
+                    {/* درجة المقالي - قيد المراجعة */}
+                    <div className="text-center p-4 bg-blue-50 dark:bg-blue-900/10 rounded-lg border border-blue-200 dark:border-blue-800">
+                      <p className="text-sm text-muted-foreground mb-2">الأسئلة المقالية ({essayQuestionsCount} سؤال)</p>
+                      <div className="flex items-center justify-center gap-2 text-blue-600">
+                        <Clock className="w-5 h-5" />
+                        <span className="text-lg font-medium">قيد المراجعة</span>
+                      </div>
+                    </div>
+                    
+                    {/* الدرجة الكلية */}
+                    <div className="text-center p-4 bg-gray-50 dark:bg-gray-900/10 rounded-lg border">
+                      <p className="text-sm text-muted-foreground mb-2">الدرجة الكلية (مبدئية)</p>
+                      <div className="text-3xl font-bold text-gray-600">
+                        {multipleChoiceScore}/{result.total}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        * ستُضاف درجة المقالي بعد المراجعة
+                      </p>
+                    </div>
                   </div>
-                  <div className="text-2xl font-semibold text-muted-foreground">
-                    {result.percentage.toFixed(1)}%
+                ) : (
+                  <div className="text-center">
+                    <div className={`text-6xl font-bold mb-2 ${result.passed ? 'text-green-600' : 'text-red-600'}`}>
+                      {result.score}/{result.total}
+                    </div>
+                    <div className="text-2xl font-semibold text-muted-foreground">
+                      {result.percentage.toFixed(1)}%
+                    </div>
                   </div>
-                </div>
+                )}
 
-                {/* Stats */}
-                <div className="grid grid-cols-2 gap-4">
-                  <Card className="p-4 text-center">
-                    <div className="text-sm text-muted-foreground mb-1">إجابات صحيحة</div>
-                    <div className="text-2xl font-bold text-green-600">
-                      {exam.questions.filter(q => answers[q.id] === q.correct_answer).length}
-                    </div>
-                  </Card>
-                  <Card className="p-4 text-center">
-                    <div className="text-sm text-muted-foreground mb-1">إجابات خاطئة</div>
-                    <div className="text-2xl font-bold text-red-600">
-                      {exam.questions.filter(q => answers[q.id] !== undefined && answers[q.id] !== q.correct_answer).length}
-                    </div>
-                  </Card>
-                </div>
+                {/* Stats - فقط للاختياري */}
+                {!isPendingReview && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <Card className="p-4 text-center">
+                      <div className="text-sm text-muted-foreground mb-1">إجابات صحيحة</div>
+                      <div className="text-2xl font-bold text-green-600">
+                        {exam.questions.filter(q => {
+                          const userAnswerIndex = answers[q.id];
+                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
+                            ? String.fromCharCode(97 + userAnswerIndex) 
+                            : null;
+                          return userAnswerLetter === q.correct_answer;
+                        }).length}
+                      </div>
+                    </Card>
+                    <Card className="p-4 text-center">
+                      <div className="text-sm text-muted-foreground mb-1">إجابات خاطئة</div>
+                      <div className="text-2xl font-bold text-red-600">
+                        {exam.questions.filter(q => {
+                          const userAnswerIndex = answers[q.id];
+                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
+                            ? String.fromCharCode(97 + userAnswerIndex) 
+                            : null;
+                          return userAnswerLetter !== null && userAnswerLetter !== q.correct_answer;
+                        }).length}
+                      </div>
+                    </Card>
+                  </div>
+                )}
+                
+                {/* Stats for pending review - show multiple choice stats */}
+                {isPendingReview && multipleChoiceCount > 0 && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <Card className="p-4 text-center bg-green-50 dark:bg-green-900/10">
+                      <div className="text-sm text-muted-foreground mb-1">إجابات صحيحة (اختياري)</div>
+                      <div className="text-2xl font-bold text-green-600">
+                        {exam.questions.filter(q => {
+                          if (q.question_type === 'essay') return false;
+                          const userAnswerIndex = answers[q.id];
+                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
+                            ? String.fromCharCode(97 + userAnswerIndex) 
+                            : null;
+                          return userAnswerLetter === q.correct_answer;
+                        }).length}
+                      </div>
+                    </Card>
+                    <Card className="p-4 text-center bg-red-50 dark:bg-red-900/10">
+                      <div className="text-sm text-muted-foreground mb-1">إجابات خاطئة (اختياري)</div>
+                      <div className="text-2xl font-bold text-red-600">
+                        {exam.questions.filter(q => {
+                          if (q.question_type === 'essay') return false;
+                          const userAnswerIndex = answers[q.id];
+                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
+                            ? String.fromCharCode(97 + userAnswerIndex) 
+                            : null;
+                          return userAnswerLetter !== null && userAnswerLetter !== q.correct_answer;
+                        }).length}
+                      </div>
+                    </Card>
+                  </div>
+                )}
 
                 {/* Detailed Results */}
                 <div className="space-y-4">
@@ -1364,7 +1484,10 @@ const TakeExam = () => {
                     {exam.questions[currentQuestion].question_image && (
                       <div className="mt-4">
                         <img
-                          src={`${import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://192.168.1.7:3001'}${exam.questions[currentQuestion].question_image}`}
+                          src={exam.questions[currentQuestion].question_image.startsWith('http')
+                            ? exam.questions[currentQuestion].question_image
+                            : exam.questions[currentQuestion].question_image
+                          }
                           alt="صورة السؤال"
                           className="max-w-full max-h-96 object-contain rounded-lg border shadow-sm"
                           onError={(e) => {

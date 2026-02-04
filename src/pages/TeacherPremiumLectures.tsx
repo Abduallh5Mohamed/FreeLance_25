@@ -45,7 +45,7 @@ export default function TeacherPremiumLectures() {
   const [rejectionReason, setRejectionReason] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState('lectures');
-  const [uploadMethod, setUploadMethod] = useState<'url' | 'upload'>('upload');
+  const [uploadMethod, setUploadMethod] = useState<'url' | 'upload' | 'youtube'>('upload');
 
   const [formData, setFormData] = useState({
     title: '',
@@ -557,10 +557,10 @@ export default function TeacherPremiumLectures() {
                         {/* Receipt Image */}
                         <div
                           className="w-full md:w-48 h-48 bg-muted rounded-lg overflow-hidden cursor-pointer hover:opacity-80 transition-opacity"
-                          onClick={() => setViewingReceipt(`http://localhost:3001${payment.receipt_image_url}`)}
+                          onClick={() => setViewingReceipt(payment.receipt_image_url)}
                         >
                           <img
-                            src={`http://localhost:3001${payment.receipt_image_url}`}
+                            src={payment.receipt_image_url}
                             alt="إيصال الدفع"
                             className="w-full h-full object-cover"
                           />
@@ -622,7 +622,7 @@ export default function TeacherPremiumLectures() {
                             </Button>
                             <Button
                               variant="outline"
-                              onClick={() => setViewingReceipt(`http://localhost:3001${payment.receipt_image_url}`)}
+                              onClick={() => setViewingReceipt(payment.receipt_image_url)}
                             >
                               <Eye className="w-4 h-4 ml-2" />
                               عرض الإيصال
@@ -680,7 +680,7 @@ export default function TeacherPremiumLectures() {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => setViewingReceipt(`http://localhost:3001${payment.receipt_image_url}`)}
+                                onClick={() => setViewingReceipt(payment.receipt_image_url)}
                               >
                                 <Eye className="w-4 h-4" />
                               </Button>
@@ -708,15 +708,19 @@ export default function TeacherPremiumLectures() {
           </DialogHeader>
 
           {/* Upload Method Tabs */}
-          <Tabs value={uploadMethod} onValueChange={(v) => setUploadMethod(v as 'url' | 'upload')} className="w-full">
-            <TabsList className="grid w-full grid-cols-2 mb-4">
+          <Tabs value={uploadMethod} onValueChange={(v) => setUploadMethod(v as 'url' | 'upload' | 'youtube')} className="w-full">
+            <TabsList className="grid w-full grid-cols-3 mb-4">
               <TabsTrigger value="upload" className="flex items-center gap-2">
                 <Upload className="h-4 w-4" />
                 رفع فيديو
               </TabsTrigger>
               <TabsTrigger value="url" className="flex items-center gap-2">
                 <Video className="h-4 w-4" />
-                رابط Google Drive
+                Google Drive
+              </TabsTrigger>
+              <TabsTrigger value="youtube" className="flex items-center gap-2">
+                <Play className="h-4 w-4" />
+                YouTube
               </TabsTrigger>
             </TabsList>
 
@@ -994,6 +998,139 @@ export default function TeacherPremiumLectures() {
                       onCheckedChange={(checked) => setFormData({ ...formData, is_published: checked })}
                     />
                     <Label htmlFor="is_published">نشر الحصة (جعلها مرئية للطلاب)</Label>
+                  </div>
+                </div>
+
+                <DialogFooter>
+                  <Button type="button" variant="ghost" onClick={resetForm}>إلغاء</Button>
+                  <Button
+                    type="submit"
+                    disabled={loading}
+                    className="bg-gradient-to-r from-cyan-500 to-teal-600"
+                  >
+                    {loading ? 'جاري الحفظ...' : (editingLecture ? 'تحديث' : 'إنشاء')}
+                  </Button>
+                </DialogFooter>
+              </form>
+            </TabsContent>
+
+            {/* Tab 3: YouTube URL */}
+            <TabsContent value="youtube">
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div>
+                    <Label>الصف الدراسي *</Label>
+                    <Select value={formData.grade_id} onValueChange={(v) => setFormData({ ...formData, grade_id: v, group_id: '' })}>
+                      <SelectTrigger className="mt-2">
+                        <SelectValue placeholder="اختر الصف الدراسي" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {grades.map((grade) => (
+                          <SelectItem key={grade.id} value={grade.id}>{grade.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>المجموعة *</Label>
+                    <Select
+                      value={formData.group_id}
+                      onValueChange={(v) => setFormData({ ...formData, group_id: v })}
+                      disabled={!formData.grade_id}
+                    >
+                      <SelectTrigger className="mt-2">
+                        <SelectValue placeholder={formData.grade_id ? "اختر المجموعة" : "اختر الصف أولاً"} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {groups
+                          .filter(group => group.grade_id === formData.grade_id)
+                          .map((group) => (
+                            <SelectItem key={group.id} value={group.id}>{group.name}</SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <Label>عنوان الحصة *</Label>
+                    <Input
+                      value={formData.title}
+                      onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                      placeholder="أدخل عنوان الحصة"
+                      className="mt-2"
+                      required
+                    />
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <Label>الوصف</Label>
+                    <Textarea
+                      value={formData.description}
+                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                      placeholder="وصف الحصة..."
+                      className="mt-2"
+                      rows={3}
+                    />
+                  </div>
+
+                  <div>
+                    <Label>السعر (جنيه) *</Label>
+                    <Input
+                      type="number"
+                      value={formData.price}
+                      onChange={(e) => setFormData({ ...formData, price: e.target.value })}
+                      placeholder="0"
+                      className="mt-2"
+                      min="0"
+                      step="0.01"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <Label>المدة (دقيقة)</Label>
+                    <Input
+                      type="number"
+                      value={formData.duration_minutes}
+                      onChange={(e) => setFormData({ ...formData, duration_minutes: e.target.value })}
+                      placeholder="0"
+                      className="mt-2"
+                      min="0"
+                    />
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <Label>رابط فيديو YouTube *</Label>
+                    <Input
+                      value={formData.video_url}
+                      onChange={(e) => setFormData({ ...formData, video_url: e.target.value })}
+                      placeholder="https://www.youtube.com/watch?v=... أو https://youtu.be/..."
+                      className="mt-2"
+                      required
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      الصق رابط الفيديو من YouTube (سيتم تأمينه تلقائياً)
+                    </p>
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <Label>رابط الصورة المصغرة</Label>
+                    <Input
+                      value={formData.thumbnail_url}
+                      onChange={(e) => setFormData({ ...formData, thumbnail_url: e.target.value })}
+                      placeholder="رابط صورة الغلاف (اختياري - سيتم استخدام صورة YouTube تلقائياً)"
+                      className="mt-2"
+                    />
+                  </div>
+
+                  <div className="md:col-span-2 flex items-center gap-3">
+                    <Switch
+                      id="is_published_youtube"
+                      checked={formData.is_published}
+                      onCheckedChange={(checked) => setFormData({ ...formData, is_published: checked })}
+                    />
+                    <Label htmlFor="is_published_youtube">نشر الحصة (جعلها مرئية للطلاب)</Label>
                   </div>
                 </div>
 

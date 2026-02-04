@@ -80,28 +80,7 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
             [student.group_id]
         );
 
-        // Get attempt counts for this student
-        const attempts = await query<any>(
-            `SELECT exam_id, COUNT(*) as count 
-             FROM exam_attempts 
-             WHERE student_id = ? 
-             GROUP BY exam_id`,
-            [userId]
-        );
-        
-        console.log('📊 Attempts from DB:', attempts);
-        
-        const attemptsMap = new Map(attempts.map((a: any) => [a.exam_id, a.count]));
-        
-        // Add attempts count to each exam
-        const examsWithAttempts = exams.map((exam: any) => ({
-            ...exam,
-            attempts: attemptsMap.get(exam.id) || 0
-        }));
-
-        console.log('📚 Exams with attempts:', examsWithAttempts.map((e: any) => ({ id: e.id, title: e.title, attempts: e.attempts })));
-
-        res.json(examsWithAttempts);
+        res.json(exams);
     } catch (error) {
         console.error('❌ Error fetching student exams:', error);
         res.status(500).json({ error: 'Failed to fetch exams' });

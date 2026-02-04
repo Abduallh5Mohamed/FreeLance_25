@@ -3,26 +3,18 @@
  * Replaces the mock localStorage database with real HTTP requests
  */
 
-// Get API base URL from environment or use current host
+// Get API base URL from environment or use relative path
 const getApiBaseUrl = (): string => {
-    // If VITE_API_URL is defined, use it (for mobile testing)
-    // Example: VITE_API_URL=http://192.168.1.100:3001/api
+    // If VITE_API_URL is defined, use it
     const envApiUrl = import.meta.env.VITE_API_URL;
     if (envApiUrl) {
         console.log('🔗 Using API URL from environment:', envApiUrl);
         return envApiUrl;
     }
 
-    // Otherwise, detect based on current host
-    const currentHost = window.location.hostname;
-    if (currentHost !== 'localhost' && currentHost !== '127.0.0.1') {
-        const apiUrl = `http://${currentHost}:3001/api`;
-        console.log('🔗 Using API URL based on hostname:', apiUrl);
-        return apiUrl;
-    }
-
-    console.log('🔗 Using default localhost API URL');
-    return 'http://localhost:3001/api';
+    // Use relative path - works with nginx proxy
+    console.log('🔗 Using relative /api path');
+    return '/api';
 };
 
 const API_BASE_URL = getApiBaseUrl();

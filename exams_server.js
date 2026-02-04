@@ -80,28 +80,7 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
             [student.group_id]
         );
 
-        // Get attempt counts for this student
-        const attempts = await query<any>(
-            `SELECT exam_id, COUNT(*) as count 
-             FROM exam_attempts 
-             WHERE student_id = ? 
-             GROUP BY exam_id`,
-            [userId]
-        );
-        
-        console.log('📊 Attempts from DB:', attempts);
-        
-        const attemptsMap = new Map(attempts.map((a: any) => [a.exam_id, a.count]));
-        
-        // Add attempts count to each exam
-        const examsWithAttempts = exams.map((exam: any) => ({
-            ...exam,
-            attempts: attemptsMap.get(exam.id) || 0
-        }));
-
-        console.log('📚 Exams with attempts:', examsWithAttempts.map((e: any) => ({ id: e.id, title: e.title, attempts: e.attempts })));
-
-        res.json(examsWithAttempts);
+        res.json(exams);
     } catch (error) {
         console.error('❌ Error fetching student exams:', error);
         res.status(500).json({ error: 'Failed to fetch exams' });
@@ -195,20 +174,17 @@ router.get('/', async (req: Request, res: Response) => {
 
         sql += ' ORDER BY created_at DESC';
 
-        let exams = await query<any>(sql, params);
+        let exams = await (0, db_1.query)(sql, params);
 
         // If student_id provided, add attempt count for each exam
         if (student_id) {
-            // ✅ جلب عدد المحاولات الفعلية لكل امتحان
-            const attempts = await query<any>(
-                `SELECT exam_id, COUNT(*) as count 
-                 FROM exam_attempts 
-                 WHERE student_id = ? 
-                 GROUP BY exam_id`,
+            // Get actual attempt counts for each exam
+            const attempts = await (0, db_1.query)(
+                'SELECT exam_id, COUNT(*) as count FROM exam_attempts WHERE student_id = ? GROUP BY exam_id',
                 [student_id]
             );
             
-            const attemptsMap = new Map(attempts.map((a: any) => [a.exam_id, a.count]));
+            const attemptsMap = new Map(attempts.map((a) => [a.exam_id, a.count]));
             
             exams = exams.map((exam) => ({
                 ...exam,
@@ -216,7 +192,7 @@ router.get('/', async (req: Request, res: Response) => {
             }));
         }
 
-        res.json(exams.map((e: any) => ({
+        res.json(exams.map((e) => ({
             ...e,
             // Frontend expects start_time/end_time sometimes as combined; keep backwards compatibility
             start_time: e.start_dt || (e.exam_date && e.start_time ? `${e.exam_date} ${e.start_time}` : e.start_time),

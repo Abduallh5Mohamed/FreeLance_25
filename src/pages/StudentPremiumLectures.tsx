@@ -15,6 +15,7 @@ import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
 import { SecureVideoPlayer } from "@/components/SecureVideoPlayer";
+import { SecureYouTubePlayer } from "@/components/SecureYouTubePlayer";
 import {
   getStudentAvailablePremiumLectures, getStudentPurchasedPremiumLectures,
   getStudentPremiumPayments, submitPremiumLecturePayment,
@@ -44,6 +45,7 @@ const StudentPremiumLectures = () => {
   const [myPayments, setMyPayments] = useState<PremiumLecturePayment[]>([]);
   const [loading, setLoading] = useState(true);
   const [playingVideo, setPlayingVideo] = useState<{ videoId: string; title: string } | null>(null);
+  const [playingYouTube, setPlayingYouTube] = useState<{ videoUrl: string; title: string } | null>(null);
   const [activeTab, setActiveTab] = useState('available');
 
   // Payment Dialog State
@@ -251,6 +253,18 @@ const StudentPremiumLectures = () => {
           studentName={currentUser.name || 'طالب'}
           groupName={currentStudent?.group_id || 'المجموعة'}
           onClose={handleCloseVideo}
+        />
+      )}
+
+      {/* YouTube/External Video Player Modal */}
+      {playingYouTube && currentUser && (
+        <SecureYouTubePlayer
+          videoUrl={playingYouTube.videoUrl}
+          userId={currentUser.id}
+          studentName={currentUser.name || 'طالب'}
+          groupName={currentStudent?.group_id || 'المجموعة'}
+          title={playingYouTube.title}
+          onClose={() => setPlayingYouTube(null)}
         />
       )}
 
@@ -557,9 +571,23 @@ const StudentPremiumLectures = () => {
 
                         <Button
                           onClick={() => {
-                            // Extract video ID from video:// URL
-                            const videoId = lecture.video_url.replace('video://', '');
-                            setPlayingVideo({ videoId, title: lecture.title });
+                            const videoUrl = lecture.video_url;
+                            
+                            // Check video type
+                            if (videoUrl.startsWith('video://')) {
+                              // MinIO encrypted video
+                              const videoId = videoUrl.replace('video://', '');
+                              setPlayingVideo({ videoId, title: lecture.title });
+                            } else if (videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be')) {
+                              // YouTube video - play in secure player
+                              setPlayingYouTube({ videoUrl, title: lecture.title });
+                            } else if (videoUrl.includes('drive.google.com')) {
+                              // Google Drive - play in secure player (same as YouTube)
+                              setPlayingYouTube({ videoUrl: videoUrl.replace('/view', '/preview'), title: lecture.title });
+                            } else {
+                              // Unknown video type - try secure player
+                              setPlayingYouTube({ videoUrl, title: lecture.title });
+                            }
                           }}
                           className="w-full bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-700 hover:to-teal-700"
                         >
