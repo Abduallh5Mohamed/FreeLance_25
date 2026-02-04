@@ -144,6 +144,7 @@ const StudentHeader = () => {
     { name: "المحتوى التعليمي", href: "/student-content", icon: File },
     { name: "الامتحانات", href: "/student-exams", icon: FileText },
     { name: "نتائج الامتحانات", href: "/student-exam-results", icon: ClipboardCheck },
+    { name: "الاجتماعات المباشرة", href: "/student-meetings", icon: Video },
     { name: "المحادثات", href: "/student-chat", icon: MessageCircle },
   ];
 

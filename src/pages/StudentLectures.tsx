@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Search, Play, PlayCircle, Clock, Users, BookOpen, ChevronRight, Star, Award, CheckCircle2, X } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
 import { motion, AnimatePresence } from "framer-motion";
@@ -33,6 +34,7 @@ const StudentLectures = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLecture, setSelectedLecture] = useState<Lecture | null>(null);
   const [playingVideo, setPlayingVideo] = useState<{ videoId: string; title: string } | null>(null);
+  const [externalVideo, setExternalVideo] = useState<{ url: string; title: string } | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [filterLevel, setFilterLevel] = useState<string>('all');
   const [lectures, setLectures] = useState<Lecture[]>([]);
@@ -173,12 +175,36 @@ const StudentLectures = () => {
         title: "جاري تشغيل المحاضرة",
         description: lecture.title
       });
+    } else if (videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be')) {
+      // YouTube video - convert to embed URL
+      let videoId = '';
+      if (videoUrl.includes('youtube.com/watch')) {
+        const urlParams = new URLSearchParams(new URL(videoUrl).search);
+        videoId = urlParams.get('v') || '';
+      } else if (videoUrl.includes('youtu.be/')) {
+        videoId = videoUrl.split('youtu.be/')[1]?.split('?')[0] || '';
+      }
+      
+      if (videoId) {
+        const embedUrl = `https://www.youtube.com/embed/${videoId}`;
+        setExternalVideo({ url: embedUrl, title: lecture.title });
+        toast({
+          title: "جاري تشغيل المحاضرة",
+          description: lecture.title
+        });
+      } else {
+        toast({
+          variant: "destructive",
+          title: "خطأ",
+          description: "رابط يوتيوب غير صحيح"
+        });
+      }
     } else {
-      // External video URL - still try to play in secure player
+      // Other external video URL
+      setExternalVideo({ url: videoUrl, title: lecture.title });
       toast({
-        variant: "destructive",
-        title: "خطأ",
-        description: "هذا الفيديو غير مدعوم"
+        title: "جاري تشغيل المحاضرة",
+        description: lecture.title
       });
     }
   };
@@ -213,6 +239,41 @@ const StudentLectures = () => {
           onClose={() => setPlayingVideo(null)}
         />
       )}
+
+      {/* External Video Modal */}
+      <Dialog open={!!externalVideo} onOpenChange={(open) => { if (!open) setExternalVideo(null); }}>
+        <DialogContent className="max-w-4xl w-[95vw] max-h-[90vh] p-0 overflow-hidden" dir="rtl">
+          <div className="p-4 border-b">
+            <DialogHeader>
+              <DialogTitle>{externalVideo?.title || 'مشاهدة المحاضرة'}</DialogTitle>
+            </DialogHeader>
+          </div>
+          <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
+            {externalVideo?.url && (
+              <iframe
+                src={externalVideo.url}
+                title={externalVideo.title}
+                className="absolute inset-0 w-full h-full"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+              />
+            )}
+          </div>
+          <div className="p-4 border-t">
+            <DialogFooter className="flex justify-between w-full">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  if (externalVideo?.url) window.open(externalVideo.url, '_blank');
+                }}
+              >
+                فتح في نافذة جديدة
+              </Button>
+              <Button onClick={() => setExternalVideo(null)}>إغلاق</Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <div className="container mx-auto px-4 py-6 relative z-10 max-w-7xl">
         {/* Header */}

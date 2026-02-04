@@ -5,7 +5,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { BookOpen, FileText, Clock, Calendar, Download, Play, Eye, MessageSquare, Award, Users, Calendar as CalendarIcon, Sparkles, TrendingUp, Trophy, Target, ClipboardCheck, Search } from "lucide-react";
+import { BookOpen, FileText, Clock, Calendar, Download, Play, Eye, MessageSquare, Award, Users, Calendar as CalendarIcon, Sparkles, TrendingUp, Trophy, Target, ClipboardCheck, Search, Video } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
 import { useNavigate } from "react-router-dom";
 import { getStudents, getCourses, getGroups, getMaterials, getStudentMaterials, getStudentExams, getStudentExamResults, Student, User, Course } from "@/lib/api";
@@ -393,6 +393,24 @@ const StudentDashboard = () => {
                           <div className="flex-1">
                             <h3 className="font-bold text-sm md:text-base">المحتوى التعليمي</h3>
                             <p className="text-xs text-muted-foreground">{materials.length} ملف</p>
+                          </div>
+                        </div>
+                      </Card>
+                    </motion.div>
+
+                    {/* Online Meetings Quick Link */}
+                    <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                      <Card 
+                        className="p-3 md:p-4 bg-gradient-to-br from-red-500/10 to-rose-500/10 border-red-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
+                        onClick={() => navigate('/student-meetings')}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-red-500/20 rounded-lg">
+                            <Video className="w-5 h-5 text-red-600" />
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="font-bold text-sm md:text-base">الاجتماعات المباشرة</h3>
+                            <p className="text-xs text-muted-foreground">الحصص الأونلاين</p>
                           </div>
                         </div>
                       </Card>

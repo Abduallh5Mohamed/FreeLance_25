@@ -65,17 +65,43 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
             content: string;
             messageType: 'text' | 'image';
             imageUrl?: string;
+            senderRole?: string;
         }) => {
             try {
-                const { senderId, receiverId, content, messageType, imageUrl } = data;
+                let { senderId, receiverId, content, messageType, imageUrl } = data;
+                const senderRole = data.senderRole;
 
-                // Insert message into database
-                const [result] = await getPool().query<any>(`
-                    INSERT INTO messages (sender_id, receiver_id, content, message_type, image_url)
-                    VALUES (?, ?, ?, ?, ?)
-                `, [senderId, receiverId, content || null, messageType, imageUrl || null]);
+                // If staff is sending, use teacher's ID instead (staff acts as teacher)
+                console.log('🔍 Message send - senderRole:', senderRole, 'senderId:', senderId);
+                if (senderRole === 'staff') {
+                    console.log('👷 Staff detected, looking for admin user...');
+                    const [teachers] = await getPool().query<RowDataPacket[]>(
+                        `SELECT id, name, phone, role FROM users WHERE role = 'admin' LIMIT 5`
+                    );
+                    console.log('📋 Found admin users:', JSON.stringify(teachers));
+                    
+                    // Find the main admin
+                    const mainAdmin = teachers.find((t: any) => t.phone === '01024083057');
+                    if (mainAdmin) {
+                        senderId = mainAdmin.id;
+                        console.log('📨 Staff sending as teacher via socket:', senderId, mainAdmin.name);
+                    } else if (teachers.length > 0) {
+                        // Use first admin if main admin not found
+                        senderId = teachers[0].id;
+                        console.log('📨 Using first admin:', senderId, teachers[0].name);
+                    } else {
+                        console.log('⚠️ No admin users found!');
+                    }
+                }
 
-                const messageId = result.insertId;
+                // Insert message into database - Generate UUID first since table uses uuid() default
+                const [uuidResult] = await getPool().query<RowDataPacket[]>('SELECT UUID() as uuid');
+                const messageId = uuidResult[0].uuid;
+                
+                await getPool().query(`
+                    INSERT INTO messages (id, sender_id, receiver_id, content, message_type, image_url)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                `, [messageId, senderId, receiverId, content || null, messageType, imageUrl || null]);
 
                 // Insert message status
                 await getPool().query(`

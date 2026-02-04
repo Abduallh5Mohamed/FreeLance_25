@@ -540,9 +540,12 @@ export default function Messages() {
             setEditingMessageId(null);
         } else {
             // Send new message
+            // Staff sends as teacher (admin), so use teacher's ID for display
+            const displaySenderId = user.role === 'staff' ? '69fe1174-c98d-11f0-9d07-94e8d4b653c4' : user.id;
+            
             const tempMessage: Message = {
                 id: Date.now(), // Temporary ID
-                sender_id: user.id,
+                sender_id: displaySenderId,
                 receiver_id: selectedUser.id,
                 content: messageText,
                 message_type: 'text',
@@ -558,12 +561,13 @@ export default function Messages() {
             // Add message to UI immediately
             setMessages(prev => [...prev, tempMessage]);
 
-            // Send via socket
+            // Send via socket - send real user ID, server will swap for staff
             socket.emit('message:send', {
                 senderId: user.id,
                 receiverId: selectedUser.id,
                 content: messageText,
-                messageType: 'text'
+                messageType: 'text',
+                senderRole: user.role  // Include role so staff can send as teacher
             });
 
             console.log('✅ Message added to UI and sent via socket');
@@ -763,8 +767,8 @@ export default function Messages() {
 
                     <Separator className="my-2" />
 
-                    {/* Search by Phone - Admin/Teacher Only */}
-                    {(user.role === 'admin' || user.role === 'teacher') && (
+                    {/* Search by Phone - Admin/Teacher/Staff Only */}
+                    {(user.role === 'admin' || user.role === 'teacher' || user.role === 'staff') && (
                         <div className="p-2 mb-2">
                             <h3 className="text-sm font-semibold text-gray-500 px-2 mb-2">بحث برقم الهاتف</h3>
                             <div className="flex gap-2 px-2">
@@ -844,7 +848,7 @@ export default function Messages() {
                     {/* Available Users */}
                     <div className="p-2">
                         <h3 className="text-sm font-semibold text-gray-500 px-2 mb-2">
-                            {user.role === 'student' ? 'المدرس' : user.role === 'teacher' ? 'الطلاب' : 'جميع المستخدمين'}
+                            {user.role === 'student' ? 'المدرس' : (user.role === 'teacher' || user.role === 'staff') ? 'الطلاب' : 'جميع المستخدمين'}
                         </h3>
                         {availableUsers.map(availUser => (
                             <div
