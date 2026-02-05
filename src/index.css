@@ -281,3 +281,13 @@ All colors MUST be HSL for consistency and theme support.
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
+
+/* Hide scrollbar but keep functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

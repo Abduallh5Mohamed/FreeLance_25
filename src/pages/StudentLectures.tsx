@@ -225,7 +225,7 @@ const StudentLectures = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-x-hidden" dir="rtl">
       <FloatingParticles />
       <StudentHeader />
 
@@ -275,21 +275,21 @@ const StudentLectures = () => {
         </DialogContent>
       </Dialog>
 
-      <div className="container mx-auto px-4 py-6 relative z-10 max-w-7xl">
+      <div className="w-full px-3 xs:px-4 sm:px-6 md:px-8 lg:px-12 xl:px-16 py-4 xs:py-5 sm:py-6 md:py-8 relative z-10 max-w-[100vw]">
         {/* Header */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mb-8"
+          className="mb-4 sm:mb-6 md:mb-8"
         >
-          <div className="flex items-center gap-3 mb-2">
-            <BookOpen className="w-8 h-8 text-primary" />
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+          <div className="flex items-center gap-2 sm:gap-3 mb-1.5 sm:mb-2">
+            <BookOpen className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 text-primary flex-shrink-0" />
+            <h1 className="text-xl sm:text-2xl md:text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
               المحاضرات الدراسية
             </h1>
           </div>
-          <p className="text-muted-foreground">
-            محاضرات احترافية من أفضل المدرسين - نمط Coursera و Udemy
+          <p className="text-xs sm:text-sm md:text-base text-muted-foreground">
+            محاضرات احترافية من أفضل المدرسين
           </p>
         </motion.div>
 
@@ -298,25 +298,25 @@ const StudentLectures = () => {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="mb-8"
+          className="mb-4 sm:mb-6 md:mb-8"
         >
           <GlassmorphicCard>
-            <CardContent className="pt-6">
-              <div className="space-y-4">
+            <CardContent className="pt-4 sm:pt-5 md:pt-6 px-3 sm:px-4 md:px-6">
+              <div className="space-y-3 sm:space-y-4">
                 {/* Search */}
                 <div className="relative">
-                  <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+                  <Search className="absolute right-2.5 sm:right-3 top-1/2 -translate-y-1/2 w-4 h-4 sm:w-5 sm:h-5 text-muted-foreground" />
                   <Input
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="ابحث عن محاضرة أو مدرس أو مادة..."
-                    className="pr-10"
+                    placeholder="ابحث عن محاضرة..."
+                    className="pr-8 sm:pr-10 text-sm sm:text-base h-9 sm:h-10"
                   />
                 </div>
 
                 {/* Level Filter */}
-                <div className="flex gap-2 flex-wrap">
-                  <span className="text-sm font-medium flex items-center">المستوى:</span>
+                <div className="flex gap-1.5 xs:gap-2 sm:gap-2 flex-wrap items-center">
+                  <span className="text-xs sm:text-sm font-medium flex items-center">المستوى:</span>
                   {[
                     { value: 'all', label: 'الكل' },
                     { value: 'beginner', label: 'مبتدئ' },
@@ -328,6 +328,7 @@ const StudentLectures = () => {
                       variant={filterLevel === filter.value ? 'default' : 'outline'}
                       onClick={() => setFilterLevel(filter.value)}
                       size="sm"
+                      className="text-[10px] xs:text-xs sm:text-sm px-2 xs:px-3 sm:px-4 h-7 xs:h-8 sm:h-9"
                     >
                       {filter.label}
                     </Button>
@@ -339,7 +340,7 @@ const StudentLectures = () => {
         </motion.div>
 
         {/* Lectures Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 xs:grid-cols-1 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-3 xs:gap-4 sm:gap-5 md:gap-6">
           <AnimatePresence>
             {filteredLectures.map((lecture, idx) => (
               <motion.div
@@ -352,7 +353,7 @@ const StudentLectures = () => {
               >
                 <Card className="overflow-hidden hover:shadow-2xl transition-all duration-300 h-full flex flex-col group bg-gradient-to-br from-card to-card/50">
                   {/* Thumbnail */}
-                  <div className="relative h-48 bg-gradient-to-br from-primary/20 to-accent/20 overflow-hidden">
+                  <div className="relative h-32 xs:h-36 sm:h-40 md:h-44 lg:h-48 bg-gradient-to-br from-primary/20 to-accent/20 overflow-hidden">
                     <img
                       src={lecture.video_url.includes('drive.google.com')
                         ? `https://drive.google.com/thumbnail?id=${lecture.video_url.match(/\/d\/([a-zA-Z0-9-_]+)/)?.[1]}&sz=w500`
@@ -366,81 +367,77 @@ const StudentLectures = () => {
 
                     {/* Overlay */}
                     <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                      <PlayCircle className="w-16 h-16 text-white drop-shadow-lg" />
+                      <PlayCircle className="w-10 h-10 sm:w-12 sm:h-12 md:w-14 md:h-14 lg:w-16 lg:h-16 text-white drop-shadow-lg" />
                     </div>
 
                     {/* Badges */}
-                    <div className="absolute top-2 right-2 flex gap-2">
-                      <Badge className={getLevelColor(lecture.level)}>
+                    <div className="absolute top-1.5 sm:top-2 right-1.5 sm:right-2 flex gap-1 sm:gap-2">
+                      <Badge className={`${getLevelColor(lecture.level)} text-[9px] xs:text-[10px] sm:text-xs px-1.5 sm:px-2`}>
                         {getLevelLabel(lecture.level)}
                       </Badge>
                       {lecture.completed && (
-                        <Badge className="bg-green-500/20 text-green-700">
-                          <CheckCircle2 className="w-3 h-3 ml-1" />
+                        <Badge className="bg-green-500/20 text-green-700 text-[9px] xs:text-[10px] sm:text-xs px-1.5 sm:px-2">
+                          <CheckCircle2 className="w-2.5 h-2.5 sm:w-3 sm:h-3 ml-0.5 sm:ml-1" />
                           مكتمل
                         </Badge>
                       )}
                     </div>
 
                     {/* Duration */}
-                    <div className="absolute bottom-2 right-2 bg-black/80 text-white px-2 py-1 rounded text-sm flex items-center gap-1">
-                      <Clock className="w-3 h-3" />
+                    <div className="absolute bottom-1.5 sm:bottom-2 right-1.5 sm:right-2 bg-black/80 text-white px-1.5 sm:px-2 py-0.5 sm:py-1 rounded text-[10px] sm:text-xs md:text-sm flex items-center gap-0.5 sm:gap-1">
+                      <Clock className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                       {lecture.duration_minutes || 0} دقيقة
                     </div>
 
                     {/* Progress Bar */}
                     {lecture.progress > 0 && (
                       <div className="absolute bottom-0 left-0 right-0">
-                        <Progress value={lecture.progress} className="h-1 rounded-none" />
+                        <Progress value={lecture.progress} className="h-0.5 sm:h-1 rounded-none" />
                       </div>
                     )}
                   </div>
 
                   {/* Content */}
-                  <CardContent className="p-4 flex-1 flex flex-col">
+                  <CardContent className="p-2.5 xs:p-3 sm:p-4 flex-1 flex flex-col">
                     <div className="flex-1">
-                      <Badge variant="outline" className="mb-2 text-xs">
+                      <Badge variant="outline" className="mb-1.5 sm:mb-2 text-[9px] xs:text-[10px] sm:text-xs">
                         {lecture.course_name || 'دورة عامة'}
                       </Badge>
-                      <h3 className="font-bold text-sm mb-2 line-clamp-2 group-hover:text-primary transition-colors">
+                      <h3 className="font-bold text-xs xs:text-sm sm:text-base mb-1.5 sm:mb-2 line-clamp-2 group-hover:text-primary transition-colors">
                         {lecture.title}
                       </h3>
-                      <p className="text-xs text-muted-foreground mb-3 line-clamp-2">
+                      <p className="text-[10px] xs:text-xs sm:text-sm text-muted-foreground mb-2 sm:mb-3 line-clamp-2">
                         {lecture.description}
                       </p>
 
                       {/* Instructor */}
-                      <div className="mb-3 pb-3 border-b">
-                        <p className="text-xs font-medium text-muted-foreground">المدرس</p>
-                        <p className="text-sm">{lecture.instructor || 'المدرس'}</p>
+                      <div className="mb-2 sm:mb-3 pb-2 sm:pb-3 border-b">
+                        <p className="text-[10px] xs:text-xs font-medium text-muted-foreground">المدرس</p>
+                        <p className="text-xs sm:text-sm">{lecture.instructor || 'المدرس'}</p>
                       </div>
 
                       {/* Stats */}
-                      <div className="space-y-2 text-xs text-muted-foreground mb-3">
+                      <div className="space-y-1.5 sm:space-y-2 text-[10px] xs:text-xs text-muted-foreground mb-2 sm:mb-3">
                         <div className="flex items-center justify-between">
-                          <span className="flex items-center gap-1">
-                            <Users className="w-3 h-3" />
+                          <span className="flex items-center gap-0.5 sm:gap-1">
+                            <Users className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                             {(lecture.students || 0).toLocaleString('ar-EG')} طالب
                           </span>
-                          <span className="flex items-center gap-1">
-                            <Award className="w-3 h-3" />
+                          <span className="flex items-center gap-0.5 sm:gap-1">
+                            <Award className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                             {lecture.lessons || 1} درس
                           </span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          {renderStars(lecture.rating)}
-                          <span>({lecture.reviews || 0} تقييم)</span>
                         </div>
                       </div>
 
                       {/* Progress */}
                       {(lecture.progress || 0) > 0 && (
-                        <div className="mb-3">
-                          <div className="flex items-center justify-between text-xs mb-1">
+                        <div className="mb-2 sm:mb-3">
+                          <div className="flex items-center justify-between text-[10px] xs:text-xs mb-0.5 sm:mb-1">
                             <span>التقدم</span>
                             <span>{lecture.progress}%</span>
                           </div>
-                          <Progress value={lecture.progress || 0} className="h-1.5" />
+                          <Progress value={lecture.progress || 0} className="h-1 sm:h-1.5" />
                         </div>
                       )}
                     </div>
@@ -448,10 +445,10 @@ const StudentLectures = () => {
                     {/* Action Button */}
                     <Button
                       onClick={() => handlePlayLecture(lecture)}
-                      className="w-full bg-gradient-to-r from-primary to-accent hover:shadow-lg"
+                      className="w-full bg-gradient-to-r from-primary to-accent hover:shadow-lg text-xs sm:text-sm h-8 sm:h-9"
                       size="sm"
                     >
-                      <Play className="w-4 h-4 ml-2" />
+                      <Play className="w-3 h-3 sm:w-4 sm:h-4 ml-1.5 sm:ml-2" />
                       {(lecture.completed) ? 'إعادة المشاهدة' : 'بدء المحاضرة'}
                     </Button>
                   </CardContent>
@@ -466,13 +463,13 @@ const StudentLectures = () => {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="text-center py-20"
+            className="text-center py-10 sm:py-16 md:py-20"
           >
-            <GlassmorphicCard className="max-w-md mx-auto">
-              <CardContent className="pt-8 pb-8">
-                <BookOpen className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-50" />
-                <h3 className="text-lg font-semibold mb-2">لا توجد محاضرات</h3>
-                <p className="text-sm text-muted-foreground">
+            <GlassmorphicCard className="max-w-xs sm:max-w-sm md:max-w-md mx-auto">
+              <CardContent className="pt-6 sm:pt-8 pb-6 sm:pb-8 px-4 sm:px-6">
+                <BookOpen className="w-12 h-12 sm:w-14 sm:h-14 md:w-16 md:h-16 mx-auto mb-3 sm:mb-4 text-muted-foreground opacity-50" />
+                <h3 className="text-base sm:text-lg font-semibold mb-1.5 sm:mb-2">لا توجد محاضرات</h3>
+                <p className="text-xs sm:text-sm text-muted-foreground">
                   لم يتم العثور على أي محاضرات تطابق بحثك
                 </p>
               </CardContent>
@@ -485,21 +482,21 @@ const StudentLectures = () => {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.3 }}
-          className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-4"
+          className="mt-6 sm:mt-8 md:mt-12 grid grid-cols-1 xs:grid-cols-3 gap-2 xs:gap-3 sm:gap-4"
         >
           <GlassmorphicCard>
-            <CardContent className="pt-6 text-center">
-              <Award className="w-8 h-8 mx-auto mb-2 text-primary" />
-              <p className="text-2xl font-bold">{lectures.filter(l => l.completed).length}</p>
-              <p className="text-sm text-muted-foreground">محاضرات مكتملة</p>
+            <CardContent className="pt-4 sm:pt-5 md:pt-6 pb-4 sm:pb-5 md:pb-6 text-center px-2 sm:px-4">
+              <Award className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 mx-auto mb-1.5 sm:mb-2 text-primary" />
+              <p className="text-lg sm:text-xl md:text-2xl font-bold">{lectures.filter(l => l.completed).length}</p>
+              <p className="text-[10px] sm:text-xs md:text-sm text-muted-foreground">محاضرات مكتملة</p>
             </CardContent>
           </GlassmorphicCard>
 
           <GlassmorphicCard>
-            <CardContent className="pt-6 text-center">
-              <BookOpen className="w-8 h-8 mx-auto mb-2 text-accent" />
-              <p className="text-2xl font-bold">{lectures.length}</p>
-              <p className="text-sm text-muted-foreground">إجمالي المحاضرات</p>
+            <CardContent className="pt-4 sm:pt-5 md:pt-6 pb-4 sm:pb-5 md:pb-6 text-center px-2 sm:px-4">
+              <BookOpen className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 mx-auto mb-1.5 sm:mb-2 text-accent" />
+              <p className="text-lg sm:text-xl md:text-2xl font-bold">{lectures.length}</p>
+              <p className="text-[10px] sm:text-xs md:text-sm text-muted-foreground">إجمالي المحاضرات</p>
             </CardContent>
           </GlassmorphicCard>
 

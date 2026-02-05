@@ -261,7 +261,7 @@ const StudentExams = () => {
       <FloatingParticles />
       <StudentHeader />
 
-      <div className="container mx-auto px-4 py-6 relative z-10 max-w-7xl">
+      <div className="w-full px-3 xs:px-4 sm:px-6 md:px-8 lg:px-12 xl:px-16 py-4 xs:py-5 sm:py-6 md:py-8 relative z-10 max-w-[100vw]">
         {/* Header */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -285,9 +285,9 @@ const StudentExams = () => {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
         >
-          <GlassmorphicCard className="mb-6">
-            <CardContent className="pt-6">
-              <div className="flex gap-2 flex-wrap">
+          <GlassmorphicCard className="mb-4 sm:mb-5 md:mb-6">
+            <CardContent className="pt-4 sm:pt-5 md:pt-6 px-3 sm:px-4 md:px-6">
+              <div className="flex gap-1.5 xs:gap-2 sm:gap-3 flex-wrap">
                 {[
                   { value: 'available', label: 'متاحة الآن', icon: CheckCircle2 },
                   { value: 'upcoming', label: 'قادمة', icon: Clock },
@@ -300,10 +300,12 @@ const StudentExams = () => {
                       key={tab.value}
                       variant={selectedTab === tab.value ? 'default' : 'outline'}
                       onClick={() => setSelectedTab(tab.value as 'available' | 'upcoming' | 'completed' | 'expired')}
-                      className="gap-2"
+                      className="gap-1 xs:gap-1.5 sm:gap-2 text-[10px] xs:text-xs sm:text-sm px-2 xs:px-3 sm:px-4 py-1.5 xs:py-2"
+                      size="sm"
                     >
-                      <Icon className="w-4 h-4" />
-                      {tab.label}
+                      <Icon className="w-3 h-3 xs:w-3.5 xs:h-3.5 sm:w-4 sm:h-4" />
+                      <span className="hidden xs:inline">{tab.label}</span>
+                      <span className="xs:hidden">{tab.label.split(' ')[0]}</span>
                     </Button>
                   );
                 })}
@@ -313,7 +315,7 @@ const StudentExams = () => {
         </motion.div>
 
         {/* Exams Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-3 xs:gap-4 sm:gap-5 md:gap-6">
           <AnimatePresence>
             {filteredExams.map((exam, idx) => (
               <motion.div
@@ -325,69 +327,69 @@ const StudentExams = () => {
                 whileHover={{ y: -5 }}
               >
                 <Card className="overflow-hidden hover:shadow-2xl transition-all duration-300 h-full border-2 border-primary/20">
-                  <div className={`h-2 ${getStatusColor(exam.status)}`} />
+                  <div className={`h-1.5 sm:h-2 ${getStatusColor(exam.status)}`} />
 
-                  <CardHeader>
+                  <CardHeader className="p-3 xs:p-4 sm:p-5 md:p-6">
                     <div className="flex items-start justify-between gap-2">
-                      <div className="flex-1">
-                        <CardTitle className="text-lg mb-2 line-clamp-2">
+                      <div className="flex-1 min-w-0">
+                        <CardTitle className="text-sm xs:text-base sm:text-lg mb-1.5 sm:mb-2 line-clamp-2">
                           {exam.title}
                         </CardTitle>
-                        <div className="flex flex-wrap gap-2">
-                          <Badge variant="outline" className="text-xs">
+                        <div className="flex flex-wrap gap-1 xs:gap-1.5 sm:gap-2">
+                          <Badge variant="outline" className="text-[9px] xs:text-[10px] sm:text-xs">
                             {exam.course_name || 'دورة عامة'}
                           </Badge>
-                          <Badge className={`${getDifficultyColor(exam.difficulty || 'medium')} text-white text-xs`}>
+                          <Badge className={`${getDifficultyColor(exam.difficulty || 'medium')} text-white text-[9px] xs:text-[10px] sm:text-xs`}>
                             {getDifficultyLabel(exam.difficulty || 'medium')}
                           </Badge>
-                          <Badge className={`${getStatusColor(exam.status || 'available')} text-white text-xs`}>
+                          <Badge className={`${getStatusColor(exam.status || 'available')} text-white text-[9px] xs:text-[10px] sm:text-xs`}>
                             {getStatusLabel(exam.status || 'available')}
                           </Badge>
                         </div>
                       </div>
-                      <div className="p-3 bg-primary/10 rounded-lg">
-                        <FileText className="w-6 h-6 text-primary" />
+                      <div className="p-2 xs:p-2.5 sm:p-3 bg-primary/10 rounded-lg flex-shrink-0">
+                        <FileText className="w-4 h-4 xs:w-5 xs:h-5 sm:w-6 sm:h-6 text-primary" />
                       </div>
                     </div>
                   </CardHeader>
 
-                  <CardContent>
-                    <p className="text-sm text-muted-foreground mb-4 line-clamp-2">
+                  <CardContent className="p-3 xs:p-4 sm:p-5 md:p-6 pt-0">
+                    <p className="text-xs xs:text-sm text-muted-foreground mb-3 sm:mb-4 line-clamp-2">
                       {exam.description}
                     </p>
 
                     {/* Exam Info Grid */}
-                    <div className="grid grid-cols-2 gap-3 mb-4">
-                      <div className="flex items-center gap-2 text-sm">
-                        <Clock className="w-4 h-4 text-primary" />
+                    <div className="grid grid-cols-2 gap-2 xs:gap-2.5 sm:gap-3 mb-3 sm:mb-4">
+                      <div className="flex items-center gap-1.5 xs:gap-2 text-[10px] xs:text-xs sm:text-sm">
+                        <Clock className="w-3 h-3 xs:w-3.5 xs:h-3.5 sm:w-4 sm:h-4 text-primary flex-shrink-0" />
                         <span>{exam.duration_minutes || 0} دقيقة</span>
                       </div>
-                      <div className="flex items-center gap-2 text-sm">
-                        <Target className="w-4 h-4 text-primary" />
+                      <div className="flex items-center gap-1.5 xs:gap-2 text-[10px] xs:text-xs sm:text-sm">
+                        <Target className="w-3 h-3 xs:w-3.5 xs:h-3.5 sm:w-4 sm:h-4 text-primary flex-shrink-0" />
                         <span>أسئلة متعددة</span>
                       </div>
-                      <div className="flex items-center gap-2 text-sm">
-                        <Trophy className="w-4 h-4 text-primary" />
+                      <div className="flex items-center gap-1.5 xs:gap-2 text-[10px] xs:text-xs sm:text-sm">
+                        <Trophy className="w-3 h-3 xs:w-3.5 xs:h-3.5 sm:w-4 sm:h-4 text-primary flex-shrink-0" />
                         <span>{exam.total_marks || 0} درجة</span>
                       </div>
-                      <div className="flex items-center gap-2 text-sm">
-                        <AlertCircle className="w-4 h-4 text-primary" />
+                      <div className="flex items-center gap-1.5 xs:gap-2 text-[10px] xs:text-xs sm:text-sm">
+                        <AlertCircle className="w-3 h-3 xs:w-3.5 xs:h-3.5 sm:w-4 sm:h-4 text-primary flex-shrink-0" />
                         <span>{exam.attempts || 0}/{exam.maxAttempts || 2} محاولة</span>
                       </div>
                     </div>
 
                     {/* Date and Time (if available) */}
                     {(exam.start_time || exam.end_time) && (
-                      <div className="bg-muted/50 rounded-lg p-3 mb-4 space-y-2">
+                      <div className="bg-muted/50 rounded-lg p-2 xs:p-2.5 sm:p-3 mb-3 sm:mb-4 space-y-1.5 sm:space-y-2">
                         {exam.start_time && (() => {
                           const d = parseSafe(exam.start_time);
                           if (!d) return null;
                           return (
-                            <div className="flex items-center gap-2 text-sm">
-                              <Calendar className="w-4 h-4 text-primary" />
+                            <div className="flex flex-wrap items-center gap-1 xs:gap-1.5 sm:gap-2 text-[10px] xs:text-xs sm:text-sm">
+                              <Calendar className="w-3 h-3 xs:w-3.5 xs:h-3.5 sm:w-4 sm:h-4 text-primary flex-shrink-0" />
                               <span className="font-medium">البدء:</span>
                               <span>{d.toLocaleDateString('ar-EG')}</span>
-                              <Clock className="w-4 h-4 text-primary" />
+                              <Clock className="w-3 h-3 xs:w-3.5 xs:h-3.5 sm:w-4 sm:h-4 text-primary flex-shrink-0" />
                               <span>{d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
                             </div>
                           );
@@ -396,11 +398,11 @@ const StudentExams = () => {
                           const d = parseSafe(exam.end_time);
                           if (!d) return null;
                           return (
-                            <div className="flex items-center gap-2 text-sm">
-                              <Calendar className="w-4 h-4 text-red-500" />
+                            <div className="flex flex-wrap items-center gap-1 xs:gap-1.5 sm:gap-2 text-[10px] xs:text-xs sm:text-sm">
+                              <Calendar className="w-3 h-3 xs:w-3.5 xs:h-3.5 sm:w-4 sm:h-4 text-red-500 flex-shrink-0" />
                               <span className="font-medium">الانتهاء:</span>
                               <span>{d.toLocaleDateString('ar-EG')}</span>
-                              <Clock className="w-4 h-4 text-red-500" />
+                              <Clock className="w-3 h-3 xs:w-3.5 xs:h-3.5 sm:w-4 sm:h-4 text-red-500 flex-shrink-0" />
                               <span>{d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
                             </div>
                           );

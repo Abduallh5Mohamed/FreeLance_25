@@ -242,13 +242,14 @@ router.post('/submit', async (req: Request, res: Response) => {
 
         console.log('✅ exam_student_answers updated with essay scores');
 
-        // Update exam_results table
+        // ⚠️ Note: The first exam_results update already used the correct student_id (user_id)
+        // This final check is redundant but kept for safety - using correct student_id (user_id)
         console.log('🔄 Final exam_results check...');
         await execute(
             `UPDATE exam_results 
        SET marks_obtained = ?
        WHERE exam_id = ? AND student_id = ?`,
-            [total_score, exam_id, actualStudentId]
+            [total_score, exam_id, student_id]  // ✅ Use student_id (user_id), NOT actualStudentId
         );
 
         console.log('✅ Grading complete');

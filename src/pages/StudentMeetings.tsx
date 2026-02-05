@@ -43,46 +43,46 @@ const StudentMeetings = () => {
     const { toast } = useToast();
     const navigate = useNavigate();
 
-        // Copy to clipboard with fallback for non-HTTPS
-        const copyToClipboard = async (text: string) => {
-            try {
-                // Try modern clipboard API first
-                if (navigator.clipboard && window.isSecureContext) {
-                    await navigator.clipboard.writeText(text);
+    // Copy to clipboard with fallback for non-HTTPS
+    const copyToClipboard = async (text: string) => {
+        try {
+            // Try modern clipboard API first
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+                toast({ title: "تم النسخ", description: "تم نسخ رابط الاجتماع" });
+            } else {
+                // Fallback for HTTP (non-secure contexts)
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                textArea.style.position = 'fixed';
+                textArea.style.left = '-999999px';
+                textArea.style.top = '-999999px';
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                try {
+                    document.execCommand('copy');
                     toast({ title: "تم النسخ", description: "تم نسخ رابط الاجتماع" });
-                } else {
-                    // Fallback for HTTP (non-secure contexts)
-                    const textArea = document.createElement('textarea');
-                    textArea.value = text;
-                    textArea.style.position = 'fixed';
-                    textArea.style.left = '-999999px';
-                    textArea.style.top = '-999999px';
-                    document.body.appendChild(textArea);
-                    textArea.focus();
-                    textArea.select();
-                    try {
-                        document.execCommand('copy');
-                        toast({ title: "تم النسخ", description: "تم نسخ رابط الاجتماع" });
-                    } catch (err) {
-                        console.error('Fallback copy failed:', err);
-                        toast({ 
-                            title: "فشل النسخ", 
-                            description: "الرجاء نسخ الرابط يدوياً",
-                            variant: "destructive"
-                        });
-                    } finally {
-                        textArea.remove();
-                    }
+                } catch (err) {
+                    console.error('Fallback copy failed:', err);
+                    toast({
+                        title: "فشل النسخ",
+                        description: "الرجاء نسخ الرابط يدوياً",
+                        variant: "destructive"
+                    });
+                } finally {
+                    textArea.remove();
                 }
-            } catch (err) {
-                console.error('Copy failed:', err);
-                toast({ 
-                    title: "فشل النسخ", 
-                    description: "الرجاء نسخ الرابط يدوياً",
-                    variant: "destructive"
-                });
             }
-        };
+        } catch (err) {
+            console.error('Copy failed:', err);
+            toast({
+                title: "فشل النسخ",
+                description: "الرجاء نسخ الرابط يدوياً",
+                variant: "destructive"
+            });
+        }
+    };
 
     const getToken = () => localStorage.getItem('token');
     const getUser = () => {
@@ -217,7 +217,7 @@ const StudentMeetings = () => {
                                             <div className="flex-1">
                                                 <div className="flex items-center gap-3 mb-3">
                                                     <div className={`w-3 h-3 rounded-full ${live ? 'bg-green-500 animate-pulse' :
-                                                            upcoming ? 'bg-yellow-500' : 'bg-gray-400'
+                                                        upcoming ? 'bg-yellow-500' : 'bg-gray-400'
                                                         }`}></div>
                                                     <h3 className="font-bold text-xl">{meeting.title}</h3>
                                                     <span className={`text-xs px-3 py-1 rounded-full text-white ${getMeetingTypeColor(meeting.meeting_type)}`}>
@@ -269,7 +269,7 @@ const StudentMeetings = () => {
                                                 </Button>
                                                 <Button
                                                     variant="outline"
-                                                        onClick={() => copyToClipboard(meeting.meeting_link)}
+                                                    onClick={() => copyToClipboard(meeting.meeting_link)}
                                                 >
                                                     نسخ الرابط
                                                 </Button>

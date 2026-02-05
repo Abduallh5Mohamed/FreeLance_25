@@ -5,6 +5,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import jwt from 'jsonwebtoken';
+import { notifyAdminNewMessage, notifyStudentMessageResponse } from '../utils/notifications';
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
@@ -276,6 +277,55 @@ router.post('/send', authenticateToken, async (req: AuthRequest, res: Response) 
             LEFT JOIN message_status ms ON m.id = ms.message_id
             WHERE m.id = ?
         `, [messageId]);
+
+        // Send notification
+        try {
+            console.log('📢 Creating notification for message...');
+            console.log('📢 Sender ID:', senderId, 'Receiver ID:', receiver_id);
+
+            const [senderInfo] = await getPool().query<RowDataPacket[]>('SELECT name, role FROM users WHERE id = ? UNION SELECT name, "student" as role FROM students WHERE id = ?', [senderId, senderId]);
+
+            // Check if receiver is a user (admin/teacher) or student
+            const [userReceiver] = await getPool().query<RowDataPacket[]>('SELECT id, role FROM users WHERE id = ?', [receiver_id]);
+
+            let receiverUserId = receiver_id;
+            let receiverRole = '';
+
+            if (userReceiver.length > 0) {
+                // Receiver is a user (admin/teacher)
+                receiverRole = userReceiver[0].role;
+                console.log('📢 Receiver is a user:', receiverRole);
+            } else {
+                // Receiver might be a student - get their user_id from phone lookup
+                const [studentInfo] = await getPool().query<RowDataPacket[]>('SELECT s.id, s.phone, s.name FROM students s WHERE s.id = ?', [receiver_id]);
+                if (studentInfo.length > 0) {
+                    receiverRole = 'student';
+                    // Find user_id by phone
+                    const [userByPhone] = await getPool().query<RowDataPacket[]>('SELECT id FROM users WHERE phone = ?', [studentInfo[0].phone]);
+                    if (userByPhone.length > 0) {
+                        receiverUserId = userByPhone[0].id;
+                        console.log('📢 Found user_id for student:', receiverUserId);
+                    }
+                }
+            }
+
+            if (senderInfo.length > 0 && receiverRole) {
+                const senderName = senderInfo[0].name || 'المستخدم';
+                console.log('📢 Sender:', senderName, 'Receiver Role:', receiverRole, 'Receiver User ID:', receiverUserId);
+
+                if (receiverRole === 'admin' || receiverRole === 'teacher') {
+                    await notifyAdminNewMessage(receiverUserId, senderName, content || 'صورة');
+                    console.log('📢 Notification sent to admin/teacher');
+                } else if (receiverRole === 'student') {
+                    await notifyStudentMessageResponse(receiverUserId, content || 'صورة');
+                    console.log('📢 Notification sent to student:', receiverUserId);
+                }
+            } else {
+                console.log('📢 Could not determine receiver info');
+            }
+        } catch (notifError) {
+            console.error('Error sending notification:', notifError);
+        }
 
         res.status(201).json(messages[0]);
     } catch (error) {

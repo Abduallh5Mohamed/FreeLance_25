@@ -162,23 +162,23 @@ const ExamReview = () => {
                 const isCorrect = question.is_correct;
                 const wasAnswered = !!question.student_answer;
                 const options = parseOptions(question.options);
-                
+
                 let optionsHTML = '';
                 if (question.question_type === 'multiple_choice') {
                     options.forEach((option: string, optIdx: number) => {
                         const optionLetter = String.fromCharCode(97 + optIdx);
                         const isUserAnswer = question.student_answer === optionLetter;
                         const isCorrectAnswer = question.correct_answer === optionLetter;
-                        
+
                         let optionClass = 'option';
                         if (isUserAnswer && isCorrectAnswer) optionClass += ' correct-answer';
                         else if (isUserAnswer && !isCorrectAnswer) optionClass += ' wrong-answer';
                         else if (isCorrectAnswer) optionClass += ' correct-answer';
-                        
+
                         optionsHTML += `
                             <div class="${optionClass}">
                                 <span class="option-letter">${optionLetter})</span>
-                                <span>${option}</span>
+                                <span class="option-text">${option}</span>
                                 ${isUserAnswer ? '<span class="marker">●</span>' : '<span class="marker">○</span>'}
                                 ${isCorrectAnswer ? '<span class="check">✓</span>' : ''}
                             </div>
@@ -361,6 +361,10 @@ const ExamReview = () => {
                             font-size: 16px;
                             margin-bottom: 15px;
                             line-height: 1.8;
+                            word-wrap: break-word;
+                            word-break: break-word;
+                            overflow-wrap: break-word;
+                            white-space: pre-wrap;
                         }
                         
                         .options-container {
@@ -375,11 +379,22 @@ const ExamReview = () => {
                             display: flex;
                             align-items: center;
                             gap: 10px;
+                            word-wrap: break-word;
+                            word-break: break-word;
+                            overflow-wrap: break-word;
                         }
                         
                         .option-letter {
                             font-weight: bold;
                             min-width: 30px;
+                            flex-shrink: 0;
+                        }
+                        
+                        .option-text {
+                            flex: 1;
+                            word-wrap: break-word;
+                            word-break: break-word;
+                            overflow-wrap: break-word;
                         }
                         
                         .marker {
@@ -410,6 +425,9 @@ const ExamReview = () => {
                             padding: 10px 15px;
                             border-radius: 5px;
                             font-size: 14px;
+                            word-wrap: break-word;
+                            word-break: break-word;
+                            overflow-wrap: break-word;
                         }
                         
                         .answer-summary.correct {
@@ -439,6 +457,10 @@ const ExamReview = () => {
                             background: #f9fafb;
                             border-right: 3px solid #0d9488;
                             font-size: 14px;
+                            word-wrap: break-word;
+                            word-break: break-word;
+                            overflow-wrap: break-word;
+                            white-space: pre-wrap;
                         }
                         
                         .footer {
@@ -657,8 +679,8 @@ const ExamReview = () => {
                                                     <XCircle className="w-5 h-5 text-red-600" />
                                                 )}
                                             </div>
-                                            <div className="flex-1">
-                                                <div className="flex items-center gap-2 mb-2">
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex items-center gap-2 mb-2 flex-wrap">
                                                     <span className="text-sm font-medium text-muted-foreground">
                                                         السؤال {index + 1}
                                                     </span>
@@ -671,7 +693,7 @@ const ExamReview = () => {
                                                         </Badge>
                                                     )}
                                                 </div>
-                                                <CardTitle className="text-lg font-medium">
+                                                <CardTitle className="text-lg font-medium break-words overflow-wrap-anywhere">
                                                     {question.question_text}
                                                 </CardTitle>
                                                 {question.question_image && (
@@ -695,7 +717,7 @@ const ExamReview = () => {
                                                         <span className="text-lg">📝</span>
                                                         نص السؤال:
                                                     </p>
-                                                    <p className="text-xl font-bold text-gray-900 dark:text-gray-100">
+                                                    <p className="text-xl font-bold text-gray-900 dark:text-gray-100 break-words whitespace-pre-wrap">
                                                         {question.question_text}
                                                     </p>
                                                 </div>
@@ -706,8 +728,8 @@ const ExamReview = () => {
                                                         <span className="text-lg">✍️</span>
                                                         إجابتك:
                                                     </p>
-                                                    <div className="flex items-center justify-between">
-                                                        <p className="text-lg font-bold">
+                                                    <div className="flex items-start justify-between gap-3">
+                                                        <p className="text-lg font-bold flex-1 break-words">
                                                             {question.student_answer && options.length > 0 ?
                                                                 `${question.student_answer.toUpperCase()}. ${options[question.student_answer.charCodeAt(0) - 97] || options[question.student_answer.charCodeAt(0) - 65] || question.student_answer}`
                                                                 : question.student_answer ? `${question.student_answer.toUpperCase()}`
@@ -728,7 +750,7 @@ const ExamReview = () => {
                                                             <CheckCircle2 className="w-4 h-4" />
                                                             الإجابة الصحيحة:
                                                         </p>
-                                                        <p className="text-lg font-bold">
+                                                        <p className="text-lg font-bold break-words">
                                                             {options.length > 0
                                                                 ? `${question.correct_answer.toUpperCase()}. ${options[question.correct_answer.charCodeAt(0) - 97] || options[question.correct_answer.charCodeAt(0) - 65] || question.correct_answer}`
                                                                 : question.correct_answer.toUpperCase()}
@@ -767,9 +789,9 @@ const ExamReview = () => {
                                                                                 : 'border-border'
                                                                             }`}
                                                                     >
-                                                                        <div className="flex items-center gap-3">
-                                                                            <span className="font-bold text-lg">{optionLabel.toUpperCase()}.</span>
-                                                                            <span>{option}</span>
+                                                                        <div className="flex items-start gap-3">
+                                                                            <span className="font-bold text-lg shrink-0">{optionLabel.toUpperCase()}.</span>
+                                                                            <span className="flex-1 break-words">{option}</span>
                                                                             {isCorrectAnswer && (
                                                                                 <Badge className="bg-green-500 text-white mr-auto text-xs">
                                                                                     <CheckCircle2 className="w-3 h-3 ml-1" />

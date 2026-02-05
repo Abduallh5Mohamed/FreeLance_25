@@ -2,6 +2,7 @@ import { Server as SocketIOServer, Socket } from 'socket.io';
 import { Server as HTTPServer } from 'http';
 import { getPool } from '../db';
 import { RowDataPacket, ResultSetHeader } from 'mysql2';
+import { notifyAdminNewMessage, notifyStudentMessageResponse } from '../utils/notifications';
 
 interface UserSocket extends Socket {
     userId?: string;
@@ -164,6 +165,63 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
                 socket.emit('message:sent', message);
 
                 console.log(`✅ Message sent from ${senderId} to ${receiverId}`);
+
+                // Send notification
+                try {
+                    console.log('📢 Creating notification for socket message...');
+
+                    // Get sender info
+                    const [senderInfo] = await getPool().query<RowDataPacket[]>(
+                        'SELECT name, role FROM users WHERE id = ?',
+                        [senderId]
+                    );
+
+                    // Check if receiver is a user (admin/teacher) or student
+                    const [userReceiver] = await getPool().query<RowDataPacket[]>(
+                        'SELECT id, role FROM users WHERE id = ?',
+                        [receiverId]
+                    );
+
+                    let receiverUserId = receiverId;
+                    let receiverRole = '';
+
+                    if (userReceiver.length > 0) {
+                        receiverRole = userReceiver[0].role;
+                        console.log('📢 Receiver is a user:', receiverRole);
+                    } else {
+                        // Receiver might be a student - get their user_id from phone lookup
+                        const [studentInfo] = await getPool().query<RowDataPacket[]>(
+                            'SELECT id, phone, name FROM students WHERE id = ?',
+                            [receiverId]
+                        );
+                        if (studentInfo.length > 0) {
+                            receiverRole = 'student';
+                            const [userByPhone] = await getPool().query<RowDataPacket[]>(
+                                'SELECT id FROM users WHERE phone = ?',
+                                [studentInfo[0].phone]
+                            );
+                            if (userByPhone.length > 0) {
+                                receiverUserId = userByPhone[0].id;
+                                console.log('📢 Found user_id for student:', receiverUserId);
+                            }
+                        }
+                    }
+
+                    if (senderInfo.length > 0 && receiverRole) {
+                        const senderName = senderInfo[0].name || 'المستخدم';
+                        console.log('📢 Sender:', senderName, 'Receiver Role:', receiverRole, 'Receiver User ID:', receiverUserId);
+
+                        if (receiverRole === 'admin' || receiverRole === 'teacher') {
+                            await notifyAdminNewMessage(receiverUserId, senderName, content || 'صورة');
+                            console.log('📢 Notification sent to admin/teacher');
+                        } else if (receiverRole === 'student') {
+                            await notifyStudentMessageResponse(receiverUserId, content || 'صورة');
+                            console.log('📢 Notification sent to student:', receiverUserId);
+                        }
+                    }
+                } catch (notifError) {
+                    console.error('Error sending notification:', notifError);
+                }
             } catch (error) {
                 console.error('Error sending message:', error);
                 socket.emit('message:error', { error: 'Failed to send message' });

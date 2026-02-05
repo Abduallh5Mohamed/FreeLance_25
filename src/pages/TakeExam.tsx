@@ -66,7 +66,8 @@ const TakeExam = () => {
   const resolveQuestionImage = (url?: string) => {
     if (!url) return '';
     if (url.startsWith('http') || url.startsWith('data:')) return url;
-    return `${getApiBase()}${url}`;
+    // ✅ الصور تتخدم من window.location.origin مباشرة بدون /api
+    return `${window.location.origin}${url}`;
   };
 
   const [exam, setExam] = useState<ExamData | null>(null);
@@ -277,7 +278,7 @@ const TakeExam = () => {
             if (typeof correctAnswer === 'string') {
               const letterToIndex: Record<string, number> = { 'a': 0, 'b': 1, 'c': 2, 'd': 3 };
               const normalizedAnswer = correctAnswer.toLowerCase().trim();
-              
+
               if (letterToIndex[normalizedAnswer] !== undefined) {
                 correctAnswer = letterToIndex[normalizedAnswer];
               } else {
@@ -379,15 +380,18 @@ const TakeExam = () => {
         // سؤال اختياري - نحسب درجته تلقائياً
         const userAnswerIndex = answers[question.id];
         const correctAnswer = question.correct_answer;
-        
-        // Convert user answer index (0,1,2,3) to letter (a,b,c,d)
-        const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
-          ? String.fromCharCode(97 + userAnswerIndex) 
+
+        // Compare directly as numbers since both are now indices
+        const userAnswer = userAnswerIndex !== undefined && userAnswerIndex !== null
+          ? Number(userAnswerIndex)
           : null;
+        const correctIndex = typeof correctAnswer === 'number'
+          ? correctAnswer
+          : (typeof correctAnswer === 'string' ? { 'a': 0, 'b': 1, 'c': 2, 'd': 3 }[correctAnswer.toLowerCase()] ?? 0 : 0);
 
-        console.log(`Q${idx + 1}: User answered index: ${userAnswerIndex}, letter: ${userAnswerLetter}, Correct: ${correctAnswer}, Match: ${userAnswerLetter === correctAnswer}`);
+        console.log(`Q${idx + 1}: User answered index: ${userAnswer}, Correct index: ${correctIndex}, Match: ${userAnswer === correctIndex}`);
 
-        if (userAnswerLetter === correctAnswer) {
+        if (userAnswer !== null && userAnswer === correctIndex) {
           autoScore += questionPoints;
           correctCount++;
           console.log(`✅ Correct! Score: ${questionPoints}`);
@@ -604,7 +608,7 @@ const TakeExam = () => {
         // Question number and points
         doc.setFillColor(250, 250, 250);
         doc.roundedRect(15, yPos - 5, pageWidth - 30, 8, 2, 2, 'F');
-        
+
         doc.setTextColor(13, 148, 136);
         doc.setFontSize(11);
         const pointsText = `(${question.points || question.marks || 1} نقطة)`;
@@ -618,7 +622,7 @@ const TakeExam = () => {
         const questionText = question.question_text || question.question || '';
         const maxWidth = pageWidth - 35;
         const lines = doc.splitTextToSize(questionText, maxWidth);
-        
+
         lines.forEach((line: string, lineIdx: number) => {
           if (yPos > pageHeight - 40) {
             doc.addPage();
@@ -638,11 +642,11 @@ const TakeExam = () => {
               doc.addPage();
               yPos = 20;
             }
-            
+
             const optionLetter = String.fromCharCode(97 + optIdx); // a, b, c, d
             const isUserAnswer = userAnswer === optIdx;
             const isCorrectAnswer = question.correct_answer === optIdx;
-            
+
             // تلوين الخيار
             if (isUserAnswer && isCorrectAnswer) {
               doc.setTextColor(34, 197, 94); // أخضر - إجابة صحيحة
@@ -682,18 +686,18 @@ const TakeExam = () => {
         } else if (questionType === 'essay') {
           const essayAnswer = essayAnswers[question.id];
           const answerImage = answerImages[question.id];
-          
+
           if (essayAnswer || answerImage) {
             doc.setTextColor(13, 148, 136);
             doc.setFontSize(10);
             doc.text('📝 إجابتك المقالية:', pageWidth - 20, yPos, { align: 'right' });
             yPos += 7;
-            
+
             // عرض الإجابة النصية كاملة
             if (essayAnswer) {
               doc.setTextColor(0, 0, 0);
               doc.setFontSize(9);
-              
+
               // عرض الإجابة الكاملة مع دعم الأسطر المتعددة
               const essayLines = doc.splitTextToSize(essayAnswer, maxWidth - 10);
               essayLines.forEach((line: string) => {
@@ -706,14 +710,14 @@ const TakeExam = () => {
               });
               yPos += 3;
             }
-            
+
             // عرض صورة الإجابة إن وجدت
             if (answerImage) {
               doc.setTextColor(13, 148, 136);
               doc.setFontSize(9);
               doc.text('🖼️ صورة الإجابة مرفقة', pageWidth - 25, yPos, { align: 'right' });
               yPos += 5;
-              
+
               // محاولة إضافة الصورة للـ PDF
               try {
                 if (answerImage.startsWith('data:image')) {
@@ -728,7 +732,7 @@ const TakeExam = () => {
                 console.log('Could not add image to PDF');
               }
             }
-            
+
             // ملاحظة أن السؤال يحتاج تصحيح يدوي
             doc.setTextColor(255, 152, 0);
             doc.setFontSize(8);
@@ -980,41 +984,42 @@ const TakeExam = () => {
 
   if (isSubmitted && result) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
+      <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative" dir="rtl">
         <FloatingParticles />
-        <div className="container mx-auto px-4 py-12 relative z-10 max-w-3xl">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-          >
-            <Card className={`border-4 ${result.passed ? 'border-green-500' : 'border-red-500'}`}>
-              <CardHeader className="text-center pb-8">
-                <div className="mx-auto mb-4">
-                  {result.passed ? (
-                    <motion.div
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      transition={{ type: "spring", stiffness: 200 }}
-                    >
-                      <Trophy className="w-24 h-24 text-green-500 mx-auto" />
-                    </motion.div>
-                  ) : (
-                    <XCircle className="w-24 h-24 text-red-500 mx-auto" />
-                  )}
-                </div>
-                <CardTitle className="text-3xl">
-                  {result.passed ? 'نجحت في الامتحان! 🎉' : 'للأسف، لم تنجح'}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                {/* Score Display */}
-                <div className="text-center">
-                  <div className={`text-6xl font-bold mb-2 ${result.passed ? 'text-green-600' : 'text-red-600'}`}>
-                    {result.score}/{result.total}
+        <div className="w-full px-3 sm:px-4 md:px-6 lg:px-8 py-6 sm:py-8 md:py-12 relative z-10">
+          <div className="max-w-3xl mx-auto">
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+            >
+              <Card className={`border-4 ${result.passed ? 'border-green-500' : 'border-red-500'}`}>
+                <CardHeader className="text-center pb-6 sm:pb-8">
+                  <div className="mx-auto mb-4">
+                    {result.passed ? (
+                      <motion.div
+                        initial={{ scale: 0 }}
+                        animate={{ scale: 1 }}
+                        transition={{ type: "spring", stiffness: 200 }}
+                      >
+                        <Trophy className="w-16 h-16 sm:w-20 sm:h-20 md:w-24 md:h-24 text-green-500 mx-auto" />
+                      </motion.div>
+                    ) : (
+                      <XCircle className="w-16 h-16 sm:w-20 sm:h-20 md:w-24 md:h-24 text-red-500 mx-auto" />
+                    )}
                   </div>
-                  <div className="text-2xl font-semibold text-muted-foreground">
-                    {result.percentage.toFixed(1)}%
-                  </div>
+                  <CardTitle className="text-xl sm:text-2xl md:text-3xl">
+                    {result.passed ? 'نجحت في الامتحان! 🎉' : 'للأسف، لم تنجح'}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4 sm:space-y-6">
+                  {/* Score Display */}
+                  <div className="text-center">
+                    <div className={`text-4xl sm:text-5xl md:text-6xl font-bold mb-2 ${result.passed ? 'text-green-600' : 'text-red-600'}`}>
+                      {result.score}/{result.total}
+                    </div>
+                    <div className="text-lg sm:text-xl md:text-2xl font-semibold text-muted-foreground">
+                      {result.percentage.toFixed(1)}%
+                    </div>
                 </div>
 
                 {/* Stats */}
@@ -1297,29 +1302,30 @@ const TakeExam = () => {
               </CardContent>
             </Card>
           </motion.div>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative" dir="rtl">
       <FloatingParticles />
 
       {/* Sticky Header with Timer */}
       <div className="sticky top-0 z-50 bg-background/95 backdrop-blur-sm border-b shadow-lg">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h1 className="text-xl font-bold">{exam.title}</h1>
-              <p className="text-sm text-muted-foreground">{exam.course}</p>
+        <div className="w-full px-3 sm:px-4 md:px-6 lg:px-8 py-3 sm:py-4">
+          <div className="flex items-center justify-between gap-2 sm:gap-4">
+            <div className="flex-shrink min-w-0">
+              <h1 className="text-base sm:text-lg md:text-xl font-bold truncate">{exam.title}</h1>
+              <p className="text-xs sm:text-sm text-muted-foreground truncate">{exam.course}</p>
             </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 sm:gap-4 flex-shrink-0">
               {/* Progress */}
               <div className="hidden md:flex items-center gap-2">
                 <span className="text-sm font-medium">التقدم:</span>
-                <div className="w-32">
+                <div className="w-24 lg:w-32">
                   <Progress value={progress} className="h-2" />
                 </div>
                 <span className="text-sm text-muted-foreground">
@@ -1329,9 +1335,9 @@ const TakeExam = () => {
 
               {/* Timer */}
               <Card className={`${getTimeColor()} border-2`}>
-                <CardContent className="p-3 flex items-center gap-2">
-                  <Timer className="w-5 h-5" />
-                  <span className="text-2xl font-mono font-bold">
+                <CardContent className="p-2 sm:p-3 flex items-center gap-1 sm:gap-2">
+                  <Timer className="w-4 h-4 sm:w-5 sm:h-5" />
+                  <span className="text-lg sm:text-xl md:text-2xl font-mono font-bold">
                     {formatTime(timeLeft)}
                   </span>
                 </CardContent>
@@ -1340,8 +1346,8 @@ const TakeExam = () => {
           </div>
 
           {/* Mobile Progress */}
-          <div className="md:hidden mt-3">
-            <div className="flex items-center justify-between text-sm mb-1">
+          <div className="md:hidden mt-2 sm:mt-3">
+            <div className="flex items-center justify-between text-xs sm:text-sm mb-1">
               <span>التقدم</span>
               <span>{answeredCount}/{exam.questions.length}</span>
             </div>
@@ -1351,47 +1357,44 @@ const TakeExam = () => {
       </div>
 
       {/* Questions */}
-      <div className="container mx-auto px-4 py-6 relative z-10 max-w-4xl">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={currentQuestion}
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
-            transition={{ duration: 0.3 }}
-          >
-            <Card className="mb-6">
-              <CardHeader>
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Badge variant="outline">
-                        السؤال {currentQuestion + 1} من {exam.questions.length}
-                      </Badge>
-                      <Badge>
-                        {exam.questions[currentQuestion].points || exam.questions[currentQuestion].marks || 1} نقطة
-                      </Badge>
-                    </div>
-                    <CardTitle className="text-xl">
-                      {exam.questions[currentQuestion].question_text || exam.questions[currentQuestion].question}
-                    </CardTitle>
-
-                    {/* ✅ عرض صورة السؤال */}
-                    {exam.questions[currentQuestion].question_image && (
-                      <div className="mt-4">
-                        <img
-                          src={resolveQuestionImage(exam.questions[currentQuestion].question_image)}
-                          alt="صورة السؤال"
-                          className="max-w-full max-h-96 object-contain rounded-lg border shadow-sm"
-                          onError={(e) => {
-                            console.error('Failed to load image:', exam.questions[currentQuestion].question_image);
-                            e.currentTarget.style.display = 'none';
-                          }}
-                        />
-                      </div>
-                    )}
-                  </div>
+      <div className="w-full px-3 sm:px-4 md:px-6 lg:px-8 xl:px-12 py-4 sm:py-6 relative z-10">
+        <div className="max-w-4xl mx-auto">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={currentQuestion}
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              transition={{ duration: 0.3 }}
+            >
+            <Card className="mb-6 overflow-hidden">
+              <CardHeader className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline" className="flex-shrink-0">
+                    السؤال {currentQuestion + 1} من {exam.questions.length}
+                  </Badge>
+                  <Badge className="flex-shrink-0">
+                    {exam.questions[currentQuestion].points || exam.questions[currentQuestion].marks || 1} نقطة
+                  </Badge>
                 </div>
+                <CardTitle className="text-base sm:text-lg md:text-xl leading-relaxed break-words overflow-wrap-anywhere">
+                  {exam.questions[currentQuestion].question_text || exam.questions[currentQuestion].question}
+                </CardTitle>
+
+                {/* ✅ عرض صورة السؤال */}
+                {exam.questions[currentQuestion].question_image && (
+                  <div className="mt-2">
+                    <img
+                      src={resolveQuestionImage(exam.questions[currentQuestion].question_image)}
+                      alt="صورة السؤال"
+                      className="max-w-full max-h-96 object-contain rounded-lg border shadow-sm"
+                      onError={(e) => {
+                        console.error('Failed to load image:', exam.questions[currentQuestion].question_image);
+                        e.currentTarget.style.display = 'none';
+                      }}
+                    />
+                  </div>
+                )}
               </CardHeader>
               <CardContent>
                 {/* ✅ عرض حسب نوع السؤال */}
@@ -1539,13 +1542,13 @@ const TakeExam = () => {
                         >
                           <Label
                             htmlFor={`option-${idx}`}
-                            className={`flex items-center gap-3 p-4 rounded-lg border-2 cursor-pointer transition-all hover:bg-accent ${answers[exam.questions[currentQuestion].id] === idx
+                            className={`flex items-start gap-3 p-3 sm:p-4 rounded-lg border-2 cursor-pointer transition-all hover:bg-accent ${answers[exam.questions[currentQuestion].id] === idx
                               ? 'border-primary bg-primary/10'
                               : 'border-border'
                               }`}
                           >
-                            <RadioGroupItem value={idx.toString()} id={`option-${idx}`} />
-                            <span className="flex-1 text-base">{option}</span>
+                            <RadioGroupItem value={idx.toString()} id={`option-${idx}`} className="flex-shrink-0 mt-1" />
+                            <span className="flex-1 text-sm sm:text-base leading-relaxed break-words">{option}</span>
                           </Label>
                         </motion.div>
                       ));
@@ -1556,46 +1559,50 @@ const TakeExam = () => {
             </Card>
 
             {/* Navigation */}
-            <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4">
               <Button
                 onClick={() => setCurrentQuestion(Math.max(0, currentQuestion - 1))}
                 disabled={currentQuestion === 0}
                 variant="outline"
-                size="lg"
+                size="default"
+                className="w-full sm:w-auto order-2 sm:order-1"
               >
                 السؤال السابق
               </Button>
 
-              <div className="flex gap-2">
-                {exam.questions.map((_, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => setCurrentQuestion(idx)}
-                    className={`w-10 h-10 rounded-lg font-medium transition-all ${idx === currentQuestion
-                      ? 'bg-primary text-white scale-110'
-                      : answers[exam.questions[idx].id] !== undefined
-                        ? 'bg-green-500 text-white'
-                        : 'bg-muted hover:bg-muted-foreground/20'
-                      }`}
-                  >
-                    {idx + 1}
-                  </button>
-                ))}
+              {/* Question Numbers - Scrollable on mobile */}
+              <div className="w-full sm:flex-1 order-1 sm:order-2 overflow-x-auto">
+                <div className="flex gap-1.5 sm:gap-2 justify-center flex-wrap sm:flex-nowrap py-2">
+                  {exam.questions.map((_, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => setCurrentQuestion(idx)}
+                      className={`w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 rounded-lg text-xs sm:text-sm font-medium transition-all flex-shrink-0 ${idx === currentQuestion
+                        ? 'bg-primary text-white scale-105 sm:scale-110'
+                        : answers[exam.questions[idx].id] !== undefined
+                          ? 'bg-green-500 text-white'
+                          : 'bg-muted hover:bg-muted-foreground/20'
+                        }`}
+                    >
+                      {idx + 1}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {currentQuestion < exam.questions.length - 1 ? (
                 <Button
                   onClick={() => setCurrentQuestion(Math.min(exam.questions.length - 1, currentQuestion + 1))}
-                  size="lg"
-                  className="bg-gradient-to-r from-primary to-accent"
+                  size="default"
+                  className="w-full sm:w-auto bg-gradient-to-r from-primary to-accent order-3"
                 >
                   السؤال التالي
                 </Button>
               ) : (
                 <Button
                   onClick={handleSubmit}
-                  size="lg"
-                  className="bg-gradient-to-r from-green-600 to-green-500"
+                  size="default"
+                  className="w-full sm:w-auto bg-gradient-to-r from-green-600 to-green-500 order-3"
                   disabled={answeredCount < exam.questions.length}
                 >
                   تسليم الامتحان
@@ -1612,8 +1619,8 @@ const TakeExam = () => {
               >
                 <Card className="border-yellow-500 bg-yellow-500/10">
                   <CardContent className="pt-4 flex items-center gap-2">
-                    <AlertCircle className="w-5 h-5 text-yellow-600" />
-                    <span className="text-sm">
+                    <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0" />
+                    <span className="text-xs sm:text-sm">
                       لم تجب على جميع الأسئلة ({answeredCount}/{exam.questions.length}). تأكد من الإجابة على جميع الأسئلة قبل التسليم.
                     </span>
                   </CardContent>
@@ -1622,6 +1629,7 @@ const TakeExam = () => {
             )}
           </motion.div>
         </AnimatePresence>
+        </div>
       </div>
     </div>
   );
