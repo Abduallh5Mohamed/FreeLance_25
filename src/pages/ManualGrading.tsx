@@ -51,7 +51,7 @@ const ManualGrading = () => {
     const [selectedGroup, setSelectedGroup] = useState<string>("");
     const [students, setStudents] = useState<StudentAttempt[]>([]);
     const [loading, setLoading] = useState(false);
-    const [saving, setSaving] = useState(false);
+    const [savingId, setSavingId] = useState<string | null>(null); // Track which student is being saved
 
     useEffect(() => {
         fetchGrades();
@@ -79,12 +79,17 @@ const ManualGrading = () => {
     };
 
     const fetchPendingAttempts = async () => {
-        if (!selectedGrade || !selectedGroup) return;
+        if (!selectedGrade) return;
 
         setLoading(true);
         try {
+            const params = new URLSearchParams({ grade_id: selectedGrade });
+            if (selectedGroup && selectedGroup !== 'all') {
+                params.set('group_id', selectedGroup);
+            }
+
             const response = await fetch(
-                `${API_BASE_URL}/manual-grading/pending?grade_id=${selectedGrade}&group_id=${selectedGroup}`
+                `${API_BASE_URL}/manual-grading/pending?${params.toString()}`
             );
             const data = await response.json();
 
@@ -151,7 +156,8 @@ const ManualGrading = () => {
             return;
         }
 
-        setSaving(true);
+        const attemptKey = `${student.student_id}-${student.exam_id}`;
+        setSavingId(attemptKey);
         try {
             const totalScore = calculateTotalScore(student);
             const essayScores = student.essay_questions.reduce((acc, q) => {
@@ -178,8 +184,10 @@ const ManualGrading = () => {
                     title: "تم بنجاح",
                     description: "تم تسليم الدرجات بنجاح"
                 });
-                // Reload data instead of removing student
-                await loadPendingAttempts();
+                // Remove this specific attempt from list (student may have multiple exams)
+                setStudents(prev => prev.filter(s =>
+                    !(s.student_id === student.student_id && s.exam_id === student.exam_id)
+                ));
             }
         } catch (error) {
             console.error('Error submitting grades:', error);
@@ -189,7 +197,7 @@ const ManualGrading = () => {
                 variant: "destructive"
             });
         } finally {
-            setSaving(false);
+            setSavingId(null);
         }
     };
 
@@ -233,6 +241,7 @@ const ManualGrading = () => {
                                         <SelectValue placeholder="اختر المجموعة" />
                                     </SelectTrigger>
                                     <SelectContent>
+                                        <SelectItem value="all">الكل</SelectItem>
                                         {filteredGroups.map(group => (
                                             <SelectItem key={group.id} value={group.id}>
                                                 {group.name}
@@ -253,9 +262,9 @@ const ManualGrading = () => {
                 ) : students.length === 0 ? (
                     <Card>
                         <CardContent className="py-12 text-center text-muted-foreground">
-                            {selectedGrade && selectedGroup
-                                ? "لا توجد امتحانات تحتاج تصحيح في هذه المجموعة"
-                                : "اختر الصف والمجموعة لعرض الطلاب"
+                            {selectedGrade
+                                ? "لا توجد امتحانات تحتاج تصحيح لهذه الصفوف/المجموعات"
+                                : "اختر الصف (ويمكنك اختيار المجموعة أو الكل)"
                             }
                         </CardContent>
                     </Card>
@@ -369,11 +378,11 @@ const ManualGrading = () => {
                                     {/* Submit Button */}
                                     <Button
                                         onClick={() => handleSubmitGrades(student)}
-                                        disabled={saving}
+                                        disabled={savingId === `${student.student_id}-${student.exam_id}`}
                                         className="w-full"
                                         size="lg"
                                     >
-                                        {saving ? (
+                                        {savingId === `${student.student_id}-${student.exam_id}` ? (
                                             <>
                                                 <Clock className="w-5 h-5 ml-2 animate-spin" />
                                                 جاري التسليم...

@@ -12,11 +12,15 @@ router.get('/pending', async (req: Request, res: Response) => {
         console.log('📝 Grade ID:', grade_id);
         console.log('📝 Group ID:', group_id);
 
-        if (!grade_id || !group_id) {
-            return res.status(400).json({ error: 'Grade ID and Group ID are required' });
+        if (!grade_id) {
+            return res.status(400).json({ error: 'Grade ID is required' });
         }
 
-        // Get all pending attempts for students in this grade and group
+        const groupId = typeof group_id === 'string' ? group_id : undefined;
+        const hasGroupFilter = !!groupId && groupId !== 'all';
+
+        // Get all pending attempts for students in this grade (and optionally group)
+        // NOTE: Removed ORDER BY to avoid MySQL sort buffer overflow - results sorted in memory
         const sql = `
       SELECT 
         ea.exam_id,
@@ -35,12 +39,12 @@ router.get('/pending', async (req: Request, res: Response) => {
       INNER JOIN students s ON s.phone = u.phone
       WHERE ea.status = 'pending_review'
         AND s.grade_id = ?
-        AND s.group_id = ?
-      ORDER BY ea.completed_at DESC
+        ${hasGroupFilter ? 'AND s.group_id = ?' : ''}
+      LIMIT 1000
     `;
 
         console.log('🔍 Executing SQL query...');
-        const attempts = await query<any>(sql, [grade_id, group_id]);
+        const attempts = await query<any>(sql, hasGroupFilter ? [grade_id, groupId] : [grade_id]);
         console.log('✅ Found attempts:', attempts.length);
         console.log('📊 Attempts data:', JSON.stringify(attempts, null, 2));
 
@@ -55,8 +59,16 @@ router.get('/pending', async (req: Request, res: Response) => {
                 [attempt.exam_id]
             );
 
-            // Parse answers JSON (already parsed by mysql2, no need for JSON.parse)
-            const answersData = attempt.answers || {};
+            // Parse answers JSON safely (handle string or object)
+            let answersData: any = attempt.answers || {};
+            if (typeof answersData === 'string') {
+                try {
+                    answersData = JSON.parse(answersData);
+                } catch (err) {
+                    console.error('Failed to parse answers JSON:', err);
+                    answersData = {};
+                }
+            }
             const essayAnswers = answersData.essay || {};
             const imageAnswers = answersData.images || {};
 
@@ -230,13 +242,14 @@ router.post('/submit', async (req: Request, res: Response) => {
 
         console.log('✅ exam_student_answers updated with essay scores');
 
-        // Update exam_results table
+        // ⚠️ Note: The first exam_results update already used the correct student_id (user_id)
+        // This final check is redundant but kept for safety - using correct student_id (user_id)
         console.log('🔄 Final exam_results check...');
         await execute(
             `UPDATE exam_results 
        SET marks_obtained = ?
        WHERE exam_id = ? AND student_id = ?`,
-            [total_score, exam_id, actualStudentId]
+            [total_score, exam_id, student_id]  // ✅ Use student_id (user_id), NOT actualStudentId
         );
 
         console.log('✅ Grading complete');

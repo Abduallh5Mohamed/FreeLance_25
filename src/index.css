@@ -8,10 +8,13 @@ All colors MUST be HSL for consistency and theme support.
 
 /* Anti-Screen-Capture Protection Animations */
 @keyframes pulse {
-  0%, 100% {
+
+  0%,
+  100% {
     opacity: 0.3;
     transform: scale(1);
   }
+
   50% {
     opacity: 0.5;
     transform: scale(1.02);
@@ -22,6 +25,7 @@ All colors MUST be HSL for consistency and theme support.
   0% {
     background-position: -1000px 0;
   }
+
   100% {
     background-position: 1000px 0;
   }
@@ -280,4 +284,14 @@ All colors MUST be HSL for consistency and theme support.
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
+}
+
+/* Hide scrollbar but keep functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
 }

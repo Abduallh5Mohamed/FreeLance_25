@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import alQaedLogo from "@/assets/Qaad_Logo.png";
+import { NotificationBell } from "@/components/NotificationBell";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -70,6 +71,7 @@ const Header = () => {
   const navigate = useNavigate();
   const [userRole, setUserRole] = useState<string>('');
   const [accessiblePages, setAccessiblePages] = useState<string[]>([]);
+  const [userId, setUserId] = useState<string>('');
 
   useEffect(() => {
     const userStr = localStorage.getItem('currentUser');
@@ -78,9 +80,13 @@ const Header = () => {
         const user = JSON.parse(userStr);
         setUserRole(user.role || '');
         setAccessiblePages(user.accessible_pages || []);
+        setUserId(user.id || '');
+        console.log('Header: User loaded from localStorage:', { id: user.id, role: user.role });
       } catch (e) {
         console.error('Error parsing user:', e);
       }
+    } else {
+      console.warn('Header: No currentUser found in localStorage');
     }
   }, []);
 
@@ -391,7 +397,7 @@ const Header = () => {
             <Button
               onClick={handleLogout}
               variant="ghost"
-              className="text-white hover:bg-red-500/20 hover:text-white rounded-xl font-medium transition-all duration-300 border border-white/20"
+              className="hidden xl:flex text-white hover:bg-red-500/20 hover:text-white rounded-xl font-medium transition-all duration-300 border border-white/20"
             >
               <LogOut className="w-4 h-4" />
               تسجيل الخروج

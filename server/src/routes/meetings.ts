@@ -29,25 +29,25 @@ router.get('/', async (req: Request, res: Response) => {
 router.get('/student/:studentId', async (req: Request, res: Response) => {
     try {
         const { studentId } = req.params;
-        
+
         // First get the user's phone to find the student
         const user = await queryOne(`SELECT phone FROM users WHERE id = ?`, [studentId]);
-        
+
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
-        
+
         // Find student by phone
         const student = await queryOne(`
             SELECT s.grade_id, s.group_id 
             FROM students s 
             WHERE s.phone = ?
         `, [user.phone]);
-        
+
         if (!student) {
             return res.status(404).json({ error: 'Student not found' });
         }
-        
+
         // Get meetings for student's grade (and optionally their group)
         // Meeting is visible if:
         // 1. It matches the student's grade AND group_id is NULL (for all groups in that grade)
@@ -68,7 +68,7 @@ router.get('/student/:studentId', async (req: Request, res: Response) => {
             AND m.scheduled_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
             ORDER BY m.scheduled_at ASC
         `, [student.grade_id, student.group_id]);
-        
+
         res.json(meetings);
     } catch (error) {
         console.error('Error fetching student meetings:', error);
@@ -92,11 +92,11 @@ router.get('/:id', async (req: Request, res: Response) => {
             LEFT JOIN users u ON m.created_by = u.id
             WHERE m.id = ?
         `, [id]);
-        
+
         if (!meeting) {
             return res.status(404).json({ error: 'Meeting not found' });
         }
-        
+
         res.json(meeting);
     } catch (error) {
         console.error('Error fetching meeting:', error);
@@ -108,39 +108,39 @@ router.get('/:id', async (req: Request, res: Response) => {
 router.post('/', async (req: Request, res: Response) => {
     try {
         console.log('📅 Creating meeting, body:', JSON.stringify(req.body));
-        
-        const { 
-            title, 
-            description, 
-            meeting_link, 
+
+        const {
+            title,
+            description,
+            meeting_link,
             meeting_type = 'zoom',
             meeting_password,
-            grade_id, 
-            group_id, 
-            scheduled_at, 
+            grade_id,
+            group_id,
+            scheduled_at,
             duration_minutes = 60,
-            created_by 
+            created_by
         } = req.body;
-        
+
         console.log('📅 Parsed fields:', { title, meeting_link, grade_id, scheduled_at, created_by });
-        
+
         if (!title || !meeting_link || !grade_id || !scheduled_at || !created_by) {
             console.log('📅 Missing fields!', { title: !!title, meeting_link: !!meeting_link, grade_id: !!grade_id, scheduled_at: !!scheduled_at, created_by: !!created_by });
-            return res.status(400).json({ 
-                error: 'Missing required fields: title, meeting_link, grade_id, scheduled_at, created_by' 
+            return res.status(400).json({
+                error: 'Missing required fields: title, meeting_link, grade_id, scheduled_at, created_by'
             });
         }
-        
+
         // Generate UUID
         const uuidResult = await queryOne('SELECT UUID() as uuid');
         const id = uuidResult.uuid;
-        
+
         await execute(`
             INSERT INTO online_meetings 
             (id, title, description, meeting_link, meeting_type, meeting_password, grade_id, group_id, scheduled_at, duration_minutes, created_by)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [id, title, description || null, meeting_link, meeting_type, meeting_password || null, grade_id, group_id || null, scheduled_at, duration_minutes, created_by]);
-        
+
         const meeting = await queryOne(`
             SELECT 
                 m.*,
@@ -151,7 +151,7 @@ router.post('/', async (req: Request, res: Response) => {
             LEFT JOIN \`groups\` gr ON m.group_id = gr.id
             WHERE m.id = ?
         `, [id]);
-        
+
         res.status(201).json(meeting);
     } catch (error) {
         console.error('Error creating meeting:', error);
@@ -163,19 +163,19 @@ router.post('/', async (req: Request, res: Response) => {
 router.put('/:id', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
-        const { 
-            title, 
-            description, 
-            meeting_link, 
+        const {
+            title,
+            description,
+            meeting_link,
             meeting_type,
             meeting_password,
-            grade_id, 
-            group_id, 
-            scheduled_at, 
+            grade_id,
+            group_id,
+            scheduled_at,
             duration_minutes,
-            is_active 
+            is_active
         } = req.body;
-        
+
         await execute(`
             UPDATE online_meetings SET
                 title = COALESCE(?, title),
@@ -190,7 +190,7 @@ router.put('/:id', async (req: Request, res: Response) => {
                 is_active = COALESCE(?, is_active)
             WHERE id = ?
         `, [title, description, meeting_link, meeting_type, meeting_password, grade_id, group_id, scheduled_at, duration_minutes, is_active, id]);
-        
+
         const meeting = await queryOne(`
             SELECT 
                 m.*,
@@ -201,7 +201,7 @@ router.put('/:id', async (req: Request, res: Response) => {
             LEFT JOIN \`groups\` gr ON m.group_id = gr.id
             WHERE m.id = ?
         `, [id]);
-        
+
         res.json(meeting);
     } catch (error) {
         console.error('Error updating meeting:', error);

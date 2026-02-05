@@ -25,22 +25,26 @@ const upload = multer({
     storage: storage,
     limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
     fileFilter: (req, file, cb) => {
-        // Check extension
-        const allowedExtensions = /\.(jpeg|jpg|png|gif|webp|bmp|svg)$/i;
-        const extname = allowedExtensions.test(file.originalname.toLowerCase());
-        
-        // Check mimetype - be more permissive
-        const allowedMimetypes = [
-            'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 
-            'image/webp', 'image/bmp', 'image/svg+xml',
-            'application/octet-stream' // Some browsers send this for images
-        ];
-        const mimetypeOk = allowedMimetypes.includes(file.mimetype) || file.mimetype.startsWith('image/');
-        
-        if (extname || mimetypeOk) {
+        // Check file extension
+        const allowedExtensions = /jpeg|jpg|png|gif|webp|bmp|svg|ico|tiff|tif|heic|heif|avif/i;
+        const extname = allowedExtensions.test(path.extname(file.originalname).toLowerCase());
+
+        // Check mimetype - should start with 'image/'
+        const isImage = file.mimetype.startsWith('image/');
+
+        console.log('📷 Upload attempt:', {
+            originalname: file.originalname,
+            mimetype: file.mimetype,
+            extname: path.extname(file.originalname),
+            extValid: extname,
+            mimeValid: isImage
+        });
+
+        // Accept if mimetype is image/* (more permissive)
+        if (isImage) {
             cb(null, true);
         } else {
-            console.log('❌ Rejected file:', file.originalname, 'mimetype:', file.mimetype);
+            console.error('❌ File rejected:', file.originalname, 'mimetype:', file.mimetype);
             cb(new Error('Only image files are allowed'));
         }
     }
@@ -872,12 +876,12 @@ router.post('/:examId/start/:studentId', async (req: Request, res: Response) => 
 router.post('/:examId/submit/:studentId', async (req: Request, res: Response) => {
     try {
         const { examId, studentId } = req.params;
-        const { answers, score, essayAnswers, answerImages, hasEssayQuestions } = req.body;  // ✅ دعم الإجابات المقالية وصور الإجابات
+        const { answers, score: frontendScore, essayAnswers, answerImages, hasEssayQuestions } = req.body;  // ✅ دعم الإجابات المقالية وصور الإجابات
 
         console.log('🔍 Submit exam attempt - Start');
         console.log('📝 Exam ID:', examId);
         console.log('👤 Student ID:', studentId);
-        console.log('📊 Score:', score);
+        console.log('📊 Frontend Score:', frontendScore);
         console.log('📝 Has Essay Questions:', hasEssayQuestions);
         console.log('✍️ Essay Answers:', essayAnswers);
         console.log('🖼️ Answer Images:', answerImages);
@@ -919,51 +923,62 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
 
         console.log('✅ Exam found:', exam);
 
-        // ✅ جلب أسئلة الامتحان لحساب الدرجة بشكل صحيح
-        const examQuestions = await query<any>(
+        // ✅ Fetch all questions and calculate score on backend
+        const questionRows = await query<any>(
             'SELECT id, question_type, correct_answer, points FROM exam_questions WHERE exam_id = ?',
             [examId]
         );
-        console.log('📋 Found questions:', examQuestions.length);
 
-        // ✅ حساب الدرجة في الـ backend بناءً على الإجابات
+        // Calculate score on backend to ensure accuracy
         let calculatedScore = 0;
-        let hasEssayQuestionsDetected = false;
-        
-        for (const question of examQuestions) {
-            if (question.question_type === 'essay') {
-                hasEssayQuestionsDetected = true;
-                console.log(`📝 Q ${question.id}: مقالي - سيصحح يدوياً`);
-            } else {
-                // سؤال اختياري
-                const userAnswerIndex = answers?.[question.id];
-                if (userAnswerIndex !== undefined && userAnswerIndex !== null) {
-                    // تحويل الـ index إلى حرف (0 -> 'a', 1 -> 'b', etc.)
-                    const userAnswerLetter = String.fromCharCode(97 + Number(userAnswerIndex));
-                    const isCorrect = userAnswerLetter === question.correct_answer;
-                    const questionPoints = Number(question.points) || 1;
-                    
-                    console.log(`📝 Q ${question.id}: User=${userAnswerIndex}(${userAnswerLetter}), Correct=${question.correct_answer}, Match=${isCorrect}, Points=${questionPoints}`);
-                    
-                    if (isCorrect) {
-                        calculatedScore += questionPoints;
+        let mcqTotal = 0;
+
+        for (const q of questionRows) {
+            const questionPoints = Number(q.points) || 1;
+
+            if (q.question_type === 'multiple_choice') {
+                mcqTotal += questionPoints;
+                const studentAnswerIndex = answers?.[q.id];
+
+                if (studentAnswerIndex !== undefined && studentAnswerIndex !== null) {
+                    // Convert student answer to letter
+                    const studentLetter = String.fromCharCode(97 + Number(studentAnswerIndex)); // 0->a, 1->b
+
+                    // Convert correct_answer to letter for comparison
+                    let correctLetter: string;
+                    const correctAnswer = q.correct_answer;
+
+                    if (typeof correctAnswer === 'number') {
+                        correctLetter = String.fromCharCode(97 + correctAnswer);
+                    } else if (typeof correctAnswer === 'string') {
+                        if (/^[0-3]$/.test(correctAnswer)) {
+                            correctLetter = String.fromCharCode(97 + parseInt(correctAnswer));
+                        } else {
+                            correctLetter = correctAnswer.toLowerCase();
+                        }
+                    } else {
+                        correctLetter = 'a';
                     }
-                } else {
-                    console.log(`📝 Q ${question.id}: لم يُجب عليه`);
+
+                    console.log(`📊 Backend Score Check - Q: ${q.id}, Student: ${studentLetter}, Correct: ${correctLetter}`);
+
+                    if (studentLetter === correctLetter) {
+                        calculatedScore += questionPoints;
+                        console.log(`✅ Correct! +${questionPoints} points`);
+                    }
                 }
             }
         }
-        
-        console.log('📊 Calculated score (backend):', calculatedScore);
-        console.log('📊 Score from frontend:', score);
-        
-        // استخدم الدرجة المحسوبة في الـ backend
-        const finalScore = calculatedScore;
+
+        console.log(`📊 Backend calculated score: ${calculatedScore}/${mcqTotal}`);
+
+        // Use backend calculated score instead of frontend score
+        const score = calculatedScore;
 
         // Derive total marks if exam.total_marks missing or zero
         let totalMarks: number = Number(exam.total_marks) || 0;
         if (!totalMarks) {
-            totalMarks = examQuestions.reduce((sum: number, q: any) => sum + (Number(q.points) || 1), 0);
+            totalMarks = questionRows.reduce((sum: number, q: any) => sum + (Number(q.points) || Number(q.marks) || 1), 0);
         }
 
         console.log('📊 Total marks:', totalMarks);
@@ -1021,8 +1036,8 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
 
         if (!userRecord || !userRecord.phone) {
             console.error('❌ User not found or has no phone');
-            return res.status(400).json({ 
-                error: 'لا يمكن العثور على بيانات المستخدم. يرجى التواصل مع الإدارة.' 
+            return res.status(400).json({
+                error: 'لا يمكن العثور على بيانات المستخدم. يرجى التواصل مع الإدارة.'
             });
         }
 
@@ -1032,12 +1047,12 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
             [userRecord.phone]
         );
 
-        let actualStudentId = studentRecords[0]?.id;
-        
+        const actualStudentId = studentRecords[0]?.id;
+
         // If student doesn't exist in students table, skip exam_student_answers (only save to exam_attempts and exam_results)
         if (!actualStudentId) {
             console.warn(`⚠️ Student not found in students table for phone ${userRecord.phone}. Skipping exam_student_answers.`);
-            
+
             // Still save to exam_results (uses user ID)
             await execute(
                 `INSERT INTO exam_results (exam_id, student_id, marks_obtained, total_marks, submitted_at)
@@ -1093,7 +1108,27 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
                 const rawAnswer = allAnswers.multipleChoice?.[question.id];
                 if (rawAnswer !== undefined && rawAnswer !== null) {
                     studentAnswer = String.fromCharCode(97 + rawAnswer); // Convert 0->a, 1->b, etc.
-                    isCorrect = (studentAnswer === question.correct_answer) ? 1 : 0;
+
+                    // ✅ Handle correct_answer comparison - can be letter ('a') or number (0)
+                    const correctAnswer = question.correct_answer;
+                    let correctLetter: string;
+
+                    if (typeof correctAnswer === 'number') {
+                        correctLetter = String.fromCharCode(97 + correctAnswer); // 0->a, 1->b
+                    } else if (typeof correctAnswer === 'string') {
+                        // If it's a single digit string like '0', '1', convert to letter
+                        if (/^[0-3]$/.test(correctAnswer)) {
+                            correctLetter = String.fromCharCode(97 + parseInt(correctAnswer));
+                        } else {
+                            correctLetter = correctAnswer.toLowerCase();
+                        }
+                    } else {
+                        correctLetter = 'a'; // Default
+                    }
+
+                    console.log(`📝 Q ${question.id}: Student=${studentAnswer}, Correct=${correctLetter} (raw: ${correctAnswer})`);
+
+                    isCorrect = (studentAnswer === correctLetter) ? 1 : 0;
                     pointsEarned = isCorrect ? (question.points || 0) : 0;
                 }
             } else if (question.type === 'essay') {

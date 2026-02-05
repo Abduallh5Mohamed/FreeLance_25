@@ -28,7 +28,7 @@ const StudentDashboard = () => {
   const [groupInfo, setGroupInfo] = useState(null);
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
-  
+
   // Filter states
   const [selectedExam, setSelectedExam] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -203,12 +203,12 @@ const StudentDashboard = () => {
   const filteredExamResults = examResults.filter((result) => {
     // Filter by selected exam
     const examFilter = selectedExam === "all" || result.exam_id?.toString() === selectedExam;
-    
+
     // Filter by search query (search in exam title and course name)
-    const searchFilter = !searchQuery || 
+    const searchFilter = !searchQuery ||
       result.exams?.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       result.exams?.courses?.name?.toLowerCase().includes(searchQuery.toLowerCase());
-    
+
     return examFilter && searchFilter;
   });
 
@@ -263,11 +263,11 @@ const StudentDashboard = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-x-hidden" dir="rtl">
       <FloatingParticles />
       <StudentHeader />
 
-      <div className="container mx-auto px-3 md:px-4 lg:px-6 py-4 md:py-6 lg:py-8 relative z-10">
+      <div className="w-full px-3 xs:px-4 sm:px-6 md:px-8 lg:px-12 xl:px-16 py-3 xs:py-4 sm:py-5 md:py-6 lg:py-8 relative z-10 max-w-[100vw]">
         {/* Student Profile Section */}
         <AnimatedSection>
           <GlassmorphicCard className="mb-4 md:mb-6 lg:mb-8">
@@ -321,9 +321,9 @@ const StudentDashboard = () => {
           </GlassmorphicCard>
         </AnimatedSection>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-4 lg:gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-3 xs:gap-3 sm:gap-4 md:gap-5 lg:gap-6">
           {/* Left Sidebar */}
-          <div className="md:col-span-1 lg:col-span-1 space-y-3 md:space-y-4 lg:space-y-6" data-section="quick-links">
+          <div className="col-span-1 md:col-span-1 lg:col-span-1 space-y-3 xs:space-y-3 sm:space-y-4 md:space-y-5 lg:space-y-6 order-2 md:order-1" data-section="quick-links">
             {/* Quick Access Dashboard */}
             <AnimatedSection>
               <GlassmorphicCard>
@@ -342,7 +342,7 @@ const StudentDashboard = () => {
                   <div className="space-y-2 md:space-y-3">
                     {/* Exams Quick Link */}
                     <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                      <Card 
+                      <Card
                         className="p-3 md:p-4 bg-gradient-to-br from-blue-500/10 to-cyan-500/10 border-blue-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
                         onClick={() => navigate('/student-exams')}
                       >
@@ -360,7 +360,7 @@ const StudentDashboard = () => {
 
                     {/* Lectures Quick Link */}
                     <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                      <Card 
+                      <Card
                         className="p-3 md:p-4 bg-gradient-to-br from-purple-500/10 to-pink-500/10 border-purple-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
                         onClick={() => navigate('/student-lectures')}
                       >
@@ -378,7 +378,7 @@ const StudentDashboard = () => {
 
                     {/* Results Quick Link */}
                     <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                      <Card 
+                      <Card
                         className="p-3 md:p-4 bg-gradient-to-br from-green-500/10 to-emerald-500/10 border-green-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
                         onClick={() => navigate('/student-exam-results')}
                       >
@@ -396,7 +396,7 @@ const StudentDashboard = () => {
 
                     {/* Materials Quick Link */}
                     <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                      <Card 
+                      <Card
                         className="p-3 md:p-4 bg-gradient-to-br from-orange-500/10 to-amber-500/10 border-orange-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
                         onClick={() => navigate('/student-content')}
                       >
@@ -414,7 +414,7 @@ const StudentDashboard = () => {
 
                     {/* Online Meetings Quick Link */}
                     <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                      <Card 
+                      <Card
                         className="p-3 md:p-4 bg-gradient-to-br from-red-500/10 to-rose-500/10 border-red-500/30 hover:shadow-lg transition-all duration-300 cursor-pointer"
                         onClick={() => navigate('/student-meetings')}
                       >
@@ -495,26 +495,10 @@ const StudentDashboard = () => {
                 </GlassmorphicCard>
               </AnimatedSection>
             )}
-
-            {/* Quick Actions */}
-            <Card className="shadow-soft">
-              <CardHeader className="pb-3 md:pb-4">
-                <CardTitle className="flex items-center gap-2 text-base md:text-lg">
-                  <MessageSquare className="w-4 h-4 md:w-5 md:h-5" />
-                  <span className="text-sm md:text-base">التواصل</span>
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <Button onClick={handleSendMessage} className="w-full text-xs md:text-sm" variant="outline">
-                  <MessageSquare className="w-3.5 h-3.5 md:w-4 md:h-4 ml-2" />
-                  مراسلة المدرس
-                </Button>
-              </CardContent>
-            </Card>
           </div>
 
           {/* Main Content */}
-          <div className="md:col-span-2 lg:col-span-3 space-y-3 md:space-y-4 lg:space-y-6">
+          <div className="col-span-1 md:col-span-2 lg:col-span-3 space-y-3 xs:space-y-3 sm:space-y-4 md:space-y-5 lg:space-y-6 order-1 md:order-2">
             {/* Available Exams */}
             <Card className="shadow-soft">
               <CardHeader className="pb-3 md:pb-4">
@@ -562,119 +546,6 @@ const StudentDashboard = () => {
                     <p className="text-center text-muted-foreground py-6 md:py-8 text-xs md:text-sm">
                       لا توجد امتحانات متاحة حالياً
                     </p>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Exam Results and Grades */}
-            <Card className="shadow-soft">
-              <CardHeader className="pb-3 md:pb-4">
-                <CardTitle className="flex items-center gap-2 text-base md:text-lg">
-                  <Award className="w-4 h-4 md:w-5 md:h-5" />
-                  <span className="text-sm md:text-base">نتائج الامتحانات</span>
-                </CardTitle>
-                <p className="text-xs text-muted-foreground mt-1">
-                  عرض ومتابعة درجات الطالب
-                </p>
-              </CardHeader>
-              <CardContent>
-                {/* Filters Section */}
-                <div className="mb-4 space-y-3">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {/* Search by name */}
-                    <div className="relative">
-                      <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
-                      <Input
-                        type="text"
-                        placeholder="ابحث بالاسم أو الامتحان..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="pr-10"
-                      />
-                    </div>
-                    
-                    {/* Filter by exam */}
-                    <Select value={selectedExam} onValueChange={setSelectedExam}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="اختر امتحان محدد" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">كل الامتحانات</SelectItem>
-                        {exams.map((exam) => (
-                          <SelectItem key={exam.id} value={exam.id.toString()}>
-                            {exam.title}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  
-                  {/* Results count */}
-                  <div className="text-xs text-muted-foreground text-center">
-                    عرض {filteredExamResults.length} من {examResults.length} نتيجة
-                  </div>
-                </div>
-
-                <div className="space-y-2 md:space-y-3">
-                  {filteredExamResults.length > 0 ? (
-                    filteredExamResults.map((result) => {
-                      const percentage = (result.marks_obtained / result.exams?.total_marks) * 100;
-                      return (
-                        <Card key={result.id} className="p-3 md:p-4">
-                          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                            <div className="flex-1 min-w-0">
-                              <h4 className="font-medium text-sm md:text-base truncate">{result.exams?.title}</h4>
-                              <p className="text-xs md:text-sm text-muted-foreground truncate">
-                                {result.exams?.courses?.name}
-                              </p>
-                              <p className="text-[10px] md:text-xs text-muted-foreground mt-1">
-                                {new Date(result.submitted_at).toLocaleDateString('ar-SA')}
-                              </p>
-                            </div>
-                            <div className="text-center w-full sm:w-auto">
-                              <div className="text-base md:text-lg font-bold">{result.marks_obtained}/{result.exams?.total_marks}
-                              </div>
-                              <div className={`text-sm font-medium ${getGradeColor(percentage)}`}>
-                                {getGradeText(percentage)} ({percentage.toFixed(0)}%)
-                              </div>
-                              {result.grade && (
-                                <Badge variant="secondary" className="mt-1">
-                                  {result.grade}
-                                </Badge>
-                              )}
-                            </div>
-                          </div>
-                          {result.remarks && (
-                            <p className="text-xs text-muted-foreground mt-2 pt-2 border-t">
-                              <span className="font-medium">ملاحظات:</span> {result.remarks}
-                            </p>
-                          )}
-                        </Card>
-                      );
-                    })
-                  ) : (
-                    <div className="text-center text-muted-foreground py-8">
-                      {examResults.length === 0 ? (
-                        <p>لا توجد نتائج امتحانات بعد</p>
-                      ) : (
-                        <div className="space-y-2">
-                          <Award className="w-12 h-12 mx-auto text-muted-foreground/50" />
-                          <p>لا توجد نتائج</p>
-                          <Button 
-                            variant="outline" 
-                            size="sm"
-                            onClick={() => {
-                              setSelectedExam("all");
-                              setSearchQuery("");
-                            }}
-                            className="mt-2"
-                          >
-                            إعادة تعيين الفلاتر
-                          </Button>
-                        </div>
-                      )}
-                    </div>
                   )}
                 </div>
               </CardContent>

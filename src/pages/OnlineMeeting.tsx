@@ -14,7 +14,7 @@ import axios from "axios";
 const getApiUrl = () => {
   const envApiUrl = import.meta.env.VITE_API_URL;
   if (envApiUrl) return envApiUrl;
-  
+
   // In production, use relative path (nginx proxies /api to backend)
   const currentHost = window.location.hostname;
   if (currentHost !== 'localhost' && currentHost !== '127.0.0.1') {
@@ -60,6 +60,47 @@ const OnlineMeeting = () => {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
+
+  // Copy to clipboard with fallback for non-HTTPS
+  const copyToClipboard = async (text: string) => {
+    try {
+      // Try modern clipboard API first
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        toast({ title: "تم النسخ", description: "تم نسخ الرابط" });
+      } else {
+        // Fallback for HTTP (non-secure contexts)
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        textArea.style.top = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        try {
+          document.execCommand('copy');
+          toast({ title: "تم النسخ", description: "تم نسخ الرابط" });
+        } catch (err) {
+          console.error('Fallback copy failed:', err);
+          toast({
+            title: "فشل النسخ",
+            description: "الرجاء نسخ الرابط يدوياً",
+            variant: "destructive"
+          });
+        } finally {
+          textArea.remove();
+        }
+      }
+    } catch (err) {
+      console.error('Copy failed:', err);
+      toast({
+        title: "فشل النسخ",
+        description: "الرجاء نسخ الرابط يدوياً",
+        variant: "destructive"
+      });
+    }
+  };
 
   // Form state
   const [title, setTitle] = useState("");
@@ -252,7 +293,7 @@ const OnlineMeeting = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
       <Header />
-      
+
       <div className="container mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
@@ -432,15 +473,14 @@ const OnlineMeeting = () => {
                       <div className="flex-1">
                         <div className="flex items-center gap-2 mb-2">
                           <h3 className="font-semibold text-lg">{meeting.title}</h3>
-                          <span className={`text-xs px-2 py-1 rounded-full ${
-                            meeting.meeting_type === 'zoom' ? 'bg-blue-100 text-blue-700' :
+                          <span className={`text-xs px-2 py-1 rounded-full ${meeting.meeting_type === 'zoom' ? 'bg-blue-100 text-blue-700' :
                             meeting.meeting_type === 'google_meet' ? 'bg-green-100 text-green-700' :
-                            'bg-gray-100 text-gray-700'
-                          }`}>
+                              'bg-gray-100 text-gray-700'
+                            }`}>
                             {getMeetingTypeLabel(meeting.meeting_type)}
                           </span>
                         </div>
-                        
+
                         {meeting.description && (
                           <p className="text-sm text-muted-foreground mb-2">{meeting.description}</p>
                         )}
@@ -480,10 +520,7 @@ const OnlineMeeting = () => {
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => {
-                            navigator.clipboard.writeText(meeting.meeting_link);
-                            toast({ title: "تم النسخ", description: "تم نسخ الرابط" });
-                          }}
+                          onClick={() => copyToClipboard(meeting.meeting_link)}
                         >
                           نسخ الرابط
                         </Button>

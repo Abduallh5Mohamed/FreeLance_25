@@ -565,7 +565,7 @@ export default function Messages() {
             // Send new message
             // Staff sends as teacher (admin), so use teacher's ID for display
             const displaySenderId = user.role === 'staff' ? '69fe1174-c98d-11f0-9d07-94e8d4b653c4' : user.id;
-            
+
             const tempMessage: Message = {
                 id: Date.now(), // Temporary ID
                 sender_id: displaySenderId,

@@ -5,10 +5,32 @@ export default {
   content: ["./pages/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}", "./app/**/*.{ts,tsx}", "./src/**/*.{ts,tsx}"],
   prefix: "",
   theme: {
+    // Professional breakpoints for all devices
+    screens: {
+      'xs': '375px',     // Small phones
+      'sm': '640px',     // Large phones / Small tablets
+      'md': '768px',     // Tablets
+      'lg': '1024px',    // Small laptops
+      'xl': '1280px',    // Desktops
+      '2xl': '1536px',   // Large desktops
+    },
     container: {
       center: true,
-      padding: "2rem",
+      padding: {
+        DEFAULT: "1rem",
+        xs: "0.75rem",
+        sm: "1rem",
+        md: "1.5rem",
+        lg: "2rem",
+        xl: "2rem",
+        "2xl": "2rem",
+      },
       screens: {
+        xs: "100%",
+        sm: "640px",
+        md: "768px",
+        lg: "1024px",
+        xl: "1280px",
         "2xl": "1400px",
       },
     },
