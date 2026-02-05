@@ -103,7 +103,7 @@ const StudentHeader = () => {
       <div className="container mx-auto px-3 sm:px-4 py-2 sm:py-3">
         <div className="flex items-center justify-between gap-2">
           {/* Logo/Brand */}
-          <div 
+          <div
             className="flex items-center gap-2 flex-shrink-0 cursor-pointer"
             onClick={() => handleNavigate('/student')}
           >
@@ -123,9 +123,8 @@ const StudentHeader = () => {
                   key={item.name}
                   variant="ghost"
                   onClick={() => handleNavigate(item.href)}
-                  className={`flex items-center gap-1 px-2 xl:px-3 py-1.5 xl:py-2 text-white rounded-lg transition-all text-[10px] xl:text-xs whitespace-nowrap ${
-                    active ? 'bg-white/20' : 'hover:bg-white/10'
-                  }`}
+                  className={`flex items-center gap-1 px-2 xl:px-3 py-1.5 xl:py-2 text-white rounded-lg transition-all text-[10px] xl:text-xs whitespace-nowrap ${active ? 'bg-white/20' : 'hover:bg-white/10'
+                    }`}
                 >
                   <Icon className="w-3.5 h-3.5 xl:w-4 xl:h-4 flex-shrink-0" />
                   <span className="hidden xl:inline">{item.name}</span>
@@ -177,11 +176,10 @@ const StudentHeader = () => {
                   <button
                     key={item.name}
                     onClick={() => handleNavigate(item.href)}
-                    className={`flex flex-col items-center gap-1.5 sm:gap-2 p-3 sm:p-4 rounded-xl transition-all ${
-                      active 
-                        ? 'bg-white/20 text-white' 
+                    className={`flex flex-col items-center gap-1.5 sm:gap-2 p-3 sm:p-4 rounded-xl transition-all ${active
+                        ? 'bg-white/20 text-white'
                         : 'bg-white/5 text-white/90 hover:bg-white/10 active:bg-white/15'
-                    }`}
+                      }`}
                   >
                     <Icon className="w-5 h-5 sm:w-6 sm:h-6" />
                     <span className="text-[11px] sm:text-xs text-center leading-tight font-medium">{item.name}</span>
@@ -189,7 +187,7 @@ const StudentHeader = () => {
                 );
               })}
             </div>
-            
+
             {/* Logout Button */}
             <button
               onClick={handleLogout}

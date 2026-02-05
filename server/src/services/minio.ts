@@ -97,6 +97,7 @@ export async function initializeBuckets(): Promise<void> {
 /**
  * Generate a presigned URL for uploading a video chunk
  * This allows direct browser-to-MinIO upload without Node.js handling the file
+ * Note: For production, use public IP/domain instead of localhost
  */
 export async function getPresignedUploadUrl(
     videoId: string,
@@ -107,11 +108,18 @@ export async function getPresignedUploadUrl(
     const objectKey = `originals/${videoId}${ext}`;
 
     // Generate presigned PUT URL (valid for 1 hour)
-    const uploadUrl = await minioClient.presignedPutObject(
+    let uploadUrl = await minioClient.presignedPutObject(
         BUCKETS.ORIGINALS,
         objectKey,
         3600 // 1 hour expiry
     );
+
+    // Replace localhost with public endpoint for browser access
+    if (publicEndpoint !== 'localhost' && uploadUrl.includes('localhost')) {
+        uploadUrl = uploadUrl.replace('localhost', publicEndpoint);
+    }
+
+    console.log('[MinIO] Upload URL generated:', uploadUrl);
 
     return { uploadUrl, objectKey };
 }
@@ -167,29 +175,25 @@ export async function completeMultipartUpload(
 
 /**
  * Generate a URL for streaming HLS content or original video
- * Since bucket is public, we use direct URLs for proper relative path resolution
+ * Use nginx reverse proxy path instead of direct MinIO access
  */
 export async function getSignedStreamUrl(
     videoId: string,
     fileName: string = 'playlist.m3u8',
     bucket: string = BUCKETS.HLS
 ): Promise<string> {
-    // Use direct URL for public bucket - this allows relative paths in m3u8 to work correctly
-    // Use the dynamically detected endpoint
-    const port = process.env.MINIO_PORT || '9000';
-    const useSSL = process.env.MINIO_USE_SSL === 'true';
-    const protocol = useSSL ? 'https' : 'http';
-
-    // The endpoint here must be the IP address we detected
+    // Use nginx reverse proxy path (/storage/) instead of direct MinIO access
+    // This ensures HTTPS compatibility and proper CORS handling
+    
     if (bucket === BUCKETS.ORIGINALS) {
         // For original files, the fileName is the full objectKey (originals/videoId.ext)
-        // We need to keep it as-is since that's how it was stored
-        const directUrl = `${protocol}://${publicEndpoint}:${port}/${bucket}/${fileName}`;
+        const cleanFileName = fileName.startsWith('originals/') ? fileName : `originals/${fileName}`;
+        const directUrl = `/storage/${bucket}/${cleanFileName}`;
         console.log('[MinIO] Original video URL:', directUrl);
         return directUrl;
     } else {
         // For HLS, use videoId/quality/playlist.m3u8 structure
-        const directUrl = `${protocol}://${publicEndpoint}:${port}/${bucket}/${videoId}/360p/playlist.m3u8`;
+        const directUrl = `/storage/${bucket}/${videoId}/360p/playlist.m3u8`;
         return directUrl;
     }
 }
