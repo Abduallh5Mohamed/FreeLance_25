@@ -7,6 +7,7 @@ import { Card } from '@/components/ui/card';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
+import StudentHeader from '@/components/StudentHeader';
 import {
   Send,
   Image as ImageIcon,
@@ -228,12 +229,13 @@ export default function StudentChat() {
     };
   };
 
-  // Save AI messages to localStorage
+  // Save AI messages to localStorage (per user for privacy)
   useEffect(() => {
-    if (selectedUser?.id === 'ai-assistant' && messages.length > 0) {
-      localStorage.setItem('ai-messages', JSON.stringify(messages));
+    if (selectedUser?.id === 'ai-assistant' && messages.length > 0 && user?.id) {
+      // Store AI messages separately for each user for privacy
+      localStorage.setItem(`ai-messages-${user.id}`, JSON.stringify(messages));
     }
-  }, [messages, selectedUser]);
+  }, [messages, selectedUser, user]);
 
   // Load conversations
   const loadConversations = async () => {
@@ -282,16 +284,16 @@ export default function StudentChat() {
 
   // Load messages with selected user
   const loadMessages = async (userId: string) => {
-    // AI Assistant messages stored locally
+    // AI Assistant messages stored locally (per user for privacy)
     if (userId === 'ai-assistant') {
-      const storedMessages = localStorage.getItem('ai-messages');
+      const storedMessages = localStorage.getItem(`ai-messages-${user?.id}`);
       if (storedMessages) {
         setMessages(JSON.parse(storedMessages));
       } else {
         const welcomeMessage: Message = {
           id: 1,
           sender_id: 'ai-assistant',
-          receiver_id: user.id,
+          receiver_id: user?.id || 'unknown',
           content: 'السلام عليكم! أنا مساعدك الذكي المتخصص في مادة التاريخ. كيف يمكنني مساعدتك اليوم؟',
           message_type: 'text',
           is_edited: false,
@@ -354,43 +356,91 @@ export default function StudentChat() {
       setMessageText('');
       setIsTyping(true);
 
-      // Call backend AI endpoint
-      const apiUrl = getApiUrl();
-      const authToken = localStorage.getItem('authToken');
+      // Call Groq API directly
+      const groqApiKey = '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';
+      const systemPrompt = `أنت مساعد ذكي تعليمي متخصص حصراً في مساعدة طلاب المرحلة الثانوية المصريين في دراسة التاريخ.
 
-      axios.post(`${apiUrl}/ai-chat/chat`, {
-        message: currentMessage
-      }, {
-        headers: {
-          'Authorization': `Bearer ${authToken}`
+وظيفتك الأساسية:
+- شرح الأحداث التاريخية والشخصيات والفترات بوضوح ودقة
+- مساعدة الطلاب على فهم دروس المنهج المصري للتاريخ
+- تقديم ملخصات وتحليلات ومقارنات للأحداث التاريخية
+- الإجابة على أسئلة من نمط الامتحانات
+- مساعدة الطالب على كتابة الإجابات الطويلة
+
+رد دائماً بالعربية فقط، وكن ودوداً وصبوراً - بدو كمعلم مختص وليس روبوت.`;
+
+      fetch(
+        'https://api.groq.com/openai/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${groqApiKey}`,
+          },
+          body: JSON.stringify({
+            model: 'llama-3.3-70b-versatile',
+            messages: [
+              {
+                role: 'system',
+                content: systemPrompt
+              },
+              {
+                role: 'user',
+                content: currentMessage
+              }
+            ],
+            temperature: 0.7,
+            max_tokens: 1000,
+          }),
         }
-      })
-        .then(response => {
-          const aiMessage: Message = {
-            id: Date.now() + 1,
-            sender_id: 'ai-assistant',
-            receiver_id: user.id,
-            content: response.data.response,
-            message_type: 'text',
-            is_edited: false,
-            is_deleted: false,
-            created_at: new Date().toISOString(),
-            is_delivered: true,
-            is_read: true
-          };
-          setMessages(prev => [...prev, aiMessage]);
-          setIsTyping(false);
-          console.log('✅ AI Response from:', response.data.model || 'AI');
+      )
+        .then(response => response.json())
+        .then(data => {
+          if (data.choices?.[0]?.message?.content) {
+            const aiMessage: Message = {
+              id: Date.now() + 1,
+              sender_id: 'ai-assistant',
+              receiver_id: user.id,
+              content: data.choices[0].message.content,
+              message_type: 'text',
+              is_edited: false,
+              is_deleted: false,
+              created_at: new Date().toISOString(),
+              is_delivered: true,
+              is_read: true
+            };
+            setMessages(prev => [...prev, aiMessage]);
+            setIsTyping(false);
+            console.log('✅ AI Response from: Groq (Llama 3.3)');
+          } else {
+            throw new Error('No valid response from AI');
+          }
         })
         .catch(error => {
-          console.error('❌ AI Error:', error.response?.data || error.message);
+          console.error('❌ AI Error:', error);
+
+          // Get user-friendly error message
+          let errorContent = '⚠️ عذراً، حدث خطأ في الاتصال بالمساعد الذكي.';
+          
+          if (error.response?.status === 429) {
+            // Rate limit/quota error
+            errorContent = error.response.data?.message || 
+              '⚠️ المساعد الذكي مشغول حالياً\n\n' +
+              'عذراً، خدمة المساعد الذكي وصلت للحد الأقصى من الطلبات.\n' +
+              'الرجاء المحاولة مرة أخرى بعد دقيقة أو التواصل مع الأستاذ مباشرة. 📞';
+          } else if (error.response?.data?.message) {
+            errorContent = error.response.data.message;
+          } else {
+            errorContent = '⚠️ عذراً، حدث خطأ في الاتصال بالمساعد الذكي.\n\n' +
+              'الرجاء المحاولة مرة أخرى أو التواصل مع الأستاذ. 📞';
+          }
 
           // Show error message to user
           const errorMessage: Message = {
             id: Date.now() + 1,
             sender_id: 'ai-assistant',
             receiver_id: user.id,
-            content: '⚠️ عذراً، حدث خطأ في الاتصال بالمساعد الذكي.\n\nالرجاء المحاولة مرة أخرى أو التواصل مع الأستاذ.',
+            content: errorContent,
             message_type: 'text',
             is_edited: false,
             is_deleted: false,
@@ -567,15 +617,14 @@ export default function StudentChat() {
   }
 
   return (
-    <div className="flex h-screen bg-gray-50" dir="rtl">
+    <div className="flex flex-col h-screen bg-gradient-to-br from-amber-50/80 via-orange-50/60 to-yellow-50/80 dark:from-slate-900 dark:via-amber-950/30 dark:to-slate-900" dir="rtl">
+      <StudentHeader />
+      <div className="flex flex-1 overflow-hidden">
       {/* Sidebar - Conversations & Users */}
       <div className="w-80 bg-white border-l border-gray-200 flex flex-col">
         <div className="p-4 border-b border-gray-200">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-bold">الرسائل</h2>
-            <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
           </div>
         </div>
 
@@ -853,6 +902,7 @@ export default function StudentChat() {
             </div>
           </div>
         )}
+      </div>
       </div>
     </div>
   );

@@ -824,6 +824,20 @@ export const getStudentExamResults = async (studentId: string) => {
 };
 
 // ====================================
+// Messages API
+// ====================================
+
+// Get recent messages for a user (conversations)
+export const getRecentMessages = async () => {
+    try {
+        return await request(`/messages/conversations`);
+    } catch (error) {
+        console.error('Error fetching recent messages:', error);
+        return [];
+    }
+};
+
+// ====================================
 // Export all functions
 // ====================================
 
@@ -1166,6 +1180,8 @@ export interface SubscriptionRequest {
     grade_name?: string | null;
     group_id?: number | null;
     group_name?: string | null;
+    subscription_plan_id?: string | null;
+    subscription_plan_name?: string | null;
     amount?: number | null;
     notes?: string | null;
     receipt_image_url?: string | null;

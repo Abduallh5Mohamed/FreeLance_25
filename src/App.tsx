@@ -112,6 +112,7 @@ const App = () => (
 
             {/* Student Routes - Protected */}
             <Route path="/student" element={<AuthGuard requiredRole="student"><StudentDashboard /></AuthGuard>} />
+            <Route path="/student-ai-chat" element={<AuthGuard requiredRole="student"><ChatAssistant /></AuthGuard>} />
             <Route path="/student-chat" element={<AuthGuard requiredRole="student"><StudentChat /></AuthGuard>} />
             <Route path="/student-messages" element={<AuthGuard requiredRole="student"><Messages /></AuthGuard>} />
             <Route path="/student-content" element={<AuthGuard requiredRole="student"><StudentContent /></AuthGuard>} />

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Video, ExternalLink, Calendar, Clock, ArrowRight, Users } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import StudentHeader from "@/components/StudentHeader";
 import axios from "axios";
 
 // Helper to get API URL - same pattern as other pages
@@ -125,14 +126,12 @@ const StudentMeetings = () => {
   });
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-amber-50/80 via-orange-50/60 to-yellow-50/80 dark:from-slate-900 dark:via-amber-950/30 dark:to-slate-900" dir="rtl">
+      <StudentHeader />
       <div className="container mx-auto px-4 py-8">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
-            <Button variant="ghost" size="icon" onClick={() => navigate('/student')}>
-              <ArrowRight className="w-5 h-5" />
-            </Button>
             <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
               <Video className="w-6 h-6 text-primary" />
             </div>

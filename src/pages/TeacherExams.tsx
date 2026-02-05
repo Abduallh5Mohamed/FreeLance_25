@@ -625,7 +625,10 @@ export default function TeacherExams() {
                           />
                           {currentQuestion.question_image && (
                             <img
-                              src={`${import.meta.env.VITE_API_URL?.replace('/api', '')}${currentQuestion.question_image}`}
+                              src={currentQuestion.question_image.startsWith('http')
+                                ? currentQuestion.question_image
+                                : `/api${currentQuestion.question_image}`
+                              }
                               alt="Preview"
                               className="h-16 w-16 object-cover rounded border"
                             />

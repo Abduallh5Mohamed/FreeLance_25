@@ -460,16 +460,13 @@ const TakeExam = () => {
         if (examResult.hasEssayQuestions) {
           toast({
             title: "تم تسليم الامتحان ✅",
-            description: "سيتم مراجعة إجاباتك المقالية وإعلان النتيجة النهائية قريباً",
+            description: "يمكنك مراجعة درجتك في صفحة نتائج الامتحانات",
           });
         } else {
-          // لا يوجد أسئلة مقالية - نعرض النتيجة مباشرة
+          // رسالة ثابتة بعد التسليم
           toast({
-            title: passed ? "تهانينا! 🎉" : "للأسف",
-            description: passed
-              ? `لقد نجحت بدرجة ${finalScore}/${totalMarks}`
-              : `لم تحصل على درجة النجاح. حصلت على ${finalScore}/${totalMarks}`,
-            variant: passed ? "default" : "destructive"
+            title: "تم تسليم الامتحان ✅",
+            description: "يمكنك مراجعة درجتك في صفحة نتائج الامتحانات",
           });
         }
       } catch (error) {
@@ -820,54 +817,38 @@ const TakeExam = () => {
           >
             <Card className="shadow-2xl border-2">
               <CardHeader className="text-center pb-4">
-                <div className={`mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4 ${attemptResult.hasEssayQuestions
-                  ? 'bg-blue-100 dark:bg-blue-900/20'
-                  : attemptResult.passed
-                    ? 'bg-green-100 dark:bg-green-900/20'
-                    : 'bg-red-100 dark:bg-red-900/20'
-                  }`}>
-                  {attemptResult.hasEssayQuestions ? (
-                    <AlertCircle className="w-8 h-8 text-blue-600 dark:text-blue-500" />
-                  ) : attemptResult.passed ? (
-                    <CheckCircle2 className="w-8 h-8 text-green-600 dark:text-green-500" />
-                  ) : (
-                    <XCircle className="w-8 h-8 text-red-600 dark:text-red-500" />
-                  )}
+                <div className="mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4 bg-green-100 dark:bg-green-900/20">
+                  <CheckCircle2 className="w-8 h-8 text-green-600 dark:text-green-500" />
                 </div>
                 <CardTitle className="text-2xl">
-                  {attemptResult.hasEssayQuestions ? 'تم تسليم الامتحان' : 'نتيجة الامتحان'}
+                  تم تسليم الامتحان بنجاح
                 </CardTitle>
               </CardHeader>
               <CardContent className="text-center space-y-4">
-                {attemptResult.hasEssayQuestions ? (
-                  <>
-                    <div className="bg-blue-50 dark:bg-blue-900/10 p-4 rounded-lg border border-blue-200 dark:border-blue-800">
-                      <p className="text-lg font-semibold text-blue-700 dark:text-blue-400 mb-2">
-                        قيد المراجعة
-                      </p>
-                      <p className="text-sm text-muted-foreground">
-                        سيتم مراجعة إجاباتك المقالية من قبل المعلم وإعلان النتيجة النهائية قريباً
-                      </p>
-                    </div>
-                    <div className="bg-muted/50 p-4 rounded-lg">
-                      <p className="text-sm font-medium mb-2">الدرجة المبدئية (الأسئلة الموضوعية):</p>
-                      <p className="text-2xl font-bold text-primary">
-                        {attemptResult.autoScore} / {attemptResult.autoScore + attemptResult.manualScore}
-                      </p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        في انتظار تصحيح الأسئلة المقالية ({attemptResult.manualScore} درجة)
-                      </p>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <p className="text-lg font-semibold">الدرجة: {attemptResult.score} / {attemptResult.total}</p>
-                    <p className={attemptResult.passed ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold'}>
-                      {attemptResult.passed ? 'تم النجاح' : `لم تحصل على درجة النجاح (${attemptResult.passingMarks})`}
-                    </p>
-                  </>
-                )}
+                <div className="bg-primary/5 p-4 rounded-lg border border-primary/20">
+                  <p className="text-lg font-semibold text-primary mb-2">
+                    🎉 أحسنت!
+                  </p>
+                  <p className="text-muted-foreground">
+                    تم تسجيل إجاباتك بنجاح وحفظ نتيجتك
+                  </p>
+                </div>
+                <div className="bg-muted/50 p-4 rounded-lg">
+                  <p className="text-sm text-muted-foreground mb-2">
+                    لمعرفة درجتك ومراجعة إجاباتك، توجه إلى:
+                  </p>
+                  <p className="text-lg font-bold text-primary">
+                    📊 نتائج الامتحانات
+                  </p>
+                </div>
                 <Button
+                  onClick={() => navigate('/student-exam-results')}
+                  className="w-full"
+                >
+                  عرض نتائج الامتحانات
+                </Button>
+                <Button
+                  variant="outline"
                   onClick={() => navigate('/student-exams')}
                   className="w-full"
                 >
@@ -1211,7 +1192,7 @@ const TakeExam = () => {
                             <div className="flex items-start gap-2 mb-3">
                               <span className="text-blue-700 font-bold text-sm bg-blue-100 px-3 py-1 rounded">📝 نص السؤال</span>
                             </div>
-                            <div className="font-bold text-xl mb-3 text-gray-900 leading-relaxed">
+                            <div className="font-bold text-xl mb-3 text-gray-900 leading-relaxed whitespace-pre-wrap break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                               {question.question_text || question.question || 'لا يوجد نص للسؤال'}
                             </div>
 
@@ -1219,7 +1200,12 @@ const TakeExam = () => {
                             {question.question_image && (
                               <div className="my-3">
                                 <img
-                                  src={question.question_image}
+                                  src={question.question_image.startsWith('http')
+                                    ? question.question_image
+                                    : question.question_image.startsWith('/api/')
+                                      ? question.question_image
+                                      : `/api${question.question_image}`
+                                  }
                                   alt="صورة السؤال"
                                   className="max-w-full h-auto rounded-lg border"
                                 />
@@ -1309,10 +1295,10 @@ const TakeExam = () => {
                                   return (
                                     <div key={optIdx} className={`p-3 rounded-lg border-2 ${borderColor} ${bgColor}`}>
                                       <div className="flex items-start gap-3">
-                                        <span className={`font-bold text-lg ${isCorrectAnswer ? 'text-green-600' : isUserAnswer ? 'text-red-600' : 'text-gray-400'}`}>
+                                        <span className={`font-bold text-lg flex-shrink-0 ${isCorrectAnswer ? 'text-green-600' : isUserAnswer ? 'text-red-600' : 'text-gray-400'}`}>
                                           {icon}
                                         </span>
-                                        <div className={`flex-1 font-medium text-base ${textColor}`}>
+                                        <div className={`flex-1 font-medium text-base ${textColor} whitespace-pre-wrap break-words`} style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                                           {option}
                                           {isUserAnswer && <span className="mr-2 text-sm font-bold">(اختيار الطالب)</span>}
                                           {isCorrectAnswer && <span className="mr-2 text-sm font-bold">(الإجابة الصحيحة)</span>}
@@ -1476,7 +1462,7 @@ const TakeExam = () => {
                         {exam.questions[currentQuestion].points || exam.questions[currentQuestion].marks || 1} نقطة
                       </Badge>
                     </div>
-                    <CardTitle className="text-xl">
+                    <CardTitle className="text-xl whitespace-pre-wrap break-words overflow-hidden" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                       {exam.questions[currentQuestion].question_text || exam.questions[currentQuestion].question}
                     </CardTitle>
 
@@ -1486,7 +1472,9 @@ const TakeExam = () => {
                         <img
                           src={exam.questions[currentQuestion].question_image.startsWith('http')
                             ? exam.questions[currentQuestion].question_image
-                            : exam.questions[currentQuestion].question_image
+                            : exam.questions[currentQuestion].question_image.startsWith('/api/')
+                              ? exam.questions[currentQuestion].question_image
+                              : `/api${exam.questions[currentQuestion].question_image}`
                           }
                           alt="صورة السؤال"
                           className="max-w-full max-h-96 object-contain rounded-lg border shadow-sm"
@@ -1651,8 +1639,8 @@ const TakeExam = () => {
                               : 'border-border'
                               }`}
                           >
-                            <RadioGroupItem value={idx.toString()} id={`option-${idx}`} />
-                            <span className="flex-1 text-base">{option}</span>
+                            <RadioGroupItem value={idx.toString()} id={`option-${idx}`} className="flex-shrink-0" />
+                            <span className="flex-1 text-base whitespace-pre-wrap break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{option}</span>
                           </Label>
                         </motion.div>
                       ));
@@ -1663,22 +1651,23 @@ const TakeExam = () => {
             </Card>
 
             {/* Navigation */}
-            <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
               <Button
                 onClick={() => setCurrentQuestion(Math.max(0, currentQuestion - 1))}
                 disabled={currentQuestion === 0}
                 variant="outline"
                 size="lg"
+                className="w-full sm:w-auto order-2 sm:order-1"
               >
                 السؤال السابق
               </Button>
 
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2 justify-center max-w-full overflow-x-auto px-2 order-1 sm:order-2">
                 {exam.questions.map((_, idx) => (
                   <button
                     key={idx}
                     onClick={() => setCurrentQuestion(idx)}
-                    className={`w-10 h-10 rounded-lg font-medium transition-all ${idx === currentQuestion
+                    className={`w-8 h-8 sm:w-10 sm:h-10 rounded-lg font-medium text-sm sm:text-base transition-all flex-shrink-0 ${idx === currentQuestion
                       ? 'bg-primary text-white scale-110'
                       : answers[exam.questions[idx].id] !== undefined
                         ? 'bg-green-500 text-white'
@@ -1694,7 +1683,7 @@ const TakeExam = () => {
                 <Button
                   onClick={() => setCurrentQuestion(Math.min(exam.questions.length - 1, currentQuestion + 1))}
                   size="lg"
-                  className="bg-gradient-to-r from-primary to-accent"
+                  className="bg-gradient-to-r from-primary to-accent w-full sm:w-auto order-3"
                 >
                   السؤال التالي
                 </Button>
@@ -1702,7 +1691,7 @@ const TakeExam = () => {
                 <Button
                   onClick={handleSubmit}
                   size="lg"
-                  className="bg-gradient-to-r from-green-600 to-green-500"
+                  className="bg-gradient-to-r from-green-600 to-green-500 w-full sm:w-auto order-3"
                   disabled={answeredCount < exam.questions.length}
                 >
                   تسليم الامتحان

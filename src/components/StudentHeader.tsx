@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
+import { NotificationBell } from "@/components/NotificationBell";
 import {
   Menu,
   X,
@@ -15,7 +16,11 @@ import {
   CreditCard,
   Upload,
   Image as ImageIcon,
-  ClipboardCheck
+  ClipboardCheck,
+  MessageSquare,
+  Bot,
+  ChevronDown,
+  LayoutDashboard
 } from "lucide-react";
 import {
   Dialog,
@@ -24,6 +29,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Select,
   SelectContent,
@@ -35,7 +46,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
-import { getGrades, getGroups, createSubscriptionRequest } from "@/lib/api-http";
+import { getGrades, getGroups, createSubscriptionRequest, getSubscriptions, type Subscription } from "@/lib/api-http";
 import alQaedLogo from "@/assets/Qaad_Logo.png";
 
 const StudentHeader = () => {
@@ -43,6 +54,8 @@ const StudentHeader = () => {
   const [showPaymentDialog, setShowPaymentDialog] = useState(false);
   const [grades, setGrades] = useState([]);
   const [groups, setGroups] = useState([]);
+  const [subscriptionPlans, setSubscriptionPlans] = useState<Subscription[]>([]);
+  const [selectedPlan, setSelectedPlan] = useState("");
   const [selectedGrade, setSelectedGrade] = useState("");
   const [selectedGroup, setSelectedGroup] = useState("");
   const [studentName, setStudentName] = useState("");
@@ -63,12 +76,14 @@ const StudentHeader = () => {
 
   const loadGradesAndGroups = async () => {
     try {
-      const [gradesData, groupsData] = await Promise.all([
+      const [gradesData, groupsData, plansData] = await Promise.all([
         getGrades(),
-        getGroups()
+        getGroups(),
+        getSubscriptions()
       ]);
       setGrades(gradesData || []);
       setGroups(groupsData || []);
+      setSubscriptionPlans(plansData || []);
     } catch (error) {
       console.error('Error loading data:', error);
     }
@@ -137,15 +152,29 @@ const StudentHeader = () => {
     }
   };
 
-  const studentNavigation = [
+  // Main navigation items
+  const mainNavigation = [
     { name: "البروفايل", href: "/student", icon: User },
+    { name: "المحادثات", href: "/student-chat", icon: MessageCircle },
+    { name: "المساعد الذكي", href: "/student-ai-chat", icon: Bot },
+  ];
+
+  // Learning menu items
+  const learningMenu = [
     { name: "المحاضرات", href: "/student-lectures", icon: Video },
-    { name: "الحصص المدفوعة", href: "/student-premium-lectures", icon: CreditCard },
     { name: "المحتوى التعليمي", href: "/student-content", icon: File },
+    { name: "الحصص المدفوعة", href: "/student-premium-lectures", icon: CreditCard },
+  ];
+
+  // Exams menu items
+  const examsMenu = [
     { name: "الامتحانات", href: "/student-exams", icon: FileText },
     { name: "نتائج الامتحانات", href: "/student-exam-results", icon: ClipboardCheck },
+  ];
+
+  // Meetings menu
+  const meetingsMenu = [
     { name: "الاجتماعات المباشرة", href: "/student-meetings", icon: Video },
-    { name: "المحادثات", href: "/student-chat", icon: MessageCircle },
   ];
 
   const handleLogout = async () => {
@@ -196,45 +225,110 @@ const StudentHeader = () => {
   };
 
   return (
-    <header className="bg-primary shadow-2xl border-b-2 border-white/10 sticky top-0 z-50 backdrop-blur-sm" dir="rtl">
-      <div className="container mx-auto px-4 py-3">
-        <div className="flex items-center justify-between gap-4">
-          {/* Brand Text */}
-          <div className="flex items-center gap-3 min-w-fit">
-            <div>
-              <h1 className="text-base sm:text-lg md:text-xl font-bold text-white drop-shadow-lg">منصة القائد</h1>
-              <p className="text-blue-100 text-[10px] sm:text-xs font-medium hidden sm:block">الأستاذ محمد رمضان - التاريخ</p>
-            </div>
+    <header className="bg-gradient-to-r from-orange-500 to-amber-600 shadow-lg sticky top-0 z-50 w-full overflow-x-hidden" dir="rtl">
+      <div className="w-full px-1 sm:px-2">
+        <div className="flex items-center justify-between py-1.5 gap-0.5">
+          {/* Brand */}
+          <div className="flex-shrink-0 min-w-0">
+            <h1 className="text-xs sm:text-sm font-bold text-white truncate">منصة القائد</h1>
+            <p className="text-white/90 text-[8px] hidden sm:block truncate">أ. محمد رمضان</p>
           </div>
 
           {/* Desktop Navigation */}
-          <nav className="hidden md:flex items-center gap-2 flex-1 justify-center overflow-x-auto scrollbar-hide">
-            {studentNavigation.map((item) => {
+          <nav className="hidden lg:flex items-center gap-1.5 flex-1 justify-center">
+            {/* Main Links */}
+            {mainNavigation.map((item) => {
               const Icon = item.icon;
               return (
                 <Button
                   key={item.name}
                   variant="ghost"
+                  size="sm"
                   onClick={() => handleNavigate(item.href, item.name)}
-                  className="flex items-center gap-2 px-3 py-2 text-white hover:bg-white/20 hover:text-white rounded-xl transition-all duration-300 font-medium text-sm whitespace-nowrap"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-white/90 hover:text-white hover:bg-white/15 rounded-lg transition-all text-sm whitespace-nowrap"
                 >
                   <Icon className="w-4 h-4" />
-                  {item.name}
+                  <span className="hidden 2xl:inline">{item.name}</span>
+                </Button>
+              );
+            })}
+
+            {/* Learning Dropdown */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" className="text-white/90 hover:text-white hover:bg-white/15 rounded-lg text-sm px-3 py-1.5 h-auto gap-1">
+                  <BookOpen className="w-4 h-4" />
+                  <span className="hidden 2xl:inline">التعليم</span>
+                  <ChevronDown className="w-3 h-3" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52 bg-white dark:bg-gray-800">
+                {learningMenu.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <DropdownMenuItem key={item.name} onClick={() => handleNavigate(item.href, item.name)}>
+                      <div className="flex items-center gap-2 cursor-pointer w-full">
+                        <Icon className="w-4 h-4 text-cyan-600" />
+                        {item.name}
+                      </div>
+                    </DropdownMenuItem>
+                  );
+                })}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* Exams Dropdown */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" className="text-white/90 hover:text-white hover:bg-white/15 rounded-lg text-sm px-3 py-1.5 h-auto gap-1">
+                  <FileText className="w-4 h-4" />
+                  <span className="hidden 2xl:inline">الامتحانات</span>
+                  <ChevronDown className="w-3 h-3" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52 bg-white dark:bg-gray-800">
+                {examsMenu.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <DropdownMenuItem key={item.name} onClick={() => handleNavigate(item.href, item.name)}>
+                      <div className="flex items-center gap-2 cursor-pointer w-full">
+                        <Icon className="w-4 h-4 text-cyan-600" />
+                        {item.name}
+                      </div>
+                    </DropdownMenuItem>
+                  );
+                })}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* Meetings Button */}
+            {meetingsMenu.map((item) => {
+              const Icon = item.icon;
+              return (
+                <Button
+                  key={item.name}
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleNavigate(item.href, item.name)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-white/90 hover:text-white hover:bg-white/15 rounded-lg transition-all text-sm whitespace-nowrap"
+                >
+                  <Icon className="w-4 h-4" />
+                  <span className="hidden 2xl:inline">{item.name}</span>
                 </Button>
               );
             })}
           </nav>
 
           {/* Desktop Actions */}
-          <div className="hidden md:flex items-center gap-3">
+          <div className="hidden lg:flex items-center gap-1 flex-shrink-0">
+            {/* Notification Bell */}
+            <NotificationBell userType="student" />
+            
             <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
               <DialogTrigger asChild>
-                <Button
-                  variant="ghost"
-                  className="text-white hover:bg-green-500/20 hover:text-white rounded-xl font-medium transition-all duration-300 border border-white/20"
-                >
-                  <CreditCard className="w-4 h-4 ml-2" />
-                  دفع الاشتراك
+                <Button variant="ghost" size="sm" className="text-white hover:bg-white/10 px-1.5 py-1 text-[10px] rounded flex-shrink-0">
+                  <CreditCard className="w-3 h-3 ml-0.5" />
+                  <span className="hidden 2xl:inline">دفع</span>
                 </Button>
               </DialogTrigger>
               <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto" dir="rtl">
@@ -311,6 +405,34 @@ const StudentHeader = () => {
                   </div>
 
                   <div>
+                    <Label>خطة الاشتراك *</Label>
+                    <Select 
+                      value={selectedPlan} 
+                      onValueChange={(value) => {
+                        setSelectedPlan(value);
+                        const plan = subscriptionPlans.find(p => p.id === value);
+                        if (plan) {
+                          setPaymentAmount(String(plan.price));
+                        }
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="اختر خطة الاشتراك" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {subscriptionPlans.map((plan) => (
+                          <SelectItem key={plan.id} value={plan.id}>
+                            {plan.name} - {plan.price} ج.م ({plan.duration_months} شهر)
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {subscriptionPlans.length === 0 && (
+                      <p className="text-xs text-amber-500 mt-1">جاري تحميل خطط الاشتراك...</p>
+                    )}
+                  </div>
+
+                  <div>
                     <Label>المبلغ المدفوع *</Label>
                     <Input
                       type="number"
@@ -320,6 +442,11 @@ const StudentHeader = () => {
                       required
                       min="0"
                     />
+                    {selectedPlan && (
+                      <p className="text-xs text-green-500 mt-1">
+                        سعر الخطة: {subscriptionPlans.find(p => p.id === selectedPlan)?.price} ج.م
+                      </p>
+                    )}
                   </div>
 
                   <div>
@@ -411,6 +538,15 @@ const StudentHeader = () => {
                         return;
                       }
 
+                      if (!selectedPlan) {
+                        toast({
+                          title: "بيانات ناقصة",
+                          description: "يرجى اختيار خطة الاشتراك",
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+
                       if (!paymentAmount || parseFloat(paymentAmount) <= 0) {
                         toast({
                           title: "بيانات ناقصة",
@@ -423,6 +559,7 @@ const StudentHeader = () => {
                       try {
                         const selectedGradeData = grades.find(g => g.id === selectedGrade);
                         const selectedGroupData = groups.find(g => g.id === selectedGroup);
+                        const selectedPlanData = subscriptionPlans.find(p => p.id === selectedPlan);
 
                         await createSubscriptionRequest({
                           student_name: studentName,
@@ -432,6 +569,8 @@ const StudentHeader = () => {
                           grade_name: selectedGradeData?.name || '',
                           group_id: parseInt(selectedGroup),
                           group_name: selectedGroupData?.name || '',
+                          subscription_plan_id: selectedPlan,
+                          subscription_plan_name: selectedPlanData?.name || '',
                           amount: parseFloat(paymentAmount),
                           notes: notes || null,
                           receipt_image_url: imagePreview || null,
@@ -449,6 +588,7 @@ const StudentHeader = () => {
                         setPaymentAmount("");
                         setSelectedGrade("");
                         setSelectedGroup("");
+                        setSelectedPlan("");
                         setNotes("");
                         removeImage();
                       } catch (error) {
@@ -469,66 +609,154 @@ const StudentHeader = () => {
             <Button
               onClick={handleLogout}
               variant="ghost"
-              className="text-white hover:bg-red-500/20 hover:text-white rounded-xl font-medium transition-all duration-300 border border-white/20"
+              size="sm"
+              className="text-white hover:bg-red-500/20 px-1.5 py-1 text-[10px] rounded flex-shrink-0"
             >
-              <LogOut className="w-4 h-4 ml-2" />
-              تسجيل الخروج
+              <LogOut className="w-3 h-3 ml-0.5" />
+              <span className="hidden 2xl:inline">خروج</span>
             </Button>
           </div>
 
-          {/* Mobile Menu Button */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="md:hidden text-white hover:bg-white/20 rounded-xl"
-            onClick={() => setIsMenuOpen(!isMenuOpen)}
-          >
-            {isMenuOpen ? (
-              <X className="w-6 h-6" />
-            ) : (
-              <Menu className="w-6 h-6" />
-            )}
-          </Button>
-        </div>
+          {/* Mobile Actions */}
+          <div className="flex lg:hidden items-center gap-0.5 flex-shrink-0">
+            {/* Notification Bell for Mobile */}
+            <NotificationBell userType="student" />
+            
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleNavigate('/student-chat', 'الدعم')}
+              className="relative p-1 text-white hover:bg-white/10 rounded"
+            >
+              <MessageSquare className="w-3.5 h-3.5" />
+            </Button>
 
-        {/* Mobile Navigation */}
-        <div className="relative">
-          {isMenuOpen && (
-            <div className="md:hidden absolute top-4 left-0 right-0 bg-primary border-t-2 border-white/20 shadow-2xl rounded-b-3xl backdrop-blur-lg z-50 max-h-[80vh] overflow-y-auto">
-              <div className="px-4 py-4 space-y-2">
-                {studentNavigation.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.name}
-                      onClick={() => {
-                        handleNavigate(item.href, item.name);
-                        setIsMenuOpen(false);
-                      }}
-                      className="flex items-center gap-3 px-4 py-3 text-white hover:bg-white/20 rounded-xl transition-all duration-300 w-full text-right font-medium"
-                    >
-                      <Icon className="w-5 h-5" />
-                      {item.name}
-                    </button>
-                  );
-                })}
-
-                {/* Logout Button - Mobile */}
-                <button
-                  onClick={() => {
-                    handleLogout();
-                    setIsMenuOpen(false);
-                  }}
-                  className="flex items-center gap-3 px-4 py-3 text-white bg-red-500/20 hover:bg-red-500/30 rounded-xl transition-all duration-300 w-full text-right font-medium"
-                >
-                  <LogOut className="w-5 h-5" />
-                  تسجيل الخروج
-                </button>
-              </div>
-            </div>
-          )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="p-1 text-white hover:bg-white/10 rounded"
+              onClick={() => setIsMenuOpen(!isMenuOpen)}
+            >
+              {isMenuOpen ? <X className="w-3.5 h-3.5" /> : <Menu className="w-3.5 h-3.5" />}
+            </Button>
+          </div>
         </div>
       </div>
+
+      {/* Mobile Navigation */}
+      {isMenuOpen && (
+        <div className="lg:hidden bg-gradient-to-r from-orange-500 to-amber-600 border-t border-white/10">
+          <div className="px-2 py-2 space-y-1 max-h-[70vh] overflow-y-auto">
+            {/* Main Navigation */}
+            <div className="mb-2">
+              <div className="text-white/80 text-xs font-semibold px-3 py-1">القائمة الرئيسية</div>
+              {mainNavigation.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.name}
+                    onClick={() => {
+                      handleNavigate(item.href, item.name);
+                      setIsMenuOpen(false);
+                    }}
+                    className="flex items-center gap-3 px-3 py-2.5 text-white hover:bg-white/20 rounded-lg transition-all w-full text-right text-sm font-medium"
+                  >
+                    <Icon className="w-4 h-4" />
+                    {item.name}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Learning Menu */}
+            <div className="mb-2">
+              <div className="text-white/80 text-xs font-semibold px-3 py-1">التعليم</div>
+              {learningMenu.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.name}
+                    onClick={() => {
+                      handleNavigate(item.href, item.name);
+                      setIsMenuOpen(false);
+                    }}
+                    className="flex items-center gap-3 px-3 py-2.5 text-white hover:bg-white/20 rounded-lg transition-all w-full text-right text-sm font-medium"
+                  >
+                    <Icon className="w-4 h-4" />
+                    {item.name}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Exams Menu */}
+            <div className="mb-2">
+              <div className="text-white/80 text-xs font-semibold px-3 py-1">الامتحانات</div>
+              {examsMenu.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.name}
+                    onClick={() => {
+                      handleNavigate(item.href, item.name);
+                      setIsMenuOpen(false);
+                    }}
+                    className="flex items-center gap-3 px-3 py-2.5 text-white hover:bg-white/20 rounded-lg transition-all w-full text-right text-sm font-medium"
+                  >
+                    <Icon className="w-4 h-4" />
+                    {item.name}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Meetings */}
+            <div className="mb-2">
+              <div className="text-white/80 text-xs font-semibold px-3 py-1">الاجتماعات</div>
+              {meetingsMenu.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.name}
+                    onClick={() => {
+                      handleNavigate(item.href, item.name);
+                      setIsMenuOpen(false);
+                    }}
+                    className="flex items-center gap-3 px-3 py-2.5 text-white hover:bg-white/20 rounded-lg transition-all w-full text-right text-sm font-medium"
+                  >
+                    <Icon className="w-4 h-4" />
+                    {item.name}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* دفع الاشتراك - موبايل */}
+            <button
+              onClick={() => {
+                setShowPaymentDialog(true);
+                setIsMenuOpen(false);
+              }}
+              className="flex items-center gap-3 px-3 py-2.5 text-white hover:bg-green-500/20 rounded-lg transition-all w-full text-right text-sm font-medium border border-white/20"
+            >
+              <CreditCard className="w-4 h-4" />
+              دفع الاشتراك
+            </button>
+
+            {/* تسجيل الخروج - موبايل */}
+            <button
+              onClick={() => {
+                handleLogout();
+                setIsMenuOpen(false);
+              }}
+              className="flex items-center gap-3 px-3 py-2.5 text-white bg-red-500/20 hover:bg-red-500/30 rounded-lg transition-all w-full text-right text-sm font-medium"
+            >
+              <LogOut className="w-4 h-4" />
+              تسجيل الخروج
+            </button>
+          </div>
+        </div>
+      )}
     </header>
   );
 };

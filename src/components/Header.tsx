@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
+import { NotificationBell } from "@/components/NotificationBell";
 import {
   BookOpen,
   Users,
@@ -110,6 +111,7 @@ const Header = () => {
     { name: "لوحة التحكم", href: "/teacher", icon: LayoutDashboard },
     { name: "المحتوى التعليمي", href: "/course-content", icon: FileText },
     { name: "الرسائل", href: "/messages", icon: MessageCircle },
+    { name: "المساعد الذكي", href: "/chat-assistant", icon: Brain },
   ];
 
   const teacherMenu = [
@@ -383,6 +385,9 @@ const Header = () => {
 
           {/* Desktop Actions */}
           <div className="hidden xl:flex items-center gap-3">
+            {/* Notification Bell */}
+            <NotificationBell userType="teacher" />
+            
             <Button
               onClick={handleLogout}
               variant="ghost"
@@ -394,18 +399,23 @@ const Header = () => {
           </div>
 
           {/* Mobile Menu Button */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="xl:hidden text-white hover:bg-white/20 rounded-xl"
-            onClick={() => setIsMenuOpen(!isMenuOpen)}
-          >
-            {isMenuOpen ? (
-              <X className="w-6 h-6" />
-            ) : (
-              <Menu className="w-6 h-6" />
-            )}
-          </Button>
+          <div className="xl:hidden flex items-center gap-2">
+            {/* Notification Bell for Mobile */}
+            <NotificationBell userType="teacher" />
+            
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-white hover:bg-white/20 rounded-xl"
+              onClick={() => setIsMenuOpen(!isMenuOpen)}
+            >
+              {isMenuOpen ? (
+                <X className="w-6 h-6" />
+              ) : (
+                <Menu className="w-6 h-6" />
+              )}
+            </Button>
+          </div>
         </div>
 
         {/* Mobile Navigation */}

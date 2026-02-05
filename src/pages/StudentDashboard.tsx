@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { BookOpen, FileText, Clock, Calendar, Download, Play, Eye, MessageSquare, Award, Users, Calendar as CalendarIcon, Sparkles, TrendingUp, Trophy, Target, ClipboardCheck, Search, Video } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
 import { useNavigate } from "react-router-dom";
-import { getStudents, getCourses, getGroups, getMaterials, getStudentMaterials, getStudentExams, getStudentExamResults, Student, User, Course } from "@/lib/api";
+import { getStudents, getCourses, getGroups, getMaterials, getStudentMaterials, getStudentExams, getStudentExamResults, getRecentMessages, Student, User, Course } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 import { motion, AnimatePresence } from "framer-motion";
@@ -130,8 +130,22 @@ const StudentDashboard = () => {
         setExamResults([]);
       }
 
-      // TODO: Add API routes for messages
-      setMessages([]);
+      // Fetch recent messages/conversations for this student
+      try {
+        const recentMessages = await getRecentMessages();
+        // Transform conversations to message format for display
+        const messagesData = Array.isArray(recentMessages) ? recentMessages.slice(0, 5).map((conv: any) => ({
+          id: conv.id,
+          sender: conv.other_user_name || 'مجهول',
+          content: conv.last_message_content || 'لا توجد رسائل',
+          time: conv.last_message_time ? new Date(conv.last_message_time).toLocaleDateString('ar') : '',
+          unread: conv.unread_count > 0
+        })) : [];
+        setMessages(messagesData);
+      } catch (err) {
+        console.error('Error fetching messages:', err);
+        setMessages([]);
+      }
 
       setLoading(false);
     } catch (error) {
@@ -168,7 +182,7 @@ const StudentDashboard = () => {
   };
 
   const handleSendMessage = () => {
-    navigate('/messages');
+    navigate('/student-chat');
   };
 
   const getGradeColor = (percentage) => {

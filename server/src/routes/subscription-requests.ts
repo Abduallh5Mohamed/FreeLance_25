@@ -38,6 +38,8 @@ router.post('/', async (req: Request, res: Response) => {
       grade_name,
       group_id,
       group_name,
+      subscription_plan_id,
+      subscription_plan_name,
       amount,
       notes,
       receipt_image_url
@@ -53,9 +55,9 @@ router.post('/', async (req: Request, res: Response) => {
 
     await execute(
       `INSERT INTO subscription_requests 
-       (id, student_name, phone, guardian_phone, grade_id, grade_name, group_id, group_name, amount, notes, receipt_image_url, status) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-      [requestId, student_name, phone, guardian_phone || null, grade_id || null, grade_name || null, group_id || null, group_name || null, amount || null, notes || null, receipt_image_url || null]
+       (id, student_name, phone, guardian_phone, grade_id, grade_name, group_id, group_name, subscription_plan_id, subscription_plan_name, amount, notes, receipt_image_url, status) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      [requestId, student_name, phone, guardian_phone || null, grade_id || null, grade_name || null, group_id || null, group_name || null, subscription_plan_id || null, subscription_plan_name || null, amount || null, notes || null, receipt_image_url || null]
     );
 
     res.status(201).json({

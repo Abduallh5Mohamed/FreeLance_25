@@ -258,12 +258,13 @@ export default function Messages() {
         };
     };
 
-    // Save AI messages to localStorage whenever they change
+    // Save AI messages to localStorage whenever they change (per user)
     useEffect(() => {
-        if (selectedUser?.id === 'ai-assistant' && messages.length > 0) {
-            localStorage.setItem('ai-messages', JSON.stringify(messages));
+        if (selectedUser?.id === 'ai-assistant' && messages.length > 0 && user?.id) {
+            // Store AI messages separately for each user for privacy
+            localStorage.setItem(`ai-messages-${user.id}`, JSON.stringify(messages));
         }
-    }, [messages, selectedUser]);
+    }, [messages, selectedUser, user]);
 
     // Load conversations
     const loadConversations = async () => {
@@ -333,17 +334,17 @@ export default function Messages() {
 
     // Load messages with selected user
     const loadMessages = async (userId: string) => {
-        // AI Assistant messages are stored locally
+        // AI Assistant messages are stored locally (per user for privacy)
         if (userId === 'ai-assistant') {
-            // Load from localStorage or start with welcome message
-            const storedMessages = localStorage.getItem('ai-messages');
+            // Load from localStorage with user-specific key
+            const storedMessages = localStorage.getItem(`ai-messages-${user?.id}`);
             if (storedMessages) {
                 setMessages(JSON.parse(storedMessages));
             } else {
                 const welcomeMessage: Message = {
                     id: 1,
                     sender_id: 'ai-assistant',
-                    receiver_id: user.id,
+                    receiver_id: user?.id || 'unknown',
                     content: 'السلام عليكم! أنا مساعدك الذكي المتخصص في مادة التاريخ. كيف يمكنني مساعدتك اليوم؟',
                     message_type: 'text',
                     is_edited: false,
@@ -436,11 +437,14 @@ export default function Messages() {
 
         // AI Assistant
         if (selectedUser.id === 'ai-assistant') {
+            // Save message before clearing
+            const currentMessage = messageText.trim();
+            
             const userMessage: Message = {
                 id: Date.now(),
                 sender_id: user.id,
                 receiver_id: 'ai-assistant',
-                content: messageText,
+                content: currentMessage,
                 message_type: 'text',
                 is_edited: false,
                 is_deleted: false,
@@ -454,7 +458,10 @@ export default function Messages() {
             setIsTyping(true);
 
             try {
-                const googleApiKey = 'AIzaSyAm-hpg9pjc66DqNnS8qHpdgeKBd-FZP70';
+                console.log('🤖 AI Chat: Sending request to Groq', { message: currentMessage?.substring(0, 30) });
+
+                // Call Groq API directly
+                const groqApiKey = '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';
                 const systemPrompt = `أنت مساعد ذكي تعليمي متخصص حصراً في مساعدة طلاب المرحلة الثانوية المصريين في دراسة التاريخ.
 
 وظيفتك الأساسية:
@@ -467,31 +474,41 @@ export default function Messages() {
 رد دائماً بالعربية فقط، وكن ودوداً وصبوراً - بدو كمعلم مختص وليس روبوت.`;
 
                 const response = await fetch(
-                    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${googleApiKey}`,
+                    'https://api.groq.com/openai/v1/chat/completions',
                     {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${groqApiKey}`,
+                        },
                         body: JSON.stringify({
-                            systemInstruction: { parts: [{ text: systemPrompt }] },
-                            contents: [{ role: 'user', parts: [{ text: messageText }] }],
-                            generationConfig: {
-                                temperature: 0.7,
-                                maxOutputTokens: 1000,
-                                topK: 40,
-                                topP: 0.95,
-                            },
+                            model: 'llama-3.3-70b-versatile',
+                            messages: [
+                                {
+                                    role: 'system',
+                                    content: systemPrompt
+                                },
+                                {
+                                    role: 'user',
+                                    content: currentMessage
+                                }
+                            ],
+                            temperature: 0.7,
+                            max_tokens: 1000,
                         }),
                     }
                 );
 
+                console.log('🤖 AI Chat: Response status', response.status);
                 const data = await response.json();
+                console.log('🤖 AI Chat: Response data', data);
 
-                if (response.ok && data.candidates?.[0]?.content?.parts?.[0]?.text) {
+                if (response.ok && data.choices?.[0]?.message?.content) {
                     const aiMessage: Message = {
                         id: Date.now() + 1,
                         sender_id: 'ai-assistant',
                         receiver_id: user.id,
-                        content: data.candidates[0].content.parts[0].text,
+                        content: data.choices[0].message.content,
                         message_type: 'text',
                         is_edited: false,
                         is_deleted: false,
@@ -503,13 +520,19 @@ export default function Messages() {
                 } else {
                     throw new Error('فشل في الحصول على رد من المساعد الذكي');
                 }
-            } catch (error) {
+            } catch (error: any) {
                 console.error('AI Error:', error);
+                let errorContent = 'عذراً، حدث خطأ في الاتصال بالمساعد الذكي. يرجى المحاولة مرة أخرى.';
+                
+                if (error.message === 'rate_limit') {
+                    errorContent = '⚠️ المساعد الذكي مشغول حالياً. يرجى المحاولة بعد قليل.';
+                }
+                
                 const errorMessage: Message = {
                     id: Date.now() + 1,
                     sender_id: 'ai-assistant',
                     receiver_id: user.id,
-                    content: 'عذراً، حدث خطأ في الاتصال بالمساعد الذكي. يرجى المحاولة مرة أخرى.',
+                    content: errorContent,
                     message_type: 'text',
                     is_edited: false,
                     is_deleted: false,

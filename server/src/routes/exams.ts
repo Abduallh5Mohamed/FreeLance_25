@@ -51,34 +51,58 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
     try {
         const { userId } = req.params;
 
-        // Get student's group_id using phone from users table
+        // Get student's group_id and grade_id using phone from users table
         const user = await queryOne<{ phone: string }>(
             'SELECT phone FROM users WHERE id = ?',
             [userId]
         );
 
         if (!user?.phone) {
+            console.log('❌ User not found for ID:', userId);
             return res.json([]); // User not found
         }
 
-        const student = await queryOne<{ group_id: string }>(
-            'SELECT group_id FROM students WHERE phone = ?',
+        const student = await queryOne<{ group_id: string; grade_id: string }>(
+            'SELECT group_id, grade_id FROM students WHERE phone = ?',
             [user.phone]
         );
 
-        if (!student?.group_id) {
-            return res.json([]); // Student has no group, return empty
+        if (!student) {
+            console.log('❌ Student not found for phone:', user.phone);
+            return res.json([]); // Student not found
         }
 
-        // Get exams assigned to this group (only active exams)
-        const exams = await query<Exam>(
-            `SELECT DISTINCT e.* 
-             FROM exams e
-             INNER JOIN exam_groups eg ON e.id = eg.exam_id
-             WHERE eg.group_id = ? AND e.is_active = TRUE
-             ORDER BY e.created_at DESC`,
-            [student.group_id]
-        );
+        console.log('📚 Student info:', { group_id: student.group_id, grade_id: student.grade_id });
+
+        // Get exams: either assigned to student's group OR matching student's grade
+        let exams: Exam[] = [];
+        
+        if (student.group_id) {
+            // Try getting exams via exam_groups first
+            exams = await query<Exam>(
+                `SELECT DISTINCT e.* 
+                 FROM exams e
+                 LEFT JOIN exam_groups eg ON e.id = eg.exam_id
+                 WHERE (eg.group_id = ? OR (e.grade_id = ? AND eg.exam_id IS NULL))
+                   AND e.is_active = TRUE
+                 ORDER BY e.created_at DESC`,
+                [student.group_id, student.grade_id]
+            );
+        }
+        
+        // If no exams found via groups, try by grade_id directly
+        if (exams.length === 0 && student.grade_id) {
+            exams = await query<Exam>(
+                `SELECT DISTINCT e.* 
+                 FROM exams e
+                 WHERE (e.grade_id = ? OR e.grade_id IS NULL)
+                   AND e.is_active = TRUE
+                 ORDER BY e.created_at DESC`,
+                [student.grade_id]
+            );
+        }
+
+        console.log(`📚 Found ${exams.length} exams for student`);
 
         // Get attempt counts for this student
         const attempts = await query<any>(

@@ -53,14 +53,19 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Name, duration_months, and price are required' });
         }
 
+        // Generate UUID for the new subscription plan
+        const { randomUUID } = await import('crypto');
+        const planId = randomUUID();
+
         const result = await execute(
-            `INSERT INTO subscription_plans (name, duration_months, price, description, is_active)
-             VALUES (?, ?, ?, ?, TRUE)`,
-            [name, parseInt(duration_months), parseFloat(price), description || null]
+            `INSERT INTO subscription_plans (id, name, duration_months, price, description, is_active)
+             VALUES (?, ?, ?, ?, ?, TRUE)`,
+            [planId, name, parseInt(duration_months), parseFloat(price), description || null]
         );
 
         const newPlan = await queryOne<SubscriptionPlan>(
-            'SELECT * FROM subscription_plans ORDER BY created_at DESC LIMIT 1'
+            'SELECT * FROM subscription_plans WHERE id = ?',
+            [planId]
         );
 
         res.status(201).json(newPlan);

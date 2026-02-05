@@ -47,8 +47,8 @@ export default function ChatAssistant() {
     setLoading(true);
 
     try {
-      // Call Google Generative AI API directly
-      const googleApiKey = 'AIzaSyAm-hpg9pjc66DqNnS8qHpdgeKBd-FZP70';
+      // Call Groq API directly
+      const groqApiKey = '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';
       
       const systemPrompt = `أنت مساعد ذكي تعليمي متخصص حصراً في مساعدة طلاب المرحلة الثانوية المصريين في دراسة التاريخ.
 
@@ -62,39 +62,38 @@ export default function ChatAssistant() {
 رد دائماً بالعربية فقط، وكن ودوداً وصبوراً - بدو كمعلم مختص وليس روبوت.`;
 
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${googleApiKey}`,
+        'https://api.groq.com/openai/v1/chat/completions',
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            'Authorization': `Bearer ${groqApiKey}`,
           },
           body: JSON.stringify({
-            systemInstruction: {
-              parts: [{ text: systemPrompt }]
-            },
-            contents: [
+            model: 'llama-3.3-70b-versatile',
+            messages: [
+              {
+                role: 'system',
+                content: systemPrompt
+              },
               {
                 role: 'user',
-                parts: [{ text: input }]
+                content: input
               }
             ],
-            generationConfig: {
-              temperature: 0.7,
-              maxOutputTokens: 1000,
-              topK: 40,
-              topP: 0.95,
-            },
+            temperature: 0.7,
+            max_tokens: 1000,
           }),
         }
       );
 
       const data = await response.json();
 
-      if (response.ok && data.candidates?.[0]?.content?.parts?.[0]?.text) {
+      if (response.ok && data.choices?.[0]?.message?.content) {
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),
           role: 'assistant',
-          content: data.candidates[0].content.parts[0].text,
+          content: data.choices[0].message.content,
           timestamp: new Date(),
         };
         setMessages((prev) => [...prev, assistantMessage]);
