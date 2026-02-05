@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { CheckCircle2, Clock, Save, User, Image as ImageIcon } from "lucide-react";
 import Header from "@/components/Header";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://72.62.35.177:3001/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 interface Grade {
     id: string;
@@ -270,6 +270,11 @@ const ManualGrading = () => {
                     </Card>
                 ) : (
                     <div className="space-y-6">
+                        <div className="mb-4 bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-200">
+                            <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                                📊 عدد الطلاب المنتظرين: <span className="font-bold">{students.length}</span> طالب
+                            </p>
+                        </div>
                         {students.map((student, studentIndex) => (
                             <Card key={`${student.student_id}-${student.exam_id}`} className="border-2">
                                 <CardHeader className="bg-muted/30">
@@ -278,9 +283,14 @@ const ManualGrading = () => {
                                             <User className="w-6 h-6 text-primary" />
                                             <div>
                                                 <CardTitle className="text-xl">{student.student_name}</CardTitle>
-                                                <p className="text-sm text-muted-foreground">
-                                                    {student.exam_title} • {new Date(student.submitted_at).toLocaleDateString('ar-EG')}
-                                                </p>
+                                                <div className="flex flex-col gap-1 mt-1">
+                                                    <Badge variant="secondary" className="w-fit">
+                                                        📝 {student.exam_title}
+                                                    </Badge>
+                                                    <p className="text-xs text-muted-foreground">
+                                                        تاريخ التسليم: {new Date(student.submitted_at).toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                                                    </p>
+                                                </div>
                                             </div>
                                         </div>
                                         <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-300">

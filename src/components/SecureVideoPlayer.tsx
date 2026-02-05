@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import Hls from 'hls.js';
 import { Loader2, X, Play, Pause, Volume2, VolumeX, Maximize, Minimize, RotateCcw, RotateCw, Shield } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 interface SecureVideoPlayerProps {
     videoId: string;

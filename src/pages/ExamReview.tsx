@@ -9,7 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { motion } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://192.168.1.7:3001/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 interface Question {
     id: string;

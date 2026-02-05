@@ -6,7 +6,7 @@ import { Upload, X, CheckCircle, AlertCircle, Loader2, RefreshCw } from 'lucide-
 import { useToast } from '@/hooks/use-toast';
 import { useUpload } from '@/contexts/UploadContext';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 interface VideoUploaderProps {
     courseId: string;

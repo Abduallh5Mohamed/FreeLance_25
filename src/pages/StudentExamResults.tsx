@@ -10,7 +10,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://72.62.35.177:3001/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 interface ExamResult {
   id: string;

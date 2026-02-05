@@ -22,6 +22,7 @@ import {
     DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu';
 
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
 const getApiUrl = () => {
     const envApiUrl = import.meta.env.VITE_API_URL;
     if (envApiUrl) return envApiUrl;

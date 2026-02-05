@@ -982,7 +982,32 @@ const TakeExam = () => {
     );
   }
 
+  // ✅ حساب عدد الأسئلة المقالية والاختيارية
+  const essayQuestionsCount = exam?.questions.filter(q => q.question_type === 'essay').length || 0;
+  const multipleChoiceCount = exam?.questions.filter(q => q.question_type !== 'essay').length || 0;
+  const hasEssayQuestions = essayQuestionsCount > 0;
+  
+  // ✅ حساب درجة الاختياري فقط
+  const multipleChoiceScore = exam?.questions
+    .filter(q => q.question_type !== 'essay')
+    .filter(q => {
+      const userAnswerIndex = answers[q.id];
+      const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
+        ? String.fromCharCode(97 + userAnswerIndex) 
+        : null;
+      return userAnswerLetter === q.correct_answer;
+    })
+    .reduce((sum, q) => sum + (q.marks || q.points || 1), 0) || 0;
+    
+  const multipleChoiceTotal = exam?.questions
+    .filter(q => q.question_type !== 'essay')
+    .reduce((sum, q) => sum + (q.marks || q.points || 1), 0) || 0;
+
   if (isSubmitted && result) {
+    // ✅ تحديد حالة العرض بناءً على وجود أسئلة مقالية
+    const isPendingReview = hasEssayQuestions;
+    const showPassFail = !isPendingReview;
+    
     return (
       <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative" dir="rtl">
         <FloatingParticles />
