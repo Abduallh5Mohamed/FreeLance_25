@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Video, ExternalLink, Calendar, Clock, ArrowRight, Users } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Video, ExternalLink, Calendar, Clock, Users } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import StudentHeader from "@/components/StudentHeader";
 import axios from "axios";
@@ -47,12 +47,10 @@ const StudentMeetings = () => {
     // Copy to clipboard with fallback for non-HTTPS
     const copyToClipboard = async (text: string) => {
         try {
-            // Try modern clipboard API first
             if (navigator.clipboard && window.isSecureContext) {
                 await navigator.clipboard.writeText(text);
                 toast({ title: "تم النسخ", description: "تم نسخ رابط الاجتماع" });
             } else {
-                // Fallback for HTTP (non-secure contexts)
                 const textArea = document.createElement('textarea');
                 textArea.value = text;
                 textArea.style.position = 'fixed';
@@ -166,146 +164,13 @@ const StudentMeetings = () => {
         return new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime();
     });
 
-  const getMeetingTypeLabel = (type: string) => {
-    switch (type) {
-      case 'zoom': return 'Zoom';
-      case 'google_meet': return 'Google Meet';
-      default: return 'أخرى';
-    }
-  };
-
-  const getMeetingTypeColor = (type: string) => {
-    switch (type) {
-      case 'zoom': return 'bg-blue-500';
-      case 'google_meet': return 'bg-green-500';
-      default: return 'bg-gray-500';
-    }
-  };
-
-  const isUpcoming = (dateString: string) => {
-    const meetingDate = new Date(dateString);
-    const now = new Date();
-    return meetingDate > now;
-  };
-
-  const isLive = (dateString: string, durationMinutes: number) => {
-    const meetingStart = new Date(dateString);
-    const meetingEnd = new Date(meetingStart.getTime() + durationMinutes * 60000);
-    const now = new Date();
-    return now >= meetingStart && now <= meetingEnd;
-  };
-
-  // Sort meetings: live first, then upcoming, then past
-  const sortedMeetings = [...meetings].sort((a, b) => {
-    const aLive = isLive(a.scheduled_at, a.duration_minutes);
-    const bLive = isLive(b.scheduled_at, b.duration_minutes);
-    if (aLive && !bLive) return -1;
-    if (!aLive && bLive) return 1;
-    return new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime();
-  });
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-amber-50/80 via-orange-50/60 to-yellow-50/80 dark:from-slate-900 dark:via-amber-950/30 dark:to-slate-900" dir="rtl">
-      <StudentHeader />
-      <div className="container mx-auto px-4 py-8">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
-              <Video className="w-6 h-6 text-primary" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold text-foreground">الاجتماعات الأونلاين</h1>
-              <p className="text-muted-foreground">اجتماعات الفيديو المجدولة لك</p>
-            </div>
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="flex justify-center items-center py-12">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
-          </div>
-        ) : sortedMeetings.length === 0 ? (
-          <Card className="shadow-soft">
-            <CardContent className="py-12">
-              <div className="text-center">
-                <Video className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
-                <h3 className="text-lg font-semibold mb-2">لا توجد اجتماعات مجدولة</h3>
-                <p className="text-muted-foreground">
-                  سيتم عرض الاجتماعات هنا عندما يقوم المدرس بجدولة اجتماع جديد
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid gap-4">
-            {sortedMeetings.map((meeting) => {
-              const live = isLive(meeting.scheduled_at, meeting.duration_minutes);
-              const upcoming = isUpcoming(meeting.scheduled_at);
-              
-              return (
-                <Card 
-                  key={meeting.id} 
-                  className={`shadow-soft transition-all ${
-                    live ? 'ring-2 ring-green-500 bg-green-50/50 dark:bg-green-950/20' : ''
-                  }`}
-                >
-                  <CardContent className="p-6">
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-3 mb-3">
-                          <div className={`w-3 h-3 rounded-full ${
-                            live ? 'bg-green-500 animate-pulse' : 
-                            upcoming ? 'bg-yellow-500' : 'bg-gray-400'
-                          }`}></div>
-                          <h3 className="font-bold text-xl">{meeting.title}</h3>
-                          <span className={`text-xs px-3 py-1 rounded-full text-white ${getMeetingTypeColor(meeting.meeting_type)}`}>
-                            {getMeetingTypeLabel(meeting.meeting_type)}
-                          </span>
-                          {live && (
-                            <span className="text-xs px-3 py-1 rounded-full bg-green-500 text-white animate-pulse">
-                              🔴 مباشر الآن
-                            </span>
-                          )}
-                        </div>
-                        
-                        {meeting.description && (
-                          <p className="text-muted-foreground mb-4">{meeting.description}</p>
-                        )}
-
-                        <div className="flex flex-wrap gap-6 text-sm">
-                          <div className="flex items-center gap-2 text-muted-foreground">
-                            <Calendar className="w-4 h-4" />
-                            <span>{formatDate(meeting.scheduled_at)}</span>
-                          </div>
-                          <div className="flex items-center gap-2 text-muted-foreground">
-                            <Clock className="w-4 h-4" />
-                            <span>{meeting.duration_minutes} دقيقة</span>
-                          </div>
-                          <div className="flex items-center gap-2 text-muted-foreground">
-                            <Users className="w-4 h-4" />
-                            <span>{meeting.grade_name}</span>
-                            {meeting.group_name && <span>- {meeting.group_name}</span>}
-                          </div>
-                        </div>
-
-                        {meeting.meeting_password && (
-                          <div className="mt-4 p-3 bg-muted/50 rounded-lg inline-block">
-                            <span className="text-sm text-muted-foreground">كلمة المرور: </span>
-                            <code className="font-mono font-bold">{meeting.meeting_password}</code>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="flex flex-col gap-2 mr-6">
-                        <Button
-                          size="lg"
-                          className={live ? 'bg-green-600 hover:bg-green-700' : ''}
-                          onClick={() => window.open(meeting.meeting_link, '_blank')}
-                        >
-                          <ExternalLink className="w-5 h-5 ml-2" />
-                          {live ? 'انضم الآن' : 'انضم للاجتماع'}
-                        </Button>
+    return (
+        <div className="min-h-screen bg-gradient-to-br from-amber-50/80 via-orange-50/60 to-yellow-50/80 dark:from-slate-900 dark:via-amber-950/30 dark:to-slate-900" dir="rtl">
+            <StudentHeader />
+            <div className="container mx-auto px-4 py-8">
+                {/* Header */}
+                <div className="flex items-center justify-between mb-8">
+                    <div className="flex items-center gap-3">
                         <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
                             <Video className="w-6 h-6 text-primary" />
                         </div>
@@ -341,16 +206,13 @@ const StudentMeetings = () => {
                             return (
                                 <Card
                                     key={meeting.id}
-                                    className={`shadow-soft transition-all ${live ? 'ring-2 ring-green-500 bg-green-50/50 dark:bg-green-950/20' : ''
-                                        }`}
+                                    className={`shadow-soft transition-all ${live ? 'ring-2 ring-green-500 bg-green-50/50 dark:bg-green-950/20' : ''}`}
                                 >
                                     <CardContent className="p-6">
                                         <div className="flex items-start justify-between">
                                             <div className="flex-1">
                                                 <div className="flex items-center gap-3 mb-3">
-                                                    <div className={`w-3 h-3 rounded-full ${live ? 'bg-green-500 animate-pulse' :
-                                                        upcoming ? 'bg-yellow-500' : 'bg-gray-400'
-                                                        }`}></div>
+                                                    <div className={`w-3 h-3 rounded-full ${live ? 'bg-green-500 animate-pulse' : upcoming ? 'bg-yellow-500' : 'bg-gray-400'}`}></div>
                                                     <h3 className="font-bold text-xl">{meeting.title}</h3>
                                                     <span className={`text-xs px-3 py-1 rounded-full text-white ${getMeetingTypeColor(meeting.meeting_type)}`}>
                                                         {getMeetingTypeLabel(meeting.meeting_type)}

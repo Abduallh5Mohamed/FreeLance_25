@@ -101,8 +101,14 @@ const StudentHeader = () => {
         });
         return;
       }
+      setPaymentImage(file);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setImagePreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
     }
-  }, []);
+  };
 
   // Close menu when route changes
   useEffect(() => {
@@ -144,16 +150,12 @@ const StudentHeader = () => {
   const examsMenu = [
     { name: "الامتحانات", href: "/student-exams", icon: FileText },
     { name: "نتائج الامتحانات", href: "/student-exam-results", icon: ClipboardCheck },
-<<<<<<< HEAD
   ];
 
   // Meetings menu
   const meetingsMenu = [
     { name: "الاجتماعات المباشرة", href: "/student-meetings", icon: Video },
-=======
-    { name: "الاجتماعات المباشرة", href: "/student-meetings", icon: Calendar },
     { name: "المحادثات", href: "/student-chat", icon: MessageCircle },
->>>>>>> 6649971abff04b0f531e668f2fa70f805e883248
   ];
 
   const handleLogout = async () => {
@@ -569,19 +571,11 @@ const StudentHeader = () => {
             <Button
               onClick={handleLogout}
               variant="ghost"
-<<<<<<< HEAD
               size="sm"
               className="text-white hover:bg-red-500/20 px-1.5 py-1 text-[10px] rounded flex-shrink-0"
             >
               <LogOut className="w-3 h-3 ml-0.5" />
               <span className="hidden 2xl:inline">خروج</span>
-=======
-              className="flex items-center gap-1 xl:gap-1.5 text-white hover:bg-red-500/20 rounded-lg text-[10px] xl:text-xs border border-white/20 px-2 xl:px-3 py-1.5 xl:py-2"
-            >
-              <LogOut className="w-3.5 h-3.5 xl:w-4 xl:h-4" />
-              <span className="hidden xl:inline">تسجيل الخروج</span>
-              <span className="xl:hidden">خروج</span>
->>>>>>> 6649971abff04b0f531e668f2fa70f805e883248
             </Button>
           </div>
 
@@ -611,7 +605,6 @@ const StudentHeader = () => {
         </div>
       </div>
 
-<<<<<<< HEAD
       {/* Mobile Navigation */}
       {isMenuOpen && (
         <div className="lg:hidden bg-gradient-to-r from-orange-500 to-amber-600 border-t border-white/10">
@@ -632,34 +625,11 @@ const StudentHeader = () => {
                   >
                     <Icon className="w-4 h-4" />
                     {item.name}
-=======
-      {/* Mobile/Tablet Menu - Full screen overlay */}
-      {isMenuOpen && (
-        <div className="lg:hidden fixed inset-0 top-[52px] sm:top-[60px] bg-primary z-40 overflow-y-auto">
-          <div className="container mx-auto px-3 sm:px-4 py-4 min-h-full">
-            {/* Navigation Grid */}
-            <div className="grid grid-cols-2 xs:grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3">
-              {navigationItems.map((item) => {
-                const Icon = item.icon;
-                const active = isActive(item.href);
-                return (
-                  <button
-                    key={item.name}
-                    onClick={() => handleNavigate(item.href)}
-                    className={`flex flex-col items-center gap-1.5 sm:gap-2 p-3 sm:p-4 rounded-xl transition-all ${active
-                        ? 'bg-white/20 text-white'
-                        : 'bg-white/5 text-white/90 hover:bg-white/10 active:bg-white/15'
-                      }`}
-                  >
-                    <Icon className="w-5 h-5 sm:w-6 sm:h-6" />
-                    <span className="text-[11px] sm:text-xs text-center leading-tight font-medium">{item.name}</span>
->>>>>>> 6649971abff04b0f531e668f2fa70f805e883248
                   </button>
                 );
               })}
             </div>
 
-<<<<<<< HEAD
             {/* Learning Menu */}
             <div className="mb-2">
               <div className="text-white/80 text-xs font-semibold px-3 py-1">التعليم</div>
@@ -745,15 +715,6 @@ const StudentHeader = () => {
             >
               <LogOut className="w-4 h-4" />
               تسجيل الخروج
-=======
-            {/* Logout Button */}
-            <button
-              onClick={handleLogout}
-              className="w-full mt-4 sm:mt-6 flex items-center justify-center gap-2 p-3 sm:p-4 bg-red-500/20 hover:bg-red-500/30 active:bg-red-500/40 text-white rounded-xl transition-all"
-            >
-              <LogOut className="w-5 h-5 sm:w-6 sm:h-6" />
-              <span className="text-sm sm:text-base font-medium">تسجيل الخروج</span>
->>>>>>> 6649971abff04b0f531e668f2fa70f805e883248
             </button>
           </div>
         </div>
