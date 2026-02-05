@@ -96,8 +96,7 @@ export async function initializeBuckets(): Promise<void> {
 
 /**
  * Generate a presigned URL for uploading a video chunk
- * This allows direct browser-to-MinIO upload without Node.js handling the file
- * Note: For production, use public IP/domain instead of localhost
+ * For HTTPS environments, use nginx reverse proxy instead of direct MinIO access
  */
 export async function getPresignedUploadUrl(
     videoId: string,
@@ -107,21 +106,31 @@ export async function getPresignedUploadUrl(
     const ext = path.extname(fileName) || '.mp4';
     const objectKey = `originals/${videoId}${ext}`;
 
-    // Generate presigned PUT URL (valid for 1 hour)
-    let uploadUrl = await minioClient.presignedPutObject(
-        BUCKETS.ORIGINALS,
-        objectKey,
-        3600 // 1 hour expiry
-    );
+    // Check if we're in production (HTTPS) environment
+    const isProduction = process.env.NODE_ENV === 'production' || process.env.USE_NGINX_PROXY === 'true';
 
-    // Replace localhost with public endpoint for browser access
-    if (publicEndpoint !== 'localhost' && uploadUrl.includes('localhost')) {
-        uploadUrl = uploadUrl.replace('localhost', publicEndpoint);
+    if (isProduction) {
+        // Use nginx reverse proxy path for HTTPS compatibility
+        // Frontend will use PUT request to /storage/bucket/object
+        const uploadUrl = `/storage/${BUCKETS.ORIGINALS}/${objectKey}`;
+        console.log('[MinIO] Upload URL (via nginx):', uploadUrl);
+        return { uploadUrl, objectKey };
+    } else {
+        // Development: Generate presigned PUT URL (valid for 1 hour)
+        let uploadUrl = await minioClient.presignedPutObject(
+            BUCKETS.ORIGINALS,
+            objectKey,
+            3600 // 1 hour expiry
+        );
+
+        // Replace localhost with public endpoint for browser access
+        if (publicEndpoint !== 'localhost' && uploadUrl.includes('localhost')) {
+            uploadUrl = uploadUrl.replace('localhost', publicEndpoint);
+        }
+
+        console.log('[MinIO] Upload URL generated:', uploadUrl);
+        return { uploadUrl, objectKey };
     }
-
-    console.log('[MinIO] Upload URL generated:', uploadUrl);
-
-    return { uploadUrl, objectKey };
 }
 
 /**

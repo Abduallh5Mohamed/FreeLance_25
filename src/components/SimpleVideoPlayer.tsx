@@ -34,6 +34,9 @@ export function SimpleVideoPlayer({ videoId, userId }: SimpleVideoPlayerProps) {
 
                 const streamUrl = data.streamUrl;
 
+                console.log('📹 Stream URL:', streamUrl);
+                console.log('📍 Full URL:', streamUrl.startsWith('/') ? window.location.origin + streamUrl : streamUrl);
+
                 // Check if HLS or direct video
                 const isHLS = streamUrl.includes('.m3u8');
 
@@ -71,11 +74,24 @@ export function SimpleVideoPlayer({ videoId, userId }: SimpleVideoPlayerProps) {
                     });
                 } else {
                     // Direct video file (mp4, webm, etc.)
+                    console.log('▶️ Using direct video playback');
                     video.src = streamUrl;
+
                     video.addEventListener('loadedmetadata', () => {
+                        console.log('✅ Video metadata loaded');
                         setLoading(false);
                     });
+
                     video.addEventListener('canplay', () => {
+                        console.log('✅ Video can play');
+                        setLoading(false);
+                    });
+
+                    video.addEventListener('error', (e) => {
+                        console.error('❌ Video error:', e);
+                        console.error('❌ Video error code:', video.error?.code);
+                        console.error('❌ Video error message:', video.error?.message);
+                        setError(`فشل تحميل الفيديو (خطأ: ${video.error?.code})`);
                         setLoading(false);
                     });
                 }
