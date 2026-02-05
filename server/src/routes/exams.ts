@@ -92,11 +92,11 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
              GROUP BY exam_id`,
             [userId]
         );
-        
+
         console.log('📊 Attempts from DB:', attempts);
-        
+
         const attemptsMap = new Map(attempts.map((a: any) => [a.exam_id, a.count]));
-        
+
         // Add attempts count to each exam
         const examsWithAttempts = exams.map((exam: any) => ({
             ...exam,
@@ -211,9 +211,9 @@ router.get('/', async (req: Request, res: Response) => {
                  GROUP BY exam_id`,
                 [student_id]
             );
-            
+
             const attemptsMap = new Map(attempts.map((a: any) => [a.exam_id, a.count]));
-            
+
             exams = exams.map((exam) => ({
                 ...exam,
                 attempts: attemptsMap.get(exam.id) || 0
@@ -969,8 +969,7 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
         console.log('✅ Passing marks:', passingMarks);
 
         // ✅ If essay questions exist, status is 'pending_review' until manually graded
-        const actualHasEssay = hasEssayQuestions || hasEssayQuestionsDetected;
-        const status = actualHasEssay ? 'pending_review' : (finalScore >= passingMarks ? 'passed' : 'failed');
+        const status = hasEssayQuestions ? 'pending_review' : (score >= passingMarks ? 'passed' : 'failed');
         const passed = status === 'passed';
 
         console.log('📝 Status:', status);
@@ -994,7 +993,7 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
                  score = ?,
                  answers = ?
              WHERE exam_id = ? AND student_id = ?`,
-            [status, finalScore, JSON.stringify(allAnswers), examId, studentId]
+            [status, score, JSON.stringify(allAnswers), examId, studentId]
         );
 
         console.log('✅ Exam attempt updated');
@@ -1037,7 +1036,7 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
                     marks_obtained = VALUES(marks_obtained),
                     total_marks = VALUES(total_marks),
                     submitted_at = VALUES(submitted_at)`,
-                [examId, studentId, finalScore, totalMarks]
+                [examId, studentId, score, totalMarks]
             );
 
             const responseData = {
@@ -1045,7 +1044,7 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
                 student_id: studentId,
                 status: status,
                 completed_at: new Date().toISOString(),
-                score: finalScore,
+                score: score,
                 total_marks: totalMarks,
                 passed: status === 'passed'
             };
@@ -1140,7 +1139,7 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
                 marks_obtained = VALUES(marks_obtained),
                 total_marks = VALUES(total_marks),
                 submitted_at = VALUES(submitted_at)`,
-            [examId, studentId, finalScore, totalMarks]
+            [examId, studentId, score, totalMarks]
         );
 
         console.log('✅ Exam results inserted/updated');
@@ -1151,7 +1150,7 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
             student_id: studentId,
             status: status,
             completed_at: new Date().toISOString(),
-            score: finalScore,
+            score: score,
             answers: allAnswers,
             total_marks: totalMarks,
             passing_marks: passingMarks,
