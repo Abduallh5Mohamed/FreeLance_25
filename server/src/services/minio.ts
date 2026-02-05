@@ -184,7 +184,7 @@ export async function getSignedStreamUrl(
 ): Promise<string> {
     // Use nginx reverse proxy path (/storage/) instead of direct MinIO access
     // This ensures HTTPS compatibility and proper CORS handling
-    
+
     if (bucket === BUCKETS.ORIGINALS) {
         // For original files, the fileName is the full objectKey (originals/videoId.ext)
         const cleanFileName = fileName.startsWith('originals/') ? fileName : `originals/${fileName}`;
