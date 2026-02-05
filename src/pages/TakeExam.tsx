@@ -965,429 +965,57 @@ const TakeExam = () => {
     .reduce((sum, q) => sum + (q.marks || q.points || 1), 0) || 0;
 
   if (isSubmitted && result) {
-    // ✅ تحديد حالة العرض بناءً على وجود أسئلة مقالية
-    const isPendingReview = hasEssayQuestions;
-    const showPassFail = !isPendingReview;
-    
+    // رسالة ثابتة بسيطة بعد التسليم
     return (
-      <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
+      <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 flex items-center justify-center p-4" dir="rtl">
         <FloatingParticles />
-        <div className="container mx-auto px-4 py-12 relative z-10 max-w-3xl">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-          >
-            <Card className={`border-4 ${isPendingReview ? 'border-blue-500' : result.passed ? 'border-green-500' : 'border-red-500'}`}>
-              <CardHeader className="text-center pb-8">
-                <div className="mx-auto mb-4">
-                  {isPendingReview ? (
-                    <motion.div
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      transition={{ type: "spring", stiffness: 200 }}
-                    >
-                      <Clock className="w-24 h-24 text-blue-500 mx-auto" />
-                    </motion.div>
-                  ) : result.passed ? (
-                    <motion.div
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      transition={{ type: "spring", stiffness: 200 }}
-                    >
-                      <Trophy className="w-24 h-24 text-green-500 mx-auto" />
-                    </motion.div>
-                  ) : (
-                    <XCircle className="w-24 h-24 text-red-500 mx-auto" />
-                  )}
-                </div>
-                <CardTitle className="text-3xl">
-                  {isPendingReview 
-                    ? 'تم تسليم الامتحان ✅' 
-                    : result.passed 
-                      ? 'نجحت في الامتحان! 🎉' 
-                      : 'للأسف، لم تنجح'}
-                </CardTitle>
-                {isPendingReview && (
-                  <p className="text-muted-foreground mt-2">
-                    سيتم مراجعة إجاباتك المقالية وإعلان النتيجة النهائية قريباً
-                  </p>
-                )}
-              </CardHeader>
-              <CardContent className="space-y-6">
-                {/* Score Display */}
-                {isPendingReview ? (
-                  <div className="space-y-4">
-                    {/* درجة الاختياري */}
-                    <div className="text-center p-4 bg-green-50 dark:bg-green-900/10 rounded-lg border border-green-200 dark:border-green-800">
-                      <p className="text-sm text-muted-foreground mb-2">درجة الأسئلة الاختيارية</p>
-                      <div className="text-4xl font-bold text-green-600">
-                        {multipleChoiceScore}/{multipleChoiceTotal}
-                      </div>
-                    </div>
-                    
-                    {/* درجة المقالي - قيد المراجعة */}
-                    <div className="text-center p-4 bg-blue-50 dark:bg-blue-900/10 rounded-lg border border-blue-200 dark:border-blue-800">
-                      <p className="text-sm text-muted-foreground mb-2">الأسئلة المقالية ({essayQuestionsCount} سؤال)</p>
-                      <div className="flex items-center justify-center gap-2 text-blue-600">
-                        <Clock className="w-5 h-5" />
-                        <span className="text-lg font-medium">قيد المراجعة</span>
-                      </div>
-                    </div>
-                    
-                    {/* الدرجة الكلية */}
-                    <div className="text-center p-4 bg-gray-50 dark:bg-gray-900/10 rounded-lg border">
-                      <p className="text-sm text-muted-foreground mb-2">الدرجة الكلية (مبدئية)</p>
-                      <div className="text-3xl font-bold text-gray-600">
-                        {multipleChoiceScore}/{result.total}
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        * ستُضاف درجة المقالي بعد المراجعة
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-center">
-                    <div className={`text-6xl font-bold mb-2 ${result.passed ? 'text-green-600' : 'text-red-600'}`}>
-                      {result.score}/{result.total}
-                    </div>
-                    <div className="text-2xl font-semibold text-muted-foreground">
-                      {result.percentage.toFixed(1)}%
-                    </div>
-                  </div>
-                )}
-
-                {/* Stats - فقط للاختياري */}
-                {!isPendingReview && (
-                  <div className="grid grid-cols-2 gap-4">
-                    <Card className="p-4 text-center">
-                      <div className="text-sm text-muted-foreground mb-1">إجابات صحيحة</div>
-                      <div className="text-2xl font-bold text-green-600">
-                        {exam.questions.filter(q => {
-                          const userAnswerIndex = answers[q.id];
-                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
-                            ? String.fromCharCode(97 + userAnswerIndex) 
-                            : null;
-                          return userAnswerLetter === q.correct_answer;
-                        }).length}
-                      </div>
-                    </Card>
-                    <Card className="p-4 text-center">
-                      <div className="text-sm text-muted-foreground mb-1">إجابات خاطئة</div>
-                      <div className="text-2xl font-bold text-red-600">
-                        {exam.questions.filter(q => {
-                          const userAnswerIndex = answers[q.id];
-                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
-                            ? String.fromCharCode(97 + userAnswerIndex) 
-                            : null;
-                          return userAnswerLetter !== null && userAnswerLetter !== q.correct_answer;
-                        }).length}
-                      </div>
-                    </Card>
-                  </div>
-                )}
-                
-                {/* Stats for pending review - show multiple choice stats */}
-                {isPendingReview && multipleChoiceCount > 0 && (
-                  <div className="grid grid-cols-2 gap-4">
-                    <Card className="p-4 text-center bg-green-50 dark:bg-green-900/10">
-                      <div className="text-sm text-muted-foreground mb-1">إجابات صحيحة (اختياري)</div>
-                      <div className="text-2xl font-bold text-green-600">
-                        {exam.questions.filter(q => {
-                          if (q.question_type === 'essay') return false;
-                          const userAnswerIndex = answers[q.id];
-                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
-                            ? String.fromCharCode(97 + userAnswerIndex) 
-                            : null;
-                          return userAnswerLetter === q.correct_answer;
-                        }).length}
-                      </div>
-                    </Card>
-                    <Card className="p-4 text-center bg-red-50 dark:bg-red-900/10">
-                      <div className="text-sm text-muted-foreground mb-1">إجابات خاطئة (اختياري)</div>
-                      <div className="text-2xl font-bold text-red-600">
-                        {exam.questions.filter(q => {
-                          if (q.question_type === 'essay') return false;
-                          const userAnswerIndex = answers[q.id];
-                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
-                            ? String.fromCharCode(97 + userAnswerIndex) 
-                            : null;
-                          return userAnswerLetter !== null && userAnswerLetter !== q.correct_answer;
-                        }).length}
-                      </div>
-                    </Card>
-                  </div>
-                )}
-
-                {/* Detailed Results */}
-                <div className="space-y-4">
-                  <h3 className="font-bold text-lg border-b pb-2 mb-4">الإجابات التفصيلية:</h3>
-                  {exam.questions.map((question, idx) => {
-                    const userAnswer = answers[question.id];
-                    const isCorrect = userAnswer === question.correct_answer;
-                    const wasAnswered = userAnswer !== undefined;
-
-                    // Parse options properly
-                    let questionOptions: string[] = [];
-                    if (Array.isArray(question.options)) {
-                      questionOptions = question.options;
-                    } else if (typeof question.options === 'string') {
-                      try {
-                        const parsed = JSON.parse(question.options);
-                        if (Array.isArray(parsed)) {
-                          questionOptions = parsed;
-                        } else if (parsed && typeof parsed === 'object') {
-                          questionOptions = [parsed.a, parsed.b, parsed.c, parsed.d].filter(Boolean);
-                        }
-                      } catch (e) {
-                        console.error('Failed to parse options:', e);
-                      }
-                    } else if (question.options && typeof question.options === 'object') {
-                      const opts = question.options as Record<string, string>;
-                      questionOptions = [opts.a, opts.b, opts.c, opts.d].filter(Boolean);
-                    }
-
-                    console.log(`Q${idx + 1} Debug - Full Details:`, {
-                      id: question.id,
-                      question: question.question_text || question.question,
-                      rawOptions: question.options,
-                      rawOptionsType: typeof question.options,
-                      rawOptionsIsArray: Array.isArray(question.options),
-                      parsedOptions: questionOptions,
-                      parsedOptionsLength: questionOptions.length,
-                      userAnswer,
-                      userAnswerType: typeof userAnswer,
-                      correctAnswer: question.correct_answer,
-                      correctAnswerType: typeof question.correct_answer,
-                      isCorrect,
-                      wasAnswered,
-                      questionType: question.question_type
-                    });
-
-                    return (
-                      <Card key={question.id} className={`p-5 ${isCorrect ? 'border-2 border-green-500 bg-green-50/50' : wasAnswered ? 'border-2 border-red-500 bg-red-50/50' : 'border-2 border-gray-300'}`}>
-                        <div className="space-y-3">
-                          {/* Question Header */}
-                          <div className="flex items-start gap-3">
-                            <div className="flex-shrink-0 mt-1">
-                              {isCorrect ? (
-                                <CheckCircle2 className="w-6 h-6 text-green-600" />
-                              ) : wasAnswered ? (
-                                <XCircle className="w-6 h-6 text-red-600" />
-                              ) : (
-                                <AlertCircle className="w-6 h-6 text-gray-400" />
-                              )}
-                            </div>
-                            <div className="flex-1">
-                              <div className="flex items-center justify-between mb-2">
-                                <span className="font-bold text-lg">السؤال {idx + 1}</span>
-                                <Badge variant={isCorrect ? "default" : "destructive"} className="text-sm">
-                                  {question.points || question.marks || 1} نقطة
-                                </Badge>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Question Text - Always visible */}
-                          <div className="bg-blue-50 p-4 rounded-lg border-2 border-blue-200">
-                            <div className="flex items-start gap-2 mb-3">
-                              <span className="text-blue-700 font-bold text-sm bg-blue-100 px-3 py-1 rounded">📝 نص السؤال</span>
-                            </div>
-                            <div className="font-bold text-xl mb-3 text-gray-900 leading-relaxed whitespace-pre-wrap break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                              {question.question_text || question.question || 'لا يوجد نص للسؤال'}
-                            </div>
-
-                            {/* Question Image if exists */}
-                            {question.question_image && (
-                              <div className="my-3">
-                                <img
-                                  src={question.question_image.startsWith('http')
-                                    ? question.question_image
-                                    : question.question_image.startsWith('/api/')
-                                      ? question.question_image
-                                      : `/api${question.question_image}`
-                                  }
-                                  alt="صورة السؤال"
-                                  className="max-w-full h-auto rounded-lg border"
-                                />
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Student Answer Section - Always visible for multiple choice */}
-                          {question.question_type === 'multiple_choice' || userAnswer !== undefined ? (
-                            <div className="bg-yellow-50 p-4 rounded-lg border-2 border-yellow-200">
-                              <div className="flex items-start gap-2 mb-3">
-                                <span className="text-yellow-700 font-bold text-sm bg-yellow-100 px-3 py-1 rounded">✍️ إجابة الطالب</span>
-                              </div>
-
-                              {wasAnswered ? (
-                                <div className="space-y-2">
-                                  {questionOptions.length > 0 ? (
-                                    // Multiple Choice Answer with options
-                                    <div className="font-bold text-lg text-gray-900">
-                                      {questionOptions[userAnswer] || `الخيار رقم ${userAnswer + 1}`}
-                                    </div>
-                                  ) : (
-                                    // Fallback if no options parsed
-                                    <div className="font-bold text-lg text-gray-900">
-                                      الخيار رقم {userAnswer + 1}
-                                      <div className="text-sm text-gray-600 mt-1">
-                                        (الخيارات غير متاحة - فقط رقم الإجابة)
-                                      </div>
-                                    </div>
-                                  )}
-                                </div>
-                              ) : (
-                                <div className="text-gray-600 font-medium">
-                                  ⚠️ لم يجب الطالب على هذا السؤال
-                                </div>
-                              )}
-                            </div>
-                          ) : null}
-
-                          {/* Correct Answer Section - Show for multiple choice */}
-                          {(question.question_type === 'multiple_choice' || question.correct_answer !== undefined) && (
-                            <div className="bg-green-50 p-4 rounded-lg border-2 border-green-200">
-                              <div className="flex items-start gap-2 mb-3">
-                                <span className="text-green-700 font-bold text-sm bg-green-100 px-3 py-1 rounded">✅ الإجابة الصحيحة</span>
-                              </div>
-                              <div className="font-bold text-lg text-green-900">
-                                {questionOptions.length > 0 && questionOptions[question.correct_answer as number]
-                                  ? questionOptions[question.correct_answer as number]
-                                  : `الخيار رقم ${(question.correct_answer as number) + 1}`}
-                                {questionOptions.length === 0 && (
-                                  <div className="text-sm text-gray-600 mt-1">
-                                    (الخيارات غير متاحة - فقط رقم الإجابة)
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )}
-
-                          {/* All Options Display */}
-                          {questionOptions.length > 0 && (
-                            <div className="bg-white p-4 rounded-lg border-2">
-                              <div className="text-sm font-semibold text-gray-700 mb-3">جميع الخيارات:</div>
-                              <div className="space-y-2">
-                                {questionOptions.map((option, optIdx) => {
-                                  const isUserAnswer = userAnswer === optIdx;
-                                  const isCorrectAnswer = question.correct_answer === optIdx;
-
-                                  let borderColor = 'border-gray-300';
-                                  let bgColor = 'bg-gray-50';
-                                  let textColor = 'text-gray-700';
-                                  let icon = '○';
-
-                                  if (isCorrectAnswer) {
-                                    borderColor = 'border-green-500';
-                                    bgColor = 'bg-green-100';
-                                    textColor = 'text-green-900';
-                                    icon = '✓';
-                                  }
-
-                                  if (isUserAnswer && !isCorrectAnswer) {
-                                    borderColor = 'border-red-500';
-                                    bgColor = 'bg-red-100';
-                                    textColor = 'text-red-900';
-                                    icon = '✗';
-                                  }
-
-                                  return (
-                                    <div key={optIdx} className={`p-3 rounded-lg border-2 ${borderColor} ${bgColor}`}>
-                                      <div className="flex items-start gap-3">
-                                        <span className={`font-bold text-lg flex-shrink-0 ${isCorrectAnswer ? 'text-green-600' : isUserAnswer ? 'text-red-600' : 'text-gray-400'}`}>
-                                          {icon}
-                                        </span>
-                                        <div className={`flex-1 font-medium text-base ${textColor} whitespace-pre-wrap break-words`} style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                                          {option}
-                                          {isUserAnswer && <span className="mr-2 text-sm font-bold">(اختيار الطالب)</span>}
-                                          {isCorrectAnswer && <span className="mr-2 text-sm font-bold">(الإجابة الصحيحة)</span>}
-                                        </div>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Summary */}
-                          <div className="mt-3 p-4 rounded-lg bg-gray-100 border-2">
-                            {wasAnswered ? (
-                              <div className="flex items-center gap-2">
-                                {isCorrect ? (
-                                  <>
-                                    <CheckCircle2 className="w-6 h-6 text-green-600" />
-                                    <span className="font-bold text-lg text-green-700">✅ إجابة صحيحة! +{question.points || question.marks || 1} نقطة</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <XCircle className="w-6 h-6 text-red-600" />
-                                    <span className="font-bold text-lg text-red-700">❌ إجابة خاطئة - 0 نقطة</span>
-                                  </>
-                                )}
-                              </div>
-                            ) : (
-                              <div className="flex items-center gap-2">
-                                <AlertCircle className="w-6 h-6 text-gray-500" />
-                                <span className="font-bold text-lg text-gray-600">⚠️ لم يجب على هذا السؤال</span>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </Card>
-                    );
-                  })}
-                </div>
-
-                {/* Actions */}
-                <div className="flex flex-col gap-3">
-                  {/* PDF Download Button - Always show after submission */}
-                  <Button
-                    onClick={generateExamPDF}
-                    disabled={generatingPDF}
-                    className="w-full bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white shadow-lg"
-                    size="lg"
-                  >
-                    {generatingPDF ? (
-                      <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white ml-2" />
-                        جاري إنشاء PDF...
-                      </>
-                    ) : (
-                      <>
-                        <FileText className="w-5 h-5 ml-2" />
-                        تحميل الامتحان كاملاً (PDF)
-                      </>
-                    )}
-                  </Button>
-
-                  {result?.hasEssayQuestions && (
-                    <p className="text-sm text-center text-muted-foreground">
-                      💡 يمكنك تحميل الامتحان الآن وستظهر النتيجة النهائية بعد التصحيح
-                    </p>
-                  )}
-
-                  <div className="flex gap-3">
-                    <Button
-                      onClick={() => navigate('/student-exams')}
-                      className="flex-1"
-                      variant="outline"
-                    >
-                      العودة للامتحانات
-                    </Button>
-                    <Button
-                      onClick={() => navigate('/student')}
-                      className="flex-1 bg-gradient-to-r from-primary to-accent"
-                    >
-                      العودة للرئيسية
-                    </Button>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </motion.div>
-        </div>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="max-w-md w-full"
+        >
+          <Card className="shadow-2xl border-2">
+            <CardHeader className="text-center pb-4">
+              <div className="mx-auto w-20 h-20 rounded-full flex items-center justify-center mb-4 bg-green-100 dark:bg-green-900/20">
+                <CheckCircle2 className="w-10 h-10 text-green-600 dark:text-green-500" />
+              </div>
+              <CardTitle className="text-2xl">
+                تم تسليم الامتحان بنجاح ✅
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-center space-y-4">
+              <div className="bg-primary/5 p-5 rounded-lg border border-primary/20">
+                <p className="text-xl font-semibold text-primary mb-2">
+                  🎉 أحسنت!
+                </p>
+                <p className="text-muted-foreground">
+                  تم تسجيل إجاباتك بنجاح وحفظ نتيجتك
+                </p>
+              </div>
+              <div className="bg-muted/50 p-5 rounded-lg">
+                <p className="text-muted-foreground mb-2">
+                  لمعرفة درجتك ومراجعة إجاباتك، توجه إلى:
+                </p>
+                <p className="text-xl font-bold text-primary">
+                  📊 نتائج الامتحانات
+                </p>
+              </div>
+              <Button
+                onClick={() => navigate('/student-exam-results')}
+                className="w-full text-lg py-6"
+              >
+                عرض نتائج الامتحانات
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => navigate('/student-exams')}
+                className="w-full"
+              >
+                العودة للامتحانات
+              </Button>
+            </CardContent>
+          </Card>
+        </motion.div>
       </div>
     );
   }
