@@ -122,7 +122,7 @@ const Expenses = () => {
       <Header />
 
       <div className="container mx-auto px-4 py-8">
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-8 gap-4 md:gap-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
               <TrendingDown className="w-6 h-6 text-primary" />
@@ -135,7 +135,7 @@ const Expenses = () => {
 
           <Dialog open={isOpen} onOpenChange={setIsOpen}>
             <DialogTrigger asChild>
-              <Button className="shadow-medium">
+              <Button className="shadow-medium w-full md:w-auto">
                 <Plus className="w-4 h-4 ml-2" />
                 إضافة مصروف جديد
               </Button>
@@ -234,15 +234,15 @@ const Expenses = () => {
                     key={expense.id}
                     className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
                   >
-                    <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-2 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <Avatar className="h-10 w-10 border-2 border-white">
+                    <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">
+                      <div className="flex items-center gap-3 w-full sm:w-auto">
+                        <Avatar className="h-10 w-10 border-2 border-white shrink-0">
                           <AvatarFallback className="text-xs bg-white text-cyan-600">
                             <DollarSign className="w-5 h-5" />
                           </AvatarFallback>
                         </Avatar>
-                        <div>
-                          <h3 className="font-bold text-white text-lg">{expense.description}</h3>
+                        <div className="min-w-0 flex-1">
+                          <h3 className="font-bold text-white text-lg truncate">{expense.description}</h3>
                           <div className="flex items-center gap-2 text-xs text-cyan-50">
                             {expense.category && (
                               <span>🏷️ {expense.category}</span>
@@ -250,7 +250,7 @@ const Expenses = () => {
                           </div>
                         </div>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex gap-2 self-end sm:self-auto">
                         <Button
                           variant="ghost"
                           size="sm"

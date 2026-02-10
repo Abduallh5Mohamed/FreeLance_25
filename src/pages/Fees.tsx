@@ -545,7 +545,7 @@ const Fees = () => {
       <Header />
 
       <div className="container mx-auto px-4 py-8">
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-8 gap-4 md:gap-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
               <DollarSign className="w-6 h-6 text-primary" />
@@ -590,32 +590,31 @@ const Fees = () => {
         {/* Online Students Fees */}
         <Card className="shadow-soft mb-6">
           <CardHeader className="bg-gradient-to-r from-blue-50 to-cyan-50 dark:from-blue-950 dark:to-cyan-950">
-            <CardTitle className="flex items-center gap-2">
-              <span></span>
-              كشف المصروفات - الطلاب الأونلاين
-            </CardTitle>
-            <div className="flex gap-4">
-              <div className="flex items-center gap-2">
-                <Search className="w-4 h-4 text-muted-foreground" />
-                <Input
-                  placeholder="البحث عن طالب..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="max-w-sm"
-                />
+            <CardTitle className="flex flex-col sm:flex-row items-start sm:items-center gap-2 justify-between w-full">
+              <span className="mb-2 sm:mb-0">كشف المصروفات - الطلاب الأونلاين</span>
+              <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <Search className="w-4 h-4 text-muted-foreground" />
+                  <Input
+                    placeholder="البحث عن طالب..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="max-w-full sm:max-w-sm w-full"
+                  />
+                </div>
+                <Select value={filterStatus} onValueChange={setFilterStatus}>
+                  <SelectTrigger className="w-full sm:w-[200px]">
+                    <SelectValue placeholder="تصفية حسب الحالة" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">جميع الحالات</SelectItem>
+                    <SelectItem value="مدفوع">مدفوع</SelectItem>
+                    <SelectItem value="جزئي">جزئي</SelectItem>
+                    <SelectItem value="متأخر">متأخر</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
-              <Select value={filterStatus} onValueChange={setFilterStatus}>
-                <SelectTrigger className="max-w-[200px]">
-                  <SelectValue placeholder="تصفية حسب الحالة" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">جميع الحالات</SelectItem>
-                  <SelectItem value="مدفوع">مدفوع</SelectItem>
-                  <SelectItem value="جزئي">جزئي</SelectItem>
-                  <SelectItem value="متأخر">متأخر</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            </CardTitle>
           </CardHeader>
           <CardContent>
             {subscriptionRequests.length > 0 && (
@@ -630,9 +629,9 @@ const Fees = () => {
                       key={request.id}
                       className="border border-yellow-200 dark:border-yellow-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-yellow-50 dark:bg-yellow-950/20"
                     >
-                      <div className="bg-gradient-to-r from-yellow-400 to-orange-400 px-4 py-2 flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <Avatar className="h-8 w-8 border-2 border-white">
+                      <div className="bg-gradient-to-r from-yellow-400 to-orange-400 px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">
+                        <div className="flex items-center gap-3 w-full sm:w-auto">
+                          <Avatar className="h-8 w-8 border-2 border-white shrink-0">
                             <AvatarFallback className="text-xs bg-white text-yellow-600">
                               {request.student_name?.charAt(0) || 'ط'}
                             </AvatarFallback>
@@ -648,14 +647,14 @@ const Fees = () => {
                             setSelectedRequest(request);
                             setIsViewRequestOpen(true);
                           }}
-                          className="h-7 px-3 text-white hover:bg-white/20"
+                          className="h-8 w-full sm:w-auto px-4 text-white hover:bg-white/20 self-end sm:self-auto"
                         >
-                          <Eye className="w-3 h-3 ml-1" />
-                          عرض
+                          <Eye className="w-3 h-3 ml-2" />
+                          عرض التفاصيل
                         </Button>
                       </div>
 
-                      <div className="p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                      <div className="p-3 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                         <div>
                           <span className="text-xs text-muted-foreground">الموبايل:</span>
                           <p className="font-medium">{request.phone}</p>
@@ -687,41 +686,43 @@ const Fees = () => {
               });
               return (
                 <div className="mb-6">
-                  <div className="flex items-center justify-between mb-4">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-4 sm:gap-0">
                     <h3 className="font-semibold text-green-800 dark:text-green-400 flex items-center gap-2">
                       <CheckCircle className="w-5 h-5" />
                       طلبات تم قبولها ({filteredApproved.length})
                     </h3>
-                    <div className="flex gap-2">
-                      <Select value={filterMonth.toString()} onValueChange={(v) => setFilterMonth(parseInt(v))}>
-                        <SelectTrigger className="w-32">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                            <SelectItem key={m} value={m.toString()}>
-                              {new Date(2025, m - 1).toLocaleDateString('ar-EG', { month: 'long' })}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Select value={filterYear.toString()} onValueChange={(v) => setFilterYear(parseInt(v))}>
-                        <SelectTrigger className="w-24">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - i).map((y) => (
-                            <SelectItem key={y} value={y.toString()}>{y}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                    <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+                      <div className="flex gap-2 w-full sm:w-auto">
+                        <Select value={filterMonth.toString()} onValueChange={(v) => setFilterMonth(parseInt(v))}>
+                          <SelectTrigger className="w-full sm:w-32">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                              <SelectItem key={m} value={m.toString()}>
+                                {new Date(2025, m - 1).toLocaleDateString('ar-EG', { month: 'long' })}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Select value={filterYear.toString()} onValueChange={(v) => setFilterYear(parseInt(v))}>
+                          <SelectTrigger className="w-24 sm:w-24">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - i).map((y) => (
+                              <SelectItem key={y} value={y.toString()}>{y}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
                       <Button
                         size="sm"
                         variant="destructive"
                         onClick={handleCleanupMonth}
                         disabled={filteredApproved.length === 0}
                         title="حذف جميع طلبات هذا الشهر من قاعدة البيانات"
-                        className="whitespace-nowrap"
+                        className="whitespace-nowrap w-full sm:w-auto"
                       >
                         <Trash2 className="w-3 h-3 ml-1" />
                         تنظيف الشهر
@@ -734,9 +735,9 @@ const Fees = () => {
                         key={request.id}
                         className="border border-green-200 dark:border-green-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-green-50 dark:bg-green-950/20"
                       >
-                        <div className="bg-gradient-to-r from-green-500 to-emerald-500 px-4 py-2 flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <Avatar className="h-8 w-8 border-2 border-white">
+                        <div className="bg-gradient-to-r from-green-500 to-emerald-500 px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">
+                          <div className="flex items-center gap-3 w-full sm:w-auto">
+                            <Avatar className="h-8 w-8 border-2 border-white shrink-0">
                               <AvatarFallback className="text-xs bg-white text-green-600">
                                 {request.student_name?.charAt(0) || 'ط'}
                               </AvatarFallback>
@@ -746,13 +747,13 @@ const Fees = () => {
                               <span className="text-xs text-green-50">✅ تم القبول</span>
                             </div>
                           </div>
-                          <div className="flex gap-2">
+                          <div className="flex gap-2 self-end sm:self-auto">
                             {request.guardian_phone && (
                               <Button
                                 size="sm"
                                 variant="ghost"
                                 onClick={() => handleSendWhatsApp(request)}
-                                className="h-7 px-3 text-white hover:bg-white/20 bg-white/10 hover:bg-white/30"
+                                className="h-8 px-3 text-white hover:bg-white/20 bg-white/10 hover:bg-white/30"
                                 title="إرسال WhatsApp"
                               >
                                 <MessageCircle className="w-3 h-3 ml-1" />
@@ -763,7 +764,7 @@ const Fees = () => {
                               size="sm"
                               variant="ghost"
                               onClick={() => handleDeleteFee(request.id, request.student_name)}
-                              className="h-7 px-3 text-white hover:bg-red-600/30 bg-red-600/20"
+                              className="h-8 px-3 text-white hover:bg-red-600/30 bg-red-600/20"
                               title="حذف"
                             >
                               <Trash2 className="w-3 h-3" />
@@ -771,7 +772,7 @@ const Fees = () => {
                           </div>
                         </div>
 
-                        <div className="p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                        <div className="p-3 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                           <div>
                             <span className="text-xs text-muted-foreground">الموبايل:</span>
                             <p className="font-medium">{request.phone}</p>

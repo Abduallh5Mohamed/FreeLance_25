@@ -334,9 +334,9 @@ export default function StudentBarcodes() {
       <Header />
       <div className="max-w-7xl mx-auto px-4 py-8">
         <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 bg-primary/10 rounded-lg flex items-center justify-center">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4 md:gap-0">
+            <div className="flex items-center gap-3 w-full md:w-auto">
+              <div className="w-12 h-12 bg-primary/10 rounded-lg flex items-center justify-center shrink-0">
                 <Barcode className="w-6 h-6 text-primary" />
               </div>
               <div>
@@ -344,11 +344,11 @@ export default function StudentBarcodes() {
                 <p className="text-muted-foreground">إنشاء وإدارة رموز الباركود الفريدة</p>
               </div>
             </div>
-            <div className="flex gap-2 no-print">
+            <div className="flex gap-2 no-print w-full md:w-auto">
               <Button
                 onClick={generateAllBarcodes}
-                disabled={loading || students.filter(s => !s.barcode).length === 0}
-                className="bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-600 hover:to-teal-600 text-white gap-2"
+                disabled={loading || students.filter(s => s.barcode).length === 0}
+                className="bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-600 hover:to-teal-600 text-white gap-2 w-full md:w-auto"
               >
                 <Zap className="w-4 h-4" />
                 إنشاء الكل
@@ -370,7 +370,7 @@ export default function StudentBarcodes() {
           className="bg-white dark:bg-slate-800 rounded-lg border border-cyan-200 dark:border-cyan-800 shadow-soft overflow-hidden mb-6">
 
           <Tabs value={selectedGroup} onValueChange={setSelectedGroup} className="w-full">
-            <div className="border-b border-cyan-200 dark:border-cyan-800 bg-gradient-to-r from-cyan-50 to-teal-50 dark:from-cyan-950/30 dark:to-teal-950/30 px-4 py-2 no-print">
+            <div className="border-b border-cyan-200 dark:border-cyan-800 bg-gradient-to-r from-cyan-50 to-teal-50 dark:from-cyan-950/30 dark:to-teal-950/30 px-4 py-2 no-print overflow-x-auto">
               <TabsList className="bg-transparent">
                 <TabsTrigger value="all" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-cyan-500 data-[state=active]:to-teal-500 data-[state=active]:text-white">
                   <Users className="w-4 h-4 ml-2" />
@@ -393,30 +393,35 @@ export default function StudentBarcodes() {
 
             <TabsContent value={selectedGroup} className="m-0">
               <div className="p-4 space-y-4">
-                <div className="flex items-center gap-2 mb-4 no-print">
-                  <Search className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-                  <Input
-                    placeholder="البحث عن طالب..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="flex-1"
-                  />
-                  <div className="flex items-center gap-2">
-                    <div className="text-sm text-muted-foreground">شكل الطباعة:</div>
-                    <div className="inline-flex rounded-md bg-white/50 p-1">
-                      <button onClick={() => setPrintStyle('table')} className={`px-3 py-1 text-sm ${printStyle === 'table' ? 'bg-cyan-500 text-white rounded' : 'text-muted-foreground'}`}>قائمة</button>
-                      <button onClick={() => setPrintStyle('cards')} className={`px-3 py-1 text-sm ${printStyle === 'cards' ? 'bg-cyan-500 text-white rounded' : 'text-muted-foreground'}`}>بطاقات</button>
-                    </div>
+                <div className="flex flex-col md:flex-row items-stretch md:items-center gap-3 mb-4 no-print">
+                  <div className="relative flex-1">
+                    <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      placeholder="البحث عن طالب..."
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      className="pr-9 w-full"
+                    />
                   </div>
 
-                  <Button
-                    onClick={() => handlePrint(selectedGroup)}
-                    variant="outline"
-                    className="gap-2 border-cyan-500 text-cyan-600 hover:bg-cyan-50 dark:hover:bg-cyan-950"
-                  >
-                    <Printer className="w-4 h-4" />
-                    طباعة المجموعة ({filteredStudents.length})
-                  </Button>
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                    <div className="flex items-center justify-between sm:justify-start gap-2 bg-muted/50 p-1 rounded-lg">
+                      <div className="text-sm text-muted-foreground px-2">شكل الطباعة:</div>
+                      <div className="inline-flex rounded-md bg-white/50 p-1">
+                        <button onClick={() => setPrintStyle('table')} className={`px-3 py-1 text-sm ${printStyle === 'table' ? 'bg-cyan-500 text-white rounded' : 'text-muted-foreground'}`}>قائمة</button>
+                        <button onClick={() => setPrintStyle('cards')} className={`px-3 py-1 text-sm ${printStyle === 'cards' ? 'bg-cyan-500 text-white rounded' : 'text-muted-foreground'}`}>بطاقات</button>
+                      </div>
+                    </div>
+
+                    <Button
+                      onClick={() => handlePrint(selectedGroup)}
+                      variant="outline"
+                      className="gap-2 border-cyan-500 text-cyan-600 hover:bg-cyan-50 dark:hover:bg-cyan-950 w-full sm:w-auto"
+                    >
+                      <Printer className="w-4 h-4" />
+                      طباعة ({filteredStudents.length})
+                    </Button>
+                  </div>
                 </div>
 
                 {filteredStudents.length === 0 ? (
@@ -441,17 +446,17 @@ export default function StudentBarcodes() {
                           transition={{ delay: index * 0.05 }}
                           className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
                         >
-                          <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-3 flex items-center justify-between">
+                          <div className="bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                             <div className="flex items-center gap-3">
-                              <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center text-cyan-600 font-bold text-sm">
+                              <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center text-cyan-600 font-bold text-sm shrink-0">
                                 {student.name?.charAt(0) || 'ط'}
                               </div>
                               <div>
-                                <h3 className="font-bold text-white text-lg">{student.name}</h3>
+                                <h3 className="font-bold text-white text-lg break-all">{student.name}</h3>
                                 <div className="text-white/90 text-sm">{student.grade || student.grade_name || '---'}</div>
                               </div>
                             </div>
-                            <div className="flex gap-2">
+                            <div className="flex gap-2 self-end sm:self-auto">
                               <Button
                                 variant="ghost"
                                 size="sm"
@@ -474,7 +479,7 @@ export default function StudentBarcodes() {
                             </div>
                           </div>
 
-                          <div className="p-4 grid grid-cols-2 gap-4">
+                          <div className="p-4 grid grid-cols-1 xs:grid-cols-2 gap-4">
                             <div>
                               <div className="flex items-center gap-2 mb-2">
                                 <Barcode className="w-4 h-4 text-cyan-600" />

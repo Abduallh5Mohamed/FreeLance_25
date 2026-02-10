@@ -25,7 +25,6 @@ import {
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import alQaedLogo from "@/assets/Qaad_Logo.png";
-import { NotificationBell } from "@/components/NotificationBell";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -393,7 +392,7 @@ const Header = () => {
           <div className="hidden xl:flex items-center gap-3">
             {/* Notification Bell */}
             <NotificationBell userType="teacher" />
-            
+
             <Button
               onClick={handleLogout}
               variant="ghost"
@@ -408,7 +407,7 @@ const Header = () => {
           <div className="xl:hidden flex items-center gap-2">
             {/* Notification Bell for Mobile */}
             <NotificationBell userType="teacher" />
-            
+
             <Button
               variant="ghost"
               size="icon"
