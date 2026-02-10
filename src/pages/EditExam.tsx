@@ -182,7 +182,7 @@ export default function EditExam() {
         group_id: exam.group_id === 'all' ? null : exam.group_id,
         start_time: formatDateTime(exam.start_time),
         end_time: formatDateTime(exam.end_time),
-        duration: exam.duration
+        duration_minutes: exam.duration_minutes
       };
 
       console.log('🔄 Updating exam with data:', updateData);
@@ -494,8 +494,8 @@ export default function EditExam() {
                     <Label>المدة (بالدقائق)</Label>
                     <Input
                       type="number"
-                      value={exam?.duration || ''}
-                      onChange={(e) => setExam({ ...exam, duration: parseInt(e.target.value) || 0 })}
+                      value={exam?.duration_minutes || ''}
+                      onChange={(e) => setExam({ ...exam, duration_minutes: parseInt(e.target.value) || 0 })}
                     />
                   </div>
                 </div>

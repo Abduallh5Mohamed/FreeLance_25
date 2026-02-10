@@ -261,7 +261,7 @@ const TakeExam = () => {
             if (typeof correctAnswer === 'string') {
               const letterToIndex: Record<string, number> = { 'a': 0, 'b': 1, 'c': 2, 'd': 3 };
               const normalizedAnswer = correctAnswer.toLowerCase().trim();
-              
+
               if (letterToIndex[normalizedAnswer] !== undefined) {
                 correctAnswer = letterToIndex[normalizedAnswer];
               } else {
@@ -363,15 +363,14 @@ const TakeExam = () => {
         // سؤال اختياري - نحسب درجته تلقائياً
         const userAnswerIndex = answers[question.id];
         const correctAnswer = question.correct_answer;
-        
-        // Convert user answer index (0,1,2,3) to letter (a,b,c,d)
-        const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
-          ? String.fromCharCode(97 + userAnswerIndex) 
-          : null;
 
-        console.log(`Q${idx + 1}: User answered index: ${userAnswerIndex}, letter: ${userAnswerLetter}, Correct: ${correctAnswer}, Match: ${userAnswerLetter === correctAnswer}`);
+        // Compare directly as numbers (both are indices 0-3)
+        const isCorrect = userAnswerIndex !== undefined && userAnswerIndex !== null
+          && Number(userAnswerIndex) === Number(correctAnswer);
 
-        if (userAnswerLetter === correctAnswer) {
+        console.log(`Q${idx + 1}: User answered index: ${userAnswerIndex}, Correct: ${correctAnswer}, Match: ${isCorrect}`);
+
+        if (isCorrect) {
           autoScore += questionPoints;
           correctCount++;
           console.log(`✅ Correct! Score: ${questionPoints}`);
@@ -588,7 +587,7 @@ const TakeExam = () => {
         // Question number and points
         doc.setFillColor(250, 250, 250);
         doc.roundedRect(15, yPos - 5, pageWidth - 30, 8, 2, 2, 'F');
-        
+
         doc.setTextColor(13, 148, 136);
         doc.setFontSize(11);
         const pointsText = `(${question.points || question.marks || 1} نقطة)`;
@@ -602,7 +601,7 @@ const TakeExam = () => {
         const questionText = question.question_text || question.question || '';
         const maxWidth = pageWidth - 35;
         const lines = doc.splitTextToSize(questionText, maxWidth);
-        
+
         lines.forEach((line: string, lineIdx: number) => {
           if (yPos > pageHeight - 40) {
             doc.addPage();
@@ -622,11 +621,11 @@ const TakeExam = () => {
               doc.addPage();
               yPos = 20;
             }
-            
+
             const optionLetter = String.fromCharCode(97 + optIdx); // a, b, c, d
             const isUserAnswer = userAnswer === optIdx;
             const isCorrectAnswer = question.correct_answer === optIdx;
-            
+
             // تلوين الخيار
             if (isUserAnswer && isCorrectAnswer) {
               doc.setTextColor(34, 197, 94); // أخضر - إجابة صحيحة
@@ -666,18 +665,18 @@ const TakeExam = () => {
         } else if (questionType === 'essay') {
           const essayAnswer = essayAnswers[question.id];
           const answerImage = answerImages[question.id];
-          
+
           if (essayAnswer || answerImage) {
             doc.setTextColor(13, 148, 136);
             doc.setFontSize(10);
             doc.text('📝 إجابتك المقالية:', pageWidth - 20, yPos, { align: 'right' });
             yPos += 7;
-            
+
             // عرض الإجابة النصية كاملة
             if (essayAnswer) {
               doc.setTextColor(0, 0, 0);
               doc.setFontSize(9);
-              
+
               // عرض الإجابة الكاملة مع دعم الأسطر المتعددة
               const essayLines = doc.splitTextToSize(essayAnswer, maxWidth - 10);
               essayLines.forEach((line: string) => {
@@ -690,14 +689,14 @@ const TakeExam = () => {
               });
               yPos += 3;
             }
-            
+
             // عرض صورة الإجابة إن وجدت
             if (answerImage) {
               doc.setTextColor(13, 148, 136);
               doc.setFontSize(9);
               doc.text('🖼️ صورة الإجابة مرفقة', pageWidth - 25, yPos, { align: 'right' });
               yPos += 5;
-              
+
               // محاولة إضافة الصورة للـ PDF
               try {
                 if (answerImage.startsWith('data:image')) {
@@ -712,7 +711,7 @@ const TakeExam = () => {
                 console.log('Could not add image to PDF');
               }
             }
-            
+
             // ملاحظة أن السؤال يحتاج تصحيح يدوي
             doc.setTextColor(255, 152, 0);
             doc.setFontSize(8);
@@ -966,19 +965,19 @@ const TakeExam = () => {
   const essayQuestionsCount = exam?.questions.filter(q => q.question_type === 'essay').length || 0;
   const multipleChoiceCount = exam?.questions.filter(q => q.question_type !== 'essay').length || 0;
   const hasEssayQuestions = essayQuestionsCount > 0;
-  
+
   // ✅ حساب درجة الاختياري فقط
   const multipleChoiceScore = exam?.questions
     .filter(q => q.question_type !== 'essay')
     .filter(q => {
       const userAnswerIndex = answers[q.id];
-      const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
-        ? String.fromCharCode(97 + userAnswerIndex) 
+      const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null
+        ? String.fromCharCode(97 + userAnswerIndex)
         : null;
       return userAnswerLetter === q.correct_answer;
     })
     .reduce((sum, q) => sum + (q.marks || q.points || 1), 0) || 0;
-    
+
   const multipleChoiceTotal = exam?.questions
     .filter(q => q.question_type !== 'essay')
     .reduce((sum, q) => sum + (q.marks || q.points || 1), 0) || 0;
@@ -987,7 +986,7 @@ const TakeExam = () => {
     // ✅ تحديد حالة العرض بناءً على وجود أسئلة مقالية
     const isPendingReview = hasEssayQuestions;
     const showPassFail = !isPendingReview;
-    
+
     return (
       <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
         <FloatingParticles />
@@ -1020,10 +1019,10 @@ const TakeExam = () => {
                   )}
                 </div>
                 <CardTitle className="text-3xl">
-                  {isPendingReview 
-                    ? 'تم تسليم الامتحان ✅' 
-                    : result.passed 
-                      ? 'نجحت في الامتحان! 🎉' 
+                  {isPendingReview
+                    ? 'تم تسليم الامتحان ✅'
+                    : result.passed
+                      ? 'نجحت في الامتحان! 🎉'
                       : 'للأسف، لم تنجح'}
                 </CardTitle>
                 {isPendingReview && (
@@ -1043,7 +1042,7 @@ const TakeExam = () => {
                         {multipleChoiceScore}/{multipleChoiceTotal}
                       </div>
                     </div>
-                    
+
                     {/* درجة المقالي - قيد المراجعة */}
                     <div className="text-center p-4 bg-blue-50 dark:bg-blue-900/10 rounded-lg border border-blue-200 dark:border-blue-800">
                       <p className="text-sm text-muted-foreground mb-2">الأسئلة المقالية ({essayQuestionsCount} سؤال)</p>
@@ -1052,7 +1051,7 @@ const TakeExam = () => {
                         <span className="text-lg font-medium">قيد المراجعة</span>
                       </div>
                     </div>
-                    
+
                     {/* الدرجة الكلية */}
                     <div className="text-center p-4 bg-gray-50 dark:bg-gray-900/10 rounded-lg border">
                       <p className="text-sm text-muted-foreground mb-2">الدرجة الكلية (مبدئية)</p>
@@ -1083,8 +1082,8 @@ const TakeExam = () => {
                       <div className="text-2xl font-bold text-green-600">
                         {exam.questions.filter(q => {
                           const userAnswerIndex = answers[q.id];
-                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
-                            ? String.fromCharCode(97 + userAnswerIndex) 
+                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null
+                            ? String.fromCharCode(97 + userAnswerIndex)
                             : null;
                           return userAnswerLetter === q.correct_answer;
                         }).length}
@@ -1095,8 +1094,8 @@ const TakeExam = () => {
                       <div className="text-2xl font-bold text-red-600">
                         {exam.questions.filter(q => {
                           const userAnswerIndex = answers[q.id];
-                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
-                            ? String.fromCharCode(97 + userAnswerIndex) 
+                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null
+                            ? String.fromCharCode(97 + userAnswerIndex)
                             : null;
                           return userAnswerLetter !== null && userAnswerLetter !== q.correct_answer;
                         }).length}
@@ -1104,7 +1103,7 @@ const TakeExam = () => {
                     </Card>
                   </div>
                 )}
-                
+
                 {/* Stats for pending review - show multiple choice stats */}
                 {isPendingReview && multipleChoiceCount > 0 && (
                   <div className="grid grid-cols-2 gap-4">
@@ -1114,8 +1113,8 @@ const TakeExam = () => {
                         {exam.questions.filter(q => {
                           if (q.question_type === 'essay') return false;
                           const userAnswerIndex = answers[q.id];
-                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
-                            ? String.fromCharCode(97 + userAnswerIndex) 
+                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null
+                            ? String.fromCharCode(97 + userAnswerIndex)
                             : null;
                           return userAnswerLetter === q.correct_answer;
                         }).length}
@@ -1127,8 +1126,8 @@ const TakeExam = () => {
                         {exam.questions.filter(q => {
                           if (q.question_type === 'essay') return false;
                           const userAnswerIndex = answers[q.id];
-                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
-                            ? String.fromCharCode(97 + userAnswerIndex) 
+                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null
+                            ? String.fromCharCode(97 + userAnswerIndex)
                             : null;
                           return userAnswerLetter !== null && userAnswerLetter !== q.correct_answer;
                         }).length}

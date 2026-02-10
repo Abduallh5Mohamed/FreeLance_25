@@ -80,7 +80,7 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
 
         // Get exams: either assigned to student's group OR matching student's grade
         let exams: Exam[] = [];
-        
+
         if (student.group_id) {
             // Try getting exams via exam_groups first
             exams = await query<Exam>(
@@ -93,7 +93,7 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
                 [student.group_id, student.grade_id]
             );
         }
-        
+
         // If no exams found via groups, try by grade_id directly
         if (exams.length === 0 && student.grade_id) {
             exams = await query<Exam>(
@@ -388,7 +388,8 @@ router.put('/:id', async (req: Request, res: Response) => {
             is_active,
             course_id,
             grade_id,
-            group_id
+            group_id,
+            group_ids   // ✅ Support array of group IDs for exam_groups
         } = req.body;
 
         console.log('📝 UPDATE EXAM REQUEST:', {
@@ -470,10 +471,7 @@ router.put('/:id', async (req: Request, res: Response) => {
             updates.push('grade_id = ?');
             values.push(grade_id);
         }
-        if (group_id !== undefined) {
-            updates.push('group_id = ?');
-            values.push(group_id);
-        }
+        // group_id is NOT a column on exams table — handled via exam_groups junction table below
 
         updates.push('updated_at = NOW()');
         values.push(req.params.id);
@@ -494,6 +492,30 @@ router.put('/:id', async (req: Request, res: Response) => {
 
         console.log('✅ UPDATE RESULT:', result);
 
+        // ✅ Update exam_groups junction table if group_ids provided
+        if (group_ids && Array.isArray(group_ids)) {
+            // Delete existing group associations
+            await execute('DELETE FROM exam_groups WHERE exam_id = ?', [req.params.id]);
+            // Insert new group associations
+            for (const gid of group_ids) {
+                if (gid && gid !== 'all') {
+                    await execute(
+                        'INSERT INTO exam_groups (exam_id, group_id) VALUES (?, ?)',
+                        [req.params.id, gid]
+                    );
+                }
+            }
+            console.log('✅ Updated exam_groups:', group_ids);
+        } else if (group_id && group_id !== 'all') {
+            // Single group_id: also update exam_groups for backward compatibility
+            await execute('DELETE FROM exam_groups WHERE exam_id = ?', [req.params.id]);
+            await execute(
+                'INSERT INTO exam_groups (exam_id, group_id) VALUES (?, ?)',
+                [req.params.id, group_id]
+            );
+            console.log('✅ Updated exam_groups with single group:', group_id);
+        }
+
         const updatedExam = await queryOne<Exam>(
             'SELECT * FROM exams WHERE id = ?',
             [req.params.id]
@@ -505,6 +527,23 @@ router.put('/:id', async (req: Request, res: Response) => {
     } catch (error) {
         console.error('Update exam error:', error);
         res.status(500).json({ error: 'Failed to update exam' });
+    }
+});
+
+// ✅ Get groups assigned to an exam
+router.get('/:examId/groups', async (req: Request, res: Response) => {
+    try {
+        const groups = await query<any>(
+            `SELECT eg.group_id, g.name as group_name 
+             FROM exam_groups eg 
+             LEFT JOIN \`groups\` g ON eg.group_id = g.id 
+             WHERE eg.exam_id = ?`,
+            [req.params.examId]
+        );
+        res.json(groups);
+    } catch (error) {
+        console.error('Get exam groups error:', error);
+        res.status(500).json({ error: 'Failed to fetch exam groups' });
     }
 });
 
