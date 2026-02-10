@@ -142,8 +142,8 @@ const BarcodeAttendance = () => {
       setTodayAttendance(response.data || []);
 
       // Update payment status and last attendance for all students who attended
-      const paymentsData: Record<string, boolean> = { ...monthlyPayments };
-      const lastAttendanceData: Record<string, any> = { ...lastAttendance };
+      const paymentsData: Record<string, boolean> = {};
+      const lastAttendanceData: Record<string, any> = {};
       const currentYear = new Date().getFullYear();
       const currentMonth = new Date().getMonth() + 1;
       // استخدم تعريف today في أعلى الدالة وتجنب إعادة تعريفه لتفادي الخطأ
@@ -194,8 +194,8 @@ const BarcodeAttendance = () => {
       }
       console.log('[Attendance] monthlyPayments (today) =>', paymentsData);
       console.log('[Attendance] lastAttendance (today) =>', lastAttendanceData);
-      setMonthlyPayments(paymentsData);
-      setLastAttendance(lastAttendanceData);
+      setMonthlyPayments(prev => ({ ...prev, ...paymentsData }));
+      setLastAttendance(prev => ({ ...prev, ...lastAttendanceData }));
     } catch (error) {
       console.error('Error fetching attendance:', error);
       toast({
@@ -233,8 +233,8 @@ const BarcodeAttendance = () => {
 
       // Fetch last attendance for each absent student
       const lastAttendanceData: Record<string, any> = {};
-      // Start with existing payment cache so we don't lose paid status for present students
-      const paymentsData: Record<string, boolean> = { ...monthlyPayments };
+      // Payment data for absent students only - will be merged with existing
+      const paymentsData: Record<string, boolean> = {};
 
       for (const student of absent) {
         // Get last scheduled session attendance
@@ -278,9 +278,9 @@ const BarcodeAttendance = () => {
       }
 
       setAbsentStudents(absent);
-      setLastAttendance(lastAttendanceData);
+      setLastAttendance(prev => ({ ...prev, ...lastAttendanceData }));
       console.log('[Attendance] monthlyPayments (absent) =>', paymentsData);
-      setMonthlyPayments(paymentsData);
+      setMonthlyPayments(prev => ({ ...prev, ...paymentsData }));
     } catch (error) {
       console.error('Error fetching absent students:', error);
     }

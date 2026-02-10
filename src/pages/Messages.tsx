@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Send,
@@ -77,12 +77,12 @@ export default function Messages() {
       });
 
       newSocket.on('connect', () => {
-        console.log('✅ Socket connected');
+        console.log('âœ… Socket connected');
         newSocket.emit('user:connect', user.id);
       });
 
       newSocket.on('disconnect', () => {
-        console.log('❌ Socket disconnected');
+        console.log('âŒ Socket disconnected');
       });
 
       newSocket.on('connect_error', (err: any) => {
@@ -91,7 +91,7 @@ export default function Messages() {
 
       newSocket.on('message:new', (msg: any) => {
         try {
-          console.log('📩 New message received:', msg);
+          console.log('ðŸ“© New message received:', msg);
           if (msg && msg.content) {
             setMessages(prev => {
               // Avoid duplicates
@@ -142,7 +142,7 @@ export default function Messages() {
         // Map API response fields to User interface
         const mapped = data.map((c: any) => ({
           id: c.other_user_id || c.id,
-          name: c.other_user_name || c.name || 'بدون اسم',
+          name: c.other_user_name || c.name || 'Ø¨Ø¯ÙˆÙ† Ø§Ø³Ù…',
           role: c.other_user_role || c.role || '',
           phone: c.phone || '',
           avatar: c.avatar || '',
@@ -259,8 +259,8 @@ export default function Messages() {
     } catch (error) {
       console.error('Error sending message:', error);
       toast({
-        title: "خطأ",
-        description: "فشل إرسال الرسالة",
+        title: "Ø®Ø·Ø£",
+        description: "ÙØ´Ù„ Ø¥Ø±Ø³Ø§Ù„ Ø§Ù„Ø±Ø³Ø§Ù„Ø©",
         variant: "destructive"
       });
     }
@@ -300,7 +300,7 @@ export default function Messages() {
             {/* Sidebar Header */}
             <div className="p-4 border-b bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm shrink-0">
               <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
-                <span className="text-primary">الرسائل</span>
+                <span className="text-primary">Ø§Ù„Ø±Ø³Ø§Ø¦Ù„</span>
                 {conversations.reduce((sum, c) => sum + (c.unread_count || 0), 0) > 0 && (
                   <span className="text-sm font-normal text-white bg-red-500 px-2 py-0.5 rounded-full">
                     {conversations.reduce((sum, c) => sum + (c.unread_count || 0), 0)}
@@ -310,7 +310,7 @@ export default function Messages() {
               <div className="relative">
                 <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
-                  placeholder="بحث بالاسم أو رقم الهاتف..."
+                  placeholder="Ø¨Ø­Ø« Ø¨Ø§Ù„Ø§Ø³Ù… Ø£Ùˆ Ø±Ù‚Ù… Ø§Ù„Ù‡Ø§ØªÙ..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="pr-9"
@@ -323,8 +323,8 @@ export default function Messages() {
               <div className="p-2 space-y-1">
                 {filteredConversations.length === 0 ? (
                   <div className="text-center py-8 text-muted-foreground">
-                    <p>لا توجد محادثات</p>
-                    <p className="text-xs mt-1">ابحث عن طالب لبدء محادثة</p>
+                    <p>Ù„Ø§ ØªÙˆØ¬Ø¯ Ù…Ø­Ø§Ø¯Ø«Ø§Øª</p>
+                    <p className="text-xs mt-1">Ø§Ø¨Ø­Ø« Ø¹Ù† Ø·Ø§Ù„Ø¨ Ù„Ø¨Ø¯Ø¡ Ù…Ø­Ø§Ø¯Ø«Ø©</p>
                   </div>
                 ) : (
                   filteredConversations.map((user) => (
@@ -341,7 +341,7 @@ export default function Messages() {
                       <div className="relative shrink-0">
                         <Avatar>
                           <AvatarImage src={user.avatar} />
-                          <AvatarFallback>{(user.name || '؟').substring(0, 2)}</AvatarFallback>
+                          <AvatarFallback>{(user.name || 'ØŸ').substring(0, 2)}</AvatarFallback>
                         </Avatar>
                         {user.is_online && (
                           <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white dark:border-slate-800 rounded-full"></span>
@@ -349,7 +349,7 @@ export default function Messages() {
                       </div>
                       <div className="flex-1 overflow-hidden min-w-0">
                         <div className="flex items-center justify-between mb-1">
-                          <span className="font-semibold truncate">{user.name || 'بدون اسم'}</span>
+                          <span className="font-semibold truncate">{user.name || 'Ø¨Ø¯ÙˆÙ† Ø§Ø³Ù…'}</span>
                           {user.last_seen && (
                             <span className="text-xs text-muted-foreground shrink-0 mr-2">
                               {new Date(user.last_seen).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
@@ -358,7 +358,7 @@ export default function Messages() {
                         </div>
                         <div className="flex items-center justify-between">
                           <p className="text-sm text-muted-foreground truncate">
-                            {user.phone || 'بدون رقم'}
+                            {user.phone || 'Ø¨Ø¯ÙˆÙ† Ø±Ù‚Ù…'}
                           </p>
                           {user.unread_count ? (
                             <span className="bg-primary text-primary-foreground text-xs px-2 py-0.5 rounded-full min-w-[20px] text-center shrink-0 mr-2">
@@ -370,12 +370,6 @@ export default function Messages() {
                     </button>
                   ))
                 )}
-<<<<<<< HEAD
-            </div>
-            </div>
-        </div>
-    );
-=======
               </div>
             </ScrollArea>
           </div>
@@ -395,18 +389,18 @@ export default function Messages() {
                   )}
                   <Avatar className="shrink-0">
                     <AvatarImage src={selectedUser.avatar} />
-                    <AvatarFallback>{(selectedUser.name || '؟').substring(0, 2)}</AvatarFallback>
+                    <AvatarFallback>{(selectedUser.name || 'ØŸ').substring(0, 2)}</AvatarFallback>
                   </Avatar>
                   <div className="flex-1 min-w-0">
-                    <h3 className="font-bold truncate">{selectedUser.name || 'بدون اسم'}</h3>
+                    <h3 className="font-bold truncate">{selectedUser.name || 'Ø¨Ø¯ÙˆÙ† Ø§Ø³Ù…'}</h3>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       {selectedUser.is_online ? (
                         <span className="text-green-600 flex items-center gap-1">
                           <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-                          متصل الآن
+                          Ù…ØªØµÙ„ Ø§Ù„Ø¢Ù†
                         </span>
                       ) : (
-                        <span>آخر ظهور: {selectedUser.last_seen ? new Date(selectedUser.last_seen).toLocaleTimeString('ar-EG') : 'غير متاح'}</span>
+                        <span>Ø¢Ø®Ø± Ø¸Ù‡ÙˆØ±: {selectedUser.last_seen ? new Date(selectedUser.last_seen).toLocaleTimeString('ar-EG') : 'ØºÙŠØ± Ù…ØªØ§Ø­'}</span>
                       )}
                       {selectedUser.phone && <span>| {selectedUser.phone}</span>}
                     </div>
@@ -428,7 +422,7 @@ export default function Messages() {
                         <div className="bg-slate-200 dark:bg-slate-800 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
                           <UserIcon className="w-8 h-8" />
                         </div>
-                        <p>ابدأ المحادثة مع {selectedUser.name || 'المستخدم'}</p>
+                        <p>Ø§Ø¨Ø¯Ø£ Ø§Ù„Ù…Ø­Ø§Ø¯Ø«Ø© Ù…Ø¹ {selectedUser.name || 'Ø§Ù„Ù…Ø³ØªØ®Ø¯Ù…'}</p>
                       </div>
                     ) : (
                       messages.map((msg) => {
@@ -483,7 +477,7 @@ export default function Messages() {
                             handleSendMessage();
                           }
                         }}
-                        placeholder="اكتب رسالتك هنا..."
+                        placeholder="Ø§ÙƒØªØ¨ Ø±Ø³Ø§Ù„ØªÙƒ Ù‡Ù†Ø§..."
                         className="w-full bg-transparent border-none focus:outline-none resize-none px-4 py-3 text-base leading-relaxed"
                         dir="auto"
                         style={{ minHeight: '48px', maxHeight: '150px', unicodeBidi: 'plaintext' as any }}
@@ -505,8 +499,8 @@ export default function Messages() {
                 <div className="bg-slate-100 dark:bg-slate-800 p-6 rounded-full mb-4">
                   <Send className="w-12 h-12 text-slate-400" />
                 </div>
-                <h3 className="text-xl font-semibold mb-2">اختر محادثة للبدء</h3>
-                <p>تواصل مع الطلاب والمدرسين بسهولة</p>
+                <h3 className="text-xl font-semibold mb-2">Ø§Ø®ØªØ± Ù…Ø­Ø§Ø¯Ø«Ø© Ù„Ù„Ø¨Ø¯Ø¡</h3>
+                <p>ØªÙˆØ§ØµÙ„ Ù…Ø¹ Ø§Ù„Ø·Ù„Ø§Ø¨ ÙˆØ§Ù„Ù…Ø¯Ø±Ø³ÙŠÙ† Ø¨Ø³Ù‡ÙˆÙ„Ø©</p>
               </div>
             )}
           </div>
@@ -514,5 +508,4 @@ export default function Messages() {
       </div>
     </div>
   );
->>>>>>> c631e3feae6f95d4451167c785afbb8668979091
 }

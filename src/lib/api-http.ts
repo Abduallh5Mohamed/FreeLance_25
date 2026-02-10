@@ -1492,12 +1492,12 @@ export const submitPremiumLecturePayment = async (formData: FormData): Promise<P
         headers: token ? { 'Authorization': `Bearer ${token}` } : {},
         body: formData,
     });
-    
+
     if (!response.ok) {
         const error = await response.json().catch(() => ({ error: 'Request failed' }));
         throw new Error(error.error || `HTTP ${response.status}`);
     }
-    
+
     return response.json();
 };
 

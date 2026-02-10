@@ -175,28 +175,28 @@ const StudentPayments = () => {
     };
   };
 
-  // Get current month payment for a student
-  const getCurrentMonthPayment = (studentId: string) => {
+  // Get current month payments for a student (all payments this month)
+  const getCurrentMonthPayments = (studentId: string) => {
     const now = new Date();
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth() + 1;
     const studentPayments = payments[studentId] || [];
-    return studentPayments.find(p => 
-      p.status === 'paid' && 
-      p.payment_year === currentYear && 
+    return studentPayments.filter(p =>
+      p.status === 'paid' &&
+      p.payment_year === currentYear &&
       p.payment_month === currentMonth
     );
   };
 
-  // Current month paid amount for a student
+  // Current month paid amount for a student (sum of all payments this month)
   const getCurrentMonthPaid = (studentId: string) => {
-    const payment = getCurrentMonthPayment(studentId);
-    return payment ? (Number(payment.paid_amount) || Number(payment.amount) || 0) : 0;
+    const monthPayments = getCurrentMonthPayments(studentId);
+    return monthPayments.reduce((sum, p) => sum + (Number(p.paid_amount) || Number(p.amount) || 0), 0);
   };
 
   // Check if student paid this month
   const hasPaidCurrentMonth = (studentId: string) => {
-    return !!getCurrentMonthPayment(studentId);
+    return getCurrentMonthPayments(studentId).length > 0;
   };
 
   // Total paid for all students THIS MONTH only

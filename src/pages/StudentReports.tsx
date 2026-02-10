@@ -233,15 +233,15 @@ const StudentReports = () => {
       const monthLabel = fee.payment_month && fee.payment_year
         ? `${getMonthName(fee.payment_month)} ${fee.payment_year}`
         : fee.due_date
-        ? new Date(fee.due_date).toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' })
-        : 'غير محدد';
+          ? new Date(fee.due_date).toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' })
+          : 'غير محدد';
 
       if (fee.status === 'paid') {
         paidMonths.push(monthLabel);
         totalPaid += Number(fee.paid_amount) || 0;
         // Check if this is current month payment
         if (fee.payment_year === currentYear && fee.payment_month === currentMonth) {
-          currentMonthPaid = Number(fee.paid_amount) || Number(fee.amount) || 0;
+          currentMonthPaid += Number(fee.paid_amount) || Number(fee.amount) || 0;
           hasPaidCurrentMonth = true;
         }
       } else {
@@ -396,7 +396,7 @@ const StudentReports = () => {
     setSelectedStudent(student);
     setEditingNotes(studentNotes.get(student.id) || '');
     setShowReportDialog(true);
-    
+
     // Load notes from database
     try {
       const token = localStorage.getItem('token');
