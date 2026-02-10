@@ -1,0 +1,92 @@
+{
+  "name": "منصة القائد - مستر محمد رمضان تاريخ",
+  "short_name": "القائد",
+  "description": "منصة القائد التعليمية - مستر محمد رمضان - تاريخ محمد رمضان - القائد للتاريخ. أفضل منصة تعليم التاريخ للثانوية العامة في مصر. تاريخ اولى ثانوي، تانية ثانوي، تالتة ثانوي.",
+  "start_url": "/",
+  "id": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "browser"],
+  "background_color": "#0f172a",
+  "theme_color": "#0d9488",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "lang": "ar",
+  "dir": "rtl",
+  "categories": ["education", "productivity", "utilities"],
+  "iarc_rating_id": "",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "/favicon-32x32.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "/favicon-16x16.png",
+      "sizes": "16x16",
+      "type": "image/png"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/maskable-icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/og-image.png",
+      "sizes": "1200x630",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "منصة القائد - مستر محمد رمضان تاريخ - الصفحة الرئيسية"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "المحاضرات",
+      "short_name": "محاضرات",
+      "description": "محاضرات تاريخ مستر محمد رمضان",
+      "url": "/student-lectures",
+      "icons": [{"src": "/favicon-32x32.png", "sizes": "32x32"}]
+    },
+    {
+      "name": "الامتحانات",
+      "short_name": "امتحانات",
+      "description": "امتحانات تاريخ الكترونية",
+      "url": "/student-exams",
+      "icons": [{"src": "/favicon-32x32.png", "sizes": "32x32"}]
+    },
+    {
+      "name": "البث المباشر",
+      "short_name": "لايف",
+      "description": "بث مباشر تاريخ مستر محمد رمضان",
+      "url": "/student-meetings",
+      "icons": [{"src": "/favicon-32x32.png", "sizes": "32x32"}]
+    }
+  ],
+  "related_applications": [],
+  "handle_links": "preferred"
+}
