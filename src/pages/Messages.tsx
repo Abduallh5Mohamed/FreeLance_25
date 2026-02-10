@@ -80,6 +80,8 @@ interface Conversation {
 }
 
 export default function Messages() {
+    // Always start with showing sidebar only (like WhatsApp)
+    const [showSidebar, setShowSidebar] = useState(true);
     const navigate = useNavigate();
     const [user, setUser] = useState<any>(null);
     const [socket, setSocket] = useState<Socket | null>(null);
@@ -676,8 +678,8 @@ export default function Messages() {
         setSelectedUser(chatUser);
         setMessages([]);
         loadMessages(chatUser.id);
-
-        // Immediately clear unread count in the UI for this conversation
+        // دائماً أخفِ القائمة الجانبية عند اختيار شات (موبايل أو لابتوب)
+        setShowSidebar(false);
         setConversations(prev => prev.map(conv =>
             conv.other_user_id === chatUser.id
                 ? { ...conv, unread_count: 0 }
@@ -728,10 +730,28 @@ export default function Messages() {
         );
     }
 
+    // NavBar دائم أعلى الصفحة
     return (
-        <div className="flex h-screen bg-gray-50" dir="rtl">
+        <div className="flex h-screen bg-gray-50 flex-col" dir="rtl">
+            {/* NavBar أعلى الصفحة */}
+            <div className="sticky top-0 left-0 w-full z-30 bg-gradient-to-br from-primary/90 to-cyan-700 dark:from-slate-900 dark:to-cyan-950 border-b border-primary/30 p-3 flex items-center gap-3 shadow-lg min-h-[56px]">
+                {/* زر رجوع في الموبايل فقط */}
+                {selectedUser && !showSidebar && (
+                    <Button variant="ghost" size="icon" className="mr-2 md:hidden" onClick={() => setShowSidebar(true)}>
+                        <ArrowLeft className="h-6 w-6 text-white" />
+                    </Button>
+                )}
+                <div className="w-10 h-10 bg-white/20 dark:bg-slate-700/40 rounded-lg flex items-center justify-center">
+                    <span className="text-lg">💬</span>
+                </div>
+                <div className="flex-1 min-w-0">
+                    <h1 className="text-lg md:text-xl font-bold text-white truncate">المحادثات</h1>
+                    <p className="text-xs md:text-sm text-cyan-100 truncate">تواصل مع المستخدمين أو المساعد الذكي</p>
+                </div>
+            </div>
+            <div className="flex flex-1 w-full overflow-hidden">
             {/* Sidebar - Conversations & Users */}
-            <div className="w-80 bg-white border-l border-gray-200 flex flex-col">
+            <div className={`w-80 bg-white border-l border-gray-200 flex flex-col transition-all duration-200 ${showSidebar ? '' : 'hidden'}`} style={{minWidth:'260px',maxWidth:'350px'}}>
                 <div className="p-4 border-b border-gray-200">
                     <div className="flex items-center justify-between mb-4">
                         <h2 className="text-xl font-bold">الرسائل</h2>
@@ -905,30 +925,32 @@ export default function Messages() {
             </div>
 
             {/* Chat Area */}
-            <div className="flex-1 flex flex-col">
+            <div className={`flex-1 flex flex-col bg-gray-50 transition-all duration-200 ${showSidebar ? 'hidden' : ''}`}>
                 {selectedUser ? (
                     <>
-                        {/* Chat Header */}
-                        <div className="bg-white border-b border-gray-200 p-4">
-                            <div className="flex items-center gap-3">
-                                <div className="relative">
-                                    <Avatar>
-                                        <AvatarFallback>{(selectedUser.username || selectedUser.name || 'U')[0]}</AvatarFallback>
-                                    </Avatar>
-                                    {selectedUser.is_online && (
-                                        <div className="absolute bottom-0 left-0 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
+                        {/* Chat Header (داخل نافذة الشات) */}
+                        <div className="bg-white border-b border-gray-200 p-4 flex items-center gap-3 sticky top-0 z-20">
+                            {/* زر رجوع دائماً */}
+                            <Button variant="ghost" size="icon" className="mr-2" onClick={() => setShowSidebar(true)}>
+                                <ArrowLeft className="h-6 w-6" />
+                            </Button>
+                            <div className="relative">
+                                <Avatar>
+                                    <AvatarFallback>{(selectedUser.username || selectedUser.name || 'U')[0]}</AvatarFallback>
+                                </Avatar>
+                                {selectedUser.is_online && (
+                                    <div className="absolute bottom-0 left-0 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
+                                )}
+                            </div>
+                            <div>
+                                <h3 className="font-semibold">{selectedUser.username || selectedUser.name}</h3>
+                                <p className="text-sm text-gray-500">
+                                    {selectedUser.is_online ? (
+                                        <span className="text-green-600">متصل الآن</span>
+                                    ) : (
+                                        selectedUser.last_seen && `آخر ظهور ${formatDate(selectedUser.last_seen)}`
                                     )}
-                                </div>
-                                <div>
-                                    <h3 className="font-semibold">{selectedUser.username || selectedUser.name}</h3>
-                                    <p className="text-sm text-gray-500">
-                                        {selectedUser.is_online ? (
-                                            <span className="text-green-600">متصل الآن</span>
-                                        ) : (
-                                            selectedUser.last_seen && `آخر ظهور ${formatDate(selectedUser.last_seen)}`
-                                        )}
-                                    </p>
-                                </div>
+                                </p>
                             </div>
                         </div>
 
@@ -960,7 +982,7 @@ export default function Messages() {
                                                         />
                                                     )}
                                                     {message.message_type === 'text' && (
-                                                        <p className="text-sm whitespace-pre-wrap break-words">
+                                                        <p className="text-sm whitespace-pre-wrap break-words" dir={/^[A-Za-z0-9\s.,!?;:'"()\[\]{}<>@#$%^&*_+=\/-]+$/.test(message.content) ? 'ltr' : 'auto'}>
                                                             {message.content}
                                                         </p>
                                                     )}
@@ -1059,6 +1081,7 @@ export default function Messages() {
                                     placeholder="اكتب رسالتك..."
                                     className="flex-1 resize-none bg-slate-50 border border-primary/20 placeholder:text-muted-foreground text-base md:text-lg py-2 md:py-3 px-3 md:px-4 rounded-2xl focus:ring-2 focus:ring-primary/40 min-h-[44px] max-h-[120px] transition-all duration-200 shadow-inner"
                                     style={{fontFamily:'inherit',lineHeight:'1.7'}}
+                                    dir={/^[A-Za-z0-9\s.,!?;:'"()\[\]{}<>@#$%^&*_+=\/-]+$/.test(messageText) ? 'ltr' : 'auto'}
                                 />
                                 <Button onClick={sendMessage} disabled={!messageText.trim()} className="bg-primary hover:bg-primary/90 text-white px-4 py-2 md:py-3 rounded-2xl text-base md:text-lg min-w-[44px] min-h-[44px] flex items-center justify-center shadow-lg" aria-label="إرسال" style={{boxShadow:'0 2px 8px 0 #06b6d4a0'}}>
                                     <Send className="h-5 w-5" />
