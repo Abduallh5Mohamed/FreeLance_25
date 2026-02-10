@@ -22,6 +22,7 @@ interface Notification {
   is_read: boolean;
   created_at: string;
   sender_name?: string;
+  sender_id?: string;
 }
 
 interface NotificationBellProps {
@@ -173,7 +174,7 @@ export const NotificationBell = ({ userType }: NotificationBellProps) => {
           message.message_type === "text"
             ? message.content?.substring(0, 80) || "رسالة جديدة"
             : "📷 صورة";
-        
+
         showBrowserNotification(
           `💬 رسالة من ${senderName}`,
           preview,
@@ -261,16 +262,17 @@ export const NotificationBell = ({ userType }: NotificationBellProps) => {
         const messageNotifications = (Array.isArray(data) ? data : []).map(
           (msg: any) => ({
             id: msg.id,
-            title: `رسالة من ${msg.sender_name}`,
+            title: `رسالة من ${msg.sender_name || 'مستخدم'}`,
             message:
               msg.message_type === "text"
                 ? msg.content?.substring(0, 50) +
-                  (msg.content?.length > 50 ? "..." : "")
+                (msg.content?.length > 50 ? "..." : "")
                 : "📷 صورة",
             type: "message",
             is_read: false,
             created_at: msg.created_at,
             sender_name: msg.sender_name,
+            sender_id: msg.sender_id,
           })
         );
         setNotifications(messageNotifications.slice(0, 10));
@@ -289,24 +291,12 @@ export const NotificationBell = ({ userType }: NotificationBellProps) => {
 
   // Mark all messages as read for a specific sender
   const markAsRead = async (notificationId: string) => {
-    try {
-      const token = localStorage.getItem("authToken");
-      // Mark using notifications API
-      await fetch(`${API_URL()}/notifications/${notificationId}/read`, {
-        method: "PUT",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      setNotifications((prev) =>
-        prev.map((n) =>
-          n.id === notificationId ? { ...n, is_read: true } : n
-        )
-      );
-      // Refresh actual count from server
-      fetchNotifications();
-    } catch (error) {
-      console.error("Error marking notification as read:", error);
-    }
+    // Just mark notification as read locally - the actual mark-read happens when opening chat
+    setNotifications((prev) =>
+      prev.map((n) =>
+        n.id === notificationId ? { ...n, is_read: true } : n
+      )
+    );
   };
 
   // Mark all as read - uses messages API for each conversation
@@ -316,37 +306,31 @@ export const NotificationBell = ({ userType }: NotificationBellProps) => {
 
     try {
       const token = localStorage.getItem("authToken");
-      
-      // Get unique sender IDs from current notifications and mark each conversation as read
-      const senderIds = [...new Set(notifications.map(n => {
-        // The notification id IS the message id. We need to mark conversations.
-        return n.id;
-      }))];
 
-      // Mark each message as read via the messages API
-      for (const msgId of senderIds) {
-        try {
-          await fetch(`${API_URL()}/messages/${msgId}/mark-read`, {
-            method: "PUT",
-            headers: { Authorization: `Bearer ${token}` },
-          });
-        } catch {
-          // continue
+      // Get unique sender IDs from notifications and mark each conversation as read
+      const senderIds = [...new Set(notifications.map(n => (n as any).sender_id || n.sender_name).filter(Boolean))];
+
+      // Fetch conversations to get actual user IDs
+      const convRes = await fetch(`${API_URL()}/messages/conversations`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (convRes.ok) {
+        const conversations = await convRes.json();
+        // Mark all conversations as read
+        for (const conv of conversations) {
+          const otherUserId = conv.other_user_id;
+          if (otherUserId && conv.unread_count > 0) {
+            try {
+              await fetch(`${API_URL()}/messages/mark-all-read/${otherUserId}`, {
+                method: "PUT",
+                headers: { Authorization: `Bearer ${token}` },
+              });
+            } catch {
+              // continue
+            }
+          }
         }
-      }
-
-      // Also mark notifications table
-      try {
-        await fetch(`${API_URL()}/notifications/read-all`, {
-          method: "PUT",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ user_id: userId, user_type: userType === "student" ? "student" : "admin" }),
-        });
-      } catch {
-        // continue
       }
 
       setNotifications((prev) =>
@@ -414,7 +398,7 @@ export const NotificationBell = ({ userType }: NotificationBellProps) => {
         align="end"
         dir="rtl"
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b bg-gradient-to-r from-cyan-500 to-teal-500 text-white rounded-t-lg">
+        <div className={`flex items-center justify-between px-4 py-3 border-b text-white rounded-t-lg ${userType === 'student' ? 'bg-gradient-to-r from-orange-500 to-amber-500' : 'bg-gradient-to-r from-cyan-500 to-teal-500'}`}>
           <h3 className="font-semibold text-sm">الإشعارات</h3>
           <div className="flex items-center gap-2">
             {unreadCount > 0 && (
@@ -493,7 +477,7 @@ export const NotificationBell = ({ userType }: NotificationBellProps) => {
           <Button
             variant="ghost"
             size="sm"
-            className="w-full text-xs text-cyan-600 hover:text-cyan-700 hover:bg-cyan-50"
+            className={`w-full text-xs ${userType === 'student' ? 'text-orange-600 hover:text-orange-700 hover:bg-orange-50' : 'text-cyan-600 hover:text-cyan-700 hover:bg-cyan-50'}`}
             onClick={() => {
               setIsOpen(false);
               if (userType === "student") {

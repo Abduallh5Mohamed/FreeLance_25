@@ -323,7 +323,7 @@ const StudentDashboard = () => {
 
         <div className="grid grid-cols-1 sm:grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-3 xs:gap-3 sm:gap-4 md:gap-5 lg:gap-6">
           {/* Left Sidebar */}
-          <div className="col-span-1 md:col-span-1 lg:col-span-1 space-y-3 xs:space-y-3 sm:space-y-4 md:space-y-5 lg:space-y-6 order-2 md:order-1" data-section="quick-links">
+          <div className="col-span-1 md:col-span-1 lg:col-span-1 space-y-3 xs:space-y-3 sm:space-y-4 md:space-y-5 lg:space-y-6" data-section="quick-links">
             {/* Quick Access Dashboard */}
             <AnimatedSection>
               <GlassmorphicCard>
@@ -498,7 +498,7 @@ const StudentDashboard = () => {
           </div>
 
           {/* Main Content */}
-          <div className="col-span-1 md:col-span-2 lg:col-span-3 space-y-3 xs:space-y-3 sm:space-y-4 md:space-y-5 lg:space-y-6 order-1 md:order-2">
+          <div className="col-span-1 md:col-span-2 lg:col-span-3 space-y-3 xs:space-y-3 sm:space-y-4 md:space-y-5 lg:space-y-6">
             {/* Available Exams */}
             <Card className="shadow-soft">
               <CardHeader className="pb-3 md:pb-4">

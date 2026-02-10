@@ -118,6 +118,69 @@ router.get('/conversations', authenticateToken, async (req: AuthRequest, res: Re
     }
 });
 
+// GET /api/messages/unread-total - Get total unread messages count for user
+router.get('/unread-total', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        // Sum all unread messages from conversations where user is either user1 or user2
+        const [result] = await getPool().query<RowDataPacket[]>(`
+            SELECT 
+                COALESCE(
+                    (SELECT SUM(unread_count_user1) FROM conversations WHERE user1_id = ?), 0
+                ) + 
+                COALESCE(
+                    (SELECT SUM(unread_count_user2) FROM conversations WHERE user2_id = ?), 0
+                ) as total_unread
+        `, [userId, userId]);
+
+        const totalUnread = result[0]?.total_unread || 0;
+        console.log('📬 Total unread for user', userId, ':', totalUnread);
+        res.json({ count: totalUnread });
+    } catch (error) {
+        console.error('❌ Error fetching unread total:', error);
+        res.status(500).json({ error: 'Failed to fetch unread count' });
+    }
+});
+
+// GET /api/messages/recent-unread - Get recent unread messages for notifications
+router.get('/recent-unread', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        // Get recent unread messages with sender info
+        // Use LEFT JOIN on message_status and check is_read is FALSE or NULL (no status row yet)
+        const [messages] = await getPool().query<RowDataPacket[]>(`
+            SELECT 
+                m.id,
+                m.content,
+                m.message_type,
+                m.created_at,
+                m.sender_id,
+                u.name as sender_name,
+                u.role as sender_role
+            FROM messages m
+            LEFT JOIN message_status ms ON m.id = ms.message_id
+            JOIN users u ON m.sender_id = u.id
+            WHERE m.receiver_id = ? AND (ms.is_read = FALSE OR ms.is_read IS NULL)
+            ORDER BY m.created_at DESC
+            LIMIT 10
+        `, [userId]);
+
+        console.log('📨 Recent unread messages for user', userId, ':', messages.length);
+        res.json(messages);
+    } catch (error) {
+        console.error('❌ Error fetching recent unread:', error);
+        res.status(500).json({ error: 'Failed to fetch recent messages' });
+    }
+});
+
 // GET /api/messages/:userId - Get messages with a specific user
 router.get('/:userId', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
@@ -707,65 +770,6 @@ router.get('/users/available', authenticateToken, async (req: AuthRequest, res: 
     }
 });
 
-// GET /api/messages/unread-total - Get total unread messages count for user
-router.get('/unread-total', authenticateToken, async (req: AuthRequest, res: Response) => {
-    try {
-        const userId = req.user?.id;
-        if (!userId) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
 
-        // Sum all unread messages from conversations where user is either user1 or user2
-        const [result] = await getPool().query<RowDataPacket[]>(`
-            SELECT 
-                COALESCE(
-                    (SELECT SUM(unread_count_user1) FROM conversations WHERE user1_id = ?), 0
-                ) + 
-                COALESCE(
-                    (SELECT SUM(unread_count_user2) FROM conversations WHERE user2_id = ?), 0
-                ) as total_unread
-        `, [userId, userId]);
-
-        const totalUnread = result[0]?.total_unread || 0;
-        console.log('📬 Total unread for user', userId, ':', totalUnread);
-        res.json({ count: totalUnread });
-    } catch (error) {
-        console.error('❌ Error fetching unread total:', error);
-        res.status(500).json({ error: 'Failed to fetch unread count' });
-    }
-});
-
-// GET /api/messages/recent-unread - Get recent unread messages for notifications
-router.get('/recent-unread', authenticateToken, async (req: AuthRequest, res: Response) => {
-    try {
-        const userId = req.user?.id;
-        if (!userId) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
-
-        // Get recent unread messages with sender info
-        const [messages] = await getPool().query<RowDataPacket[]>(`
-            SELECT 
-                m.id,
-                m.content,
-                m.message_type,
-                m.created_at,
-                u.name as sender_name,
-                u.role as sender_role
-            FROM messages m
-            JOIN message_status ms ON m.id = ms.message_id
-            JOIN users u ON m.sender_id = u.id
-            WHERE m.receiver_id = ? AND ms.is_read = FALSE
-            ORDER BY m.created_at DESC
-            LIMIT 10
-        `, [userId]);
-
-        console.log('📨 Recent unread messages for user', userId, ':', messages.length);
-        res.json(messages);
-    } catch (error) {
-        console.error('❌ Error fetching recent unread:', error);
-        res.status(500).json({ error: 'Failed to fetch recent messages' });
-    }
-});
 
 export default router;
