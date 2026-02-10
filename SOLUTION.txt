@@ -1,0 +1,61 @@
+========================================
+حل مشكلة Messages - تنفيذ مباشر
+========================================
+
+الطريقة 1 - PowerShell (الأسرع):
+========================================
+1. افتح PowerShell جديد كـ Administrator
+
+2. انسخ والصق الكود التالي كله مرة واحدة:
+
+$pw = ConvertTo-SecureString "NewSecureP@ssw0rd2025!" -AsPlainText -Force; $c = New-Object PSCredential("root", $pw); Get-SSHSession | Remove-SSHSession 2>$null | Out-Null; $s = New-SSHSession -ComputerName 72.62.35.177 -Credential $c -AcceptKey -Force 2>$null; if ($s) { $cmd1 = "cat /var/www/alqaed-api/.env | grep DB_PASSWORD | cut -d'=' -f2"; $p = Invoke-SSHCommand -SessionId $s.SessionId -Command $cmd1; $dbpw = $p.Output.Trim(); Write-Host "DB: $dbpw"; $sql = 'CREATE TABLE IF NOT EXISTS message_deletions (id INT AUTO_INCREMENT PRIMARY KEY,message_id INT NOT NULL,user_id VARCHAR(36) NOT NULL,deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,UNIQUE KEY unique_message_user(message_id,user_id),FOREIGN KEY(message_id)REFERENCES messages(id)ON DELETE CASCADE);'; $cmd2 = "mysql -u root -p'$dbpw' Freelance -e '$sql'"; $r = Invoke-SSHCommand -SessionId $s.SessionId -Command $cmd2; Write-Host $r.Output; Invoke-SSHCommand -SessionId $s.SessionId -Command "pm2 restart alqaed-api" | Out-Host; Remove-SSHSession -SessionId $s.SessionId | Out-Null; Write-Host "DONE!" -ForegroundColor Green }
+
+
+الطريقة 2 - SSH مباشر (موصى بها):
+========================================
+1. افتح Command Prompt (CMD) أو PowerShell
+2. نفذ:
+   ssh root@72.62.35.177
+
+3. أدخل Password:
+   NewSecureP@ssw0rd2025!
+
+4. بعد الدخول، نفذ التالي:
+   cd /var/www/alqaed-api
+   source .env
+   mysql -u root -p"$DB_PASSWORD" Freelance << 'EOF'
+   CREATE TABLE IF NOT EXISTS message_deletions (
+     id INT AUTO_INCREMENT PRIMARY KEY,
+     message_id INT NOT NULL,
+     user_id VARCHAR(36) NOT NULL,
+     deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+     UNIQUE KEY unique_message_user (message_id, user_id),
+     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+   );
+   SHOW TABLES LIKE 'message_deletions';
+   EOF
+
+5. لو ظهر message_deletions، نفذ:
+   pm2 restart alqaed-api
+   pm2 logs alqaed-api --lines 5
+
+6. اطلع من SSH:
+   exit
+
+
+بعد التنفيذ:
+========================================
+1. افتح الموقع: https://elka2d.cloud
+2. سجل دخول
+3. افتح Messages
+4. جرب:
+   - إرسال رسالة → ستظهر
+   - حذف رسالة → تحذف من عندك فقط
+   - تعديل رسالة → تتعدل للطرفين
+
+========================================
+ملاحظة: إذا ظهر خطأ "Access denied"، معناه:
+- كلمة مرور MySQL على السيرفر مختلفة
+- نفذ: cat /var/www/alqaed-api/.env | grep DB_PASSWORD
+- استخدم الباسورد اللي يظهر بدل $DB_PASSWORD
+========================================
