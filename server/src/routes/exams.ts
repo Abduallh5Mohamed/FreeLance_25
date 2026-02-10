@@ -649,6 +649,18 @@ router.post('/:examId/questions', async (req: Request, res: Response) => {
             'SELECT * FROM exam_questions WHERE id = (SELECT id FROM exam_questions ORDER BY created_at DESC LIMIT 1)'
         );
 
+        // ✅ Auto-update total_marks in exams table
+        const totalMarksResult = await queryOne<{ total: number }>(
+            'SELECT COALESCE(SUM(points), 0) as total FROM exam_questions WHERE exam_id = ?',
+            [req.params.examId]
+        );
+        const totalMarks = totalMarksResult?.total || 0;
+        await execute(
+            'UPDATE exams SET total_marks = ? WHERE id = ?',
+            [totalMarks, req.params.examId]
+        );
+        console.log(`✅ Updated exam ${req.params.examId} total_marks to ${totalMarks}`);
+
         res.status(201).json(newQuestion);
     } catch (error) {
         console.error('Add exam question error:', error);
@@ -1298,6 +1310,18 @@ router.put('/:examId/questions/:questionId', async (req: Request, res: Response)
             [question_text, question_image || null, question_type, options, correct_answer, points, explanation || null, questionId, examId]
         );
 
+        // ✅ Auto-update total_marks in exams table
+        const totalMarksResult = await queryOne<{ total: number }>(
+            'SELECT COALESCE(SUM(points), 0) as total FROM exam_questions WHERE exam_id = ?',
+            [examId]
+        );
+        const totalMarks = totalMarksResult?.total || 0;
+        await execute(
+            'UPDATE exams SET total_marks = ? WHERE id = ?',
+            [totalMarks, examId]
+        );
+        console.log(`✅ Updated exam ${examId} total_marks to ${totalMarks}`);
+
         res.json({ message: 'Question updated successfully' });
     } catch (error) {
         console.error('Update question error:', error);
@@ -1314,6 +1338,18 @@ router.delete('/:examId/questions/:questionId', async (req: Request, res: Respon
             'DELETE FROM exam_questions WHERE id = ? AND exam_id = ?',
             [questionId, examId]
         );
+
+        // ✅ Auto-update total_marks in exams table
+        const totalMarksResult = await queryOne<{ total: number }>(
+            'SELECT COALESCE(SUM(points), 0) as total FROM exam_questions WHERE exam_id = ?',
+            [examId]
+        );
+        const totalMarks = totalMarksResult?.total || 0;
+        await execute(
+            'UPDATE exams SET total_marks = ? WHERE id = ?',
+            [totalMarks, examId]
+        );
+        console.log(`✅ Updated exam ${examId} total_marks to ${totalMarks}`);
 
         res.json({ message: 'Question deleted successfully' });
     } catch (error) {

@@ -154,13 +154,14 @@ router.get('/:userId', authenticateToken, async (req: AuthRequest, res: Response
                     FROM messages m
                     LEFT JOIN message_status ms ON m.id = ms.message_id
                     LEFT JOIN users u ON m.sender_id = u.id
+                    LEFT JOIN message_deletions md ON m.id = md.message_id AND md.user_id = ?
                     WHERE 
                         ((m.sender_id = ? AND m.receiver_id = ?) OR
                         (m.sender_id = ? AND m.receiver_id = ?))
-                        AND m.is_deleted = FALSE
+                        AND md.id IS NULL
                     ORDER BY m.created_at ASC
                 `;
-                params = [teacherId, otherUserId, otherUserId, teacherId];
+                params = [currentUserId, teacherId, otherUserId, otherUserId, teacherId];
             } else {
                 // Fallback: show all messages involving the student
                 query = `
@@ -175,12 +176,13 @@ router.get('/:userId', authenticateToken, async (req: AuthRequest, res: Response
                     FROM messages m
                     LEFT JOIN message_status ms ON m.id = ms.message_id
                     LEFT JOIN users u ON m.sender_id = u.id
+                    LEFT JOIN message_deletions md ON m.id = md.message_id AND md.user_id = ?
                     WHERE 
                         (m.sender_id = ? OR m.receiver_id = ?)
-                        AND m.is_deleted = FALSE
+                        AND md.id IS NULL
                     ORDER BY m.created_at ASC
                 `;
-                params = [otherUserId, otherUserId];
+                params = [currentUserId, otherUserId, otherUserId];
             }
         } else {
             // Normal behavior: messages between current user and other user
@@ -196,13 +198,14 @@ router.get('/:userId', authenticateToken, async (req: AuthRequest, res: Response
                 FROM messages m
                 LEFT JOIN message_status ms ON m.id = ms.message_id
                 LEFT JOIN users u ON m.sender_id = u.id
+                LEFT JOIN message_deletions md ON m.id = md.message_id AND md.user_id = ?
                 WHERE 
                     ((m.sender_id = ? AND m.receiver_id = ?) OR
                     (m.sender_id = ? AND m.receiver_id = ?))
-                    AND m.is_deleted = FALSE
+                    AND md.id IS NULL
                 ORDER BY m.created_at ASC
             `;
-            params = [currentUserId, otherUserId, otherUserId, currentUserId];
+            params = [currentUserId, currentUserId, otherUserId, otherUserId, currentUserId];
         }
 
         const [messages] = await getPool().query<RowDataPacket[]>(query, params);
@@ -509,21 +512,21 @@ router.delete('/:id', authenticateToken, async (req: AuthRequest, res: Response)
             return res.status(401).json({ error: 'Unauthorized' });
         }
 
-        // Check if user owns the message
+        // Check if message exists
         const [messages] = await getPool().query<RowDataPacket[]>(`
-            SELECT * FROM messages WHERE id = ? AND sender_id = ?
-        `, [messageId, userId]);
+            SELECT id FROM messages WHERE id = ?
+        `, [messageId]);
 
         if (messages.length === 0) {
-            return res.status(403).json({ error: 'Not authorized to delete this message' });
+            return res.status(404).json({ error: 'Message not found' });
         }
 
-        // Soft delete
+        // Soft delete for this user only using message_deletions table
         await getPool().query(`
-            UPDATE messages 
-            SET is_deleted = TRUE, deleted_at = NOW()
-            WHERE id = ?
-        `, [messageId]);
+            INSERT INTO message_deletions (message_id, user_id)
+            VALUES (?, ?)
+            ON DUPLICATE KEY UPDATE deleted_at = NOW()
+        `, [messageId, userId]);
 
         res.json({ success: true, message: 'Message deleted' });
     } catch (error) {

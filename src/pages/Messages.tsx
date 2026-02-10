@@ -214,11 +214,14 @@ export default function Messages() {
         });
 
         newSocket.on('message:edited', (data: any) => {
-            setMessages(prev => prev.map(msg =>
-                msg.id === data.messageId
-                    ? { ...msg, content: data.content, is_edited: true, edited_at: data.editedAt }
-                    : msg
-            ));
+            console.log('📝 Message edited event received:', data);
+            setMessages(prev => prev.map(msg => {
+                if (msg.id === data.messageId) {
+                    console.log('✏️ Updating message', msg.id, 'with new content:', data.content);
+                    return { ...msg, content: data.content, is_edited: true, edited_at: data.editedAt };
+                }
+                return msg;
+            }));
         });
 
         newSocket.on('message:deleted', (data: { messageId: number }) => {
@@ -439,7 +442,7 @@ export default function Messages() {
         if (selectedUser.id === 'ai-assistant') {
             // Save message before clearing
             const currentMessage = messageText.trim();
-            
+
             const userMessage: Message = {
                 id: Date.now(),
                 sender_id: user.id,
@@ -523,11 +526,11 @@ export default function Messages() {
             } catch (error: any) {
                 console.error('AI Error:', error);
                 let errorContent = 'عذراً، حدث خطأ في الاتصال بالمساعد الذكي. يرجى المحاولة مرة أخرى.';
-                
+
                 if (error.message === 'rate_limit') {
                     errorContent = '⚠️ المساعد الذكي مشغول حالياً. يرجى المحاولة بعد قليل.';
                 }
-                
+
                 const errorMessage: Message = {
                     id: Date.now() + 1,
                     sender_id: 'ai-assistant',

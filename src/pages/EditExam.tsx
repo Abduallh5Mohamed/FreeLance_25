@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -56,6 +56,11 @@ export default function EditExam() {
   const filteredGroups = exam?.grade_id && exam.grade_id !== 'all'
     ? groups.filter(g => g.grade_id === exam.grade_id)
     : groups;
+
+  // Calculate total marks automatically from all questions
+  const totalMarks = useMemo(() => {
+    return questions.reduce((sum, q) => sum + (q.points || 0), 0);
+  }, [questions]);
 
   useEffect(() => {
     const userStr = localStorage.getItem('currentUser');
@@ -182,7 +187,8 @@ export default function EditExam() {
         group_id: exam.group_id === 'all' ? null : exam.group_id,
         start_time: formatDateTime(exam.start_time),
         end_time: formatDateTime(exam.end_time),
-        duration_minutes: exam.duration_minutes
+        duration_minutes: exam.duration_minutes,
+        total_marks: totalMarks  // ✅ Auto-update total marks from questions
       };
 
       console.log('🔄 Updating exam with data:', updateData);
@@ -577,7 +583,7 @@ export default function EditExam() {
             <div className="flex justify-between items-center">
               <CardTitle className="flex items-center gap-2">
                 <ClipboardCheck className="h-5 w-5 text-cyan-600" />
-                الأسئلة ({questions.length})
+                الأسئلة ({questions.length}) • الدرجة الكلية: {totalMarks} درجة
               </CardTitle>
               {!addingNewQuestion && (
                 <Button

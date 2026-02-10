@@ -327,29 +327,28 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
             }
         });
 
-        // Delete message
-        socket.on('message:delete', async (data: { messageId: number; userId: number }) => {
+        // Delete message (for current user only)
+        socket.on('message:delete', async (data: { messageId: number; userId: string }) => {
             try {
                 const { messageId, userId } = data;
 
-                // Verify user owns the message
+                // Verify message exists
                 const [messages] = await getPool().query<RowDataPacket[]>(`
-                    SELECT sender_id, receiver_id FROM messages WHERE id = ? AND sender_id = ?
-                `, [messageId, userId]);
+                    SELECT id FROM messages WHERE id = ?
+                `, [messageId]);
 
                 if (messages.length > 0) {
-                    // Soft delete
+                    // Add to message_deletions table (soft delete for this user only)
                     await getPool().query(`
-                        UPDATE messages 
-                        SET is_deleted = TRUE, deleted_at = NOW()
-                        WHERE id = ?
-                    `, [messageId]);
+                        INSERT INTO message_deletions (message_id, user_id)
+                        VALUES (?, ?)
+                        ON DUPLICATE KEY UPDATE deleted_at = NOW()
+                    `, [messageId, userId]);
 
-                    // Notify both users
-                    io.to(`user:${messages[0].sender_id}`).emit('message:deleted', { messageId });
-                    io.to(`user:${messages[0].receiver_id}`).emit('message:deleted', { messageId });
+                    // Only notify the user who deleted
+                    io.to(`user:${userId}`).emit('message:deleted', { messageId });
 
-                    console.log(`🗑️ Message ${messageId} deleted by user ${userId}`);
+                    console.log(`🗑️ Message ${messageId} deleted for user ${userId}`);
                 }
             } catch (error) {
                 console.error('Error deleting message:', error);
