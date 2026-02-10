@@ -297,10 +297,45 @@ router.post('/', async (req: Request, res: Response) => {
     }
 });
 
+// Get student admin notes
+router.get('/:id/notes', async (req: Request, res: Response) => {
+    try {
+        const student = await queryOne<{ id: string; notes: string | null }>(
+            'SELECT id, notes FROM students WHERE id = ?',
+            [req.params.id]
+        );
+        if (!student) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
+        res.json({ notes: student.notes || '' });
+    } catch (error) {
+        console.error('Get student notes error:', error);
+        res.status(500).json({ error: 'Failed to get student notes' });
+    }
+});
+
+// Update student admin notes
+router.put('/:id/notes', async (req: Request, res: Response) => {
+    try {
+        const { notes } = req.body;
+        const result = await execute(
+            'UPDATE students SET notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [notes || null, req.params.id]
+        );
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
+        res.json({ message: 'Notes saved successfully', notes: notes || '' });
+    } catch (error) {
+        console.error('Update student notes error:', error);
+        res.status(500).json({ error: 'Failed to update student notes' });
+    }
+});
+
 // Update student
 router.put('/:id', async (req: Request, res: Response) => {
     try {
-        const { name, email, phone, guardian_phone, grade, grade_id, group_id, barcode, password } = req.body;
+        const { name, email, phone, guardian_phone, grade, grade_id, group_id, barcode, password, notes } = req.body;
 
         const fields: string[] = [];
         const params: any[] = [];
@@ -332,6 +367,10 @@ router.put('/:id', async (req: Request, res: Response) => {
         if (group_id !== undefined) {
             fields.push('group_id = ?');
             params.push(group_id ?? null);
+        }
+        if (notes !== undefined) {
+            fields.push('notes = ?');
+            params.push(notes ?? null);
         }
         if (barcode !== undefined) {
             if (barcode === null) {

@@ -126,11 +126,6 @@ const StudentReports = () => {
     }
 
     loadData();
-    // Load saved notes from localStorage
-    const savedNotes = localStorage.getItem('studentNotes');
-    if (savedNotes) {
-      setStudentNotes(new Map(JSON.parse(savedNotes)));
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -200,6 +195,14 @@ const StudentReports = () => {
     });
   }, [students, searchQuery, selectedGroup, selectedGrade]);
 
+  const getMonthName = (month: number) => {
+    const months = [
+      'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
+      'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'
+    ];
+    return months[month - 1] || month.toString();
+  };
+
   // Calculate student report
   const calculateStudentReport = (student: Student): StudentReport => {
     // Attendance
@@ -214,21 +217,46 @@ const StudentReports = () => {
       f.phone === student.phone
     );
 
+    // Current month check
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+
     const paidMonths: string[] = [];
     const unpaidMonths: string[] = [];
     let totalPaid = 0;
     let totalRemaining = 0;
+    let currentMonthPaid = 0;
+    let hasPaidCurrentMonth = false;
 
     studentFees.forEach(fee => {
-      const month = fee.due_date ? new Date(fee.due_date).toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' }) : 'غير محدد';
+      const monthLabel = fee.payment_month && fee.payment_year
+        ? `${getMonthName(fee.payment_month)} ${fee.payment_year}`
+        : fee.due_date
+        ? new Date(fee.due_date).toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' })
+        : 'غير محدد';
+
       if (fee.status === 'paid') {
-        paidMonths.push(month);
-        totalPaid += fee.paid_amount || 0;
+        paidMonths.push(monthLabel);
+        totalPaid += Number(fee.paid_amount) || 0;
+        // Check if this is current month payment
+        if (fee.payment_year === currentYear && fee.payment_month === currentMonth) {
+          currentMonthPaid = Number(fee.paid_amount) || Number(fee.amount) || 0;
+          hasPaidCurrentMonth = true;
+        }
       } else {
-        unpaidMonths.push(month);
-        totalRemaining += fee.remaining_amount || fee.amount || 0;
+        unpaidMonths.push(monthLabel);
+        totalRemaining += Number(fee.remaining_amount) || Number(fee.amount) || 0;
       }
     });
+
+    // If student has not paid for current month, add it to unpaid
+    if (!hasPaidCurrentMonth) {
+      const currentMonthLabel = `${getMonthName(currentMonth)} ${currentYear}`;
+      if (!unpaidMonths.includes(currentMonthLabel)) {
+        unpaidMonths.unshift(currentMonthLabel);
+      }
+    }
 
     // Exam Results
     const examResults = (examResultsData.get(student.id) || []).map((result: any) => ({
@@ -249,24 +277,45 @@ const StudentReports = () => {
       lateDays,
       paidMonths,
       unpaidMonths,
-      totalPaid,
-      totalRemaining,
+      totalPaid: currentMonthPaid,
+      totalRemaining: hasPaidCurrentMonth ? 0 : totalRemaining,
       examResults,
       notes,
     };
   };
 
-  // Save notes
-  const saveNotes = () => {
+  // Save notes to database
+  const saveNotes = async () => {
     if (selectedStudent) {
-      const newNotes = new Map(studentNotes);
-      newNotes.set(selectedStudent.id, editingNotes);
-      setStudentNotes(newNotes);
-      localStorage.setItem('studentNotes', JSON.stringify(Array.from(newNotes.entries())));
-      toast({
-        title: "تم الحفظ",
-        description: "تم حفظ الملاحظات بنجاح",
-      });
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`${import.meta.env.VITE_API_URL || '/api'}/students/${selectedStudent.id}/notes`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({ notes: editingNotes }),
+        });
+        if (response.ok) {
+          const newNotes = new Map(studentNotes);
+          newNotes.set(selectedStudent.id, editingNotes);
+          setStudentNotes(newNotes);
+          toast({
+            title: "تم الحفظ",
+            description: "تم حفظ الملاحظات بنجاح",
+          });
+        } else {
+          throw new Error('Failed to save notes');
+        }
+      } catch (error) {
+        console.error('Error saving notes:', error);
+        toast({
+          title: "خطأ",
+          description: "فشل في حفظ الملاحظات",
+          variant: "destructive",
+        });
+      }
     }
   };
 
@@ -343,10 +392,27 @@ const StudentReports = () => {
   };
 
   // View report dialog
-  const viewReport = (student: Student) => {
+  const viewReport = async (student: Student) => {
     setSelectedStudent(student);
     setEditingNotes(studentNotes.get(student.id) || '');
     setShowReportDialog(true);
+    
+    // Load notes from database
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${import.meta.env.VITE_API_URL || '/api'}/students/${student.id}/notes`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setEditingNotes(data.notes || '');
+        const newNotes = new Map(studentNotes);
+        newNotes.set(student.id, data.notes || '');
+        setStudentNotes(newNotes);
+      }
+    } catch (error) {
+      console.error('Error loading notes:', error);
+    }
   };
 
   const resetFilters = () => {
@@ -511,13 +577,13 @@ const StudentReports = () => {
                               </Badge>
                             </TableCell>
                             <TableCell className="text-center">
-                              {report.totalRemaining > 0 ? (
-                                <Badge variant="destructive">
-                                  متبقي: {report.totalRemaining}
-                                </Badge>
-                              ) : (
+                              {report.totalPaid > 0 ? (
                                 <Badge className="bg-green-600">
                                   مدفوع
+                                </Badge>
+                              ) : (
+                                <Badge variant="destructive">
+                                  غير مدفوع
                                 </Badge>
                               )}
                             </TableCell>
@@ -620,12 +686,12 @@ const StudentReports = () => {
                 <CardContent>
                   <div className="grid grid-cols-2 gap-4 mb-4">
                     <div className="p-4 bg-green-50 rounded-lg text-center">
-                      <p className="text-2xl font-bold text-green-700">{currentReport.totalPaid} جنيه</p>
-                      <p className="text-sm text-green-600">المبلغ المدفوع</p>
+                      <p className="text-2xl font-bold text-green-700">{Number(currentReport.totalPaid).toLocaleString()} جنيه</p>
+                      <p className="text-sm text-green-600">المبلغ المدفوع (هذا الشهر)</p>
                     </div>
                     <div className="p-4 bg-red-50 rounded-lg text-center">
-                      <p className="text-2xl font-bold text-red-700">{currentReport.totalRemaining} جنيه</p>
-                      <p className="text-sm text-red-600">المبلغ المتبقي</p>
+                      <p className="text-2xl font-bold text-red-700">{currentReport.totalPaid > 0 ? 'مدفوع' : 'غير مدفوع'}</p>
+                      <p className="text-sm text-red-600">حالة الشهر الحالي</p>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">

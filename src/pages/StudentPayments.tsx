@@ -175,23 +175,38 @@ const StudentPayments = () => {
     };
   };
 
-  const getTotalPaid = (studentId: string) => {
+  // Get current month payment for a student
+  const getCurrentMonthPayment = (studentId: string) => {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
     const studentPayments = payments[studentId] || [];
-    return studentPayments
-      .filter(p => p.status === 'paid')
-      .reduce((sum, p) => sum + (Number(p.paid_amount) || Number(p.amount) || 0), 0);
+    return studentPayments.find(p => 
+      p.status === 'paid' && 
+      p.payment_year === currentYear && 
+      p.payment_month === currentMonth
+    );
   };
 
-  const getPaymentCount = (studentId: string) => {
-    return (payments[studentId] || []).filter(p => p.status === 'paid').length;
+  // Current month paid amount for a student
+  const getCurrentMonthPaid = (studentId: string) => {
+    const payment = getCurrentMonthPayment(studentId);
+    return payment ? (Number(payment.paid_amount) || Number(payment.amount) || 0) : 0;
   };
 
+  // Check if student paid this month
+  const hasPaidCurrentMonth = (studentId: string) => {
+    return !!getCurrentMonthPayment(studentId);
+  };
+
+  // Total paid for all students THIS MONTH only
   const getTotalAllStudents = () => {
-    return filteredStudents.reduce((sum, s) => sum + getTotalPaid(s.id), 0);
+    return filteredStudents.reduce((sum, s) => sum + getCurrentMonthPaid(s.id), 0);
   };
 
+  // Count of payments THIS MONTH only  
   const getTotalPaymentCount = () => {
-    return filteredStudents.reduce((sum, s) => sum + getPaymentCount(s.id), 0);
+    return filteredStudents.filter(s => hasPaidCurrentMonth(s.id)).length;
   };
 
   const getAveragePayment = () => {
@@ -540,7 +555,7 @@ const StudentPayments = () => {
                   <DollarSign className="h-5 w-5 text-green-600 dark:text-green-400" />
                 </div>
                 <div>
-                  <p className="text-sm text-muted-foreground">إجمالي الدفعات</p>
+                  <p className="text-sm text-muted-foreground">إجمالي دفعات هذا الشهر</p>
                   <p className="text-2xl font-bold">
                     {getTotalAllStudents().toLocaleString()} ج.م
                   </p>
@@ -556,7 +571,7 @@ const StudentPayments = () => {
                   <CreditCard className="h-5 w-5 text-purple-600 dark:text-purple-400" />
                 </div>
                 <div>
-                  <p className="text-sm text-muted-foreground">عدد الدفعات</p>
+                  <p className="text-sm text-muted-foreground">عدد الدافعين هذا الشهر</p>
                   <p className="text-2xl font-bold">
                     {getTotalPaymentCount()}
                   </p>
@@ -601,8 +616,8 @@ const StudentPayments = () => {
                 {filteredStudents.map((student) => {
                   const isExpanded = expandedStudents.has(student.id);
                   const studentPayments = payments[student.id] || [];
-                  const totalPaid = getTotalPaid(student.id);
-                  const paymentCount = getPaymentCount(student.id);
+                  const currentMonthPaid = getCurrentMonthPaid(student.id);
+                  const paidThisMonth = hasPaidCurrentMonth(student.id);
 
                   return (
                     <Collapsible
@@ -640,16 +655,16 @@ const StudentPayments = () => {
                                   </div>
 
                                   <div className="flex items-center gap-2">
-                                    <Badge variant="secondary" className="gap-1">
+                                    <Badge variant={paidThisMonth ? "default" : "destructive"} className={`gap-1 ${paidThisMonth ? 'bg-green-600' : ''}`}>
                                       <CreditCard className="h-3 w-3" />
-                                      {paymentCount} دفعة
+                                      {paidThisMonth ? 'مدفوع' : 'غير مدفوع'}
                                     </Badge>
                                   </div>
 
                                   <div className="flex items-center gap-2">
                                     <Badge variant="default" className="gap-1 bg-green-600">
                                       <DollarSign className="h-3 w-3" />
-                                      {totalPaid.toLocaleString()} ج.م
+                                      {currentMonthPaid.toLocaleString()} ج.م
                                     </Badge>
                                   </div>
                                 </div>

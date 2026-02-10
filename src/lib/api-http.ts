@@ -912,8 +912,10 @@ export default {
 
 export interface Fee {
     id: string;
+    student_id?: string;
     student_name: string;
     phone?: string;
+    guardian_phone?: string;
     grade_id?: string;
     grade_name?: string;
     group_id?: string;
@@ -928,6 +930,8 @@ export interface Fee {
     notes?: string;
     due_date?: string;
     payment_date?: string;
+    payment_year?: number;
+    payment_month?: number;
     receipt_image_url?: string;
     created_at?: string;
     updated_at?: string;
