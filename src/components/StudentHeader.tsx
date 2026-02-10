@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -10,6 +10,7 @@ import {
   MessageCircle,
   User,
   FileText,
+  BookOpen,
   Video,
   File,
   CreditCard,
@@ -66,7 +67,6 @@ const StudentHeader = () => {
   const [notes, setNotes] = useState("");
   const { toast } = useToast();
   const navigate = useNavigate();
-  const location = useLocation();
 
   useEffect(() => {
     if (showPaymentDialog) {
@@ -101,7 +101,20 @@ const StudentHeader = () => {
         });
         return;
       }
+
+      // Check file type
+      if (!file.type.startsWith('image/')) {
+        toast({
+          title: "نوع الملف غير صحيح",
+          description: "يرجى اختيار صورة فقط",
+          variant: "destructive",
+        });
+        return;
+      }
+
       setPaymentImage(file);
+
+      // Create preview
       const reader = new FileReader();
       reader.onloadend = () => {
         setImagePreview(reader.result as string);
@@ -110,26 +123,33 @@ const StudentHeader = () => {
     }
   };
 
-  // Close menu when route changes
-  useEffect(() => {
-    setIsMenuOpen(false);
-  }, [location.pathname]);
+  const removeImage = () => {
+    setPaymentImage(null);
+    setImagePreview(null);
+  };
 
-  // Prevent body scroll when menu is open
-  useEffect(() => {
-    if (isMenuOpen) {
-      document.body.style.overflow = 'hidden';
+  const handleNavigate = (href: string, name: string, scrollTo?: string) => {
+    if (scrollTo) {
+      // Always navigate to /student first if not already there
+      if (window.location.pathname !== "/student") {
+        navigate("/student");
+        // Wait for navigation then scroll
+        setTimeout(() => {
+          const section = document.querySelector(`[data-section="${scrollTo}"]`);
+          if (section) {
+            section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }, 100);
+      } else {
+        // Already on student page, just scroll
+        const section = document.querySelector(`[data-section="${scrollTo}"]`);
+        if (section) {
+          section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }
     } else {
-      document.body.style.overflow = '';
+      navigate(href);
     }
-    return () => {
-      document.body.style.overflow = '';
-    };
-  }, [isMenuOpen]);
-
-  const handleNavigate = (href: string) => {
-    navigate(href);
-    setIsMenuOpen(false);
   };
 
   // Main navigation items
@@ -155,19 +175,39 @@ const StudentHeader = () => {
   // Meetings menu
   const meetingsMenu = [
     { name: "الاجتماعات المباشرة", href: "/student-meetings", icon: Video },
-    { name: "المحادثات", href: "/student-chat", icon: MessageCircle },
   ];
 
   const handleLogout = async () => {
     try {
+      // Clear offline student session if exists
+      const offlineSession = localStorage.getItem('offlineStudentSession');
+      if (offlineSession) {
+        localStorage.removeItem('offlineStudentSession');
+        // Clear all authentication data
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('currentUser');
+        localStorage.removeItem('currentStudent');
+        localStorage.removeItem('supabaseUser');
+        toast({
+          title: "تم تسجيل الخروج بنجاح",
+          description: "أراك لاحقاً!",
+        });
+        navigate("/");
+        return;
+      }
+
+      // Clear student session and all authentication data
       localStorage.removeItem('student_session');
       localStorage.removeItem('authToken');
       localStorage.removeItem('currentUser');
       localStorage.removeItem('currentStudent');
       localStorage.removeItem('supabaseUser');
-      localStorage.removeItem('offlineStudentSession');
 
-      await supabase.auth.signOut();
+      // Sign out from Supabase (for online students and admin users)
+      const { error } = await supabase.auth.signOut();
+      if (error && error.message !== "No session found") {
+        throw error;
+      }
 
       toast({
         title: "تم تسجيل الخروج بنجاح",
@@ -176,13 +216,12 @@ const StudentHeader = () => {
 
       navigate("/");
     } catch (error) {
-      console.error('Logout error:', error);
-      navigate("/");
+      toast({
+        title: "خطأ في تسجيل الخروج",
+        description: "حاول مرة أخرى",
+        variant: "destructive",
+      });
     }
-  };
-
-  const isActive = (href: string) => {
-    return location.pathname === href;
   };
 
   return (
@@ -200,7 +239,6 @@ const StudentHeader = () => {
             {/* Main Links */}
             {mainNavigation.map((item) => {
               const Icon = item.icon;
-              const active = isActive(item.href);
               return (
                 <Button
                   key={item.name}

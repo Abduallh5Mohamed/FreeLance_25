@@ -78,7 +78,7 @@ export default function StudentBarcodes() {
 
   useEffect(() => {
     loadData();
-    const interval = setInterval(loadData, 2000);
+    const interval = setInterval(loadData, 30000);
     return () => clearInterval(interval);
   }, []);
 
@@ -448,7 +448,7 @@ export default function StudentBarcodes() {
                               </div>
                               <div>
                                 <h3 className="font-bold text-white text-lg">{student.name}</h3>
-                                <div className="text-white/90 text-sm">{student.grade || '---'}</div>
+                                <div className="text-white/90 text-sm">{student.grade || student.grade_name || '---'}</div>
                               </div>
                             </div>
                             <div className="flex gap-2">
@@ -488,7 +488,7 @@ export default function StudentBarcodes() {
                                 <Users className="w-4 h-4 text-cyan-600" />
                                 <span className="text-sm text-muted-foreground">الصف</span>
                               </div>
-                              <p className="font-medium">{student.grade || '---'}</p>
+                              <p className="font-medium">{student.grade || student.grade_name || '---'}</p>
                             </div>
 
                             <div>
@@ -582,7 +582,7 @@ export default function StudentBarcodes() {
                                   <td style={{ textAlign: 'right', paddingRight: '8px' }}>{student.name}</td>
                                   <td>{student.phone || '-'}</td>
                                   <td>{student.guardian_phone || '-'}</td>
-                                  <td>{student.grade || '-'}</td>
+                                  <td>{student.grade || student.grade_name || '-'}</td>
                                   <td>{groupName}</td>
                                   <td className="barcode-cell">
                                     {barcode ? (
@@ -617,7 +617,7 @@ export default function StudentBarcodes() {
                                     <div style={avatarStyle}>{initial}</div>
                                     <div>
                                       <div style={nameStyle}>{student.name}</div>
-                                      <div style={{ fontSize: 12, color: '#e6fffa', opacity: 0.95 }}>{student.grade || '---'}</div>
+                                      <div style={{ fontSize: 12, color: '#e6fffa', opacity: 0.95 }}>{student.grade || student.grade_name || '---'}</div>
                                     </div>
                                   </div>
                                   <div style={{ textAlign: 'left' }}>
@@ -641,7 +641,7 @@ export default function StudentBarcodes() {
                                         <div style={{ width: 16, height: 16, borderLeft: '3px solid #06b6d4' }}></div>
                                         <span style={{ fontSize: 11, color: '#666' }}>الصف</span>
                                       </div>
-                                      <div style={{ fontSize: 16, fontWeight: 700, paddingRight: 22 }}>{student.grade || '---'}</div>
+                                      <div style={{ fontSize: 16, fontWeight: 700, paddingRight: 22 }}>{student.grade || student.grade_name || '---'}</div>
                                     </div>
                                   </div>
 

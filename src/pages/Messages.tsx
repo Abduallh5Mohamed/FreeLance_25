@@ -69,7 +69,7 @@ interface Message {
 interface Conversation {
     id: number;
     other_user_id: string;
-    other_user_name: string;
+    other_user_name: string | null;
     other_user_role: string;
     unread_count: number;
     last_message_content: string;
@@ -753,15 +753,15 @@ export default function Messages() {
                                         }`}
                                     onClick={() => selectUser({
                                         id: conv.other_user_id,
-                                        username: conv.other_user_name,
-                                        role: conv.other_user_role,
+                                        username: conv.other_user_name || 'مستخدم محذوف',
+                                        role: conv.other_user_role || 'student',
                                         is_online: conv.is_online,
                                         last_seen: conv.last_seen
                                     })}
                                 >
                                     <div className="relative">
                                         <Avatar>
-                                            <AvatarFallback>{conv.other_user_name[0]}</AvatarFallback>
+                                            <AvatarFallback>{(conv.other_user_name || 'م')[0]}</AvatarFallback>
                                         </Avatar>
                                         {conv.is_online && (
                                             <div className="absolute bottom-0 left-0 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
@@ -769,7 +769,7 @@ export default function Messages() {
                                     </div>
                                     <div className="flex-1 min-w-0">
                                         <div className="flex items-center justify-between">
-                                            <p className="font-medium text-sm truncate">{conv.other_user_name}</p>
+                                            <p className="font-medium text-sm truncate">{conv.other_user_name || 'مستخدم محذوف'}</p>
                                             <span className="text-xs text-gray-500">
                                                 {formatTime(conv.last_message_time)}
                                             </span>

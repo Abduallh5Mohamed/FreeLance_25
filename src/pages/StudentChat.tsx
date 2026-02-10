@@ -7,7 +7,6 @@ import { Card } from '@/components/ui/card';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
-import StudentHeader from '@/components/StudentHeader';
 import {
   Send,
   Image as ImageIcon,
@@ -617,14 +616,15 @@ export default function StudentChat() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-gradient-to-br from-amber-50/80 via-orange-50/60 to-yellow-50/80 dark:from-slate-900 dark:via-amber-950/30 dark:to-slate-900" dir="rtl">
-      <StudentHeader />
-      <div className="flex flex-1 overflow-hidden">
+    <div className="flex h-screen bg-gray-50" dir="rtl">
       {/* Sidebar - Conversations & Users */}
       <div className="w-80 bg-white border-l border-gray-200 flex flex-col">
         <div className="p-4 border-b border-gray-200">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-bold">الرسائل</h2>
+            <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
+              <ArrowLeft className="h-5 w-5" />
+            </Button>
           </div>
         </div>
 
@@ -902,7 +902,6 @@ export default function StudentChat() {
             </div>
           </div>
         )}
-      </div>
       </div>
     </div>
   );

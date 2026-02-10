@@ -6,6 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import jwt from 'jsonwebtoken';
 import { notifyAdminNewMessage, notifyStudentMessageResponse } from '../utils/notifications';
+import { getIO } from '../services/socket';
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
@@ -256,25 +257,42 @@ router.post('/send', authenticateToken, async (req: AuthRequest, res: Response) 
         // Sort IDs alphabetically for consistent user1/user2 ordering
         const [user1Id, user2Id] = [senderId, receiver_id].sort();
 
-        await getPool().query(`
-            INSERT INTO conversations (user1_id, user2_id, last_message_id, unread_count_user2, updated_at)
-            VALUES (?, ?, ?, 1, NOW())
-            ON DUPLICATE KEY UPDATE
-                last_message_id = ?,
-                unread_count_user2 = unread_count_user2 + 1,
-                updated_at = NOW()
-        `, [user1Id, user2Id, messageId, messageId]);
+        // Determine which unread count to increment based on who is the receiver
+        if (receiver_id === user1Id) {
+            // Receiver is user1, increment unread_count_user1
+            await getPool().query(`
+                INSERT INTO conversations (user1_id, user2_id, last_message_id, unread_count_user1, updated_at)
+                VALUES (?, ?, ?, 1, NOW())
+                ON DUPLICATE KEY UPDATE
+                    last_message_id = ?,
+                    unread_count_user1 = unread_count_user1 + 1,
+                    updated_at = NOW()
+            `, [user1Id, user2Id, messageId, messageId]);
+        } else {
+            // Receiver is user2, increment unread_count_user2
+            await getPool().query(`
+                INSERT INTO conversations (user1_id, user2_id, last_message_id, unread_count_user2, updated_at)
+                VALUES (?, ?, ?, 1, NOW())
+                ON DUPLICATE KEY UPDATE
+                    last_message_id = ?,
+                    unread_count_user2 = unread_count_user2 + 1,
+                    updated_at = NOW()
+            `, [user1Id, user2Id, messageId, messageId]);
+        }
 
-        // Get the created message with status
+        // Get the created message with status and sender name
         const [messages] = await getPool().query<RowDataPacket[]>(`
             SELECT 
                 m.*,
                 ms.is_delivered,
                 ms.delivered_at,
                 ms.is_read,
-                ms.read_at
+                ms.read_at,
+                u.name as sender_name,
+                u.role as sender_role
             FROM messages m
             LEFT JOIN message_status ms ON m.id = ms.message_id
+            LEFT JOIN users u ON m.sender_id = u.id
             WHERE m.id = ?
         `, [messageId]);
 
@@ -325,6 +343,17 @@ router.post('/send', authenticateToken, async (req: AuthRequest, res: Response) 
             }
         } catch (notifError) {
             console.error('Error sending notification:', notifError);
+        }
+
+        // Emit real-time socket event so NotificationBell updates immediately
+        try {
+            const io = getIO();
+            if (io) {
+                io.to(`user:${receiver_id}`).emit('message:new', messages[0]);
+                console.log('📡 Socket emit message:new to', receiver_id);
+            }
+        } catch (socketError) {
+            console.error('Socket emit error:', socketError);
         }
 
         res.status(201).json(messages[0]);
@@ -390,18 +419,31 @@ router.post('/upload-image', authenticateToken, upload.single('image'), async (r
             `, [user1Id, user2Id, messageId, messageId]);
         }
 
-        // Get the created message
+        // Get the created message with sender info
         const [messages] = await getPool().query<RowDataPacket[]>(`
             SELECT 
                 m.*,
                 ms.is_delivered,
                 ms.delivered_at,
                 ms.is_read,
-                ms.read_at
+                ms.read_at,
+                u.name as sender_name,
+                u.role as sender_role
             FROM messages m
             LEFT JOIN message_status ms ON m.id = ms.message_id
+            LEFT JOIN users u ON m.sender_id = u.id
             WHERE m.id = ?
         `, [messageId]);
+
+        // Emit real-time socket event for image messages too
+        try {
+            const io = getIO();
+            if (io) {
+                io.to(`user:${receiver_id}`).emit('message:new', messages[0]);
+            }
+        } catch (socketError) {
+            console.error('Socket emit error:', socketError);
+        }
 
         res.status(201).json(messages[0]);
     } catch (error) {

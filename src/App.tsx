@@ -3,6 +3,8 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { useEffect } from "react";
+import { startVersionCheck, stopVersionCheck } from "./utils/versionChecker";
 import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import TeacherDashboard from "./pages/TeacherDashboard";
@@ -59,14 +61,26 @@ import { UploadNotification } from "./components/UploadNotification";
 
 const queryClient = new QueryClient();
 
-const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <UploadProvider>
-      <TooltipProvider>
-        <Toaster />
-        <Sonner />
-        <UploadNotification />
-        <BrowserRouter>
+const App = () => {
+  // Auto-reload when new build is detected
+  useEffect(() => {
+    console.log('🚀 App mounted - Starting version checker');
+    startVersionCheck();
+    
+    return () => {
+      console.log('🛑 App unmounting - Stopping version checker');
+      stopVersionCheck();
+    };
+  }, []);
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <UploadProvider>
+        <TooltipProvider>
+          <Toaster />
+          <Sonner />
+          <UploadNotification />
+          <BrowserRouter>
           <Routes>
             <Route path="/" element={<Index />} />
             <Route path="/promo" element={<PromoVideo />} />
@@ -132,6 +146,7 @@ const App = () => (
       </TooltipProvider>
     </UploadProvider>
   </QueryClientProvider>
-);
+  );
+};
 
 export default App;

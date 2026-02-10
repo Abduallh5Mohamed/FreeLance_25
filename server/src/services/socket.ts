@@ -8,6 +8,11 @@ interface UserSocket extends Socket {
     userId?: string;
 }
 
+// Global reference to io instance for use in REST routes
+let ioInstance: SocketIOServer | null = null;
+
+export const getIO = (): SocketIOServer | null => ioInstance;
+
 export const setupSocketIO = (httpServer: HTTPServer) => {
     const io = new SocketIOServer(httpServer, {
         cors: {
@@ -19,12 +24,16 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
                     'http://127.0.0.1:8080',
                     'http://127.0.0.1:8081',
                     'http://127.0.0.1:3000',
-                ];
+                    'https://elka2d.cloud',
+                    'http://elka2d.cloud',
+                    process.env.CORS_ORIGIN,
+                ].filter(Boolean) as string[];
 
-                if (!origin || allowedOrigins.some(allowed => origin.includes(allowed))) {
+                // Allow all origins in production (same as Express CORS in index.ts)
+                if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1') || allowedOrigins.includes(origin)) {
                     callback(null, true);
                 } else {
-                    callback(null, true);
+                    callback(null, true); // Allow all in production
                 }
             },
             credentials: true,
@@ -384,6 +393,9 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
     });
 
     console.log('✅ Socket.IO initialized for real-time messaging');
+
+    // Store reference for REST routes
+    ioInstance = io;
 
     return io;
 };

@@ -53,23 +53,6 @@ const TakeExam = () => {
   const { toast } = useToast();
   const resultRef = useRef<HTMLDivElement>(null);
 
-  const getApiBase = () => {
-    const envApiUrl = import.meta.env.VITE_API_URL as string | undefined;
-    if (envApiUrl) return envApiUrl.replace('/api', '');
-    const host = window.location.hostname;
-    if (host !== 'localhost' && host !== '127.0.0.1') {
-      return window.location.origin;
-    }
-    return 'http://localhost:3001';
-  };
-
-  const resolveQuestionImage = (url?: string) => {
-    if (!url) return '';
-    if (url.startsWith('http') || url.startsWith('data:')) return url;
-    // ✅ الصور تتخدم من window.location.origin مباشرة بدون /api
-    return `${window.location.origin}${url}`;
-  };
-
   const [exam, setExam] = useState<ExamData | null>(null);
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [essayAnswers, setEssayAnswers] = useState<Record<string, string>>({});  // ✅ إجابات مقالية
@@ -278,7 +261,7 @@ const TakeExam = () => {
             if (typeof correctAnswer === 'string') {
               const letterToIndex: Record<string, number> = { 'a': 0, 'b': 1, 'c': 2, 'd': 3 };
               const normalizedAnswer = correctAnswer.toLowerCase().trim();
-
+              
               if (letterToIndex[normalizedAnswer] !== undefined) {
                 correctAnswer = letterToIndex[normalizedAnswer];
               } else {
@@ -380,18 +363,15 @@ const TakeExam = () => {
         // سؤال اختياري - نحسب درجته تلقائياً
         const userAnswerIndex = answers[question.id];
         const correctAnswer = question.correct_answer;
-
-        // Compare directly as numbers since both are now indices
-        const userAnswer = userAnswerIndex !== undefined && userAnswerIndex !== null
-          ? Number(userAnswerIndex)
+        
+        // Convert user answer index (0,1,2,3) to letter (a,b,c,d)
+        const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
+          ? String.fromCharCode(97 + userAnswerIndex) 
           : null;
-        const correctIndex = typeof correctAnswer === 'number'
-          ? correctAnswer
-          : (typeof correctAnswer === 'string' ? { 'a': 0, 'b': 1, 'c': 2, 'd': 3 }[correctAnswer.toLowerCase()] ?? 0 : 0);
 
-        console.log(`Q${idx + 1}: User answered index: ${userAnswer}, Correct index: ${correctIndex}, Match: ${userAnswer === correctIndex}`);
+        console.log(`Q${idx + 1}: User answered index: ${userAnswerIndex}, letter: ${userAnswerLetter}, Correct: ${correctAnswer}, Match: ${userAnswerLetter === correctAnswer}`);
 
-        if (userAnswer !== null && userAnswer === correctIndex) {
+        if (userAnswerLetter === correctAnswer) {
           autoScore += questionPoints;
           correctCount++;
           console.log(`✅ Correct! Score: ${questionPoints}`);
@@ -480,13 +460,16 @@ const TakeExam = () => {
         if (examResult.hasEssayQuestions) {
           toast({
             title: "تم تسليم الامتحان ✅",
-            description: "يمكنك مراجعة درجتك في صفحة نتائج الامتحانات",
+            description: "سيتم مراجعة إجاباتك المقالية وإعلان النتيجة النهائية قريباً",
           });
         } else {
-          // رسالة ثابتة بعد التسليم
+          // لا يوجد أسئلة مقالية - نعرض النتيجة مباشرة
           toast({
-            title: "تم تسليم الامتحان ✅",
-            description: "يمكنك مراجعة درجتك في صفحة نتائج الامتحانات",
+            title: passed ? "تهانينا! 🎉" : "للأسف",
+            description: passed
+              ? `لقد نجحت بدرجة ${finalScore}/${totalMarks}`
+              : `لم تحصل على درجة النجاح. حصلت على ${finalScore}/${totalMarks}`,
+            variant: passed ? "default" : "destructive"
           });
         }
       } catch (error) {
@@ -605,7 +588,7 @@ const TakeExam = () => {
         // Question number and points
         doc.setFillColor(250, 250, 250);
         doc.roundedRect(15, yPos - 5, pageWidth - 30, 8, 2, 2, 'F');
-
+        
         doc.setTextColor(13, 148, 136);
         doc.setFontSize(11);
         const pointsText = `(${question.points || question.marks || 1} نقطة)`;
@@ -619,7 +602,7 @@ const TakeExam = () => {
         const questionText = question.question_text || question.question || '';
         const maxWidth = pageWidth - 35;
         const lines = doc.splitTextToSize(questionText, maxWidth);
-
+        
         lines.forEach((line: string, lineIdx: number) => {
           if (yPos > pageHeight - 40) {
             doc.addPage();
@@ -639,11 +622,11 @@ const TakeExam = () => {
               doc.addPage();
               yPos = 20;
             }
-
+            
             const optionLetter = String.fromCharCode(97 + optIdx); // a, b, c, d
             const isUserAnswer = userAnswer === optIdx;
             const isCorrectAnswer = question.correct_answer === optIdx;
-
+            
             // تلوين الخيار
             if (isUserAnswer && isCorrectAnswer) {
               doc.setTextColor(34, 197, 94); // أخضر - إجابة صحيحة
@@ -683,18 +666,18 @@ const TakeExam = () => {
         } else if (questionType === 'essay') {
           const essayAnswer = essayAnswers[question.id];
           const answerImage = answerImages[question.id];
-
+          
           if (essayAnswer || answerImage) {
             doc.setTextColor(13, 148, 136);
             doc.setFontSize(10);
             doc.text('📝 إجابتك المقالية:', pageWidth - 20, yPos, { align: 'right' });
             yPos += 7;
-
+            
             // عرض الإجابة النصية كاملة
             if (essayAnswer) {
               doc.setTextColor(0, 0, 0);
               doc.setFontSize(9);
-
+              
               // عرض الإجابة الكاملة مع دعم الأسطر المتعددة
               const essayLines = doc.splitTextToSize(essayAnswer, maxWidth - 10);
               essayLines.forEach((line: string) => {
@@ -707,14 +690,14 @@ const TakeExam = () => {
               });
               yPos += 3;
             }
-
+            
             // عرض صورة الإجابة إن وجدت
             if (answerImage) {
               doc.setTextColor(13, 148, 136);
               doc.setFontSize(9);
               doc.text('🖼️ صورة الإجابة مرفقة', pageWidth - 25, yPos, { align: 'right' });
               yPos += 5;
-
+              
               // محاولة إضافة الصورة للـ PDF
               try {
                 if (answerImage.startsWith('data:image')) {
@@ -729,7 +712,7 @@ const TakeExam = () => {
                 console.log('Could not add image to PDF');
               }
             }
-
+            
             // ملاحظة أن السؤال يحتاج تصحيح يدوي
             doc.setTextColor(255, 152, 0);
             doc.setFontSize(8);
@@ -837,38 +820,54 @@ const TakeExam = () => {
           >
             <Card className="shadow-2xl border-2">
               <CardHeader className="text-center pb-4">
-                <div className="mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4 bg-green-100 dark:bg-green-900/20">
-                  <CheckCircle2 className="w-8 h-8 text-green-600 dark:text-green-500" />
+                <div className={`mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4 ${attemptResult.hasEssayQuestions
+                  ? 'bg-blue-100 dark:bg-blue-900/20'
+                  : attemptResult.passed
+                    ? 'bg-green-100 dark:bg-green-900/20'
+                    : 'bg-red-100 dark:bg-red-900/20'
+                  }`}>
+                  {attemptResult.hasEssayQuestions ? (
+                    <AlertCircle className="w-8 h-8 text-blue-600 dark:text-blue-500" />
+                  ) : attemptResult.passed ? (
+                    <CheckCircle2 className="w-8 h-8 text-green-600 dark:text-green-500" />
+                  ) : (
+                    <XCircle className="w-8 h-8 text-red-600 dark:text-red-500" />
+                  )}
                 </div>
                 <CardTitle className="text-2xl">
-                  تم تسليم الامتحان بنجاح
+                  {attemptResult.hasEssayQuestions ? 'تم تسليم الامتحان' : 'نتيجة الامتحان'}
                 </CardTitle>
               </CardHeader>
               <CardContent className="text-center space-y-4">
-                <div className="bg-primary/5 p-4 rounded-lg border border-primary/20">
-                  <p className="text-lg font-semibold text-primary mb-2">
-                    🎉 أحسنت!
-                  </p>
-                  <p className="text-muted-foreground">
-                    تم تسجيل إجاباتك بنجاح وحفظ نتيجتك
-                  </p>
-                </div>
-                <div className="bg-muted/50 p-4 rounded-lg">
-                  <p className="text-sm text-muted-foreground mb-2">
-                    لمعرفة درجتك ومراجعة إجاباتك، توجه إلى:
-                  </p>
-                  <p className="text-lg font-bold text-primary">
-                    📊 نتائج الامتحانات
-                  </p>
-                </div>
+                {attemptResult.hasEssayQuestions ? (
+                  <>
+                    <div className="bg-blue-50 dark:bg-blue-900/10 p-4 rounded-lg border border-blue-200 dark:border-blue-800">
+                      <p className="text-lg font-semibold text-blue-700 dark:text-blue-400 mb-2">
+                        قيد المراجعة
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        سيتم مراجعة إجاباتك المقالية من قبل المعلم وإعلان النتيجة النهائية قريباً
+                      </p>
+                    </div>
+                    <div className="bg-muted/50 p-4 rounded-lg">
+                      <p className="text-sm font-medium mb-2">الدرجة المبدئية (الأسئلة الموضوعية):</p>
+                      <p className="text-2xl font-bold text-primary">
+                        {attemptResult.autoScore} / {attemptResult.autoScore + attemptResult.manualScore}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        في انتظار تصحيح الأسئلة المقالية ({attemptResult.manualScore} درجة)
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-lg font-semibold">الدرجة: {attemptResult.score} / {attemptResult.total}</p>
+                    <p className={attemptResult.passed ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold'}>
+                      {attemptResult.passed ? 'تم النجاح' : `لم تحصل على درجة النجاح (${attemptResult.passingMarks})`}
+                    </p>
+                  </>
+                )}
                 <Button
-                  onClick={() => navigate('/student-exam-results')}
-                  className="w-full"
-                >
-                  عرض نتائج الامتحانات
-                </Button>
-                <Button
-                  variant="outline"
                   onClick={() => navigate('/student-exams')}
                   className="w-full"
                 >
@@ -985,350 +984,451 @@ const TakeExam = () => {
     .reduce((sum, q) => sum + (q.marks || q.points || 1), 0) || 0;
 
   if (isSubmitted && result) {
-    // رسالة ثابتة بسيطة بعد التسليم
+    // ✅ تحديد حالة العرض بناءً على وجود أسئلة مقالية
+    const isPendingReview = hasEssayQuestions;
+    const showPassFail = !isPendingReview;
+    
     return (
-      <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative" dir="rtl">
+      <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
         <FloatingParticles />
-        <div className="w-full px-3 sm:px-4 md:px-6 lg:px-8 py-6 sm:py-8 md:py-12 relative z-10">
-          <div className="max-w-3xl mx-auto">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-            >
-              <Card className={`border-4 ${result.passed ? 'border-green-500' : 'border-red-500'}`}>
-                <CardHeader className="text-center pb-6 sm:pb-8">
-                  <div className="mx-auto mb-4">
-                    {result.passed ? (
-                      <motion.div
-                        initial={{ scale: 0 }}
-                        animate={{ scale: 1 }}
-                        transition={{ type: "spring", stiffness: 200 }}
-                      >
-                        <Trophy className="w-16 h-16 sm:w-20 sm:h-20 md:w-24 md:h-24 text-green-500 mx-auto" />
-                      </motion.div>
-                    ) : (
-                      <XCircle className="w-16 h-16 sm:w-20 sm:h-20 md:w-24 md:h-24 text-red-500 mx-auto" />
-                    )}
+        <div className="container mx-auto px-4 py-12 relative z-10 max-w-3xl">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+          >
+            <Card className={`border-4 ${isPendingReview ? 'border-blue-500' : result.passed ? 'border-green-500' : 'border-red-500'}`}>
+              <CardHeader className="text-center pb-8">
+                <div className="mx-auto mb-4">
+                  {isPendingReview ? (
+                    <motion.div
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      transition={{ type: "spring", stiffness: 200 }}
+                    >
+                      <Clock className="w-24 h-24 text-blue-500 mx-auto" />
+                    </motion.div>
+                  ) : result.passed ? (
+                    <motion.div
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      transition={{ type: "spring", stiffness: 200 }}
+                    >
+                      <Trophy className="w-24 h-24 text-green-500 mx-auto" />
+                    </motion.div>
+                  ) : (
+                    <XCircle className="w-24 h-24 text-red-500 mx-auto" />
+                  )}
+                </div>
+                <CardTitle className="text-3xl">
+                  {isPendingReview 
+                    ? 'تم تسليم الامتحان ✅' 
+                    : result.passed 
+                      ? 'نجحت في الامتحان! 🎉' 
+                      : 'للأسف، لم تنجح'}
+                </CardTitle>
+                {isPendingReview && (
+                  <p className="text-muted-foreground mt-2">
+                    سيتم مراجعة إجاباتك المقالية وإعلان النتيجة النهائية قريباً
+                  </p>
+                )}
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* Score Display */}
+                {isPendingReview ? (
+                  <div className="space-y-4">
+                    {/* درجة الاختياري */}
+                    <div className="text-center p-4 bg-green-50 dark:bg-green-900/10 rounded-lg border border-green-200 dark:border-green-800">
+                      <p className="text-sm text-muted-foreground mb-2">درجة الأسئلة الاختيارية</p>
+                      <div className="text-4xl font-bold text-green-600">
+                        {multipleChoiceScore}/{multipleChoiceTotal}
+                      </div>
+                    </div>
+                    
+                    {/* درجة المقالي - قيد المراجعة */}
+                    <div className="text-center p-4 bg-blue-50 dark:bg-blue-900/10 rounded-lg border border-blue-200 dark:border-blue-800">
+                      <p className="text-sm text-muted-foreground mb-2">الأسئلة المقالية ({essayQuestionsCount} سؤال)</p>
+                      <div className="flex items-center justify-center gap-2 text-blue-600">
+                        <Clock className="w-5 h-5" />
+                        <span className="text-lg font-medium">قيد المراجعة</span>
+                      </div>
+                    </div>
+                    
+                    {/* الدرجة الكلية */}
+                    <div className="text-center p-4 bg-gray-50 dark:bg-gray-900/10 rounded-lg border">
+                      <p className="text-sm text-muted-foreground mb-2">الدرجة الكلية (مبدئية)</p>
+                      <div className="text-3xl font-bold text-gray-600">
+                        {multipleChoiceScore}/{result.total}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        * ستُضاف درجة المقالي بعد المراجعة
+                      </p>
+                    </div>
                   </div>
-                  <CardTitle className="text-xl sm:text-2xl md:text-3xl">
-                    {result.passed ? 'نجحت في الامتحان! 🎉' : 'للأسف، لم تنجح'}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4 sm:space-y-6">
-                  {/* Score Display */}
+                ) : (
                   <div className="text-center">
-                    <div className={`text-4xl sm:text-5xl md:text-6xl font-bold mb-2 ${result.passed ? 'text-green-600' : 'text-red-600'}`}>
+                    <div className={`text-6xl font-bold mb-2 ${result.passed ? 'text-green-600' : 'text-red-600'}`}>
                       {result.score}/{result.total}
                     </div>
-                    <div className="text-lg sm:text-xl md:text-2xl font-semibold text-muted-foreground">
+                    <div className="text-2xl font-semibold text-muted-foreground">
                       {result.percentage.toFixed(1)}%
                     </div>
                   </div>
+                )}
 
-                  {/* Stats */}
+                {/* Stats - فقط للاختياري */}
+                {!isPendingReview && (
                   <div className="grid grid-cols-2 gap-4">
                     <Card className="p-4 text-center">
                       <div className="text-sm text-muted-foreground mb-1">إجابات صحيحة</div>
                       <div className="text-2xl font-bold text-green-600">
-                        {exam.questions.filter(q => answers[q.id] === q.correct_answer).length}
+                        {exam.questions.filter(q => {
+                          const userAnswerIndex = answers[q.id];
+                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
+                            ? String.fromCharCode(97 + userAnswerIndex) 
+                            : null;
+                          return userAnswerLetter === q.correct_answer;
+                        }).length}
                       </div>
                     </Card>
                     <Card className="p-4 text-center">
                       <div className="text-sm text-muted-foreground mb-1">إجابات خاطئة</div>
                       <div className="text-2xl font-bold text-red-600">
-                        {exam.questions.filter(q => answers[q.id] !== undefined && answers[q.id] !== q.correct_answer).length}
+                        {exam.questions.filter(q => {
+                          const userAnswerIndex = answers[q.id];
+                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
+                            ? String.fromCharCode(97 + userAnswerIndex) 
+                            : null;
+                          return userAnswerLetter !== null && userAnswerLetter !== q.correct_answer;
+                        }).length}
                       </div>
                     </Card>
                   </div>
+                )}
+                
+                {/* Stats for pending review - show multiple choice stats */}
+                {isPendingReview && multipleChoiceCount > 0 && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <Card className="p-4 text-center bg-green-50 dark:bg-green-900/10">
+                      <div className="text-sm text-muted-foreground mb-1">إجابات صحيحة (اختياري)</div>
+                      <div className="text-2xl font-bold text-green-600">
+                        {exam.questions.filter(q => {
+                          if (q.question_type === 'essay') return false;
+                          const userAnswerIndex = answers[q.id];
+                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
+                            ? String.fromCharCode(97 + userAnswerIndex) 
+                            : null;
+                          return userAnswerLetter === q.correct_answer;
+                        }).length}
+                      </div>
+                    </Card>
+                    <Card className="p-4 text-center bg-red-50 dark:bg-red-900/10">
+                      <div className="text-sm text-muted-foreground mb-1">إجابات خاطئة (اختياري)</div>
+                      <div className="text-2xl font-bold text-red-600">
+                        {exam.questions.filter(q => {
+                          if (q.question_type === 'essay') return false;
+                          const userAnswerIndex = answers[q.id];
+                          const userAnswerLetter = userAnswerIndex !== undefined && userAnswerIndex !== null 
+                            ? String.fromCharCode(97 + userAnswerIndex) 
+                            : null;
+                          return userAnswerLetter !== null && userAnswerLetter !== q.correct_answer;
+                        }).length}
+                      </div>
+                    </Card>
+                  </div>
+                )}
 
-                  {/* Detailed Results */}
-                  <div className="space-y-4">
-                    <h3 className="font-bold text-lg border-b pb-2 mb-4">الإجابات التفصيلية:</h3>
-                    {exam.questions.map((question, idx) => {
-                      const userAnswer = answers[question.id];
-                      const isCorrect = userAnswer === question.correct_answer;
-                      const wasAnswered = userAnswer !== undefined;
+                {/* Detailed Results */}
+                <div className="space-y-4">
+                  <h3 className="font-bold text-lg border-b pb-2 mb-4">الإجابات التفصيلية:</h3>
+                  {exam.questions.map((question, idx) => {
+                    const userAnswer = answers[question.id];
+                    const isCorrect = userAnswer === question.correct_answer;
+                    const wasAnswered = userAnswer !== undefined;
 
-                      // Parse options properly
-                      let questionOptions: string[] = [];
-                      if (Array.isArray(question.options)) {
-                        questionOptions = question.options;
-                      } else if (typeof question.options === 'string') {
-                        try {
-                          const parsed = JSON.parse(question.options);
-                          if (Array.isArray(parsed)) {
-                            questionOptions = parsed;
-                          } else if (parsed && typeof parsed === 'object') {
-                            questionOptions = [parsed.a, parsed.b, parsed.c, parsed.d].filter(Boolean);
-                          }
-                        } catch (e) {
-                          console.error('Failed to parse options:', e);
+                    // Parse options properly
+                    let questionOptions: string[] = [];
+                    if (Array.isArray(question.options)) {
+                      questionOptions = question.options;
+                    } else if (typeof question.options === 'string') {
+                      try {
+                        const parsed = JSON.parse(question.options);
+                        if (Array.isArray(parsed)) {
+                          questionOptions = parsed;
+                        } else if (parsed && typeof parsed === 'object') {
+                          questionOptions = [parsed.a, parsed.b, parsed.c, parsed.d].filter(Boolean);
                         }
-                      } else if (question.options && typeof question.options === 'object') {
-                        const opts = question.options as Record<string, string>;
-                        questionOptions = [opts.a, opts.b, opts.c, opts.d].filter(Boolean);
+                      } catch (e) {
+                        console.error('Failed to parse options:', e);
                       }
+                    } else if (question.options && typeof question.options === 'object') {
+                      const opts = question.options as Record<string, string>;
+                      questionOptions = [opts.a, opts.b, opts.c, opts.d].filter(Boolean);
+                    }
 
-                      console.log(`Q${idx + 1} Debug - Full Details:`, {
-                        id: question.id,
-                        question: question.question_text || question.question,
-                        rawOptions: question.options,
-                        rawOptionsType: typeof question.options,
-                        rawOptionsIsArray: Array.isArray(question.options),
-                        parsedOptions: questionOptions,
-                        parsedOptionsLength: questionOptions.length,
-                        userAnswer,
-                        userAnswerType: typeof userAnswer,
-                        correctAnswer: question.correct_answer,
-                        correctAnswerType: typeof question.correct_answer,
-                        isCorrect,
-                        wasAnswered,
-                        questionType: question.question_type
-                      });
+                    console.log(`Q${idx + 1} Debug - Full Details:`, {
+                      id: question.id,
+                      question: question.question_text || question.question,
+                      rawOptions: question.options,
+                      rawOptionsType: typeof question.options,
+                      rawOptionsIsArray: Array.isArray(question.options),
+                      parsedOptions: questionOptions,
+                      parsedOptionsLength: questionOptions.length,
+                      userAnswer,
+                      userAnswerType: typeof userAnswer,
+                      correctAnswer: question.correct_answer,
+                      correctAnswerType: typeof question.correct_answer,
+                      isCorrect,
+                      wasAnswered,
+                      questionType: question.question_type
+                    });
 
-                      return (
-                        <Card key={question.id} className={`p-5 ${isCorrect ? 'border-2 border-green-500 bg-green-50/50' : wasAnswered ? 'border-2 border-red-500 bg-red-50/50' : 'border-2 border-gray-300'}`}>
-                          <div className="space-y-3">
-                            {/* Question Header */}
-                            <div className="flex items-start gap-3">
-                              <div className="flex-shrink-0 mt-1">
-                                {isCorrect ? (
-                                  <CheckCircle2 className="w-6 h-6 text-green-600" />
-                                ) : wasAnswered ? (
-                                  <XCircle className="w-6 h-6 text-red-600" />
-                                ) : (
-                                  <AlertCircle className="w-6 h-6 text-gray-400" />
-                                )}
-                              </div>
-                              <div className="flex-1">
-                                <div className="flex items-center justify-between mb-2">
-                                  <span className="font-bold text-lg">السؤال {idx + 1}</span>
-                                  <Badge variant={isCorrect ? "default" : "destructive"} className="text-sm">
-                                    {question.points || question.marks || 1} نقطة
-                                  </Badge>
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* Question Text - Always visible */}
-                            <div className="bg-blue-50 p-4 rounded-lg border-2 border-blue-200">
-                              <div className="flex items-start gap-2 mb-3">
-                                <span className="text-blue-700 font-bold text-sm bg-blue-100 px-3 py-1 rounded">📝 نص السؤال</span>
-                              </div>
-                              <div className="font-bold text-xl mb-3 text-gray-900 leading-relaxed">
-                                {question.question_text || question.question || 'لا يوجد نص للسؤال'}
-                              </div>
-
-                              {/* Question Image if exists */}
-                              {question.question_image && (
-                                <div className="my-3">
-                                  <img
-                                    src={question.question_image}
-                                    alt="صورة السؤال"
-                                    className="max-w-full h-auto rounded-lg border"
-                                  />
-                                </div>
+                    return (
+                      <Card key={question.id} className={`p-5 ${isCorrect ? 'border-2 border-green-500 bg-green-50/50' : wasAnswered ? 'border-2 border-red-500 bg-red-50/50' : 'border-2 border-gray-300'}`}>
+                        <div className="space-y-3">
+                          {/* Question Header */}
+                          <div className="flex items-start gap-3">
+                            <div className="flex-shrink-0 mt-1">
+                              {isCorrect ? (
+                                <CheckCircle2 className="w-6 h-6 text-green-600" />
+                              ) : wasAnswered ? (
+                                <XCircle className="w-6 h-6 text-red-600" />
+                              ) : (
+                                <AlertCircle className="w-6 h-6 text-gray-400" />
                               )}
                             </div>
-
-                            {/* Student Answer Section - Always visible for multiple choice */}
-                            {question.question_type === 'multiple_choice' || userAnswer !== undefined ? (
-                              <div className="bg-yellow-50 p-4 rounded-lg border-2 border-yellow-200">
-                                <div className="flex items-start gap-2 mb-3">
-                                  <span className="text-yellow-700 font-bold text-sm bg-yellow-100 px-3 py-1 rounded">✍️ إجابة الطالب</span>
-                                </div>
-
-                                {wasAnswered ? (
-                                  <div className="space-y-2">
-                                    {questionOptions.length > 0 ? (
-                                      // Multiple Choice Answer with options
-                                      <div className="font-bold text-lg text-gray-900">
-                                        {questionOptions[userAnswer] || `الخيار رقم ${userAnswer + 1}`}
-                                      </div>
-                                    ) : (
-                                      // Fallback if no options parsed
-                                      <div className="font-bold text-lg text-gray-900">
-                                        الخيار رقم {userAnswer + 1}
-                                        <div className="text-sm text-gray-600 mt-1">
-                                          (الخيارات غير متاحة - فقط رقم الإجابة)
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <div className="text-gray-600 font-medium">
-                                    ⚠️ لم يجب الطالب على هذا السؤال
-                                  </div>
-                                )}
+                            <div className="flex-1">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="font-bold text-lg">السؤال {idx + 1}</span>
+                                <Badge variant={isCorrect ? "default" : "destructive"} className="text-sm">
+                                  {question.points || question.marks || 1} نقطة
+                                </Badge>
                               </div>
-                            ) : null}
+                            </div>
+                          </div>
 
-                            {/* Correct Answer Section - Show for multiple choice */}
-                            {(question.question_type === 'multiple_choice' || question.correct_answer !== undefined) && (
-                              <div className="bg-green-50 p-4 rounded-lg border-2 border-green-200">
-                                <div className="flex items-start gap-2 mb-3">
-                                  <span className="text-green-700 font-bold text-sm bg-green-100 px-3 py-1 rounded">✅ الإجابة الصحيحة</span>
-                                </div>
-                                <div className="font-bold text-lg text-green-900">
-                                  {questionOptions.length > 0 && questionOptions[question.correct_answer as number]
-                                    ? questionOptions[question.correct_answer as number]
-                                    : `الخيار رقم ${(question.correct_answer as number) + 1}`}
-                                  {questionOptions.length === 0 && (
-                                    <div className="text-sm text-gray-600 mt-1">
-                                      (الخيارات غير متاحة - فقط رقم الإجابة)
+                          {/* Question Text - Always visible */}
+                          <div className="bg-blue-50 p-4 rounded-lg border-2 border-blue-200">
+                            <div className="flex items-start gap-2 mb-3">
+                              <span className="text-blue-700 font-bold text-sm bg-blue-100 px-3 py-1 rounded">📝 نص السؤال</span>
+                            </div>
+                            <div className="font-bold text-xl mb-3 text-gray-900 leading-relaxed whitespace-pre-wrap break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                              {question.question_text || question.question || 'لا يوجد نص للسؤال'}
+                            </div>
+
+                            {/* Question Image if exists */}
+                            {question.question_image && (
+                              <div className="my-3">
+                                <img
+                                  src={question.question_image.startsWith('http')
+                                    ? question.question_image
+                                    : question.question_image.startsWith('/api/')
+                                      ? question.question_image
+                                      : `/api${question.question_image}`
+                                  }
+                                  alt="صورة السؤال"
+                                  className="max-w-full h-auto rounded-lg border"
+                                />
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Student Answer Section - Always visible for multiple choice */}
+                          {question.question_type === 'multiple_choice' || userAnswer !== undefined ? (
+                            <div className="bg-yellow-50 p-4 rounded-lg border-2 border-yellow-200">
+                              <div className="flex items-start gap-2 mb-3">
+                                <span className="text-yellow-700 font-bold text-sm bg-yellow-100 px-3 py-1 rounded">✍️ إجابة الطالب</span>
+                              </div>
+
+                              {wasAnswered ? (
+                                <div className="space-y-2">
+                                  {questionOptions.length > 0 ? (
+                                    // Multiple Choice Answer with options
+                                    <div className="font-bold text-lg text-gray-900">
+                                      {questionOptions[userAnswer] || `الخيار رقم ${userAnswer + 1}`}
+                                    </div>
+                                  ) : (
+                                    // Fallback if no options parsed
+                                    <div className="font-bold text-lg text-gray-900">
+                                      الخيار رقم {userAnswer + 1}
+                                      <div className="text-sm text-gray-600 mt-1">
+                                        (الخيارات غير متاحة - فقط رقم الإجابة)
+                                      </div>
                                     </div>
                                   )}
                                 </div>
-                              </div>
-                            )}
-
-                            {/* All Options Display */}
-                            {questionOptions.length > 0 && (
-                              <div className="bg-white p-4 rounded-lg border-2">
-                                <div className="text-sm font-semibold text-gray-700 mb-3">جميع الخيارات:</div>
-                                <div className="space-y-2">
-                                  {questionOptions.map((option, optIdx) => {
-                                    const isUserAnswer = userAnswer === optIdx;
-                                    const isCorrectAnswer = question.correct_answer === optIdx;
-
-                                    let borderColor = 'border-gray-300';
-                                    let bgColor = 'bg-gray-50';
-                                    let textColor = 'text-gray-700';
-                                    let icon = '○';
-
-                                    if (isCorrectAnswer) {
-                                      borderColor = 'border-green-500';
-                                      bgColor = 'bg-green-100';
-                                      textColor = 'text-green-900';
-                                      icon = '✓';
-                                    }
-
-                                    if (isUserAnswer && !isCorrectAnswer) {
-                                      borderColor = 'border-red-500';
-                                      bgColor = 'bg-red-100';
-                                      textColor = 'text-red-900';
-                                      icon = '✗';
-                                    }
-
-                                    return (
-                                      <div key={optIdx} className={`p-3 rounded-lg border-2 ${borderColor} ${bgColor}`}>
-                                        <div className="flex items-start gap-3">
-                                          <span className={`font-bold text-lg ${isCorrectAnswer ? 'text-green-600' : isUserAnswer ? 'text-red-600' : 'text-gray-400'}`}>
-                                            {icon}
-                                          </span>
-                                          <div className={`flex-1 font-medium text-base ${textColor}`}>
-                                            {option}
-                                            {isUserAnswer && <span className="mr-2 text-sm font-bold">(اختيار الطالب)</span>}
-                                            {isCorrectAnswer && <span className="mr-2 text-sm font-bold">(الإجابة الصحيحة)</span>}
-                                          </div>
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Summary */}
-                            <div className="mt-3 p-4 rounded-lg bg-gray-100 border-2">
-                              {wasAnswered ? (
-                                <div className="flex items-center gap-2">
-                                  {isCorrect ? (
-                                    <>
-                                      <CheckCircle2 className="w-6 h-6 text-green-600" />
-                                      <span className="font-bold text-lg text-green-700">✅ إجابة صحيحة! +{question.points || question.marks || 1} نقطة</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <XCircle className="w-6 h-6 text-red-600" />
-                                      <span className="font-bold text-lg text-red-700">❌ إجابة خاطئة - 0 نقطة</span>
-                                    </>
-                                  )}
-                                </div>
                               ) : (
-                                <div className="flex items-center gap-2">
-                                  <AlertCircle className="w-6 h-6 text-gray-500" />
-                                  <span className="font-bold text-lg text-gray-600">⚠️ لم يجب على هذا السؤال</span>
+                                <div className="text-gray-600 font-medium">
+                                  ⚠️ لم يجب الطالب على هذا السؤال
                                 </div>
                               )}
                             </div>
+                          ) : null}
+
+                          {/* Correct Answer Section - Show for multiple choice */}
+                          {(question.question_type === 'multiple_choice' || question.correct_answer !== undefined) && (
+                            <div className="bg-green-50 p-4 rounded-lg border-2 border-green-200">
+                              <div className="flex items-start gap-2 mb-3">
+                                <span className="text-green-700 font-bold text-sm bg-green-100 px-3 py-1 rounded">✅ الإجابة الصحيحة</span>
+                              </div>
+                              <div className="font-bold text-lg text-green-900">
+                                {questionOptions.length > 0 && questionOptions[question.correct_answer as number]
+                                  ? questionOptions[question.correct_answer as number]
+                                  : `الخيار رقم ${(question.correct_answer as number) + 1}`}
+                                {questionOptions.length === 0 && (
+                                  <div className="text-sm text-gray-600 mt-1">
+                                    (الخيارات غير متاحة - فقط رقم الإجابة)
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* All Options Display */}
+                          {questionOptions.length > 0 && (
+                            <div className="bg-white p-4 rounded-lg border-2">
+                              <div className="text-sm font-semibold text-gray-700 mb-3">جميع الخيارات:</div>
+                              <div className="space-y-2">
+                                {questionOptions.map((option, optIdx) => {
+                                  const isUserAnswer = userAnswer === optIdx;
+                                  const isCorrectAnswer = question.correct_answer === optIdx;
+
+                                  let borderColor = 'border-gray-300';
+                                  let bgColor = 'bg-gray-50';
+                                  let textColor = 'text-gray-700';
+                                  let icon = '○';
+
+                                  if (isCorrectAnswer) {
+                                    borderColor = 'border-green-500';
+                                    bgColor = 'bg-green-100';
+                                    textColor = 'text-green-900';
+                                    icon = '✓';
+                                  }
+
+                                  if (isUserAnswer && !isCorrectAnswer) {
+                                    borderColor = 'border-red-500';
+                                    bgColor = 'bg-red-100';
+                                    textColor = 'text-red-900';
+                                    icon = '✗';
+                                  }
+
+                                  return (
+                                    <div key={optIdx} className={`p-3 rounded-lg border-2 ${borderColor} ${bgColor}`}>
+                                      <div className="flex items-start gap-3">
+                                        <span className={`font-bold text-lg flex-shrink-0 ${isCorrectAnswer ? 'text-green-600' : isUserAnswer ? 'text-red-600' : 'text-gray-400'}`}>
+                                          {icon}
+                                        </span>
+                                        <div className={`flex-1 font-medium text-base ${textColor} whitespace-pre-wrap break-words`} style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                                          {option}
+                                          {isUserAnswer && <span className="mr-2 text-sm font-bold">(اختيار الطالب)</span>}
+                                          {isCorrectAnswer && <span className="mr-2 text-sm font-bold">(الإجابة الصحيحة)</span>}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Summary */}
+                          <div className="mt-3 p-4 rounded-lg bg-gray-100 border-2">
+                            {wasAnswered ? (
+                              <div className="flex items-center gap-2">
+                                {isCorrect ? (
+                                  <>
+                                    <CheckCircle2 className="w-6 h-6 text-green-600" />
+                                    <span className="font-bold text-lg text-green-700">✅ إجابة صحيحة! +{question.points || question.marks || 1} نقطة</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <XCircle className="w-6 h-6 text-red-600" />
+                                    <span className="font-bold text-lg text-red-700">❌ إجابة خاطئة - 0 نقطة</span>
+                                  </>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                <AlertCircle className="w-6 h-6 text-gray-500" />
+                                <span className="font-bold text-lg text-gray-600">⚠️ لم يجب على هذا السؤال</span>
+                              </div>
+                            )}
                           </div>
-                        </Card>
-                      );
-                    })}
-                  </div>
+                        </div>
+                      </Card>
+                    );
+                  })}
+                </div>
 
-                  {/* Actions */}
-                  <div className="flex flex-col gap-3">
-                    {/* PDF Download Button - Always show after submission */}
-                    <Button
-                      onClick={generateExamPDF}
-                      disabled={generatingPDF}
-                      className="w-full bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white shadow-lg"
-                      size="lg"
-                    >
-                      {generatingPDF ? (
-                        <>
-                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white ml-2" />
-                          جاري إنشاء PDF...
-                        </>
-                      ) : (
-                        <>
-                          <FileText className="w-5 h-5 ml-2" />
-                          تحميل الامتحان كاملاً (PDF)
-                        </>
-                      )}
-                    </Button>
-
-                    {result?.hasEssayQuestions && (
-                      <p className="text-sm text-center text-muted-foreground">
-                        💡 يمكنك تحميل الامتحان الآن وستظهر النتيجة النهائية بعد التصحيح
-                      </p>
+                {/* Actions */}
+                <div className="flex flex-col gap-3">
+                  {/* PDF Download Button - Always show after submission */}
+                  <Button
+                    onClick={generateExamPDF}
+                    disabled={generatingPDF}
+                    className="w-full bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white shadow-lg"
+                    size="lg"
+                  >
+                    {generatingPDF ? (
+                      <>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white ml-2" />
+                        جاري إنشاء PDF...
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="w-5 h-5 ml-2" />
+                        تحميل الامتحان كاملاً (PDF)
+                      </>
                     )}
+                  </Button>
 
-                    <div className="flex gap-3">
-                      <Button
-                        onClick={() => navigate('/student-exams')}
-                        className="flex-1"
-                        variant="outline"
-                      >
-                        العودة للامتحانات
-                      </Button>
-                      <Button
-                        onClick={() => navigate('/student')}
-                        className="flex-1 bg-gradient-to-r from-primary to-accent"
-                      >
-                        العودة للرئيسية
-                      </Button>
-                    </div>
+                  {result?.hasEssayQuestions && (
+                    <p className="text-sm text-center text-muted-foreground">
+                      💡 يمكنك تحميل الامتحان الآن وستظهر النتيجة النهائية بعد التصحيح
+                    </p>
+                  )}
+
+                  <div className="flex gap-3">
+                    <Button
+                      onClick={() => navigate('/student-exams')}
+                      className="flex-1"
+                      variant="outline"
+                    >
+                      العودة للامتحانات
+                    </Button>
+                    <Button
+                      onClick={() => navigate('/student')}
+                      className="flex-1 bg-gradient-to-r from-primary to-accent"
+                    >
+                      العودة للرئيسية
+                    </Button>
                   </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-          </div>
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-hidden" dir="rtl">
       <FloatingParticles />
 
       {/* Sticky Header with Timer */}
       <div className="sticky top-0 z-50 bg-background/95 backdrop-blur-sm border-b shadow-lg">
-        <div className="w-full px-3 sm:px-4 md:px-6 lg:px-8 py-3 sm:py-4">
-          <div className="flex items-center justify-between gap-2 sm:gap-4">
-            <div className="flex-shrink min-w-0">
-              <h1 className="text-base sm:text-lg md:text-xl font-bold truncate">{exam.title}</h1>
-              <p className="text-xs sm:text-sm text-muted-foreground truncate">{exam.course}</p>
+        <div className="container mx-auto px-4 py-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h1 className="text-xl font-bold">{exam.title}</h1>
+              <p className="text-sm text-muted-foreground">{exam.course}</p>
             </div>
 
-            <div className="flex items-center gap-2 sm:gap-4 flex-shrink-0">
+            <div className="flex items-center gap-4">
               {/* Progress */}
               <div className="hidden md:flex items-center gap-2">
                 <span className="text-sm font-medium">التقدم:</span>
-                <div className="w-24 lg:w-32">
+                <div className="w-32">
                   <Progress value={progress} className="h-2" />
                 </div>
                 <span className="text-sm text-muted-foreground">
@@ -1338,9 +1438,9 @@ const TakeExam = () => {
 
               {/* Timer */}
               <Card className={`${getTimeColor()} border-2`}>
-                <CardContent className="p-2 sm:p-3 flex items-center gap-1 sm:gap-2">
-                  <Timer className="w-4 h-4 sm:w-5 sm:h-5" />
-                  <span className="text-lg sm:text-xl md:text-2xl font-mono font-bold">
+                <CardContent className="p-3 flex items-center gap-2">
+                  <Timer className="w-5 h-5" />
+                  <span className="text-2xl font-mono font-bold">
                     {formatTime(timeLeft)}
                   </span>
                 </CardContent>
@@ -1349,8 +1449,8 @@ const TakeExam = () => {
           </div>
 
           {/* Mobile Progress */}
-          <div className="md:hidden mt-2 sm:mt-3">
-            <div className="flex items-center justify-between text-xs sm:text-sm mb-1">
+          <div className="md:hidden mt-3">
+            <div className="flex items-center justify-between text-sm mb-1">
               <span>التقدم</span>
               <span>{answeredCount}/{exam.questions.length}</span>
             </div>
@@ -1360,279 +1460,283 @@ const TakeExam = () => {
       </div>
 
       {/* Questions */}
-      <div className="w-full px-3 sm:px-4 md:px-6 lg:px-8 xl:px-12 py-4 sm:py-6 relative z-10">
-        <div className="max-w-4xl mx-auto">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={currentQuestion}
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              transition={{ duration: 0.3 }}
-            >
-              <Card className="mb-6 overflow-hidden">
-                <CardHeader className="space-y-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="outline" className="flex-shrink-0">
-                      السؤال {currentQuestion + 1} من {exam.questions.length}
-                    </Badge>
-                    <Badge className="flex-shrink-0">
-                      {exam.questions[currentQuestion].points || exam.questions[currentQuestion].marks || 1} نقطة
-                    </Badge>
-                  </div>
-                  <CardTitle className="text-base sm:text-lg md:text-xl leading-relaxed break-words overflow-wrap-anywhere">
-                    {exam.questions[currentQuestion].question_text || exam.questions[currentQuestion].question}
-                  </CardTitle>
-
-                  {/* ✅ عرض صورة السؤال */}
-                  {exam.questions[currentQuestion].question_image && (
-                    <div className="mt-2">
-                      <img
-                        src={resolveQuestionImage(exam.questions[currentQuestion].question_image)}
-                        alt="صورة السؤال"
-                        className="max-w-full max-h-96 object-contain rounded-lg border shadow-sm"
-                        onError={(e) => {
-                          console.error('Failed to load image:', exam.questions[currentQuestion].question_image);
-                          e.currentTarget.style.display = 'none';
-                        }}
-                      />
+      <div className="container mx-auto px-4 py-6 relative z-10 max-w-4xl">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={currentQuestion}
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            transition={{ duration: 0.3 }}
+          >
+            <Card className="mb-6">
+              <CardHeader>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Badge variant="outline">
+                        السؤال {currentQuestion + 1} من {exam.questions.length}
+                      </Badge>
+                      <Badge>
+                        {exam.questions[currentQuestion].points || exam.questions[currentQuestion].marks || 1} نقطة
+                      </Badge>
                     </div>
-                  )}
-                </CardHeader>
-                <CardContent>
-                  {/* ✅ عرض حسب نوع السؤال */}
-                  {exam.questions[currentQuestion].question_type === 'essay' ? (
-                    // سؤال مقالي
-                    <div className="space-y-4">
-                      <div>
-                        <Label className="text-base font-medium">اكتب إجابتك هنا:</Label>
-                        <Textarea
-                          value={essayAnswers[exam.questions[currentQuestion].id] || ''}
-                          onChange={(e) => setEssayAnswers({
-                            ...essayAnswers,
-                            [exam.questions[currentQuestion].id]: e.target.value
-                          })}
-                          placeholder="اكتب إجابتك المفصلة..."
-                          className="min-h-[200px] mt-2"
-                        />
-                        <p className="text-xs text-muted-foreground mt-1">يمكنك كتابة الإجابة أو رفع صورة أو كلاهما</p>
-                      </div>
+                    <CardTitle className="text-xl whitespace-pre-wrap break-words overflow-hidden" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                      {exam.questions[currentQuestion].question_text || exam.questions[currentQuestion].question}
+                    </CardTitle>
 
-                      <div className="border-t pt-4">
-                        <Label className="flex items-center gap-2 mb-3 text-base font-medium">
-                          <Upload className="h-4 w-4" />
-                          أو ارفع صورة الإجابة
-                        </Label>
-                        {answerImages[exam.questions[currentQuestion].id] ? (
-                          <div className="relative inline-block">
-                            <img
-                              src={answerImages[exam.questions[currentQuestion].id]}
-                              alt="صورة الإجابة"
-                              className="max-w-full max-h-64 rounded-lg border"
-                            />
-                            <Button
-                              type="button"
-                              variant="destructive"
-                              size="sm"
-                              className="absolute top-2 left-2"
-                              onClick={() => setAnswerImages({
-                                ...answerImages,
-                                [exam.questions[currentQuestion].id]: ''
-                              })}
-                            >
-                              حذف الصورة
-                            </Button>
-                          </div>
-                        ) : (
-                          <div className="border-2 border-dashed rounded-lg p-6 text-center">
-                            <input
-                              type="file"
-                              accept="image/*"
-                              id={`answer-image-${exam.questions[currentQuestion].id}`}
-                              className="hidden"
-                              onChange={async (e) => {
-                                const file = e.target.files?.[0];
-                                if (file) {
-                                  setUploadingAnswerImage(true);
-                                  try {
-                                    const reader = new FileReader();
-                                    reader.onload = (event) => {
-                                      const base64 = event.target?.result as string;
-                                      setAnswerImages({
-                                        ...answerImages,
-                                        [exam.questions[currentQuestion].id]: base64
-                                      });
-                                      setUploadingAnswerImage(false);
-                                    };
-                                    reader.onerror = () => {
-                                      toast({ title: "خطأ", description: "فشل قراءة الصورة", variant: "destructive" });
-                                      setUploadingAnswerImage(false);
-                                    };
-                                    reader.readAsDataURL(file);
-                                  } catch (err) {
-                                    toast({ title: "خطأ", description: "فشل رفع الصورة", variant: "destructive" });
-                                    setUploadingAnswerImage(false);
-                                  }
-                                }
-                              }}
-                            />
-                            <label htmlFor={`answer-image-${exam.questions[currentQuestion].id}`} className="cursor-pointer">
-                              {uploadingAnswerImage ? (
-                                <div className="flex items-center justify-center gap-2 text-muted-foreground py-4">
-                                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
-                                  جاري الرفع...
-                                </div>
-                              ) : (
-                                <div className="flex flex-col items-center gap-3 text-muted-foreground hover:text-primary transition-colors py-4">
-                                  <ImageIcon className="w-12 h-12" />
-                                  <span className="text-sm font-medium">اضغط لرفع صورة الإجابة</span>
-                                  <span className="text-xs">(اختياري - يمكنك كتابة نص فقط)</span>
-                                </div>
-                              )}
-                            </label>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    // سؤال اختيار من متعدد
-                    <RadioGroup
-                      value={answers[exam.questions[currentQuestion].id]?.toString()}
-                      onValueChange={(value) => {
-                        console.log(`Selected answer index: ${value} for question: ${exam.questions[currentQuestion].id}`);
-                        handleAnswerChange(exam.questions[currentQuestion].id, parseInt(value));
-                      }}
-                      className="space-y-3"
-                    >
-                      {(() => {
-                        const q = exam.questions[currentQuestion];
-                        const options = q.options;
-                        let optionsArray: string[] = [];
-
-                        console.log(`=== Rendering Question ${currentQuestion + 1} ===`);
-                        console.log('Question object:', q);
-                        console.log('Correct answer stored:', q.correct_answer, 'Type:', typeof q.correct_answer);
-
-                        if (typeof options === 'string') {
-                          try {
-                            const parsed = JSON.parse(options);
-                            // If it's an object like {a: "...", b: "...", c: "...", d: "..."}, convert to array
-                            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                              optionsArray = [parsed.a, parsed.b, parsed.c, parsed.d].filter(Boolean);
-                            } else if (Array.isArray(parsed)) {
-                              optionsArray = parsed;
-                            }
-                          } catch (e) {
-                            console.error('Failed to parse options:', e, options);
-                            optionsArray = [];
+                    {/* ✅ عرض صورة السؤال */}
+                    {exam.questions[currentQuestion].question_image && (
+                      <div className="mt-4">
+                        <img
+                          src={exam.questions[currentQuestion].question_image.startsWith('http')
+                            ? exam.questions[currentQuestion].question_image
+                            : exam.questions[currentQuestion].question_image.startsWith('/api/')
+                              ? exam.questions[currentQuestion].question_image
+                              : `/api${exam.questions[currentQuestion].question_image}`
                           }
-                        } else if (Array.isArray(options)) {
-                          optionsArray = options;
-                        }
-
-                        console.log('Rendering options:', optionsArray);
-
-                        if (optionsArray.length === 0) {
-                          return <div className="text-center py-8 text-muted-foreground">لا توجد خيارات متاحة</div>;
-                        }
-
-                        return optionsArray.map((option: string, idx: number) => (
-                          <motion.div
-                            key={idx}
-                            initial={{ opacity: 0, y: 10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: idx * 0.1 }}
-                          >
-                            <Label
-                              htmlFor={`option-${idx}`}
-                              className={`flex items-start gap-3 p-3 sm:p-4 rounded-lg border-2 cursor-pointer transition-all hover:bg-accent ${answers[exam.questions[currentQuestion].id] === idx
-                                ? 'border-primary bg-primary/10'
-                                : 'border-border'
-                                }`}
-                            >
-                              <RadioGroupItem value={idx.toString()} id={`option-${idx}`} className="flex-shrink-0 mt-1" />
-                              <span className="flex-1 text-sm sm:text-base leading-relaxed break-words">{option}</span>
-                            </Label>
-                          </motion.div>
-                        ));
-                      })()}
-                    </RadioGroup>
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* Navigation */}
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4">
-                <Button
-                  onClick={() => setCurrentQuestion(Math.max(0, currentQuestion - 1))}
-                  disabled={currentQuestion === 0}
-                  variant="outline"
-                  size="default"
-                  className="w-full sm:w-auto order-2 sm:order-1"
-                >
-                  السؤال السابق
-                </Button>
-
-                {/* Question Numbers - Scrollable on mobile */}
-                <div className="w-full sm:flex-1 order-1 sm:order-2 overflow-x-auto">
-                  <div className="flex gap-1.5 sm:gap-2 justify-center flex-wrap sm:flex-nowrap py-2">
-                    {exam.questions.map((_, idx) => (
-                      <button
-                        key={idx}
-                        onClick={() => setCurrentQuestion(idx)}
-                        className={`w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 rounded-lg text-xs sm:text-sm font-medium transition-all flex-shrink-0 ${idx === currentQuestion
-                          ? 'bg-primary text-white scale-105 sm:scale-110'
-                          : answers[exam.questions[idx].id] !== undefined
-                            ? 'bg-green-500 text-white'
-                            : 'bg-muted hover:bg-muted-foreground/20'
-                          }`}
-                      >
-                        {idx + 1}
-                      </button>
-                    ))}
+                          alt="صورة السؤال"
+                          className="max-w-full max-h-96 object-contain rounded-lg border shadow-sm"
+                          onError={(e) => {
+                            console.error('Failed to load image:', exam.questions[currentQuestion].question_image);
+                            e.currentTarget.style.display = 'none';
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
+              </CardHeader>
+              <CardContent>
+                {/* ✅ عرض حسب نوع السؤال */}
+                {exam.questions[currentQuestion].question_type === 'essay' ? (
+                  // سؤال مقالي
+                  <div className="space-y-4">
+                    <div>
+                      <Label className="text-base font-medium">اكتب إجابتك هنا:</Label>
+                      <Textarea
+                        value={essayAnswers[exam.questions[currentQuestion].id] || ''}
+                        onChange={(e) => setEssayAnswers({
+                          ...essayAnswers,
+                          [exam.questions[currentQuestion].id]: e.target.value
+                        })}
+                        placeholder="اكتب إجابتك المفصلة..."
+                        className="min-h-[200px] mt-2"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">يمكنك كتابة الإجابة أو رفع صورة أو كلاهما</p>
+                    </div>
 
-                {currentQuestion < exam.questions.length - 1 ? (
-                  <Button
-                    onClick={() => setCurrentQuestion(Math.min(exam.questions.length - 1, currentQuestion + 1))}
-                    size="default"
-                    className="w-full sm:w-auto bg-gradient-to-r from-primary to-accent order-3"
-                  >
-                    السؤال التالي
-                  </Button>
+                    <div className="border-t pt-4">
+                      <Label className="flex items-center gap-2 mb-3 text-base font-medium">
+                        <Upload className="h-4 w-4" />
+                        أو ارفع صورة الإجابة
+                      </Label>
+                      {answerImages[exam.questions[currentQuestion].id] ? (
+                        <div className="relative inline-block">
+                          <img
+                            src={answerImages[exam.questions[currentQuestion].id]}
+                            alt="صورة الإجابة"
+                            className="max-w-full max-h-64 rounded-lg border"
+                          />
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="sm"
+                            className="absolute top-2 left-2"
+                            onClick={() => setAnswerImages({
+                              ...answerImages,
+                              [exam.questions[currentQuestion].id]: ''
+                            })}
+                          >
+                            حذف الصورة
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="border-2 border-dashed rounded-lg p-6 text-center">
+                          <input
+                            type="file"
+                            accept="image/*"
+                            id={`answer-image-${exam.questions[currentQuestion].id}`}
+                            className="hidden"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                setUploadingAnswerImage(true);
+                                try {
+                                  const reader = new FileReader();
+                                  reader.onload = (event) => {
+                                    const base64 = event.target?.result as string;
+                                    setAnswerImages({
+                                      ...answerImages,
+                                      [exam.questions[currentQuestion].id]: base64
+                                    });
+                                    setUploadingAnswerImage(false);
+                                  };
+                                  reader.onerror = () => {
+                                    toast({ title: "خطأ", description: "فشل قراءة الصورة", variant: "destructive" });
+                                    setUploadingAnswerImage(false);
+                                  };
+                                  reader.readAsDataURL(file);
+                                } catch (err) {
+                                  toast({ title: "خطأ", description: "فشل رفع الصورة", variant: "destructive" });
+                                  setUploadingAnswerImage(false);
+                                }
+                              }
+                            }}
+                          />
+                          <label htmlFor={`answer-image-${exam.questions[currentQuestion].id}`} className="cursor-pointer">
+                            {uploadingAnswerImage ? (
+                              <div className="flex items-center justify-center gap-2 text-muted-foreground py-4">
+                                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
+                                جاري الرفع...
+                              </div>
+                            ) : (
+                              <div className="flex flex-col items-center gap-3 text-muted-foreground hover:text-primary transition-colors py-4">
+                                <ImageIcon className="w-12 h-12" />
+                                <span className="text-sm font-medium">اضغط لرفع صورة الإجابة</span>
+                                <span className="text-xs">(اختياري - يمكنك كتابة نص فقط)</span>
+                              </div>
+                            )}
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 ) : (
-                  <Button
-                    onClick={handleSubmit}
-                    size="default"
-                    className="w-full sm:w-auto bg-gradient-to-r from-green-600 to-green-500 order-3"
-                    disabled={answeredCount < exam.questions.length}
+                  // سؤال اختيار من متعدد
+                  <RadioGroup
+                    value={answers[exam.questions[currentQuestion].id]?.toString()}
+                    onValueChange={(value) => {
+                      console.log(`Selected answer index: ${value} for question: ${exam.questions[currentQuestion].id}`);
+                      handleAnswerChange(exam.questions[currentQuestion].id, parseInt(value));
+                    }}
+                    className="space-y-3"
                   >
-                    تسليم الامتحان
-                  </Button>
+                    {(() => {
+                      const q = exam.questions[currentQuestion];
+                      const options = q.options;
+                      let optionsArray: string[] = [];
+
+                      console.log(`=== Rendering Question ${currentQuestion + 1} ===`);
+                      console.log('Question object:', q);
+                      console.log('Correct answer stored:', q.correct_answer, 'Type:', typeof q.correct_answer);
+
+                      if (typeof options === 'string') {
+                        try {
+                          const parsed = JSON.parse(options);
+                          // If it's an object like {a: "...", b: "...", c: "...", d: "..."}, convert to array
+                          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                            optionsArray = [parsed.a, parsed.b, parsed.c, parsed.d].filter(Boolean);
+                          } else if (Array.isArray(parsed)) {
+                            optionsArray = parsed;
+                          }
+                        } catch (e) {
+                          console.error('Failed to parse options:', e, options);
+                          optionsArray = [];
+                        }
+                      } else if (Array.isArray(options)) {
+                        optionsArray = options;
+                      }
+
+                      console.log('Rendering options:', optionsArray);
+
+                      if (optionsArray.length === 0) {
+                        return <div className="text-center py-8 text-muted-foreground">لا توجد خيارات متاحة</div>;
+                      }
+
+                      return optionsArray.map((option: string, idx: number) => (
+                        <motion.div
+                          key={idx}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: idx * 0.1 }}
+                        >
+                          <Label
+                            htmlFor={`option-${idx}`}
+                            className={`flex items-center gap-3 p-4 rounded-lg border-2 cursor-pointer transition-all hover:bg-accent ${answers[exam.questions[currentQuestion].id] === idx
+                              ? 'border-primary bg-primary/10'
+                              : 'border-border'
+                              }`}
+                          >
+                            <RadioGroupItem value={idx.toString()} id={`option-${idx}`} className="flex-shrink-0" />
+                            <span className="flex-1 text-base whitespace-pre-wrap break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{option}</span>
+                          </Label>
+                        </motion.div>
+                      ));
+                    })()}
+                  </RadioGroup>
                 )}
+              </CardContent>
+            </Card>
+
+            {/* Navigation */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+              <Button
+                onClick={() => setCurrentQuestion(Math.max(0, currentQuestion - 1))}
+                disabled={currentQuestion === 0}
+                variant="outline"
+                size="lg"
+                className="w-full sm:w-auto order-2 sm:order-1"
+              >
+                السؤال السابق
+              </Button>
+
+              <div className="flex flex-wrap gap-2 justify-center max-w-full overflow-x-auto px-2 order-1 sm:order-2">
+                {exam.questions.map((_, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => setCurrentQuestion(idx)}
+                    className={`w-8 h-8 sm:w-10 sm:h-10 rounded-lg font-medium text-sm sm:text-base transition-all flex-shrink-0 ${idx === currentQuestion
+                      ? 'bg-primary text-white scale-110'
+                      : answers[exam.questions[idx].id] !== undefined
+                        ? 'bg-green-500 text-white'
+                        : 'bg-muted hover:bg-muted-foreground/20'
+                      }`}
+                  >
+                    {idx + 1}
+                  </button>
+                ))}
               </div>
 
-              {/* Warning if not all answered */}
-              {currentQuestion === exam.questions.length - 1 && answeredCount < exam.questions.length && (
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="mt-4"
+              {currentQuestion < exam.questions.length - 1 ? (
+                <Button
+                  onClick={() => setCurrentQuestion(Math.min(exam.questions.length - 1, currentQuestion + 1))}
+                  size="lg"
+                  className="bg-gradient-to-r from-primary to-accent w-full sm:w-auto order-3"
                 >
-                  <Card className="border-yellow-500 bg-yellow-500/10">
-                    <CardContent className="pt-4 flex items-center gap-2">
-                      <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0" />
-                      <span className="text-xs sm:text-sm">
-                        لم تجب على جميع الأسئلة ({answeredCount}/{exam.questions.length}). تأكد من الإجابة على جميع الأسئلة قبل التسليم.
-                      </span>
-                    </CardContent>
-                  </Card>
-                </motion.div>
+                  السؤال التالي
+                </Button>
+              ) : (
+                <Button
+                  onClick={handleSubmit}
+                  size="lg"
+                  className="bg-gradient-to-r from-green-600 to-green-500 w-full sm:w-auto order-3"
+                  disabled={answeredCount < exam.questions.length}
+                >
+                  تسليم الامتحان
+                </Button>
               )}
-            </motion.div>
-          </AnimatePresence>
-        </div>
+            </div>
+
+            {/* Warning if not all answered */}
+            {currentQuestion === exam.questions.length - 1 && answeredCount < exam.questions.length && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mt-4"
+              >
+                <Card className="border-yellow-500 bg-yellow-500/10">
+                  <CardContent className="pt-4 flex items-center gap-2">
+                    <AlertCircle className="w-5 h-5 text-yellow-600" />
+                    <span className="text-sm">
+                      لم تجب على جميع الأسئلة ({answeredCount}/{exam.questions.length}). تأكد من الإجابة على جميع الأسئلة قبل التسليم.
+                    </span>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            )}
+          </motion.div>
+        </AnimatePresence>
       </div>
     </div>
   );

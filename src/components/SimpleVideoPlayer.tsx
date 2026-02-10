@@ -13,7 +13,28 @@ export function SimpleVideoPlayer({ videoId, userId }: SimpleVideoPlayerProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const hlsRef = useRef<Hls | null>(null);
     const [loading, setLoading] = useState(true);
+    const [buffering, setBuffering] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
+    // Buffering event handlers
+    useEffect(() => {
+        const video = videoRef.current;
+        if (!video) return;
+
+        const handleWaiting = () => setBuffering(true);
+        const handlePlaying = () => setBuffering(false);
+        const handleCanPlay = () => setBuffering(false);
+
+        video.addEventListener('waiting', handleWaiting);
+        video.addEventListener('playing', handlePlaying);
+        video.addEventListener('canplay', handleCanPlay);
+
+        return () => {
+            video.removeEventListener('waiting', handleWaiting);
+            video.removeEventListener('playing', handlePlaying);
+            video.removeEventListener('canplay', handleCanPlay);
+        };
+    }, []);
 
     useEffect(() => {
         const video = videoRef.current;
@@ -35,10 +56,15 @@ export function SimpleVideoPlayer({ videoId, userId }: SimpleVideoPlayerProps) {
                 const streamUrl = data.streamUrl;
 
                 console.log('📹 Stream URL:', streamUrl);
-                console.log('📍 Full URL:', streamUrl.startsWith('/') ? window.location.origin + streamUrl : streamUrl);
+                
+                // Convert relative URL to absolute URL
+                const fullStreamUrl = streamUrl.startsWith('http') 
+                    ? streamUrl 
+                    : `${window.location.origin}${streamUrl}`;
+                console.log('📍 Full URL:', fullStreamUrl);
 
                 // Check if HLS or direct video
-                const isHLS = streamUrl.includes('.m3u8');
+                const isHLS = fullStreamUrl.includes('.m3u8');
 
                 if (isHLS && Hls.isSupported()) {
                     const hls = new Hls({
@@ -63,27 +89,32 @@ export function SimpleVideoPlayer({ videoId, userId }: SimpleVideoPlayerProps) {
                         });
                     });
 
-                    hls.loadSource(streamUrl);
+                    hls.loadSource(fullStreamUrl);
                     hls.attachMedia(video);
                 } else if (isHLS && video.canPlayType('application/vnd.apple.mpegurl')) {
                     // Safari native HLS support
-                    video.src = streamUrl;
+                    video.src = fullStreamUrl;
                     video.addEventListener('loadedmetadata', () => {
                         setLoading(false);
                         video.play();
                     });
                 } else {
-                    // Direct video file (mp4, webm, etc.)
-                    console.log('▶️ Using direct video playback');
-                    video.src = streamUrl;
+                    // Direct video file (mp4, webm, etc.) - Stream immediately like YouTube
+                    console.log('▶️ Using direct video playback (progressive streaming)');
+                    video.src = fullStreamUrl;
 
-                    video.addEventListener('loadedmetadata', () => {
-                        console.log('✅ Video metadata loaded');
+                    // Start playing as soon as we have ANY data (like YouTube)
+                    video.addEventListener('loadeddata', () => {
+                        console.log('✅ First frame loaded - starting playback');
                         setLoading(false);
+                        video.play().catch(() => {
+                            // Autoplay blocked, user needs to click
+                        });
                     });
 
-                    video.addEventListener('canplay', () => {
-                        console.log('✅ Video can play');
+                    // Fallback: if loadeddata doesn't fire, use canplaythrough
+                    video.addEventListener('canplaythrough', () => {
+                        console.log('✅ Video can play through');
                         setLoading(false);
                     });
 
@@ -119,6 +150,15 @@ export function SimpleVideoPlayer({ videoId, userId }: SimpleVideoPlayerProps) {
                 </div>
             )}
 
+            {/* Buffering indicator (like YouTube) - shows when video is waiting for data */}
+            {buffering && !loading && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+                    <div className="bg-black/40 rounded-full p-3">
+                        <Loader2 className="h-10 w-10 animate-spin text-white" />
+                    </div>
+                </div>
+            )}
+
             {error && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black z-10">
                     <div className="text-center text-white">
@@ -136,6 +176,7 @@ export function SimpleVideoPlayer({ videoId, userId }: SimpleVideoPlayerProps) {
             <video
                 ref={videoRef}
                 controls
+                preload="auto"
                 className="w-full h-full object-contain"
                 style={{ maxHeight: '70vh' }}
                 playsInline

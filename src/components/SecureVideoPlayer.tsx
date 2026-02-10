@@ -27,6 +27,7 @@ export function SecureVideoPlayer({
     const hlsRef = useRef<Hls | null>(null);
 
     const [loading, setLoading] = useState(true);
+    const [buffering, setBuffering] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [isMuted, setIsMuted] = useState(false);
@@ -184,16 +185,13 @@ export function SecureVideoPlayer({
 
         detectScreenCapture();
 
-        // Monitor window blur events - Immediate logout on ANY visibility change (ALT+TAB)
+        // Monitor window blur events - Pause video but don't logout (too aggressive)
         const handleVisibilityChange = () => {
             if (document.hidden) {
                 setIsSecurityBlurred(true);
                 setIsWindowFocused(false);
-                setShowBlackScreen(true);
                 if (videoRef.current) videoRef.current.pause();
-
-                // Immediate logout on any tab/window switch
-                forceLogout('تبديل التبويب أو النافذة محظور');
+                // Just pause, don't logout - users might need to check something quickly
             } else {
                 setTimeout(() => {
                     setIsSecurityBlurred(false);
@@ -204,14 +202,10 @@ export function SecureVideoPlayer({
         };
 
         const handleWindowBlur = () => {
-            const now = Date.now();
             setIsSecurityBlurred(true);
             setIsWindowFocused(false);
-            setShowBlackScreen(true);
             if (videoRef.current) videoRef.current.pause();
-
-            // Immediate logout on ANY window blur (ALT+TAB, switching apps, etc.)
-            forceLogout('تبديل النافذة أو التطبيق محظور (ALT+TAB)');
+            // Just pause, don't logout - too aggressive for normal use
         };
 
         const handleWindowFocus = () => {
@@ -242,31 +236,19 @@ export function SecureVideoPlayer({
 
         performanceCheckInterval.current = setInterval(checkPerformance, 2000);
 
-        // Detect if debugger is open - more aggressive
+        // Detect if debugger is open
         const detectDevTools = () => {
             const threshold = 160;
             const widthThreshold = window.outerWidth - window.innerWidth > threshold;
             const heightThreshold = window.outerHeight - window.innerHeight > threshold;
 
-            // Also check for orientation changes that might indicate DevTools
-            const orientation = window.screen.orientation?.type;
-
             if (widthThreshold || heightThreshold) {
                 setShowBlackScreen(true);
                 forceLogout('أدوات المطور مفتوحة');
             }
-
-            // Debugger statement trap
-            const before = new Date().getTime();
-            debugger;
-            const after = new Date().getTime();
-            if (after - before > 100) {
-                setShowBlackScreen(true);
-                forceLogout('تم اكتشاف Debugger');
-            }
         };
 
-        const devToolsInterval = setInterval(detectDevTools, 500);
+        const devToolsInterval = setInterval(detectDevTools, 2000);
 
         // Monitor for suspicious extensions
         const checkExtensions = () => {
@@ -356,23 +338,32 @@ export function SecureVideoPlayer({
             };
         };
 
-        // 2. Detect when user leaves app (goes to home screen or switches apps)
+        // 2. Detect when user leaves app - just pause video (same as desktop)
         const handleAppStateChange = () => {
             if (document.hidden || document.visibilityState === 'hidden') {
-                forceLogout('الخروج من التطبيق على الموبايل محظور');
+                // Just pause video, don't logout - users get notifications, calls, etc.
+                setIsSecurityBlurred(true);
+                setIsWindowFocused(false);
+                if (videoRef.current) videoRef.current.pause();
+            } else {
+                setTimeout(() => {
+                    setIsSecurityBlurred(false);
+                    setIsWindowFocused(true);
+                    setShowBlackScreen(false);
+                }, 500);
             }
         };
 
         // 3. Detect screenshot attempts on Android/iOS
-        // Screenshots cause a quick blur/visibility change
+        // Only trigger on rapid repeated blur events (actual screenshot tools)
         let mobileBlurCount = 0;
         let lastMobileBlurTime = 0;
 
         const handleMobileBlur = () => {
             const now = Date.now();
-            if (now - lastMobileBlurTime < 500) {
+            if (now - lastMobileBlurTime < 300) {
                 mobileBlurCount++;
-                if (mobileBlurCount >= 1) {
+                if (mobileBlurCount >= 3) {
                     forceLogout('محاولة أخذ لقطة شاشة على الموبايل');
                 }
             } else {
@@ -384,34 +375,34 @@ export function SecureVideoPlayer({
         // 4. Detect volume button press (often used for screenshot)
         const handleVolumeButton = (e: KeyboardEvent) => {
             if (e.key === 'VolumeUp' || e.key === 'VolumeDown') {
-                // Check if Power button is also pressed (Screenshot combo on Android)
-                handleMobileBlur();
+                // Volume buttons are normal, don't trigger security
             }
         };
 
-        // 5. Block long press on mobile (screenshot gesture)
+        // 5. Long press on mobile - allow normal interaction (seeking, controls)
         let touchStartTime = 0;
         const handleTouchStart = () => {
             touchStartTime = Date.now();
         };
 
         const handleTouchEnd = () => {
-            const touchDuration = Date.now() - touchStartTime;
-            if (touchDuration > 1000) {
-                // Long press detected - might be screenshot gesture
-                forceLogout('ضغطة طويلة مشبوهة على الموبايل');
-            }
+            // Long press is a normal mobile interaction, don't logout
         };
 
-        // 6. Monitor page freeze (iOS screenshot causes brief freeze)
+        // 6. Frame rate monitoring - only show black screen on severe freezes, don't logout
         let lastFrameTime = Date.now();
+        let frameDropCount = 0;
         const checkFrameRate = () => {
             const now = Date.now();
             const timeSinceLastFrame = now - lastFrameTime;
 
-            // If more than 200ms passed, might be screenshot
-            if (timeSinceLastFrame > 200 && document.visibilityState === 'visible') {
-                forceLogout('تجميد الشاشة - محاولة لقطة شاشة محتملة');
+            // Only count severe freezes (> 1 second) as suspicious
+            if (timeSinceLastFrame > 1000 && document.visibilityState === 'visible') {
+                frameDropCount++;
+                if (frameDropCount >= 5) {
+                    setShowBlackScreen(true);
+                    forceLogout('نشاط مشبوه متكرر');
+                }
             }
 
             lastFrameTime = now;
@@ -462,21 +453,13 @@ export function SecureVideoPlayer({
             }
         };
 
-        // 9. Monitor screen orientation changes (some recording apps rotate screen)
+        // 9. Monitor screen orientation changes - allow normal rotation
         let orientationChangeCount = 0;
         let lastOrientationChange = Date.now();
 
         const handleOrientationChange = () => {
-            const now = Date.now();
-            if (now - lastOrientationChange < 2000) {
-                orientationChangeCount++;
-                if (orientationChangeCount >= 2) {
-                    forceLogout('تغيير اتجاه الشاشة المتكرر - نشاط مشبوه');
-                }
-            } else {
-                orientationChangeCount = 0;
-            }
-            lastOrientationChange = now;
+            // Orientation change is normal on mobile, especially for video
+            // Don't treat it as suspicious
         };
 
         // 10. Block Web Share API (can be used to save video)
@@ -853,7 +836,13 @@ export function SecureVideoPlayer({
                 const streamUrl = data.streamUrl;
                 console.log('Stream URL:', streamUrl);
 
-                const isHLS = streamUrl.includes('.m3u8');
+                // Make sure streamUrl is a full URL for video element
+                const fullStreamUrl = streamUrl.startsWith('http') 
+                    ? streamUrl 
+                    : `${window.location.origin}${streamUrl}`;
+                console.log('Full Stream URL:', fullStreamUrl);
+
+                const isHLS = fullStreamUrl.includes('.m3u8');
 
                 if (isHLS && Hls.isSupported()) {
                     const hls = new Hls({
@@ -896,25 +885,32 @@ export function SecureVideoPlayer({
                         video.play().catch(() => { });
                     });
 
-                    hls.loadSource(streamUrl);
+                    hls.loadSource(fullStreamUrl);
                     hls.attachMedia(video);
                 } else if (isHLS && video.canPlayType('application/vnd.apple.mpegurl')) {
-                    video.src = streamUrl;
+                    video.src = fullStreamUrl;
                     video.addEventListener('loadedmetadata', () => {
                         setLoading(false);
                         video.play().catch(() => { });
                     });
                 } else {
-                    video.src = streamUrl;
+                    // Direct video - Stream immediately like YouTube
+                    video.src = fullStreamUrl;
 
                     video.addEventListener('loadedmetadata', () => {
                         setDuration(video.duration);
-                        setLoading(false);
                     });
 
-                    video.addEventListener('canplay', () => {
+                    // Start playing as soon as first frame is available (like YouTube)
+                    video.addEventListener('loadeddata', () => {
+                        console.log('✅ First frame loaded - starting playback');
                         setLoading(false);
                         video.play().catch(() => { });
+                    });
+
+                    // Fallback for slower connections
+                    video.addEventListener('canplaythrough', () => {
+                        setLoading(false);
                     });
 
                     video.addEventListener('error', (e) => {
@@ -958,12 +954,19 @@ export function SecureVideoPlayer({
             setVolume(video.volume);
             setIsMuted(video.muted);
         };
+        // Buffering handlers - show spinner when video is waiting for data (like YouTube)
+        const handleWaiting = () => setBuffering(true);
+        const handlePlaying = () => setBuffering(false);
+        const handleCanPlay = () => setBuffering(false);
 
         video.addEventListener('play', handlePlay);
         video.addEventListener('pause', handlePause);
         video.addEventListener('timeupdate', handleTimeUpdate);
         video.addEventListener('loadedmetadata', handleLoadedMetadata);
         video.addEventListener('volumechange', handleVolumeChange);
+        video.addEventListener('waiting', handleWaiting);
+        video.addEventListener('playing', handlePlaying);
+        video.addEventListener('canplay', handleCanPlay);
 
         return () => {
             video.removeEventListener('play', handlePlay);
@@ -971,6 +974,9 @@ export function SecureVideoPlayer({
             video.removeEventListener('timeupdate', handleTimeUpdate);
             video.removeEventListener('loadedmetadata', handleLoadedMetadata);
             video.removeEventListener('volumechange', handleVolumeChange);
+            video.removeEventListener('waiting', handleWaiting);
+            video.removeEventListener('playing', handlePlaying);
+            video.removeEventListener('canplay', handleCanPlay);
         };
     }, [isDragging]);
 
@@ -1111,6 +1117,7 @@ export function SecureVideoPlayer({
             {/* Video Element with security attributes */}
             <video
                 ref={videoRef}
+                preload="auto"
                 className="w-full h-full object-contain bg-black"
                 playsInline
                 controlsList="nodownload nofullscreen noremoteplayback"
@@ -1218,6 +1225,15 @@ export function SecureVideoPlayer({
                     <div className="text-center">
                         <Loader2 className="h-20 w-20 animate-spin text-purple-500 mx-auto mb-4" />
                         <p className="text-white text-xl">جاري تحميل الفيديو...</p>
+                    </div>
+                </div>
+            )}
+
+            {/* Buffering indicator (like YouTube) - shows when video is waiting for data */}
+            {buffering && !loading && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-15">
+                    <div className="bg-black/40 rounded-full p-4">
+                        <Loader2 className="h-12 w-12 animate-spin text-white" />
                     </div>
                 </div>
             )}

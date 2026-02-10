@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,8 +9,10 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { io, Socket } from "socket.io-client";
 
 const API_URL = () => "/api";
+const SOCKET_URL = () => window.location.origin;
 
 interface Notification {
   id: string;
@@ -29,7 +31,6 @@ interface NotificationBellProps {
 // Request browser notification permission
 const requestNotificationPermission = async () => {
   if (!("Notification" in window)) {
-    console.log("This browser does not support notifications");
     return false;
   }
 
@@ -48,23 +49,46 @@ const requestNotificationPermission = async () => {
 // Show browser notification
 const showBrowserNotification = (title: string, body: string, onClick?: () => void) => {
   if (Notification.permission === "granted") {
-    const notification = new Notification(title, {
-      body,
-      icon: "/favicon.ico",
-      badge: "/favicon.ico",
-      tag: "message-notification",
-      renotify: true,
-      vibrate: [200, 100, 200],
-    });
+    try {
+      const notification = new Notification(title, {
+        body,
+        icon: "/favicon.ico",
+        badge: "/favicon.ico",
+        tag: "message-notification-" + Date.now(),
+        renotify: true,
+        vibrate: [200, 100, 200],
+        silent: false,
+      });
 
-    notification.onclick = () => {
-      window.focus();
-      notification.close();
-      if (onClick) onClick();
-    };
+      notification.onclick = () => {
+        window.focus();
+        notification.close();
+        if (onClick) onClick();
+      };
 
-    // Auto close after 5 seconds
-    setTimeout(() => notification.close(), 5000);
+      setTimeout(() => notification.close(), 8000);
+    } catch {
+      // Notification API not available
+    }
+  }
+};
+
+// Play notification sound
+const playNotificationSound = () => {
+  try {
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    oscillator.frequency.value = 800;
+    oscillator.type = "sine";
+    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.5);
+    oscillator.start(audioContext.currentTime);
+    oscillator.stop(audioContext.currentTime + 0.5);
+  } catch {
+    // Audio not available
   }
 };
 
@@ -74,6 +98,9 @@ export const NotificationBell = ({ userType }: NotificationBellProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [hasPermission, setHasPermission] = useState(false);
   const navigate = useNavigate();
+  const prevUnreadCountRef = useRef(0);
+  const socketRef = useRef<Socket | null>(null);
+  const userIdRef = useRef<string | null>(null);
 
   // Get user ID from localStorage
   const getUserId = useCallback(() => {
@@ -98,38 +125,111 @@ export const NotificationBell = ({ userType }: NotificationBellProps) => {
     checkPermission();
   }, []);
 
-  // Fetch notifications (using messages API for unread count)
+  // Initialize Socket.IO connection for real-time notifications
+  useEffect(() => {
+    const userId = getUserId();
+    if (!userId) return;
+    userIdRef.current = userId;
+
+    const socket = io(SOCKET_URL(), {
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionDelay: 2000,
+      reconnectionAttempts: 10,
+    });
+
+    socket.on("connect", () => {
+      socket.emit("user:connect", userId);
+    });
+
+    // Listen for new messages in real-time
+    socket.on("message:new", (message: any) => {
+      if (message.receiver_id === userId) {
+        // This message is for ME - update count immediately
+        setUnreadCount((prev) => {
+          const newCount = prev + 1;
+          prevUnreadCountRef.current = newCount;
+          return newCount;
+        });
+
+        // Add to notifications list
+        const newNotif: Notification = {
+          id: message.id,
+          title: `رسالة جديدة من ${message.sender_name || "المعلم"}`,
+          message:
+            message.message_type === "text"
+              ? message.content?.substring(0, 50) + (message.content?.length > 50 ? "..." : "")
+              : "📷 صورة",
+          type: "message",
+          is_read: false,
+          created_at: message.created_at || new Date().toISOString(),
+          sender_name: message.sender_name,
+        };
+        setNotifications((prev) => [newNotif, ...prev].slice(0, 10));
+
+        // Show browser notification IMMEDIATELY
+        const senderName = message.sender_name || "المعلم";
+        const preview =
+          message.message_type === "text"
+            ? message.content?.substring(0, 80) || "رسالة جديدة"
+            : "📷 صورة";
+        
+        showBrowserNotification(
+          `💬 رسالة من ${senderName}`,
+          preview,
+          () => {
+            if (userType === "student") {
+              navigate("/student-chat");
+            } else {
+              navigate("/messages");
+            }
+          }
+        );
+
+        // Play notification sound
+        playNotificationSound();
+      }
+    });
+
+    socketRef.current = socket;
+
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [getUserId, userType, navigate]);
+
+  // Fetch notifications from API (polling as backup)
   const fetchNotifications = useCallback(async () => {
     const userId = getUserId();
-    if (!userId) {
-      console.log("NotificationBell: userId is empty");
-      return;
-    }
+    if (!userId) return;
 
     try {
       const token = localStorage.getItem("authToken");
-      
+      if (!token) return;
+
       // Fetch unread count from messages API
-      console.log(`Fetching unread count from: ${API_URL()}/messages/unread-total`);
       const countResponse = await fetch(
         `${API_URL()}/messages/unread-total`,
         {
           headers: {
             Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
           },
         }
       );
-      
+
       if (countResponse.ok) {
         const countData = await countResponse.json();
-        console.log("Unread count response:", countData);
         const newCount = countData.count || 0;
-        
-        // Show browser notification if count increased
-        if (newCount > unreadCount && unreadCount > 0) {
+
+        // Only show browser notification from polling if count genuinely increased
+        // and socket didn't already handle it
+        if (newCount > prevUnreadCountRef.current && prevUnreadCountRef.current >= 0) {
+          const diff = newCount - prevUnreadCountRef.current;
           showBrowserNotification(
-            "رسالة جديدة 📩",
-            `لديك ${newCount - unreadCount} رسالة جديدة`,
+            "📩 رسالة جديدة",
+            `لديك ${diff} رسالة جديدة غير مقروءة`,
             () => {
               if (userType === "student") {
                 navigate("/student-chat");
@@ -138,85 +238,122 @@ export const NotificationBell = ({ userType }: NotificationBellProps) => {
               }
             }
           );
+          playNotificationSound();
         }
-        
+
+        prevUnreadCountRef.current = newCount;
         setUnreadCount(newCount);
       }
 
-      // Fetch recent unread messages for list
-      console.log(`Fetching recent unread from: ${API_URL()}/messages/recent-unread`);
+      // Fetch recent unread messages for dropdown list
       const response = await fetch(
         `${API_URL()}/messages/recent-unread`,
         {
           headers: {
             Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
           },
         }
       );
 
       if (response.ok) {
         const data = await response.json();
-        console.log("Recent unread messages:", data);
-        // Convert messages to notification format
-        const messageNotifications = (Array.isArray(data) ? data : []).map((msg: any) => ({
-          id: msg.id,
-          title: `رسالة من ${msg.sender_name}`,
-          message: msg.message_type === 'text' ? msg.content?.substring(0, 50) + (msg.content?.length > 50 ? '...' : '') : '📷 صورة',
-          type: 'message',
-          is_read: false,
-          created_at: msg.created_at,
-          sender_name: msg.sender_name,
-        }));
+        const messageNotifications = (Array.isArray(data) ? data : []).map(
+          (msg: any) => ({
+            id: msg.id,
+            title: `رسالة من ${msg.sender_name}`,
+            message:
+              msg.message_type === "text"
+                ? msg.content?.substring(0, 50) +
+                  (msg.content?.length > 50 ? "..." : "")
+                : "📷 صورة",
+            type: "message",
+            is_read: false,
+            created_at: msg.created_at,
+            sender_name: msg.sender_name,
+          })
+        );
         setNotifications(messageNotifications.slice(0, 10));
       }
     } catch (error) {
-      console.error("Error fetching notifications:", error);
+      // Silent fail for polling
     }
-  }, [getUserId, userType, unreadCount, navigate]);
+  }, [getUserId, userType, navigate]);
 
-  // Fetch on mount and every 30 seconds
+  // Poll every 10 seconds as backup (socket handles real-time)
   useEffect(() => {
     fetchNotifications();
-    const interval = setInterval(fetchNotifications, 30000);
+    const interval = setInterval(fetchNotifications, 10000);
     return () => clearInterval(interval);
   }, [fetchNotifications]);
 
-  // Mark notification as read
+  // Mark all messages as read for a specific sender
   const markAsRead = async (notificationId: string) => {
     try {
       const token = localStorage.getItem("authToken");
+      // Mark using notifications API
       await fetch(`${API_URL()}/notifications/${notificationId}/read`, {
         method: "PUT",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { Authorization: `Bearer ${token}` },
       });
-      
+
       setNotifications((prev) =>
-        prev.map((n) => (n.id === notificationId ? { ...n, is_read: true } : n))
+        prev.map((n) =>
+          n.id === notificationId ? { ...n, is_read: true } : n
+        )
       );
-      setUnreadCount((prev) => Math.max(0, prev - 1));
+      // Refresh actual count from server
+      fetchNotifications();
     } catch (error) {
       console.error("Error marking notification as read:", error);
     }
   };
 
-  // Mark all as read
+  // Mark all as read - uses messages API for each conversation
   const markAllAsRead = async () => {
     const userId = getUserId();
     if (!userId) return;
 
     try {
       const token = localStorage.getItem("authToken");
-      await fetch(`${API_URL()}/notifications/mark-all-read?user_id=${userId}`, {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
       
-      setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+      // Get unique sender IDs from current notifications and mark each conversation as read
+      const senderIds = [...new Set(notifications.map(n => {
+        // The notification id IS the message id. We need to mark conversations.
+        return n.id;
+      }))];
+
+      // Mark each message as read via the messages API
+      for (const msgId of senderIds) {
+        try {
+          await fetch(`${API_URL()}/messages/${msgId}/mark-read`, {
+            method: "PUT",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+        } catch {
+          // continue
+        }
+      }
+
+      // Also mark notifications table
+      try {
+        await fetch(`${API_URL()}/notifications/read-all`, {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ user_id: userId, user_type: userType === "student" ? "student" : "admin" }),
+        });
+      } catch {
+        // continue
+      }
+
+      setNotifications((prev) =>
+        prev.map((n) => ({ ...n, is_read: true }))
+      );
       setUnreadCount(0);
+      prevUnreadCountRef.current = 0;
     } catch (error) {
       console.error("Error marking all as read:", error);
     }
@@ -226,8 +363,7 @@ export const NotificationBell = ({ userType }: NotificationBellProps) => {
   const handleNotificationClick = (notification: Notification) => {
     markAsRead(notification.id);
     setIsOpen(false);
-    
-    // Navigate to messages
+
     if (userType === "student") {
       navigate("/student-chat");
     } else {

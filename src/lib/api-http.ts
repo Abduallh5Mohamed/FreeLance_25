@@ -174,7 +174,9 @@ export interface Student {
     guardian_phone?: string;
     grade?: string;
     grade_id?: string;
+    grade_name?: string;
     group_id?: string;
+    group_name?: string;
     barcode?: string;
     is_offline: boolean;
     approval_status: 'pending' | 'approved' | 'rejected';
