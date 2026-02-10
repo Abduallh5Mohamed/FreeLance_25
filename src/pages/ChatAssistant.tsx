@@ -121,24 +121,24 @@ export default function ChatAssistant() {
   };
 
   return (
-    <div className="h-screen w-full flex flex-col bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
+    <div className="min-h-screen w-full flex flex-col bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
       {/* Header */}
-      <div className="bg-white dark:bg-slate-800 border-b border-primary/20 p-4 shadow-sm">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
-            <span className="text-lg">🤖</span>
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-foreground">مساعد التاريخ الذكي</h1>
-            <p className="text-sm text-muted-foreground">متخصص في شرح دروس التاريخ</p>
-          </div>
+      {/* NavBar - شبيه واتساب */}
+      <div className="sticky top-0 left-0 w-full z-30 bg-gradient-to-br from-primary/90 to-cyan-700 dark:from-slate-900 dark:to-cyan-950 border-b border-primary/30 p-3 flex items-center gap-3 shadow-lg">
+        <div className="w-10 h-10 bg-white/20 dark:bg-slate-700/40 rounded-lg flex items-center justify-center">
+          <span className="text-lg">🤖</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <h1 className="text-lg md:text-xl font-bold text-white truncate">مساعد التاريخ الذكي</h1>
+          <p className="text-xs md:text-sm text-cyan-100 truncate">متخصص في شرح دروس التاريخ</p>
         </div>
       </div>
 
       {/* Messages Container - FIXED SIZE, NO SCROLL OUTSIDE */}
       <div
         ref={messagesContainerRef}
-        className="flex-1 overflow-y-auto px-4 py-6 space-y-4"
+        className="flex-1 overflow-y-auto px-1 py-2 md:px-4 md:py-6 space-y-3 md:space-y-4 mb-[90px] md:mb-0 bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950"
+        style={{scrollBehavior:'smooth', WebkitOverflowScrolling:'touch'}}
       >
         {messages.map((message) => (
           <div
@@ -146,11 +146,11 @@ export default function ChatAssistant() {
             className={`flex ${message.role === 'user' ? 'justify-start' : 'justify-end'}`}
           >
             <div
-              className={`max-w-xs lg:max-w-md xl:max-w-lg px-4 py-3 rounded-lg ${
-                message.role === 'user'
-                  ? 'bg-primary text-white rounded-bl-none'
-                  : 'bg-white dark:bg-slate-800 text-foreground border border-primary/20 rounded-br-none shadow-sm'
-              }`}
+              className={`max-w-[85vw] sm:max-w-xs md:max-w-md xl:max-w-lg px-4 py-3 rounded-2xl shadow-md ${
+                  message.role === 'user'
+                    ? 'bg-primary text-white rounded-bl-none'
+                    : 'bg-white dark:bg-slate-800 text-foreground border border-primary/20 rounded-br-none'
+                }`}
             >
               <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
               <span className={`text-xs mt-2 block ${
@@ -178,25 +178,29 @@ export default function ChatAssistant() {
       </div>
 
       {/* Input Area - FIXED AT BOTTOM */}
-      <div className="bg-white dark:bg-slate-800 border-t border-primary/20 p-4 shadow-lg">
-        <form onSubmit={sendMessage} className="flex gap-2">
-          <Input
-            type="text"
-            placeholder="اسأل عن التاريخ..."
+      <div className="fixed bottom-0 left-0 w-full z-40 bg-white/95 dark:bg-slate-800/95 border-t border-primary/20 p-2 md:p-4 shadow-2xl backdrop-blur-md flex flex-col" style={{maxWidth:'100vw'}}>
+        <form onSubmit={sendMessage} className="flex gap-2 w-full items-end">
+          <textarea
+            rows={1}
+            placeholder="اكتب رسالة..."
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={e => setInput(e.target.value)}
             disabled={loading}
-            className="flex-1 bg-slate-50 dark:bg-slate-700 border-primary/20 placeholder:text-muted-foreground"
+            className="flex-1 resize-none bg-slate-50 dark:bg-slate-700 border border-primary/20 placeholder:text-muted-foreground text-base md:text-lg py-2 md:py-3 px-3 md:px-4 rounded-2xl focus:ring-2 focus:ring-primary/40 min-h-[44px] max-h-[120px] transition-all duration-200 shadow-inner"
+            style={{fontFamily:'inherit',lineHeight:'1.7'}}
+            onFocus={e => { e.target.scrollIntoView({behavior:'smooth',block:'center'}); }}
           />
           <Button
             type="submit"
             disabled={loading || !input.trim()}
-            className="bg-primary hover:bg-primary/90 text-white px-4"
+            className="bg-primary hover:bg-primary/90 text-white px-4 py-2 md:py-3 rounded-2xl text-base md:text-lg min-w-[44px] min-h-[44px] flex items-center justify-center shadow-lg"
+            aria-label="إرسال"
+            style={{boxShadow:'0 2px 8px 0 #06b6d4a0'}}
           >
-            <Send className="w-4 h-4" />
+            <Send className="w-5 h-5" />
           </Button>
         </form>
-        <p className="text-xs text-muted-foreground mt-2">
+        <p className="text-xs text-muted-foreground mt-2 text-center md:text-right select-none">
           💡 نصيحة: اسأل عن أي موضوع تاريخي أو معادلة أو إجابة امتحان
         </p>
       </div>

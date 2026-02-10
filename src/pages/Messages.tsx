@@ -1011,7 +1011,7 @@ export default function Messages() {
                         </ScrollArea>
 
                         {/* Input */}
-                        <div className="bg-white border-t border-gray-200 p-4">
+                        <div className="fixed bottom-0 left-0 w-full z-40 bg-white/95 border-t border-gray-200 p-2 md:p-4 shadow-2xl backdrop-blur-md flex flex-col" style={{maxWidth:'100vw'}}>
                             {editingMessageId && (
                                 <div className="bg-blue-50 p-2 rounded-lg mb-2 flex items-center justify-between">
                                     <span className="text-sm text-blue-700">تعديل الرسالة</span>
@@ -1027,7 +1027,7 @@ export default function Messages() {
                                     </Button>
                                 </div>
                             )}
-                            <div className="flex gap-2">
+                            <div className="flex gap-2 w-full items-end">
                                 <input
                                     type="file"
                                     ref={fileInputRef}
@@ -1042,17 +1042,25 @@ export default function Messages() {
                                     variant="outline"
                                     size="icon"
                                     onClick={() => fileInputRef.current?.click()}
+                                    className="rounded-2xl"
                                 >
                                     <ImageIcon className="h-5 w-5" />
                                 </Button>
-                                <Input
+                                <textarea
+                                    rows={1}
                                     value={messageText}
-                                    onChange={handleTyping}
-                                    onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                                    onChange={e => setMessageText(e.target.value)}
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter' && !e.shiftKey) {
+                                            e.preventDefault();
+                                            sendMessage();
+                                        }
+                                    }}
                                     placeholder="اكتب رسالتك..."
-                                    className="flex-1"
+                                    className="flex-1 resize-none bg-slate-50 border border-primary/20 placeholder:text-muted-foreground text-base md:text-lg py-2 md:py-3 px-3 md:px-4 rounded-2xl focus:ring-2 focus:ring-primary/40 min-h-[44px] max-h-[120px] transition-all duration-200 shadow-inner"
+                                    style={{fontFamily:'inherit',lineHeight:'1.7'}}
                                 />
-                                <Button onClick={sendMessage} disabled={!messageText.trim()}>
+                                <Button onClick={sendMessage} disabled={!messageText.trim()} className="bg-primary hover:bg-primary/90 text-white px-4 py-2 md:py-3 rounded-2xl text-base md:text-lg min-w-[44px] min-h-[44px] flex items-center justify-center shadow-lg" aria-label="إرسال" style={{boxShadow:'0 2px 8px 0 #06b6d4a0'}}>
                                     <Send className="h-5 w-5" />
                                 </Button>
                             </div>
