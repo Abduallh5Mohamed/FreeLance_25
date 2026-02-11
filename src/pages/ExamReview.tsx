@@ -215,6 +215,7 @@ const ExamReview = () => {
                             <span class="question-points">(${question.points} نقطة)</span>
                         </div>
                         <div class="question-text">${question.question_text}</div>
+                        ${question.question_image ? `<img src="${question.question_image}" class="question-image" alt="صورة السؤال" />` : ''}
                         <div class="options-container">
                             ${optionsHTML}
                         </div>
@@ -365,6 +366,15 @@ const ExamReview = () => {
                             word-break: break-word;
                             overflow-wrap: break-word;
                             white-space: pre-wrap;
+                        }
+                        
+                        .question-image {
+                            max-width: 100%;
+                            height: auto;
+                            margin: 15px 0;
+                            border-radius: 8px;
+                            border: 1px solid #e5e7eb;
+                            display: block;
                         }
                         
                         .options-container {
@@ -700,7 +710,7 @@ const ExamReview = () => {
                                                     <img
                                                         src={question.question_image}
                                                         alt="سؤال"
-                                                        className="mt-3 rounded-lg max-w-md"
+                                                        className="mt-3 rounded-lg w-full max-w-md"
                                                     />
                                                 )}
                                             </div>

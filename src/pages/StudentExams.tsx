@@ -455,15 +455,15 @@ const StudentExams = () => {
                     {exam.status === 'available' && (
                       <Button
                         onClick={() => handleStartExam(exam)}
-                        className={`w-full ${exam.has_in_progress 
-                          ? 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600' 
+                        className={`w-full ${exam.has_in_progress
+                          ? 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600'
                           : 'bg-gradient-to-r from-primary to-accent'} hover:shadow-lg`}
                         disabled={!exam.has_in_progress && (exam.attempts || 0) >= (exam.maxAttempts || 1)}
                       >
-                        {exam.has_in_progress 
-                          ? '🔄 استكمال الامتحان' 
-                          : (exam.attempts || 0) >= (exam.maxAttempts || 1) 
-                            ? 'استنفذت المحاولات' 
+                        {exam.has_in_progress
+                          ? '🔄 استكمال الامتحان'
+                          : (exam.attempts || 0) >= (exam.maxAttempts || 1)
+                            ? 'استنفذت المحاولات'
                             : 'بدء الامتحان'}
                       </Button>
                     )}

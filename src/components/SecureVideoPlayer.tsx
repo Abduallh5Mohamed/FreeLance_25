@@ -250,7 +250,7 @@ export function SecureVideoPlayer({
             }
 
             // Block F12 (DevTools), Ctrl+U (view source), Ctrl+Shift+I (DevTools)
-            if (e.key === 'F12' || 
+            if (e.key === 'F12' ||
                 (e.ctrlKey && e.key.toLowerCase() === 'u') ||
                 (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'i')) {
                 e.preventDefault();
