@@ -90,11 +90,11 @@ router.get('/key/:videoId', async (req: Request, res: Response) => {
         res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
         res.set('Pragma', 'no-cache');
         res.set('Expires', '0');
-        
+
         // Add CORS headers for HLS.js
         res.set('Access-Control-Allow-Origin', '*');
         res.set('Access-Control-Allow-Methods', 'GET');
-        
+
         res.send(keyBuffer);
 
         console.log(`[Videos] Encryption key served for video ${videoId} to user ${userId}`);
@@ -407,7 +407,7 @@ router.get('/stream/:videoId', async (req: Request, res: Response) => {
             // Use original file directly
             streamUrl = await getSignedStreamUrl(videoId, video.original_key, BUCKETS.ORIGINALS);
         }
-        
+
         const thumbnailUrl = await getThumbnailUrl(videoId);
 
         // Log access
