@@ -12,7 +12,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { getExamById, getExamQuestions, canAttemptExam, startExamAttempt, submitExamAttempt } from "@/lib/api";
+import { getExamById, getExamQuestions, canAttemptExam, startExamAttempt, submitExamAttempt, saveExamProgress } from "@/lib/api";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 import jsPDF from "jspdf";
 
@@ -143,6 +143,46 @@ const TakeExam = () => {
     ]
   };
 
+  // Refs for auto-save to access latest state without re-triggering effect
+  const answersRef = useRef(answers);
+  const essayAnswersRef = useRef(essayAnswers);
+  const answerImagesRef = useRef(answerImages);
+
+  // Update refs when state changes
+  useEffect(() => {
+    answersRef.current = answers;
+    essayAnswersRef.current = essayAnswers;
+    answerImagesRef.current = answerImages;
+  }, [answers, essayAnswers, answerImages]);
+
+  // ✅ Auto-Save every 10 seconds
+  useEffect(() => {
+    if (!examId || !studentId || isSubmitted || !exam) return;
+
+    const interval = setInterval(async () => {
+      // Don't save if no answers
+      const hasAnswers = Object.keys(answersRef.current).length > 0 ||
+        Object.keys(essayAnswersRef.current).length > 0;
+
+      if (hasAnswers) {
+        console.log('💾 Auto-saving progress...');
+        try {
+          await saveExamProgress(
+            examId,
+            studentId,
+            answersRef.current,
+            essayAnswersRef.current,
+            answerImagesRef.current
+          );
+        } catch (error) {
+          console.error('❌ Auto-save failed:', error);
+        }
+      }
+    }, 10000); // 10 Seconds
+
+    return () => clearInterval(interval);
+  }, [examId, studentId, isSubmitted, exam]);
+
   useEffect(() => {
     const loadExamData = async () => {
       try {
@@ -157,7 +197,6 @@ const TakeExam = () => {
           return;
         }
         const user = JSON.parse(userStr);
-        const studentObj = studentStr ? JSON.parse(studentStr) : null;
         // Use user.id directly for students (they're in users table with role='student')
         const currentStudentId = user.id;
         if (!currentStudentId) {
@@ -171,47 +210,81 @@ const TakeExam = () => {
         const attemptCheck = await canAttemptExam(examId, currentStudentId) as any;
         console.log('🔍 Can attempt check:', attemptCheck);
 
+        // ✅ If already attempted but in_progress, we proceed to start (which now returns the attempt)
         if (!attemptCheck.canAttempt) {
-          setCanAttempt(false);
-          setAttemptMessage(attemptCheck.message || attemptCheck.reason || 'لا يمكنك دخول هذا الامتحان');
+          // Only block if explicitly NOT in progress (e.g. passed, failed, ended)
+          // But we rely on startExamAttempt to return the attempt if it's open
+          if (attemptCheck.reason === 'already_attempted' && attemptCheck.score !== undefined) {
+            // Check if it's really finished (could add status check here if API returned it)
+          }
 
-          // If already attempted, fetch exam to display summary
-          if (attemptCheck.reason === 'already_attempted') {
-            try {
-              const examData = await getExamById(examId) as any;
-              // Fetch questions to derive total marks if missing
-              const qs = await getExamQuestions(examId);
-              const computedTotal = Array.isArray(qs)
-                ? qs.reduce((sum: number, q: any) => sum + (q.marks || q.points || 1), 0)
-                : 0;
-              const rawTotal = examData?.total_marks || examData?.totalMarks || computedTotal;
-              const rawPassing = examData?.passing_marks || examData?.passingMarks || 0;
-              // Interpret passing as percentage if > total and <=100
-              const passingMarks = rawTotal > 0 && rawPassing > rawTotal && rawPassing <= 100
-                ? Math.ceil((rawPassing / 100) * rawTotal)
-                : rawPassing;
-              const existingScore = attemptCheck.score || 0;
-              const passed = existingScore >= passingMarks;
-              setAttemptResult({ score: existingScore, total: rawTotal, passed, passingMarks });
-            } catch (e) {
-              console.error('Failed to load exam for attempt summary', e);
+          // If strictly blocked
+          if (attemptCheck.reason !== 'no_schedule') { // no_schedule is allowed
+            setCanAttempt(false);
+            setAttemptMessage(attemptCheck.message || attemptCheck.reason || 'لا يمكنك دخول هذا الامتحان');
+
+            // If already attempted (and submitted), fetch exam to display summary
+            if (attemptCheck.reason === 'already_attempted') {
+              try {
+                // ... existing summary logic ...
+                const examData = await getExamById(examId) as any;
+                const qs = await getExamQuestions(examId);
+                const computedTotal = Array.isArray(qs)
+                  ? qs.reduce((sum: number, q: any) => sum + (q.marks || q.points || 1), 0)
+                  : 0;
+                const rawTotal = examData?.total_marks || examData?.totalMarks || computedTotal;
+                const rawPassing = examData?.passing_marks || examData?.passingMarks || 0;
+                const passingMarks = rawTotal > 0 && rawPassing > rawTotal && rawPassing <= 100
+                  ? Math.ceil((rawPassing / 100) * rawTotal)
+                  : rawPassing;
+                const existingScore = attemptCheck.score || 0;
+                const passed = existingScore >= passingMarks;
+                setAttemptResult({ score: existingScore, total: rawTotal, passed, passingMarks });
+              } catch (e) {
+                console.error('Failed to load exam for attempt summary', e);
+              }
+              setLoading(false);
+              return;
+            }
+
+            if (attemptCheck.reason === 'not_started') {
+              if (attemptCheck.startTime) setExamStartTime(new Date(attemptCheck.startTime));
+              setLoading(false);
+              return;
+            }
+
+            if (attemptCheck.reason === 'ended') {
+              setLoading(false);
+              return;
             }
           }
-
-          if (attemptCheck.reason === 'not_started' && attemptCheck.startTime) {
-            setExamStartTime(new Date(attemptCheck.startTime));
-          }
-
-          setLoading(false);
-          return;
         }
 
-        // Start exam attempt
-        await startExamAttempt(examId, currentStudentId);
+        // Start exam attempt (Returns attempt object if new or resumed)
+        const attemptResponse: any = await startExamAttempt(examId, currentStudentId);
+
+        // ✅ Restore answers if resuming
+        if (attemptResponse && attemptResponse.answers) {
+          console.log('🔄 Restoring saved answers:', attemptResponse.answers);
+          try {
+            const saved = typeof attemptResponse.answers === 'string'
+              ? JSON.parse(attemptResponse.answers)
+              : attemptResponse.answers;
+
+            if (saved.multipleChoice) setAnswers(saved.multipleChoice);
+            if (saved.essay) setEssayAnswers(saved.essay);
+            if (saved.images) setAnswerImages(saved.images);
+
+            toast({ title: 'تم استرجاع إجاباتك', description: 'يمكنك إكمال الامتحان من حيث توقفت' });
+          } catch (e) {
+            console.error('Failed to parse saved answers', e);
+          }
+        }
 
         // Load exam details
         console.log('🔍 Loading exam with ID:', examId);
         const examData = await getExamById(examId);
+        // ... existing code ...
         console.log('📋 Exam data loaded:', examData);
 
         if (!examData) {
@@ -420,7 +493,7 @@ const TakeExam = () => {
     if (examId && studentId) {
       try {
         // ✅ Include essay answers and answer images
-        const response = await submitExamAttempt(
+        const response: any = await submitExamAttempt(
           examId,
           studentId,
           answers,  // Multiple choice answers
@@ -438,9 +511,9 @@ const TakeExam = () => {
         });
 
         // ✅ Update result from backend response
-        const finalScore = response.score || examResult.autoScore;
-        const totalMarks = response.total_marks || examResult.total;
-        const passingMarks = response.passing_marks || exam?.passing_marks || exam?.passingMarks || 0;
+        const finalScore = response.score !== undefined ? response.score : examResult.autoScore;
+        const totalMarks = response.total_marks !== undefined ? response.total_marks : examResult.total;
+        const passingMarks = response.passing_marks !== undefined ? response.passing_marks : (exam?.passing_marks || exam?.passingMarks || 0);
         const passed = response.passed ?? (finalScore >= passingMarks);
 
         const finalResult = {

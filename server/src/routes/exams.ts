@@ -899,7 +899,14 @@ router.post('/:examId/start/:studentId', async (req: Request, res: Response) => 
             [examId, studentId]
         );
 
+
+
         if (existingAttempt) {
+            // ✅ Allow resuming if in_progress and time permits (or force resume to allow auto-submit logic)
+            if (existingAttempt.status === 'in_progress') {
+                console.log('🔄 Resuming existing attempt:', existingAttempt.id);
+                return res.json(existingAttempt);
+            }
             return res.status(400).json({ error: 'Exam already attempted' });
         }
 
@@ -920,6 +927,46 @@ router.post('/:examId/start/:studentId', async (req: Request, res: Response) => 
     } catch (error) {
         console.error('Start exam attempt error:', error);
         res.status(500).json({ error: 'Failed to start exam attempt' });
+    }
+});
+
+
+// ✅ Auto-Save progress (Draft)
+router.post('/:examId/save-progress/:studentId', async (req: Request, res: Response) => {
+    try {
+        const { examId, studentId } = req.params;
+        const { answers, essayAnswers, answerImages } = req.body;
+
+        console.log(`💾 Auto-saving progress for student ${studentId} on exam ${examId}`);
+
+        // Merge answers
+        const allAnswers = {
+            multipleChoice: answers || {},
+            essay: essayAnswers || {},
+            images: answerImages || {}
+        };
+
+        // Update exam_attempts table only if status is 'in_progress'
+        const result = await execute(
+            `UPDATE exam_attempts 
+             SET answers = ?, 
+                 updated_at = NOW()
+             WHERE exam_id = ? 
+             AND student_id = ? 
+             AND status = 'in_progress'`,
+            [JSON.stringify(allAnswers), examId, studentId]
+        );
+
+        if (result.affectedRows === 0) {
+            console.warn('⚠️ Auto-save failed: No in-progress attempt found');
+            return res.status(404).json({ error: 'No in_progress attempt found' });
+        }
+
+        console.log('✅ Progress saved successfully');
+        res.json({ success: true });
+    } catch (error) {
+        console.error('❌ Auto-save error:', error);
+        res.status(500).json({ error: 'Failed to save progress' });
     }
 });
 
