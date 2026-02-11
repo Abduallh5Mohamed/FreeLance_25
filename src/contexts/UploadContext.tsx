@@ -169,6 +169,21 @@ export function UploadProvider({ children }: { children: ReactNode }) {
                         stage: 'processing',
                         progress: data.processing_progress || 0
                     });
+                } else if (data.status === 'uploading') {
+                    // Video file uploaded but complete endpoint not called yet
+                    // Try to call complete to trigger processing
+                    try {
+                        const completeRes = await fetch(`${API_BASE}/videos/upload/complete`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ videoId })
+                        });
+                        if (completeRes.ok) {
+                            updateUpload(videoId, { stage: 'processing', progress: 0 });
+                        }
+                    } catch {
+                        // Will retry on next poll cycle
+                    }
                 }
             } catch (error) {
                 console.error('Background polling error:', error);

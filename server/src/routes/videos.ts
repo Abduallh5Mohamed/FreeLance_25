@@ -90,11 +90,11 @@ router.get('/key/:videoId', async (req: Request, res: Response) => {
         res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
         res.set('Pragma', 'no-cache');
         res.set('Expires', '0');
-        
+
         // Add CORS headers for HLS.js
         res.set('Access-Control-Allow-Origin', '*');
         res.set('Access-Control-Allow-Methods', 'GET');
-        
+
         res.send(keyBuffer);
 
         console.log(`[Videos] Encryption key served for video ${videoId} to user ${userId}`);
@@ -319,6 +319,48 @@ router.delete('/upload/cancel/:videoId', async (req: Request, res: Response) => 
     }
 });
 
+/**
+ * Recover stuck uploads - finds videos stuck at 'uploading' for more than 5 minutes
+ * and triggers processing (processor will handle missing files gracefully)
+ */
+router.post('/upload/recover-stuck', async (req: Request, res: Response) => {
+    try {
+        const stuckVideos = await query(
+            `SELECT id FROM videos 
+             WHERE status = 'uploading' 
+             AND created_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`,
+            []
+        );
+
+        if (!stuckVideos || stuckVideos.length === 0) {
+            return res.json({ recovered: 0, message: 'No stuck uploads found' });
+        }
+
+        let recovered = 0;
+        for (const video of stuckVideos) {
+            try {
+                await execute(
+                    `INSERT INTO video_processing_queue (id, video_id, status, created_at)
+                    VALUES (?, ?, 'pending', NOW())
+                    ON DUPLICATE KEY UPDATE status = 'pending', created_at = NOW()`,
+                    [uuidv4(), video.id]
+                );
+                processVideoAsync(video.id);
+                recovered++;
+                console.log(`[Videos] Recovered stuck upload ${video.id}`);
+            } catch (err) {
+                console.error(`[Videos] Error recovering ${video.id}:`, err);
+            }
+        }
+
+        res.json({ recovered, total: stuckVideos.length });
+
+    } catch (error) {
+        console.error('[Videos] Recover stuck error:', error);
+        res.status(500).json({ error: 'Failed to recover stuck uploads' });
+    }
+});
+
 // ============================================
 // STREAMING ENDPOINTS (Student)
 // ============================================
@@ -365,7 +407,7 @@ router.get('/stream/:videoId', async (req: Request, res: Response) => {
             // Use original file directly
             streamUrl = await getSignedStreamUrl(videoId, video.original_key, BUCKETS.ORIGINALS);
         }
-        
+
         const thumbnailUrl = await getThumbnailUrl(videoId);
 
         // Log access

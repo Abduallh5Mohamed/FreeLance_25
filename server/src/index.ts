@@ -35,6 +35,8 @@ import premiumLecturesRoutes from './routes/premium-lectures';
 import aiChatRoutes from './routes/ai-chat';
 import meetingsRoutes from './routes/meetings';
 import { initializeBuckets } from './services/minio';
+import { query, execute } from './db';
+import { processVideo } from './services/video-processor';
 
 dotenv.config();
 
@@ -210,15 +212,52 @@ const startServer = async () => {
 ║                                                ║
 ╚════════════════════════════════════════════════╝
             `);
+
+            // Recover stuck video processing (from previous server crash/restart)
+            setTimeout(async () => {
+                try {
+                    const stuck = await query(
+                        `SELECT id FROM videos WHERE status IN ('processing') AND created_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)`,
+                        []
+                    );
+                    if (stuck && stuck.length > 0) {
+                        console.log(`[Startup] Found ${stuck.length} stuck processing videos, re-triggering...`);
+                        for (const video of stuck) {
+                            await execute(
+                                `UPDATE videos SET status = 'uploading', processing_progress = 0 WHERE id = ?`,
+                                [video.id]
+                            );
+                            // Stagger processing to avoid overloading
+                            await new Promise(r => setTimeout(r, 2000));
+                            processVideo(video.id).catch(err => {
+                                console.error(`[Startup] Failed to re-process video ${video.id}:`, err);
+                            });
+                        }
+                    }
+                } catch (err) {
+                    console.error('[Startup] Error recovering stuck videos:', err);
+                }
+            }, 15000); // Wait 15s after startup to let everything stabilize
         });
 
         server.on('error', (error: NodeJS.ErrnoException) => {
             if (error.code === 'EADDRINUSE') {
                 console.error(`❌ Port ${PORT} is already in use`);
+                // Try to kill the process on the port and retry once
+                const { execSync } = require('child_process');
+                try {
+                    execSync(`fuser -k ${PORT}/tcp 2>/dev/null || true`, { stdio: 'ignore' });
+                    console.log(`🔄 Killed process on port ${PORT}, retrying in 3s...`);
+                    setTimeout(() => {
+                        server.listen(Number(PORT), '0.0.0.0');
+                    }, 3000);
+                } catch {
+                    process.exit(1);
+                }
             } else {
                 console.error('❌ Server error:', error);
+                process.exit(1);
             }
-            process.exit(1);
         });
     } catch (error) {
         console.error('❌ Server startup failed:', error);

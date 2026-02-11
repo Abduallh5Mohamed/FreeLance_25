@@ -268,6 +268,16 @@ router.get('/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Exam not found' });
         }
 
+        // Also fetch group_id from exam_groups junction table
+        const examGroups = await query<any>(
+            'SELECT group_id FROM exam_groups WHERE exam_id = ?',
+            [req.params.id]
+        );
+        if (examGroups && examGroups.length > 0) {
+            (exam as any).group_id = examGroups[0].group_id;
+            (exam as any).group_ids = examGroups.map((g: any) => g.group_id);
+        }
+
         res.json(exam);
     } catch (error) {
         console.error('Get exam by ID error:', error);
@@ -480,11 +490,11 @@ router.put('/:id', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'No fields to update' });
         }
 
-        const query = `UPDATE exams SET ${updates.join(', ')} WHERE id = ?`;
-        console.log('🔧 UPDATE QUERY:', query);
+        const updateQuery = `UPDATE exams SET ${updates.join(', ')} WHERE id = ?`;
+        console.log('🔧 UPDATE QUERY:', updateQuery);
         console.log('📊 VALUES:', values);
 
-        const result = await execute(query, values);
+        const result = await execute(updateQuery, values);
 
         if (result.affectedRows === 0) {
             return res.status(404).json({ error: 'Exam not found' });
@@ -514,12 +524,26 @@ router.put('/:id', async (req: Request, res: Response) => {
                 [req.params.id, group_id]
             );
             console.log('✅ Updated exam_groups with single group:', group_id);
+        } else if (group_id === null || group_id === 'all') {
+            // Clear all group associations (means "all groups")
+            await execute('DELETE FROM exam_groups WHERE exam_id = ?', [req.params.id]);
+            console.log('✅ Cleared exam_groups (all groups)');
         }
 
         const updatedExam = await queryOne<Exam>(
             'SELECT * FROM exams WHERE id = ?',
             [req.params.id]
         );
+
+        // Also include group info from exam_groups
+        const updatedGroups = await query<any>(
+            'SELECT group_id FROM exam_groups WHERE exam_id = ?',
+            [req.params.id]
+        );
+        if (updatedExam && updatedGroups && updatedGroups.length > 0) {
+            (updatedExam as any).group_id = updatedGroups[0].group_id;
+            (updatedExam as any).group_ids = updatedGroups.map((g: any) => g.group_id);
+        }
 
         console.log('✅ UPDATED EXAM:', updatedExam);
 
