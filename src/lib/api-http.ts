@@ -816,6 +816,20 @@ export const submitExamAttempt = async (
     });
 };
 
+// Save exam progress (auto-save)
+export const saveExamProgress = async (
+    examId: string,
+    studentId: string,
+    answers: Record<string, unknown>,
+    essayAnswers?: Record<string, string>,
+    answerImages?: Record<string, string>
+) => {
+    return await request(`/exams/${examId}/save-progress/${studentId}`, {
+        method: 'POST',
+        body: JSON.stringify({ answers, essayAnswers, answerImages })
+    });
+};
+
 // Get exam attempts (admin)
 export const getExamAttempts = async (examId: string) => {
     return await request(`/exams/${examId}/attempts`);

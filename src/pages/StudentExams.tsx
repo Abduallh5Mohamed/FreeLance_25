@@ -25,6 +25,8 @@ interface StudentExam extends Exam {
   maxAttempts?: number;
   lastScore?: number;
   difficulty?: 'easy' | 'medium' | 'hard';
+  has_in_progress?: boolean;
+  in_progress_started_at?: string;
 }
 
 const StudentExams = () => {
@@ -97,6 +99,7 @@ const StudentExams = () => {
 
       const examsData = data?.map((exam: StudentExam & { start_dt?: string; end_dt?: string }) => {
         const hasAttempted = (exam.attempts || 0) > 0;
+        const hasInProgress = exam.has_in_progress === true;
 
         // Sanitize raw times first
         const combinedStart = exam.start_dt || exam.start_time;
@@ -107,13 +110,31 @@ const StudentExams = () => {
         const endDate = parseSafe(rawEnd);
 
         console.log(`\n📝 Exam: ${exam.title}`);
-        console.log('  Has attempted:', hasAttempted);
+        console.log('  Has attempted:', hasAttempted, 'Has in_progress:', hasInProgress);
         console.log('  Start time (raw):', exam.start_time, '→', rawStart, 'Parsed valid?', !!startDate);
         console.log('  End time (raw):', exam.end_time, '→', rawEnd, 'Parsed valid?', !!endDate);
 
         let status: 'available' | 'upcoming' | 'completed' | 'expired' = 'available';
 
-        if (hasAttempted) {
+        // ✅ If in_progress, check if exam time window is still open
+        if (hasInProgress) {
+          // Check if exam end_time has passed
+          if (endDate && now > endDate) {
+            status = 'expired';
+            console.log('  ⏰ Status: expired (in_progress but end time passed)');
+          } else {
+            // Also check if the attempt's own duration has expired
+            const startedAt = exam.in_progress_started_at ? new Date(exam.in_progress_started_at) : null;
+            const durationMs = (exam.duration_minutes || 60) * 60 * 1000;
+            if (startedAt && (now.getTime() - startedAt.getTime()) > durationMs) {
+              status = 'expired';
+              console.log('  ⏰ Status: expired (attempt duration exceeded)');
+            } else {
+              status = 'available';
+              console.log('  🔄 Status: available (in_progress, can resume)');
+            }
+          }
+        } else if (hasAttempted) {
           status = 'completed';
           console.log('  ✅ Status: completed (already attempted)');
         } else if (startDate && endDate) {
@@ -142,6 +163,8 @@ const StudentExams = () => {
           start_time: rawStart, // sanitized
           end_time: rawEnd,     // sanitized
           status,
+          has_in_progress: hasInProgress,
+          in_progress_started_at: exam.in_progress_started_at,
           attempts: exam.attempts || 0,
           maxAttempts: exam.maxAttempts || 1,
           difficulty: (exam.difficulty || 'medium') as 'easy' | 'medium' | 'hard'
@@ -226,6 +249,12 @@ const StudentExams = () => {
   });
 
   const handleStartExam = (exam: StudentExam) => {
+    // ✅ Allow if in_progress (resuming)
+    if (exam.has_in_progress) {
+      navigate(`/take-exam/${exam.id}`);
+      return;
+    }
+
     // Check if exam is available
     if (exam.status !== 'available') {
       let message = 'لا يمكن الدخول للامتحان';
@@ -426,10 +455,16 @@ const StudentExams = () => {
                     {exam.status === 'available' && (
                       <Button
                         onClick={() => handleStartExam(exam)}
-                        className="w-full bg-gradient-to-r from-primary to-accent hover:shadow-lg"
-                        disabled={(exam.attempts || 0) >= (exam.maxAttempts || 1)}
+                        className={`w-full ${exam.has_in_progress
+                          ? 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600'
+                          : 'bg-gradient-to-r from-primary to-accent'} hover:shadow-lg`}
+                        disabled={!exam.has_in_progress && (exam.attempts || 0) >= (exam.maxAttempts || 1)}
                       >
-                        {(exam.attempts || 0) >= (exam.maxAttempts || 1) ? 'استنفذت المحاولات' : 'بدء الامتحان'}
+                        {exam.has_in_progress
+                          ? '🔄 استكمال الامتحان'
+                          : (exam.attempts || 0) >= (exam.maxAttempts || 1)
+                            ? 'استنفذت المحاولات'
+                            : 'بدء الامتحان'}
                       </Button>
                     )}
                     {exam.status === 'upcoming' && exam.start_time && (() => {

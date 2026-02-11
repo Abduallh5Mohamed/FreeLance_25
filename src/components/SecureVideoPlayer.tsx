@@ -432,6 +432,7 @@ export function SecureVideoPlayer({
         };
     }, [videoId, userId, directUrl]);
 
+<<<<<<< HEAD
     // VIDEO CONTROLS
     const togglePlay = () => {
         if (videoRef.current) {
@@ -440,6 +441,61 @@ export function SecureVideoPlayer({
             } else {
                 videoRef.current.play();
             }
+=======
+    // ANTI-RECORDING EVENTS
+    useEffect(() => {
+        // ✅ Instead of forceLogout on visibility/blur, just pause the video
+        // This prevents false-positive logouts from notifications, address bar clicks, etc.
+
+        const handleVisibilityChange = () => {
+            if (document.hidden && videoRef.current) {
+                // Just pause the video when tab is hidden — don't logout
+                videoRef.current.pause();
+                console.log('⏸️ Video paused - tab hidden');
+            }
+        };
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // Block PrintScreen and screen recording shortcuts
+            if (e.key === 'PrintScreen') {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                videoRef.current?.pause();
+                setShowBlackScreen(true);
+                forceLogout('محاولة تصوير الشاشة (PrintScreen)');
+                return;
+            }
+
+            // Block F12 (DevTools), Ctrl+U (view source), Ctrl+Shift+I (DevTools)
+            if (e.key === 'F12' ||
+                (e.ctrlKey && e.key.toLowerCase() === 'u') ||
+                (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'i')) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+            }
+        };
+
+        const handleContextMenu = (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+        };
+
+        // Add Listeners with CAPTURE phase to catch events early
+        document.addEventListener('visibilitychange', handleVisibilityChange, true);
+        window.addEventListener('keydown', handleKeyDown, true);
+        window.addEventListener('contextmenu', handleContextMenu, true);
+
+        // Disable Screen Capture API
+        if (navigator.mediaDevices) {
+            // @ts-ignore
+            navigator.mediaDevices.getDisplayMedia = () => {
+                forceLogout('محاولة تسجيل الشاشة');
+                return Promise.reject('Blocked');
+            };
+>>>>>>> fa4890504d4d7555af0a310ca9671668c6ae2bef
         }
     };
 
@@ -507,10 +563,16 @@ export function SecureVideoPlayer({
         video.addEventListener('pause', handlePause);
 
         return () => {
+<<<<<<< HEAD
             video.removeEventListener('timeupdate', handleTimeUpdate);
             video.removeEventListener('durationchange', handleDurationChange);
             video.removeEventListener('play', handlePlay);
             video.removeEventListener('pause', handlePause);
+=======
+            document.removeEventListener('visibilitychange', handleVisibilityChange, true);
+            window.removeEventListener('keydown', handleKeyDown, true);
+            window.removeEventListener('contextmenu', handleContextMenu, true);
+>>>>>>> fa4890504d4d7555af0a310ca9671668c6ae2bef
         };
     }, []);
 
