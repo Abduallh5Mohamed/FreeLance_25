@@ -384,28 +384,28 @@ export default function EditExam() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       <Header />
-      <div className="container mx-auto px-4 py-8">
-        <div className="mb-6">
+      <div className="container mx-auto px-3 sm:px-4 py-4 sm:py-8 max-w-full overflow-hidden">
+        <div className="mb-4 sm:mb-6">
           <Button
             variant="outline"
             onClick={() => navigate('/teacher-exams')}
-            className="mb-4"
+            className="mb-3 sm:mb-4 text-sm"
           >
             <ArrowLeft className="h-4 w-4 ml-2" />
             العودة للامتحانات
           </Button>
 
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-cyan-600 to-teal-600 bg-clip-text text-transparent">
+          <h1 className="text-xl sm:text-2xl md:text-3xl font-bold bg-gradient-to-r from-cyan-600 to-teal-600 bg-clip-text text-transparent break-words">
             تعديل امتحان: {exam.title}
           </h1>
         </div>
 
         {/* Exam Details Card */}
         <Card className="shadow-lg mb-6">
-          <CardHeader className="bg-gradient-to-r from-purple-50 to-pink-50">
-            <div className="flex justify-between items-center">
-              <CardTitle className="flex items-center gap-2">
-                <ClipboardCheck className="h-5 w-5 text-purple-600" />
+          <CardHeader className="bg-gradient-to-r from-purple-50 to-pink-50 px-3 sm:px-6">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+              <CardTitle className="flex items-center gap-2 text-base sm:text-lg">
+                <ClipboardCheck className="h-5 w-5 text-purple-600 shrink-0" />
                 تفاصيل الامتحان
               </CardTitle>
               {!editingExamDetails && (
@@ -413,7 +413,7 @@ export default function EditExam() {
                   variant="outline"
                   size="sm"
                   onClick={() => setEditingExamDetails(true)}
-                  className="text-blue-600"
+                  className="text-blue-600 w-full sm:w-auto"
                 >
                   <Edit2 className="h-4 w-4 ml-2" />
                   تعديل التفاصيل
@@ -421,7 +421,7 @@ export default function EditExam() {
               )}
             </div>
           </CardHeader>
-          <CardContent className="pt-6">
+          <CardContent className="pt-4 sm:pt-6 px-3 sm:px-6">
             {editingExamDetails ? (
               <div className="space-y-4">
                 <div>
@@ -433,7 +433,7 @@ export default function EditExam() {
                   />
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   <div>
                     <Label>المادة</Label>
                     <Select
@@ -506,7 +506,7 @@ export default function EditExam() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   <div>
                     <Label>وقت البداية</Label>
                     <Input
@@ -547,7 +547,7 @@ export default function EditExam() {
               </div>
             ) : (
               <div className="space-y-3">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   <div>
                     <span className="text-sm text-gray-500">المادة:</span>
                     <p className="font-semibold">{courses.find(c => c.id === exam.course_id)?.name || 'غير محدد'}</p>
@@ -579,16 +579,16 @@ export default function EditExam() {
         </Card>
 
         <Card className="shadow-lg">
-          <CardHeader className="bg-gradient-to-r from-cyan-50 to-teal-50">
-            <div className="flex justify-between items-center">
-              <CardTitle className="flex items-center gap-2">
-                <ClipboardCheck className="h-5 w-5 text-cyan-600" />
-                الأسئلة ({questions.length}) • الدرجة الكلية: {totalMarks} درجة
+          <CardHeader className="bg-gradient-to-r from-cyan-50 to-teal-50 px-3 sm:px-6">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+              <CardTitle className="flex items-center gap-2 text-sm sm:text-lg">
+                <ClipboardCheck className="h-5 w-5 text-cyan-600 shrink-0" />
+                <span className="break-words">الأسئلة ({questions.length}) • الدرجة الكلية: {totalMarks} درجة</span>
               </CardTitle>
               {!addingNewQuestion && (
                 <Button
                   onClick={() => setAddingNewQuestion(true)}
-                  className="bg-green-600 hover:bg-green-700"
+                  className="bg-green-600 hover:bg-green-700 w-full sm:w-auto"
                 >
                   <Plus className="h-4 w-4 ml-2" />
                   إضافة سؤال جديد
@@ -596,11 +596,11 @@ export default function EditExam() {
               )}
             </div>
           </CardHeader>
-          <CardContent className="pt-6">
+          <CardContent className="pt-4 sm:pt-6 px-3 sm:px-6">
             <div className="space-y-4">
               {/* Add New Question Form */}
               {addingNewQuestion && (
-                <div className="border-2 border-green-200 rounded-lg p-4 bg-green-50">
+                <div className="border-2 border-green-200 rounded-lg p-3 sm:p-4 bg-green-50">
                   <h3 className="text-lg font-semibold mb-4 text-green-700">إضافة سؤال جديد</h3>
                   <div className="space-y-4">
                     <div>
@@ -695,7 +695,7 @@ export default function EditExam() {
 
                     {newQuestion.question_type === 'multiple_choice' && (
                       <>
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div>
                             <Label>الخيار أ</Label>
                             <Input
@@ -807,7 +807,7 @@ export default function EditExam() {
 
               {/* Existing Questions */}
               {questions.map((question, index) => (
-                <div key={question.id} className="border rounded-lg p-4 bg-white">
+                <div key={question.id} className="border rounded-lg p-3 sm:p-4 bg-white">
                   {editingQuestion?.id === question.id ? (
                     // Edit Mode
                     <div className="space-y-4">
@@ -902,7 +902,7 @@ export default function EditExam() {
 
                       {editingQuestion.question_type === 'multiple_choice' && (
                         <>
-                          <div className="grid grid-cols-2 gap-3">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
                               <Label>الخيار أ</Label>
                               <Input
@@ -993,7 +993,7 @@ export default function EditExam() {
                   ) : (
                     // View Mode
                     <div>
-                      <div className="flex justify-between items-start mb-3">
+                      <div className="flex flex-col sm:flex-row justify-between items-start gap-2 mb-3">
                         <div className="flex-1">
                           <div className="flex items-center gap-2 mb-2">
                             <span className="font-bold text-cyan-600">#{index + 1}</span>
@@ -1013,12 +1013,12 @@ export default function EditExam() {
                                 : `${API_URL.replace('/api', '')}${question.question_image}`
                               }
                               alt="صورة السؤال"
-                              className="max-w-md rounded-lg mb-3"
+                              className="max-w-full sm:max-w-md rounded-lg mb-3"
                             />
                           )}
 
                           {question.question_type === 'multiple_choice' && (
-                            <div className="grid grid-cols-2 gap-2 mt-3">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
                               {[
                                 { key: 'a', value: question.option_a },
                                 { key: 'b', value: question.option_b },
@@ -1039,7 +1039,7 @@ export default function EditExam() {
                           )}
                         </div>
 
-                        <div className="flex gap-2">
+                        <div className="flex flex-wrap gap-2">
                           <Button
                             variant="ghost"
                             size="sm"
