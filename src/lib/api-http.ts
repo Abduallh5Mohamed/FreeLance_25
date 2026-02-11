@@ -785,6 +785,21 @@ export const startExamAttempt = async (examId: string, studentId: string) => {
     });
 };
 
+
+// Save exam progress (Draft)
+export const saveExamProgress = async (
+    examId: string,
+    studentId: string,
+    answers: Record<string, unknown>,
+    essayAnswers?: Record<string, string>,
+    answerImages?: Record<string, string>
+) => {
+    return await request(`/exams/${examId}/save-progress/${studentId}`, {
+        method: 'POST',
+        body: JSON.stringify({ answers, essayAnswers, answerImages })
+    });
+};
+
 // Submit exam attempt
 export const submitExamAttempt = async (
     examId: string,
