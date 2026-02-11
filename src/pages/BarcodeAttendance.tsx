@@ -5,9 +5,9 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { Scan, CheckCircle, XCircle, MessageCircle, Calendar, Send, DollarSign } from "lucide-react";
+import { Scan, CheckCircle, XCircle, MessageCircle, Calendar, Send, DollarSign, AlertTriangle } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
 import axios from 'axios';
@@ -46,6 +46,35 @@ const getPreviousScheduledDay = (referenceDate: string, schedule_days: any): str
   return null;
 };
 
+// Helper: check if today matches a group's schedule_days
+const isTodayScheduled = (schedule_days: any): boolean => {
+  if (!schedule_days) return true; // no schedule = available every day
+  let days: string[] = [];
+  if (typeof schedule_days === 'string') {
+    try { days = JSON.parse(schedule_days); } catch { return true; }
+  } else if (Array.isArray(schedule_days)) {
+    days = schedule_days;
+  }
+  if (days.length === 0) return true; // empty array = available every day
+  const dayMap: { [k: string]: number } = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+  const todayNum = new Date().getDay();
+  return days.some(d => dayMap[d.toLowerCase()] === todayNum);
+};
+
+// Helper: get Arabic day name from schedule_days
+const getScheduleDaysArabic = (schedule_days: any): string => {
+  if (!schedule_days) return 'كل يوم';
+  let days: string[] = [];
+  if (typeof schedule_days === 'string') {
+    try { days = JSON.parse(schedule_days); } catch { return 'كل يوم'; }
+  } else if (Array.isArray(schedule_days)) {
+    days = schedule_days;
+  }
+  if (days.length === 0) return 'كل يوم';
+  const arabicDays: { [k: string]: string } = { sun: 'الأحد', mon: 'الاثنين', tue: 'الثلاثاء', wed: 'الأربعاء', thu: 'الخميس', fri: 'الجمعة', sat: 'السبت' };
+  return days.map(d => arabicDays[d.toLowerCase()] || d).join(' و ');
+};
+
 const BarcodeAttendance = () => {
   const [groups, setGroups] = useState([]);
   const [grades, setGrades] = useState([]);
@@ -59,7 +88,12 @@ const BarcodeAttendance = () => {
   const [isPaymentDialogOpen, setIsPaymentDialogOpen] = useState(false);
   const [selectedStudentForPayment, setSelectedStudentForPayment] = useState<any>(null);
   const [paymentAmount, setPaymentAmount] = useState("");
+  // Cross-group warning dialog state
+  const [crossGroupWarning, setCrossGroupWarning] = useState<{ open: boolean; student: any; studentGroup: any; } | null>(null);
   const { toast } = useToast();
+
+  // Filter groups to only show those scheduled for today
+  const todayGroups = groups.filter((g: any) => isTodayScheduled(g.schedule_days));
 
   useEffect(() => {
     fetchGroups();
@@ -184,7 +218,10 @@ const BarcodeAttendance = () => {
                 }
               });
               if (attResponse.data && attResponse.data.length > 0) {
-                lastAttendanceData[student.id] = attResponse.data[0];
+                lastAttendanceData[student.id] = { ...attResponse.data[0], _scheduledDate: lastScheduledDate, _attended: attResponse.data[0].status === 'present' };
+              } else {
+                // No record = was absent on last scheduled session
+                lastAttendanceData[student.id] = { _scheduledDate: lastScheduledDate, _attended: false, status: 'absent' };
               }
             }
           } catch (err) {
@@ -250,7 +287,10 @@ const BarcodeAttendance = () => {
               }
             });
             if (attResponse.data && attResponse.data.length > 0) {
-              lastAttendanceData[student.id] = attResponse.data[0];
+              lastAttendanceData[student.id] = { ...attResponse.data[0], _scheduledDate: lastScheduledDate, _attended: attResponse.data[0].status === 'present' };
+            } else {
+              // No record = was absent on last scheduled session
+              lastAttendanceData[student.id] = { _scheduledDate: lastScheduledDate, _attended: false, status: 'absent' };
             }
           } catch (err) {
             console.error('Error fetching last attendance:', err);
@@ -322,16 +362,33 @@ const BarcodeAttendance = () => {
           description: "الباركود غير صحيح",
           variant: "destructive",
         });
+        setBarcodeInput("");
         return;
       }
 
+      // Check if student belongs to a different group than selected
+      if (selectedGroupId && student.group_id && student.group_id !== selectedGroupId) {
+        const studentGroup = groups.find((g: any) => g.id === student.group_id);
+        setCrossGroupWarning({ open: true, student, studentGroup });
+        setBarcodeInput("");
+        return;
+      }
+
+      await doRecordAttendance(student, student.group_id);
+    } catch (error: any) {
+      handleAttendanceError(error);
+    }
+  };
+
+  // Actual attendance recording logic (used by both normal and cross-group flows)
+  const doRecordAttendance = async (student: any, groupId: string) => {
+    try {
       const today = new Date().toISOString().split('T')[0];
       const token = localStorage.getItem('token');
 
-      // Record attendance via API
       const response = await axios.post(`${API_URL}/attendance`, {
         student_id: student.id,
-        group_id: selectedGroupId || student.group_id,
+        group_id: groupId,
         attendance_date: today,
         status: 'present'
       }, {
@@ -344,33 +401,49 @@ const BarcodeAttendance = () => {
           description: `تم تسجيل حضور ${student.name} بنجاح`,
         });
 
-        // Don't send WhatsApp automatically
-        // sendWhatsAppNotification(student, status);
-
         fetchTodayAttendance();
         setBarcodeInput("");
       }
     } catch (error: any) {
-      console.error('Error recording attendance:', error);
-
-      // Check if already recorded (409 Conflict or 400 with message)
-      if (error.response?.status === 409 ||
-        (error.response?.status === 400 && error.response?.data?.message?.includes('already recorded')) ||
-        error.response?.data?.error?.includes('already recorded')) {
-        toast({
-          title: "تنبيه",
-          description: `تم تسجيل حضور ${student.name} مسبقاً اليوم`,
-          variant: "default",
-        });
-      } else {
-        toast({
-          title: "خطأ",
-          description: error.response?.data?.error || error.response?.data?.message || "حدث خطأ أثناء تسجيل الحضور",
-          variant: "destructive",
-        });
-      }
-      setBarcodeInput("");
+      handleAttendanceError(error);
     }
+  };
+
+  const handleAttendanceError = (error: any) => {
+    console.error('Error recording attendance:', error);
+
+    if (error.response?.status === 409 ||
+      (error.response?.status === 400 && error.response?.data?.message?.includes('already recorded')) ||
+      error.response?.data?.error?.includes('already recorded')) {
+      toast({
+        title: "تنبيه",
+        description: "تم تسجيل الحضور مسبقاً اليوم",
+        variant: "default",
+      });
+    } else {
+      toast({
+        title: "خطأ",
+        description: error.response?.data?.error || error.response?.data?.message || "حدث خطأ أثناء تسجيل الحضور",
+        variant: "destructive",
+      });
+    }
+    setBarcodeInput("");
+  };
+
+  // Handle cross-group confirmation
+  const handleCrossGroupAccept = async () => {
+    if (crossGroupWarning?.student) {
+      await doRecordAttendance(crossGroupWarning.student, crossGroupWarning.student.group_id);
+    }
+    setCrossGroupWarning(null);
+  };
+
+  const handleCrossGroupReject = () => {
+    toast({
+      title: "تم الرفض",
+      description: "لم يتم تسجيل حضور الطالب",
+    });
+    setCrossGroupWarning(null);
   };
 
   const handleBarcodeSubmit = (e: React.FormEvent) => {
@@ -562,13 +635,28 @@ const BarcodeAttendance = () => {
                       <SelectValue placeholder="اختر المجموعة" />
                     </SelectTrigger>
                     <SelectContent>
-                      {groups.map((group: any) => (
-                        <SelectItem key={group.id} value={group.id}>
-                          {group.name}
-                        </SelectItem>
-                      ))}
+                      {todayGroups.length === 0 ? (
+                        <div className="p-3 text-center text-sm text-muted-foreground">
+                          لا توجد مجموعات مجدولة لهذا اليوم
+                        </div>
+                      ) : (
+                        todayGroups.map((group: any) => (
+                          <SelectItem key={group.id} value={group.id}>
+                            {group.name}
+                          </SelectItem>
+                        ))
+                      )}
                     </SelectContent>
                   </Select>
+                  {todayGroups.length === 0 && groups.length > 0 && (
+                    <div className="mt-2 p-3 bg-amber-50 dark:bg-amber-950/20 rounded-lg border border-amber-200 dark:border-amber-800">
+                      <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                        <AlertTriangle className="h-4 w-4" />
+                        <p className="text-sm font-medium">لا توجد مجموعات مجدولة اليوم</p>
+                      </div>
+                      <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">المجموعات المتاحة لها أيام محددة أخرى</p>
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -678,7 +766,6 @@ const BarcodeAttendance = () => {
                         const student = students.find((s: any) => s.id === record.student_id);
                         const hasPaid = monthlyPayments[student?.id] || false;
                         const lastAtt = lastAttendance[student?.id];
-                        const attendedLastSession = lastAtt?.status === 'present';
                         return (
                           <TableRow key={record.id}>
                             <TableCell className="font-medium">{student?.name || 'غير معروف'}</TableCell>
@@ -692,11 +779,22 @@ const BarcodeAttendance = () => {
                             </TableCell>
                             <TableCell>
                               {lastAtt ? (
-                                <Badge variant={attendedLastSession ? 'default' : 'secondary'}>
-                                  {attendedLastSession ? 'نعم' : 'لا يوجد'}
-                                </Badge>
+                                <div className="flex flex-col gap-1">
+                                  <Badge variant={lastAtt._attended ? 'default' : 'destructive'}>
+                                    {lastAtt._attended ? (
+                                      <><CheckCircle className="ml-1 h-3 w-3" /> حضر</>
+                                    ) : (
+                                      <><XCircle className="ml-1 h-3 w-3" /> غائب</>
+                                    )}
+                                  </Badge>
+                                  {lastAtt._scheduledDate && (
+                                    <span className="text-xs text-muted-foreground">
+                                      {new Date(lastAtt._scheduledDate).toLocaleDateString('ar-SA')}
+                                    </span>
+                                  )}
+                                </div>
                               ) : (
-                                <Badge variant="secondary">لا يوجد</Badge>
+                                <Badge variant="secondary">لم يحضر من قبل</Badge>
                               )}
                             </TableCell>
                             <TableCell>
@@ -781,11 +879,19 @@ const BarcodeAttendance = () => {
                               <TableCell className="font-mono text-sm">{student.guardian_phone || '-'}</TableCell>
                               <TableCell className="text-sm">
                                 {lastAtt ? (
-                                  <div>
-                                    <div>{new Date(lastAtt.attendance_date).toLocaleDateString('ar-SA')}</div>
-                                    <div className="text-xs text-muted-foreground">
-                                      {lastAtt.notes || 'لا يوجد ملاحظات'}
-                                    </div>
+                                  <div className="flex flex-col gap-1">
+                                    <Badge variant={lastAtt._attended ? 'default' : 'destructive'} className="w-fit">
+                                      {lastAtt._attended ? (
+                                        <><CheckCircle className="ml-1 h-3 w-3" /> حضر آخر حصة</>
+                                      ) : (
+                                        <><XCircle className="ml-1 h-3 w-3" /> لم يحضر آخر حصة</>
+                                      )}
+                                    </Badge>
+                                    {lastAtt._scheduledDate && (
+                                      <span className="text-xs text-muted-foreground">
+                                        {new Date(lastAtt._scheduledDate).toLocaleDateString('ar-SA')}
+                                      </span>
+                                    )}
                                   </div>
                                 ) : (
                                   <span className="text-muted-foreground">لم يحضر من قبل</span>
@@ -835,6 +941,50 @@ const BarcodeAttendance = () => {
           );
         })()}
       </div>
+
+      {/* Cross-Group Warning Dialog */}
+      <Dialog open={crossGroupWarning?.open || false} onOpenChange={(open) => { if (!open) setCrossGroupWarning(null); }}>
+        <DialogContent className="sm:max-w-[450px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-amber-600">
+              <AlertTriangle className="h-5 w-5" />
+              تنبيه: طالب من مجموعة أخرى
+            </DialogTitle>
+            <DialogDescription>
+              هذا الطالب مسجل في مجموعة مختلفة. هل تريد تسجيل حضوره في مجموعته الأصلية؟
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="p-4 bg-amber-50 dark:bg-amber-950/20 rounded-lg border border-amber-200 dark:border-amber-800">
+              <div className="space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-sm text-muted-foreground">اسم الطالب:</span>
+                  <span className="font-medium">{crossGroupWarning?.student?.name}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm text-muted-foreground">مجموعته الأصلية:</span>
+                  <span className="font-medium text-amber-700 dark:text-amber-400">{crossGroupWarning?.studentGroup?.name || 'غير محددة'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm text-muted-foreground">المجموعة الحالية:</span>
+                  <span className="font-medium">{groups.find((g: any) => g.id === selectedGroupId)?.name}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 justify-end">
+              <Button variant="destructive" onClick={handleCrossGroupReject}>
+                <XCircle className="ml-1 h-4 w-4" />
+                رفض
+              </Button>
+              <Button onClick={handleCrossGroupAccept} className="bg-green-600 hover:bg-green-700">
+                <CheckCircle className="ml-1 h-4 w-4" />
+                موافقة (تسجيل في مجموعته)
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Payment Dialog */}
       <Dialog open={isPaymentDialogOpen} onOpenChange={setIsPaymentDialogOpen}>
