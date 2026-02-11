@@ -108,9 +108,11 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
 
         console.log(`📚 Found ${exams.length} exams for student`);
 
-        // Get attempt counts for this student
+        // Get attempt info for this student (status + count)
         const attempts = await query<any>(
-            `SELECT exam_id, COUNT(*) as count 
+            `SELECT exam_id, COUNT(*) as count,
+                    MAX(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as has_in_progress,
+                    MAX(CASE WHEN status = 'in_progress' THEN started_at ELSE NULL END) as in_progress_started_at
              FROM exam_attempts 
              WHERE student_id = ? 
              GROUP BY exam_id`,
@@ -119,13 +121,18 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
 
         console.log('📊 Attempts from DB:', attempts);
 
-        const attemptsMap = new Map(attempts.map((a: any) => [a.exam_id, a.count]));
+        const attemptsMap = new Map(attempts.map((a: any) => [a.exam_id, a]));
 
-        // Add attempts count to each exam
-        const examsWithAttempts = exams.map((exam: any) => ({
-            ...exam,
-            attempts: attemptsMap.get(exam.id) || 0
-        }));
+        // Add attempts count and status to each exam
+        const examsWithAttempts = exams.map((exam: any) => {
+            const attemptInfo = attemptsMap.get(exam.id);
+            return {
+                ...exam,
+                attempts: attemptInfo?.count || 0,
+                has_in_progress: attemptInfo?.has_in_progress === 1,
+                in_progress_started_at: attemptInfo?.in_progress_started_at || null
+            };
+        });
 
         console.log('📚 Exams with attempts:', examsWithAttempts.map((e: any) => ({ id: e.id, title: e.title, attempts: e.attempts })));
 
@@ -797,12 +804,48 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
         }
 
         // Check if already attempted
-        const attempt = await queryOne(
+        const attempt = await queryOne<any>(
             'SELECT * FROM exam_attempts WHERE exam_id = ? AND student_id = ?',
             [examId, studentId]
         );
 
         if (attempt) {
+            // ✅ If attempt is in_progress, allow resuming
+            if (attempt.status === 'in_progress') {
+                const startedAt = new Date(attempt.started_at);
+                const durationMs = (exam.duration_minutes || 60) * 60 * 1000;
+                const expiresAt = new Date(startedAt.getTime() + durationMs);
+                const now2 = new Date();
+                const remainingSeconds = Math.floor((expiresAt.getTime() - now2.getTime()) / 1000);
+
+                if (remainingSeconds <= 0) {
+                    // Time expired — auto-complete the attempt
+                    console.log('⏰ Exam time expired for in_progress attempt, auto-completing');
+                    await execute(
+                        `UPDATE exam_attempts SET status = 'failed', completed_at = NOW() WHERE id = ?`,
+                        [attempt.id]
+                    );
+                    return res.json({
+                        canAttempt: false,
+                        reason: 'already_attempted',
+                        message: 'انتهى وقت الامتحان',
+                        score: attempt.score || 0,
+                        totalMarks: exam.total_marks || 0,
+                        passed: false
+                    });
+                }
+
+                console.log(`🔄 Allowing resume: ${remainingSeconds}s remaining`);
+                return res.json({
+                    canAttempt: true,
+                    reason: 'resuming',
+                    message: 'يمكنك استكمال الامتحان',
+                    started_at: attempt.started_at,
+                    remainingSeconds
+                });
+            }
+
+            // Completed/submitted/passed/failed — block re-entry
             return res.json({
                 canAttempt: false,
                 reason: 'already_attempted',
@@ -973,8 +1016,7 @@ router.post('/:examId/save-progress/:studentId', async (req: Request, res: Respo
         // Update exam_attempts table only if status is 'in_progress'
         const result = await execute(
             `UPDATE exam_attempts 
-             SET answers = ?, 
-                 updated_at = NOW()
+             SET answers = ?
              WHERE exam_id = ? 
              AND student_id = ? 
              AND status = 'in_progress'`,

@@ -224,53 +224,38 @@ export function SecureVideoPlayer({
         };
     }, [videoId, userId, directUrl]);
 
-    // ANTI-RECORDING EVENTS (AGGRESSIVE)
+    // ANTI-RECORDING EVENTS
     useEffect(() => {
-        const checkFocusInterval = setInterval(() => {
-            // Check if window has focus
-            if (!document.hasFocus()) {
-                // Allow a small grace period or immediate logout? User said "Immediate"
-                // But clicking controls might cause temporary blur? No, controls are in div.
-                // Iframes on the same page usually keep focus.
-                // However, debugging tools or switching apps definitely loses focus.
-
-                // We'll log it first to verify behavior if needed, but here we Force Logout.
-                // NOTE: Using specific reason to differentiate
-                // forceLogout('فقدان التركيز - Focus Loss'); 
-
-                // CAUTION: This might be too sensitive for iframes if cross-origin behavior varies.
-                // We will rely on window.blur for now, but adding a "Visibility" check is safer.
-                if (document.hidden) {
-                    forceLogout('المتصفح مخفي - Hidden');
-                }
-            }
-        }, 1000);
+        // ✅ Instead of forceLogout on visibility/blur, just pause the video
+        // This prevents false-positive logouts from notifications, address bar clicks, etc.
 
         const handleVisibilityChange = () => {
-            if (document.hidden) {
-                forceLogout('محاولة تبديل النافذة أو إخفاء المتصفح');
+            if (document.hidden && videoRef.current) {
+                // Just pause the video when tab is hidden — don't logout
+                videoRef.current.pause();
+                console.log('⏸️ Video paused - tab hidden');
             }
-        };
-
-        const handleBlur = () => {
-            // Immediate logout on blur
-            forceLogout('محاولة تبديل النافذة (Lost Focus)');
         };
 
         const handleKeyDown = (e: KeyboardEvent) => {
-            const blockedKeys = ['PrintScreen', 'Meta', 'ContextMenu', 'F12', 'Alt', 'Tab'];
-            if (blockedKeys.includes(e.key) || (e.ctrlKey && ['s', 'p', 'c', 'u', 'shift'].includes(e.key.toLowerCase()))) {
+            // Block PrintScreen and screen recording shortcuts
+            if (e.key === 'PrintScreen') {
                 e.preventDefault();
                 e.stopPropagation();
                 e.stopImmediatePropagation();
-                forceLogout(`استخدام اختصار محظور: ${e.key}`);
-            }
-
-            // Block PrintScreen specifically even without modifier
-            if (e.key === 'PrintScreen') {
                 videoRef.current?.pause();
                 setShowBlackScreen(true);
                 forceLogout('محاولة تصوير الشاشة (PrintScreen)');
+                return;
+            }
+
+            // Block F12 (DevTools), Ctrl+U (view source), Ctrl+Shift+I (DevTools)
+            if (e.key === 'F12' || 
+                (e.ctrlKey && e.key.toLowerCase() === 'u') ||
+                (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'i')) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
             }
         };
 
@@ -280,19 +265,8 @@ export function SecureVideoPlayer({
             return false;
         };
 
-        // Aggressive Clipboard Clearing
-        const clipboardInterval = setInterval(() => {
-            if (document.hasFocus()) {
-                try {
-                    // Only works if document is focused
-                    navigator.clipboard.writeText('محاولة نسخ محتوى محمي - منصة القائد').catch(() => { });
-                } catch (e) { }
-            }
-        }, 2000);
-
         // Add Listeners with CAPTURE phase to catch events early
         document.addEventListener('visibilitychange', handleVisibilityChange, true);
-        window.addEventListener('blur', handleBlur, true);
         window.addEventListener('keydown', handleKeyDown, true);
         window.addEventListener('contextmenu', handleContextMenu, true);
 
@@ -306,10 +280,7 @@ export function SecureVideoPlayer({
         }
 
         return () => {
-            clearInterval(checkFocusInterval);
-            clearInterval(clipboardInterval);
             document.removeEventListener('visibilitychange', handleVisibilityChange, true);
-            window.removeEventListener('blur', handleBlur, true);
             window.removeEventListener('keydown', handleKeyDown, true);
             window.removeEventListener('contextmenu', handleContextMenu, true);
         };

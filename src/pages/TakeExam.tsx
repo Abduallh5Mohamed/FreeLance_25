@@ -210,23 +210,22 @@ const TakeExam = () => {
         const attemptCheck = await canAttemptExam(examId, currentStudentId) as any;
         console.log('🔍 Can attempt check:', attemptCheck);
 
-        // ✅ If already attempted but in_progress, we proceed to start (which now returns the attempt)
-        if (!attemptCheck.canAttempt) {
-          // Only block if explicitly NOT in progress (e.g. passed, failed, ended)
-          // But we rely on startExamAttempt to return the attempt if it's open
-          if (attemptCheck.reason === 'already_attempted' && attemptCheck.score !== undefined) {
-            // Check if it's really finished (could add status check here if API returned it)
-          }
+        // ✅ Handle resume case — student has in_progress attempt
+        if (attemptCheck.canAttempt && attemptCheck.reason === 'resuming') {
+          console.log('🔄 Resuming exam, remaining seconds:', attemptCheck.remainingSeconds);
+          toast({ title: 'استكمال الامتحان', description: 'جاري استرجاع إجاباتك السابقة...' });
+          // Fall through to startExamAttempt which will return the existing attempt
+        }
 
+        if (!attemptCheck.canAttempt) {
           // If strictly blocked
-          if (attemptCheck.reason !== 'no_schedule') { // no_schedule is allowed
+          if (attemptCheck.reason !== 'no_schedule') {
             setCanAttempt(false);
             setAttemptMessage(attemptCheck.message || attemptCheck.reason || 'لا يمكنك دخول هذا الامتحان');
 
             // If already attempted (and submitted), fetch exam to display summary
             if (attemptCheck.reason === 'already_attempted') {
               try {
-                // ... existing summary logic ...
                 const examData = await getExamById(examId) as any;
                 const qs = await getExamQuestions(examId);
                 const computedTotal = Array.isArray(qs)
@@ -375,7 +374,23 @@ const TakeExam = () => {
         };
 
         setExam(fullExam);
-        setTimeLeft((examData.duration_minutes || 60) * 60); // Convert to seconds
+
+        // ✅ Calculate remaining time — if resuming, use server's remainingSeconds
+        if (attemptCheck.reason === 'resuming' && attemptCheck.remainingSeconds > 0) {
+          console.log('⏱️ Setting remaining time from server:', attemptCheck.remainingSeconds);
+          setTimeLeft(attemptCheck.remainingSeconds);
+        } else if (attemptResponse && attemptResponse.started_at) {
+          // Fallback: calculate from started_at
+          const startedAt = new Date(attemptResponse.started_at);
+          const elapsed = Math.floor((Date.now() - startedAt.getTime()) / 1000);
+          const totalDuration = (examData.duration_minutes || 60) * 60;
+          const remaining = Math.max(0, totalDuration - elapsed);
+          console.log('⏱️ Calculated remaining time:', remaining, 'elapsed:', elapsed);
+          setTimeLeft(remaining > 0 ? remaining : totalDuration);
+        } else {
+          setTimeLeft((examData.duration_minutes || 60) * 60);
+        }
+
         setLoading(false);
       } catch (error) {
         console.error('❌ Error loading exam:', error);
