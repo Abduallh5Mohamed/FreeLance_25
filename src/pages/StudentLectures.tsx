@@ -33,8 +33,7 @@ const StudentLectures = () => {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLecture, setSelectedLecture] = useState<Lecture | null>(null);
-  const [playingVideo, setPlayingVideo] = useState<{ videoId: string; title: string } | null>(null);
-  const [externalVideo, setExternalVideo] = useState<{ url: string; title: string } | null>(null);
+  const [playingVideo, setPlayingVideo] = useState<{ videoId: string; title: string; url?: string } | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [filterLevel, setFilterLevel] = useState<string>('all');
   const [lectures, setLectures] = useState<Lecture[]>([]);
@@ -135,73 +134,47 @@ const StudentLectures = () => {
     return matchesSearch && matchesLevel;
   });
 
-  const handlePlayLecture = async (lecture: Lecture) => {
-    console.log('🎬 Playing lecture:', {
-      title: lecture.title,
-      video_url: lecture.video_url,
-    });
-
-    // Check if video_url starts with video:// (MinIO stored video)
-    let videoUrl = lecture.video_url;
-    if (videoUrl.startsWith('video://')) {
-      // Extract video ID from video://uuid format
-      const videoId = videoUrl.replace('video://', '');
-      console.log('📹 Video ID:', videoId);
-
-      // Get user ID from localStorage
-      const userStr = localStorage.getItem('currentUser');
-      console.log('👤 User from localStorage:', userStr);
-
-      if (!userStr) {
-        console.error('❌ No user in localStorage!');
-        toast({
-          variant: "destructive",
-          title: "خطأ",
-          description: "يجب تسجيل الدخول أولاً"
-        });
-        return;
-      }
-
-      const user = JSON.parse(userStr);
-      setCurrentUser(user);
-
-      // Use SecureVideoPlayer with video ID directly
-      setPlayingVideo({
-        videoId: videoId,
-        title: lecture.title
+  const handlePlayLecture = (lecture: Lecture) => {
+    if (!lecture.video_url) { // Changed from videoUrl to video_url based on Lecture interface
+      toast({
+        title: "غير متاح",
+        description: "لا يوجد فيديو لهذه المحاضرة",
+        variant: "destructive"
       });
+      return;
+    }
 
+    const videoUrl = lecture.video_url || '';
+    const isInternal = videoUrl.startsWith('video://');
+
+    // Get user ID from localStorage
+    const userStr = localStorage.getItem('currentUser');
+    if (!userStr) {
+      console.error('❌ No user in localStorage!');
+      toast({
+        variant: "destructive",
+        title: "خطأ",
+        description: "يجب تسجيل الدخول أولاً"
+      });
+      return;
+    }
+    const user = JSON.parse(userStr);
+    setCurrentUser(user);
+
+    if (isInternal) {
+      const videoId = videoUrl.replace('video://', '');
+      setPlayingVideo({ videoId, title: lecture.title });
       toast({
         title: "جاري تشغيل المحاضرة",
         description: lecture.title
       });
-    } else if (videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be')) {
-      // YouTube video - convert to embed URL
-      let videoId = '';
-      if (videoUrl.includes('youtube.com/watch')) {
-        const urlParams = new URLSearchParams(new URL(videoUrl).search);
-        videoId = urlParams.get('v') || '';
-      } else if (videoUrl.includes('youtu.be/')) {
-        videoId = videoUrl.split('youtu.be/')[1]?.split('?')[0] || '';
-      }
-
-      if (videoId) {
-        const embedUrl = `https://www.youtube.com/embed/${videoId}`;
-        setExternalVideo({ url: embedUrl, title: lecture.title });
-        toast({
-          title: "جاري تشغيل المحاضرة",
-          description: lecture.title
-        });
-      } else {
-        toast({
-          variant: "destructive",
-          title: "خطأ",
-          description: "رابط يوتيوب غير صحيح"
-        });
-      }
     } else {
-      // Other external video URL
-      setExternalVideo({ url: videoUrl, title: lecture.title });
+      // Use SecureVideoPlayer for external videos too
+      setPlayingVideo({
+        videoId: 'external', // A placeholder videoId for external URLs
+        title: lecture.title,
+        url: videoUrl
+      });
       toast({
         title: "جاري تشغيل المحاضرة",
         description: lecture.title
@@ -229,7 +202,7 @@ const StudentLectures = () => {
       <FloatingParticles />
       <StudentHeader />
 
-      {/* Video Player Modal */}
+      {/* Video Player Modal - Handles ALL Videos */}
       {playingVideo && currentUser && (
         <SecureVideoPlayer
           videoId={playingVideo.videoId}
@@ -237,43 +210,9 @@ const StudentLectures = () => {
           studentName={currentUser.name || 'طالب'}
           groupName={'المجموعة'}
           onClose={() => setPlayingVideo(null)}
+          directUrl={playingVideo.url} // Pass external URL if present
         />
       )}
-
-      {/* External Video Modal */}
-      <Dialog open={!!externalVideo} onOpenChange={(open) => { if (!open) setExternalVideo(null); }}>
-        <DialogContent className="max-w-4xl w-[95vw] max-h-[90vh] p-0 overflow-hidden" dir="rtl">
-          <div className="p-4 border-b">
-            <DialogHeader>
-              <DialogTitle>{externalVideo?.title || 'مشاهدة المحاضرة'}</DialogTitle>
-            </DialogHeader>
-          </div>
-          <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
-            {externalVideo?.url && (
-              <iframe
-                src={externalVideo.url}
-                title={externalVideo.title}
-                className="absolute inset-0 w-full h-full"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                allowFullScreen
-              />
-            )}
-          </div>
-          <div className="p-4 border-t">
-            <DialogFooter className="flex justify-between w-full">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  if (externalVideo?.url) window.open(externalVideo.url, '_blank');
-                }}
-              >
-                فتح في نافذة جديدة
-              </Button>
-              <Button onClick={() => setExternalVideo(null)}>إغلاق</Button>
-            </DialogFooter>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <div className="w-full px-3 xs:px-4 sm:px-6 md:px-8 lg:px-12 xl:px-16 py-4 xs:py-5 sm:py-6 md:py-8 relative z-10 max-w-[100vw]">
         {/* Header */}
