@@ -138,19 +138,38 @@ export function VideoUploader({
                 updateUpload(videoId, { progress });
             }, abortControllerRef.current.signal);
 
-            // Step 3: Complete upload and start processing
+            // Step 3: Complete upload and start processing (with retry)
             setUploadState(prev => ({ ...prev, status: 'processing', progress: 0 }));
             updateUpload(videoId, { stage: 'processing', progress: 0 });
 
-            const completeResponse = await fetch(`${API_BASE}/videos/upload/complete`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ videoId }),
-                signal: abortControllerRef.current.signal
-            });
+            let completeSuccess = false;
+            let lastError: Error | null = null;
+            for (let attempt = 0; attempt < 5; attempt++) {
+                try {
+                    const completeResponse = await fetch(`${API_BASE}/videos/upload/complete`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ videoId }),
+                        signal: abortControllerRef.current.signal
+                    });
 
-            if (!completeResponse.ok) {
-                throw new Error('Failed to complete upload');
+                    if (completeResponse.ok) {
+                        completeSuccess = true;
+                        break;
+                    }
+                    lastError = new Error(`Complete failed with status ${completeResponse.status}`);
+                } catch (err) {
+                    if (err instanceof Error && err.name === 'AbortError') throw err;
+                    lastError = err instanceof Error ? err : new Error('Network error');
+                }
+                // Wait before retrying (2s, 4s, 8s, 16s)
+                if (attempt < 4) {
+                    await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
+                }
+            }
+
+            if (!completeSuccess) {
+                throw lastError || new Error('Failed to complete upload after retries');
             }
 
             // Step 4: Start background polling (persists across page navigation)

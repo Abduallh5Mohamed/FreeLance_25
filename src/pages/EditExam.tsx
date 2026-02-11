@@ -562,7 +562,7 @@ export default function EditExam() {
                   </div>
                   <div>
                     <span className="text-sm text-gray-500">المدة:</span>
-                    <p className="font-semibold">{exam.duration} دقيقة</p>
+                    <p className="font-semibold">{exam.duration_minutes} دقيقة</p>
                   </div>
                   <div>
                     <span className="text-sm text-gray-500">وقت البداية:</span>
