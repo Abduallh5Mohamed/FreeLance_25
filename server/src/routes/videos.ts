@@ -9,7 +9,7 @@ import {
     BUCKETS
 } from '../services/minio';
 import { processVideo, deleteVideoFiles } from '../services/video-processor';
-import { AuthRequest, authenticateToken } from '../middleware/auth';
+import { AuthRequest, authenticateToken, requireRoles } from '../middleware/auth';
 import {
     createManagedPlayback,
     createManagedUpload,
@@ -44,7 +44,7 @@ router.post('/security/log', authenticateToken, async (req: AuthRequest, res: Re
         const userAgent = req.headers['user-agent'] || 'unknown';
 
         // Enhanced logging with platform info
-        const enhancedDetails = `[Platform: ${platform}] ${details || 'No details provided'} | IP: ${ipAddress}`;
+        const enhancedDetails = `${details || 'No details provided'} | IP: ${ipAddress}`;
 
         await execute(
             `INSERT INTO video_security_logs 
@@ -61,13 +61,6 @@ router.post('/security/log', authenticateToken, async (req: AuthRequest, res: Re
         console.log(`[Security] Details: ${enhancedDetails}`);
         console.log(`[Security] User-Agent: ${userAgent}`);
 
-        // If force logout requested, invalidate user session (optional enhancement)
-        if (forceLogout) {
-            console.log(`[Security] Force logout triggered for user ${userId}`);
-            // In a production system, you could invalidate tokens here
-            // For now, we just log and return the logout flag
-        }
-
         // Count violations for this user
         const violationCount = await queryOne(
             `SELECT COUNT(*) as count FROM video_security_logs 
@@ -78,9 +71,8 @@ router.post('/security/log', authenticateToken, async (req: AuthRequest, res: Re
         res.json({ 
             success: true, 
             logId,
-            forceLogout,
             violationCount: violationCount?.count || 0,
-            message: forceLogout ? 'User will be logged out' : 'Violation logged'
+            message: 'Violation logged'
         });
 
     } catch (error) {
@@ -92,7 +84,7 @@ router.post('/security/log', authenticateToken, async (req: AuthRequest, res: Re
 /**
  * Get security violations for a user (Admin endpoint)
  */
-router.get('/security/violations/:userId', async (req: Request, res: Response) => {
+router.get('/security/violations/:userId', authenticateToken, requireRoles('admin'), async (req: Request, res: Response) => {
     try {
         const { userId } = req.params;
         const { limit = 50 } = req.query;
@@ -125,7 +117,7 @@ router.get('/security/violations/:userId', async (req: Request, res: Response) =
 /**
  * Get all security violations (Admin dashboard)
  */
-router.get('/security/all-violations', async (req: Request, res: Response) => {
+router.get('/security/all-violations', authenticateToken, requireRoles('admin'), async (req: Request, res: Response) => {
     try {
         const { limit = 100, hours = 24 } = req.query;
 
@@ -446,7 +438,7 @@ router.delete('/upload/cancel/:videoId', authenticateToken, async (req: AuthRequ
  * Recover stuck uploads - finds videos stuck at 'uploading' for more than 5 minutes
  * and triggers processing (processor will handle missing files gracefully)
  */
-router.post('/upload/recover-stuck', async (req: Request, res: Response) => {
+router.post('/upload/recover-stuck', authenticateToken, requireRoles('admin'), async (req: Request, res: Response) => {
     try {
         const stuckVideos = await query(
             `SELECT id FROM videos 

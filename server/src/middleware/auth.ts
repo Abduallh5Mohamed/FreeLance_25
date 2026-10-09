@@ -33,7 +33,26 @@ export interface AuthRequest extends Request {
         tokenVersion?: number;
     };
     sessionId?: string;
+    authResolved?: boolean;
 }
+
+const supportedRoles = new Set(['admin', 'instructor', 'teacher', 'staff', 'student', 'parent']);
+
+const readBearerToken = (req: Request): string | null => {
+    const header = req.headers.authorization;
+    if (!header) return null;
+    const match = /^Bearer\s+([^\s]+)$/i.exec(header);
+    if (!match) throw new Error('Malformed authorization header');
+    return match[1];
+};
+
+const validateClaims = (decoded: any) => {
+    if (!decoded || typeof decoded !== 'object' || typeof decoded.id !== 'string' || !decoded.id ||
+        typeof decoded.role !== 'string' || !supportedRoles.has(decoded.role)) {
+        throw new Error('Invalid token claims');
+    }
+    return decoded;
+};
 
 const isInstructorBillingPath = (req: Request, userId: string) => {
     const path = req.originalUrl.split('?')[0];
@@ -70,14 +89,14 @@ async function instructorAccountAccess(userId: string) {
  */
 export const authenticateToken = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-        const authHeader = req.headers.authorization;
-        const token = authHeader?.replace('Bearer ', '');
+        if (req.user && req.authResolved) return next();
+        const token = readBearerToken(req);
 
         if (!token) {
             return res.status(401).json({ error: 'No token provided' });
         }
 
-        const decoded = jwt.verify(token, getJwtSecret()) as any;
+        const decoded = validateClaims(jwt.verify(token, getJwtSecret()));
         if (decoded.role === 'student') {
             const tokenState = await queryOne<any>('SELECT token_version,is_active FROM users WHERE id=? AND role=\'student\' LIMIT 1', [decoded.id]);
             if (!tokenState?.is_active || Number(decoded.tv || 0) !== Number(tokenState.token_version || 0)) {
@@ -113,6 +132,7 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
             gradeId: decoded.grade_id,
             tokenVersion: Number(decoded.tv || 0),
         };
+        req.authResolved = true;
 
         next();
     } catch (error: any) {
@@ -129,12 +149,12 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
  * Used to scope data per-role without breaking public/student endpoints.
  */
 export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    if (req.authResolved) return next();
     try {
-        const authHeader = req.headers.authorization;
-        const token = authHeader?.replace('Bearer ', '');
+        const token = readBearerToken(req);
 
         if (token) {
-            const decoded = jwt.verify(token, getJwtSecret()) as any;
+            const decoded = validateClaims(jwt.verify(token, getJwtSecret()));
             if (decoded.role === 'student') {
                 const tokenState = await queryOne<any>('SELECT token_version,is_active FROM users WHERE id=? AND role=\'student\' LIMIT 1', [decoded.id]);
                 if (!tokenState?.is_active || Number(decoded.tv || 0) !== Number(tokenState.token_version || 0)) {
@@ -166,8 +186,12 @@ export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFu
                 tokenVersion: Number(decoded.tv || 0),
             };
         }
-    } catch {
-        // Invalid/expired token - treat as unauthenticated
+        req.authResolved = true;
+    } catch (error: any) {
+        if (error.name === 'TokenExpiredError') {
+            return res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
+        }
+        return res.status(401).json({ error: 'Invalid token' });
     }
     next();
 };
