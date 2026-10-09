@@ -20,21 +20,25 @@ The current checkout scan found secret-like material in local ignored files, old
    git filter-repo --version
    ```
 
-5. Create a mirror clone outside the working directory and perform the rewrite there first:
+5. Create a bundle of all local refs outside the working directory, then use it as the mirror-clone source. This includes unpushed local work without printing or copying the remote URL:
 
    ```powershell
-   git clone --mirror <REMOTE_URL> tabweb-teachers-purge.git
+   $bundle = Join-Path $env:TEMP 'tabweb-before-purge.bundle'
+   git bundle create $bundle --all
+   git clone --mirror $bundle tabweb-teachers-purge.git
    Set-Location tabweb-teachers-purge.git
    ```
 
-   Use the configured `origin` URL without printing it into logs or chat. If some local-only commits are not on the remote, make a separate private mirror from the local repository or bundle before filtering and reconcile the ref sets deliberately.
+   The source remote is configured as `origin`. Before any approved force push, compare the rewritten refs with the remote and coordinate all collaborators. The bundle is a sensitive backup because it contains the old history.
 
-## Path purge command
+## Combined path purge and inline replacement
 
-Run only after confirming every path against `git log --all --name-only`. This removes the named paths from every rewritten commit; it does not remove inline secrets from other files.
+Run only after confirming every path against `git log --all --name-only` and preparing the private replacement file below. This removes named paths from every rewritten commit and replaces exact literals in all remaining files.
 
 ```powershell
-git filter-repo --sensitive-data-removal --invert-paths `
+$replaceFile = Join-Path $env:TEMP 'tabweb-filter-replacements.txt'
+# Create/edit this file locally with literal:secret==>***REMOVED*** entries.
+git filter-repo --sensitive-data-removal --replace-text $replaceFile --invert-paths `
   --path .qa/ `
   --path .env `
   --path .env.production `
@@ -49,22 +53,12 @@ git filter-repo --sensitive-data-removal --invert-paths `
   --path dist-fixed.zip `
   --path deploy.zip `
   --path dist.zip
+Remove-Item -LiteralPath $replaceFile -Force
 ```
 
 If history inspection finds additional credential-bearing files, add their exact paths before running. A path purge permanently removes those files from all rewritten history, including any useful deployment artifacts or QA evidence stored there.
 
-## Inline-secret replacement
-
-Some credentials were embedded in tracked source, tests, and documentation. Create a replacement file in a private local directory, not the repository. Add one exact leaked literal per line in `literal:secret==>***REMOVED***` syntax. Populate it from the credential owner’s secure vault or local incident-response records; do not copy values into tickets, commits, or chat.
-
-```powershell
-$replaceFile = Join-Path $env:TEMP 'tabweb-filter-replacements.txt'
-# Create/edit this file locally with the required literal replacement entries.
-git filter-repo --sensitive-data-removal --replace-text $replaceFile
-Remove-Item -LiteralPath $replaceFile -Force
-```
-
-The path purge and replacement are alternative filter runs unless combined into one carefully tested `git filter-repo` invocation. Verify the exact `git-filter-repo` version’s option interaction in the mirror clone before applying. Never run separate rewrites on top of one another without revalidating refs and backup snapshots.
+Some credentials were embedded in tracked source, tests, and documentation. Populate the replacement file from the credential owner’s secure vault or local incident-response records; do not copy values into tickets, commits, or chat. Verify the exact `git-filter-repo` version’s option interaction in the mirror clone first. Never rerun a rewrite without revalidating refs and backup snapshots.
 
 ## Verification before any push
 
