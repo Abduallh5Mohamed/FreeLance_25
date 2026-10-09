@@ -21,6 +21,7 @@ export interface SecurityConfig {
     onViolation: (violation: SecurityViolation) => void;
     onForceLogout: (reason: string) => void;
     isHostedVideo: boolean;
+    onVisibilityHidden?: () => void;
 }
 
 export class VideoSecurityManager {
@@ -153,7 +154,7 @@ export class VideoSecurityManager {
     private setupVisibilityDetection() {
         const handler = () => {
             if (document.hidden || document.visibilityState === 'hidden') {
-                this.triggerViolation('blur', 'تم إخفاء التطبيق / Tab Hidden');
+                this.config.onVisibilityHidden?.();
             }
         };
         this.addListener(document, 'visibilitychange', handler, { capture: true });

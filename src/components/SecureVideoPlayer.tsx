@@ -213,6 +213,11 @@ export function SecureVideoPlayer({
         }
     }, [sourceType, hasStarted, violationCount, forceLogout]);
 
+    const handleVisibilityHidden = useCallback(() => {
+        videoRef.current?.pause();
+        setIsPlaying(false);
+    }, []);
+
     // INITIALIZE SECURITY MANAGER
     useEffect(() => {
         if (!hasStarted) return;
@@ -225,7 +230,8 @@ export function SecureVideoPlayer({
             studentName,
             isHostedVideo: isHosted,
             onViolation: handleSecurityViolation,
-            onForceLogout: forceLogou
+            onForceLogout: forceLogout,
+            onVisibilityHidden: handleVisibilityHidden
         });
 
         // Start security after a brief grace period
@@ -237,7 +243,7 @@ export function SecureVideoPlayer({
             clearTimeout(graceTimeout);
             securityManagerRef.current?.stop();
         };
-    }, [hasStarted, sourceType, userId, videoId, studentName, handleSecurityViolation, forceLogout]);
+    }, [hasStarted, sourceType, userId, videoId, studentName, handleSecurityViolation, forceLogout, handleVisibilityHidden]);
 
     // RENDER STATIC WATERMARKS (and re-render on resize)
     useEffect(() => {
