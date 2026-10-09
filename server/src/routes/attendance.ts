@@ -2,13 +2,8 @@ import { Router, Request, Response } from 'express';
 import { query, queryOne, execute } from '../db';
 import { sendWhatsAppMessage, formatEgyptianPhone } from '../services/whatsapp-free';
 import { optionalAuth, instructorScopeId, AuthRequest } from '../middleware/auth';
-import { ensureGroupInstructorColumn } from '../utils/instructor-scope';
 
 const router = Router();
-router.use(async (_req: AuthRequest, _res: Response, next: any) => {
-    await ensureGroupInstructorColumn();
-    next();
-});
 router.use(optionalAuth);
 
 // Students that belong to an instructor (assigned directly or via their group)
@@ -39,7 +34,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
         const scopeId = instructorScopeId(req);
 
         let sql = `
-            SELECT 
+            SELECT
                 a.id,
                 a.student_id,
                 a.course_id,
@@ -221,7 +216,7 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
         const { status, notes, attendance_date } = req.body;
 
         const result = await execute(
-            `UPDATE attendance 
+            `UPDATE attendance
              SET status = COALESCE(?, status),
                  notes = COALESCE(?, notes),
                  attendance_date = COALESCE(?, attendance_date)
@@ -290,8 +285,8 @@ router.post('/notify-absent', async (req: AuthRequest, res: Response) => {
 
         // Get all students in the group
         const allStudents = await query(
-            `SELECT id, name, phone, guardian_phone, barcode 
-             FROM students 
+            `SELECT id, name, phone, guardian_phone, barcode
+             FROM students
              WHERE group_id = ? AND is_active = TRUE`,
             [group_id]
         );
@@ -302,8 +297,8 @@ router.post('/notify-absent', async (req: AuthRequest, res: Response) => {
 
         // Get students who attended today
         const attendedStudents = await query(
-            `SELECT student_id 
-             FROM attendance 
+            `SELECT student_id
+             FROM attendance
              WHERE DATE(attendance_date) = ? AND status = 'present'`,
             [date]
         );

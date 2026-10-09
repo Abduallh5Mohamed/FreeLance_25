@@ -7,17 +7,8 @@ const router = Router();
 router.use(optionalAuth);
 
 // Get all courses
-async function instructorTenant(instructorId: string) {
-    return queryOne<{ id: string }>(
-        `SELECT t.id FROM tenants t
-         INNER JOIN tenant_memberships m ON m.tenant_id=t.id AND m.user_id=? AND m.status='active'
-         WHERE t.owner_user_id=? AND t.status='active' LIMIT 1`, [instructorId, instructorId]
-    );
-}
-
 const courseScope = (req: AuthRequest): { clause: string; params: string[] } => {
-    if (req.user?.role === 'instructor') return { clause: ' AND instructor_id=?', params: [req.user.id] };
-    if (req.user?.role === 'student' && req.user.tenantId) return { clause: ' AND tenant_id=?', params: [req.user.tenantId] };
+    if (req.user?.tenantId) return { clause: ' AND tenant_id=?', params: [req.user.tenantId] };
     if (req.user?.role === 'admin') return { clause: '', params: [] };
     return { clause: ' AND tenant_id IS NULL', params: [] };
 };
@@ -69,11 +60,11 @@ router.post('/', requireTeachingWrite('courses'), async (req: AuthRequest, res: 
 
         let tenantId: string | null = null;
         let instructorId: string | null = null;
-        if (req.user?.role === 'instructor') {
-            const tenant = await instructorTenant(req.user.id);
-            if (!tenant) return res.status(409).json({ error: 'Active instructor workspace required' });
-            tenantId = tenant.id;
+        if (req.user?.tenantId && ['instructor', 'teacher', 'staff'].includes(req.user.role)) {
+            tenantId = req.user.tenantId;
             instructorId = req.user.id;
+        } else {
+            return res.status(403).json({ error: 'An active tenant membership is required' });
         }
 
         // Generate UUID for the new course
@@ -132,7 +123,7 @@ router.put('/:id', requireTeachingWrite('courses'), async (req: AuthRequest, res
 router.delete('/:id', requireTeachingWrite('courses'), async (req: AuthRequest, res: Response) => {
     try {
         const { id } = req.params;
-        
+
         const scope = courseScope(req);
         const result = await execute(
             `UPDATE courses SET is_active=FALSE WHERE id=?${scope.clause}`,

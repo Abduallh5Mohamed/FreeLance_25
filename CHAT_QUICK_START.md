@@ -4,7 +4,7 @@
 
 ### 1️⃣ Google AI Integration
 ```
-✅ Google API Key: AIzaSyAm-hpg9pjc66DqNnS8qHpdgeKBd-FZP70
+✅ Google API Key: [REMOVED_SECRET_ROTATE]
 ✅ Model: gemini-2.0-flash
 ✅ متصل وجاهز للعمل
 ```

@@ -47,7 +47,7 @@ router.post('/security/log', authenticateToken, async (req: AuthRequest, res: Re
         const enhancedDetails = `${details || 'No details provided'} | IP: ${ipAddress}`;
 
         await execute(
-            `INSERT INTO video_security_logs 
+            `INSERT INTO video_security_logs
             (id, user_id, video_id, activity_type, ip_address, user_agent, details, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
             [logId, userId, videoId, activityType, ipAddress, userAgent, enhancedDetails]
@@ -56,20 +56,20 @@ router.post('/security/log', authenticateToken, async (req: AuthRequest, res: Re
         // Log severity based on activity type
         const severeViolations = ['screenshot', 'screenrecord', 'devtools', 'alttab', 'focus_loss'];
         const severity = severeViolations.includes(activityType) ? '🚨 SEVERE' : '⚠️ Warning';
-        
+
         console.log(`[Security] ${severity} - ${activityType} for user ${userId} on video ${videoId}`);
         console.log(`[Security] Details: ${enhancedDetails}`);
         console.log(`[Security] User-Agent: ${userAgent}`);
 
         // Count violations for this user
         const violationCount = await queryOne(
-            `SELECT COUNT(*) as count FROM video_security_logs 
+            `SELECT COUNT(*) as count FROM video_security_logs
              WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)`,
             [userId]
         );
 
-        res.json({ 
-            success: true, 
+        res.json({
+            success: true,
             logId,
             violationCount: violationCount?.count || 0,
             message: 'Violation logged'
@@ -90,15 +90,15 @@ router.get('/security/violations/:userId', authenticateToken, requireRoles('admi
         const { limit = 50 } = req.query;
 
         const violations = await query(
-            `SELECT * FROM video_security_logs 
-             WHERE user_id = ? 
-             ORDER BY created_at DESC 
+            `SELECT * FROM video_security_logs
+             WHERE user_id = ?
+             ORDER BY created_at DESC
              LIMIT ?`,
             [userId, parseInt(limit as string)]
         );
 
         const stats = await queryOne(
-            `SELECT 
+            `SELECT
                 COUNT(*) as total_violations,
                 COUNT(DISTINCT video_id) as videos_affected,
                 MAX(created_at) as last_violation
@@ -132,11 +132,11 @@ router.get('/security/all-violations', authenticateToken, requireRoles('admin'),
         );
 
         const summary = await queryOne(
-            `SELECT 
+            `SELECT
                 COUNT(*) as total,
                 COUNT(DISTINCT user_id) as unique_users,
                 SUM(CASE WHEN activity_type IN ('screenshot', 'screenrecord') THEN 1 ELSE 0 END) as severe_count
-             FROM video_security_logs 
+             FROM video_security_logs
              WHERE created_at > DATE_SUB(NOW(), INTERVAL ? HOUR)`,
             [parseInt(hours as string)]
         );
@@ -222,7 +222,7 @@ router.get('/drm/status', authenticateToken, (_req: AuthRequest, res: Response) 
  * Initialize a new video upload
  * Returns presigned URL for direct browser-to-MinIO upload
  */
-router.post('/upload/init', authenticateToken, async (req: AuthRequest, res: Response) => {
+router.post('/upload/init', authenticateToken, requireRoles('instructor', 'teacher', 'staff'), async (req: AuthRequest, res: Response) => {
     try {
         const {
             course_id,
@@ -234,13 +234,17 @@ router.post('/upload/init', authenticateToken, async (req: AuthRequest, res: Res
             file_size
         } = req.body;
         const uploaded_by = req.user!.id;
+        const tenantId = req.user!.tenantId;
 
         // Validation
-        if (!course_id || !title || !file_name || !uploaded_by) {
+        if (!course_id || !title || !file_name || !uploaded_by || !tenantId) {
             return res.status(400).json({
                 error: 'course_id, title, file_name, and uploaded_by are required'
             });
         }
+
+        const course = await queryOne('SELECT id FROM courses WHERE id=? AND tenant_id=?', [course_id, tenantId]);
+        if (!course) return res.status(404).json({ error: 'Course not found' });
 
         // Check file size limit (default 5GB)
         const maxSizeMB = parseInt(process.env.VIDEO_MAX_SIZE_MB || '5000');
@@ -263,13 +267,14 @@ router.post('/upload/init', authenticateToken, async (req: AuthRequest, res: Res
 
         // Create video record in database
         await execute(
-            `INSERT INTO videos 
-            (id, course_id, lecture_id, material_id, title, description, 
+            `INSERT INTO videos
+            (id, course_id, tenant_id, lecture_id, material_id, title, description,
              file_size_bytes, original_key, uploaded_by, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
             [
                 videoId,
                 course_id,
+                tenantId,
                 lecture_id || null,
                 material_id || null,
                 title,
@@ -311,8 +316,8 @@ router.post('/upload/complete', authenticateToken, async (req: AuthRequest, res:
 
         // Verify video exists and is in uploading state
         const video = await queryOne<any>(
-            'SELECT * FROM videos WHERE id = ? AND status = ? AND uploaded_by = ?',
-            [videoId, 'uploading', req.user!.id]
+            'SELECT * FROM videos WHERE id = ? AND tenant_id = ? AND status = ? AND uploaded_by = ?',
+            [videoId, req.user!.tenantId, 'uploading', req.user!.id]
         );
 
         if (!video) {
@@ -325,14 +330,14 @@ router.post('/upload/complete', authenticateToken, async (req: AuthRequest, res:
 
         // Add to processing queue
         await execute(
-            `INSERT INTO video_processing_queue (id, video_id, status, created_at)
-            VALUES (?, ?, 'pending', NOW())
+            `INSERT INTO video_processing_queue (id, video_id, tenant_id, status, created_at)
+            VALUES (?, ?, ?, 'pending', NOW())
             ON DUPLICATE KEY UPDATE status = 'pending', created_at = NOW()`,
-            [uuidv4(), videoId]
+            [uuidv4(), videoId, req.user!.tenantId]
         );
 
         // Start processing in background (don't await)
-        processVideoAsync(videoId);
+        processVideoAsync(videoId, req.user!.tenantId!);
 
         console.log(`[Videos] Upload complete for ${videoId}, processing started`);
 
@@ -352,9 +357,9 @@ router.post('/upload/complete', authenticateToken, async (req: AuthRequest, res:
 /**
  * Process video asynchronously
  */
-async function processVideoAsync(videoId: string): Promise<void> {
+async function processVideoAsync(videoId: string, tenantId: string): Promise<void> {
     try {
-        await processVideo(videoId);
+        await processVideo(videoId, tenantId);
     } catch (error) {
         console.error(`[Videos] Async processing failed for ${videoId}:`, error);
     }
@@ -368,12 +373,12 @@ router.get('/upload/status/:videoId', authenticateToken, async (req: AuthRequest
         const { videoId } = req.params;
 
         const video = await queryOne<any>(
-            `SELECT id, title, status, processing_progress, processing_error, 
+            `SELECT id, title, status, processing_progress, processing_error,
                     qualities_available, created_at, processed_at, delivery_provider,
                     drm_asset_id, drm_preview_asset_id, drm_status, drm_last_synced_at,
                     preview_status, duration_seconds
-             FROM videos WHERE id = ? AND uploaded_by = ?`,
-            [videoId, req.user!.id]
+             FROM videos WHERE id = ? AND tenant_id = ? AND uploaded_by = ?`,
+            [videoId, req.user!.tenantId, req.user!.id]
         );
 
         if (!video) {
@@ -441,8 +446,8 @@ router.delete('/upload/cancel/:videoId', authenticateToken, async (req: AuthRequ
 router.post('/upload/recover-stuck', authenticateToken, requireRoles('admin'), async (req: Request, res: Response) => {
     try {
         const stuckVideos = await query(
-            `SELECT id FROM videos 
-             WHERE status = 'uploading' AND delivery_provider = 'minio'
+            `SELECT id,tenant_id FROM videos
+             WHERE tenant_id IS NOT NULL AND status = 'uploading' AND delivery_provider = 'minio'
              AND created_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`,
             []
         );
@@ -455,12 +460,12 @@ router.post('/upload/recover-stuck', authenticateToken, requireRoles('admin'), a
         for (const video of stuckVideos) {
             try {
                 await execute(
-                    `INSERT INTO video_processing_queue (id, video_id, status, created_at)
-                    VALUES (?, ?, 'pending', NOW())
+                    `INSERT INTO video_processing_queue (id, video_id, tenant_id, status, created_at)
+                    VALUES (?, ?, ?, 'pending', NOW())
                     ON DUPLICATE KEY UPDATE status = 'pending', created_at = NOW()`,
-                    [uuidv4(), video.id]
+                    [uuidv4(), video.id, video.tenant_id]
                 );
-                processVideoAsync(video.id);
+                processVideoAsync(video.id, video.tenant_id);
                 recovered++;
                 console.log(`[Videos] Recovered stuck upload ${video.id}`);
             } catch (err) {
@@ -493,7 +498,7 @@ router.get('/stream/:videoId', authenticateToken, async (req: AuthRequest, res: 
 
         // Get video info
         const video = await queryOne(
-            `SELECT v.*, c.name as course_name 
+            `SELECT v.*, c.name as course_name
              FROM videos v
              LEFT JOIN courses c ON v.course_id = c.id
              WHERE v.id = ? AND v.status = 'ready'`,
@@ -716,10 +721,10 @@ router.get('/course/:courseId', async (req: Request, res: Response) => {
         const { courseId } = req.params;
 
         const videos = await query(
-            `SELECT id, title, description, duration_seconds, status, 
-                    processing_progress, qualities_available, 
+            `SELECT id, title, description, duration_seconds, status,
+                    processing_progress, qualities_available,
                     created_at, processed_at
-             FROM videos 
+             FROM videos
              WHERE course_id = ?
              ORDER BY created_at DESC`,
             [courseId]
@@ -843,8 +848,8 @@ router.post('/:videoId/retry', authenticateToken, async (req: AuthRequest, res: 
         const { videoId } = req.params;
 
         const video = await queryOne(
-            'SELECT * FROM videos WHERE id = ? AND status = ? AND uploaded_by=?',
-            [videoId, 'failed', req.user!.id]
+            'SELECT * FROM videos WHERE id = ? AND tenant_id=? AND status = ? AND uploaded_by=?',
+            [videoId, req.user!.tenantId, 'failed', req.user!.id]
         );
 
         if (!video) {
@@ -855,14 +860,14 @@ router.post('/:videoId/retry', authenticateToken, async (req: AuthRequest, res: 
 
         // Reset status
         await execute(
-            `UPDATE videos SET status = 'uploading', 
-             processing_progress = 0, processing_error = NULL 
-             WHERE id = ?`,
-            [videoId]
+            `UPDATE videos SET status = 'uploading',
+             processing_progress = 0, processing_error = NULL
+             WHERE id = ? AND tenant_id=?`,
+            [videoId, req.user!.tenantId]
         );
 
         // Re-queue for processing
-        processVideoAsync(videoId);
+        processVideoAsync(videoId, req.user!.tenantId!);
 
         res.json({ success: true, message: 'Processing restarted' });
 
@@ -880,8 +885,8 @@ router.post('/:videoId/reprocess', authenticateToken, async (req: AuthRequest, r
         const { videoId } = req.params;
 
         const video = await queryOne(
-            'SELECT * FROM videos WHERE id = ? AND uploaded_by=?',
-            [videoId, req.user!.id]
+            'SELECT * FROM videos WHERE id = ? AND tenant_id=? AND uploaded_by=?',
+            [videoId, req.user!.tenantId, req.user!.id]
         );
 
         if (!video) {
@@ -896,14 +901,14 @@ router.post('/:videoId/reprocess', authenticateToken, async (req: AuthRequest, r
 
         // Reset status
         await execute(
-            `UPDATE videos SET status = 'processing', 
-             processing_progress = 0, processing_error = NULL 
-             WHERE id = ?`,
-            [videoId]
+            `UPDATE videos SET status = 'processing',
+             processing_progress = 0, processing_error = NULL
+             WHERE id = ? AND tenant_id=?`,
+            [videoId, req.user!.tenantId]
         );
 
         // Re-queue for processing
-        processVideoAsync(videoId);
+        processVideoAsync(videoId, req.user!.tenantId!);
 
         res.json({ success: true, message: 'Processing started' });
 
@@ -940,18 +945,18 @@ router.get('/:videoId/analytics', async (req: Request, res: Response) => {
         const { videoId } = req.params;
 
         const stats = await queryOne(
-            `SELECT 
+            `SELECT
                 COUNT(*) as total_views,
                 COUNT(DISTINCT user_id) as unique_viewers,
                 AVG(watch_duration_seconds) as avg_watch_time
-             FROM video_access_logs 
+             FROM video_access_logs
              WHERE video_id = ?`,
             [videoId]
         );
 
         const recentViews = await query(
             `SELECT DATE(accessed_at) as date, COUNT(*) as views
-             FROM video_access_logs 
+             FROM video_access_logs
              WHERE video_id = ?
              AND accessed_at > DATE_SUB(NOW(), INTERVAL 30 DAY)
              GROUP BY DATE(accessed_at)

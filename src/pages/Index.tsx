@@ -58,50 +58,22 @@ const Index = () => {
     setIsSendingQuickMessage(true);
 
     try {
-      // Call the same AI endpoint used in the dedicated chat assistant
-      const googleApiKey = "AIzaSyAm-hpg9pjc66DqNnS8qHpdgeKBd-FZP70";
-      const systemPrompt = `أنت مساعد ذكي تعليمي متخصص حصراً في مساعدة طلاب المرحلة الثانوية المصريين في دراسة التاريخ.
-
-وظيفتك الأساسية:
-- شرح الأحداث التاريخية والشخصيات والفترات بوضوح ودقة
-- مساعدة الطلاب على فهم دروس المنهج المصري للتاريخ
-- تقديم ملخصات وتحليلات ومقارنات للأحداث التاريخية
-- الإجابة على أسئلة من نمط الامتحانات
-- مساعدة الطالب على كتابة الإجابات الطويلة
-
-رد دائماً بالعربية فقط، وكن ودوداً وصبوراً - بدو كمعلم مختص وليس روبوت.`;
-
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${googleApiKey}`,
+        "/api/ai-chat/chat",
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            Authorization: `Bearer ${localStorage.getItem("authToken") || ""}`,
           },
-          body: JSON.stringify({
-            systemInstruction: {
-              parts: [{ text: systemPrompt }],
-            },
-            contents: [
-              {
-                role: "user",
-                parts: [{ text: trimmed }],
-              },
-            ],
-            generationConfig: {
-              temperature: 0.7,
-              maxOutputTokens: 600,
-              topK: 40,
-              topP: 0.95,
-            },
-          }),
+          body: JSON.stringify({ message: trimmed }),
         }
       );
 
       const data = await response.json();
 
-      if (response.ok && data.candidates?.[0]?.content?.parts?.[0]?.text) {
-        const assistantMessage = data.candidates[0].content.parts[0].text.trim();
+      if (response.ok && data.response) {
+        const assistantMessage = String(data.response).trim();
         const assistantEntry = {
           id: `assistant-${Date.now()}`,
           text: assistantMessage,

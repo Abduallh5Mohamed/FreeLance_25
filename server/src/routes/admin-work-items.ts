@@ -81,7 +81,7 @@ router.post('/', requireAdminPermission('task.create'), async (req: AuthRequest,
          (id,type,title,description,priority,created_by,assigned_team_id,tenant_id,resource_type,resource_id,due_at)
          VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
         [id, type, title, description || null, priority, req.user!.id, assignedTeamId,
-          req.body.tenant_id || null, req.body.resource_type || null, req.body.resource_id || null, req.body.due_at || null]
+          null, req.body.resource_type || null, req.body.resource_id || null, req.body.due_at || null]
       );
       await connection.execute(
         'INSERT INTO admin_work_item_events (id,work_item_id,actor_user_id,event_type) VALUES (?,?,?,?)',

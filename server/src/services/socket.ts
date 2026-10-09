@@ -16,6 +16,15 @@ let ioInstance: SocketIOServer | null = null;
 
 export const getIO = (): SocketIOServer | null => ioInstance;
 
+export function verifySocketPrincipal(token: string): { id: string; role: string } {
+    const principal = jwt.verify(token, getJwtSecret()) as { id?: string; role?: string };
+    const allowedRoles = new Set(['admin', 'instructor', 'teacher', 'staff', 'student', 'parent']);
+    if (!principal.id || !principal.role || !allowedRoles.has(principal.role)) {
+        throw new Error('Invalid token claims');
+    }
+    return { id: String(principal.id), role: principal.role };
+}
+
 export const setupSocketIO = (httpServer: HTTPServer) => {
     const io = new SocketIOServer(httpServer, {
         cors: {
@@ -46,21 +55,17 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
     io.use((socket: UserSocket, next) => {
         try {
             const authHeader = socket.handshake.headers.authorization;
-            const bearerToken = authHeader?.startsWith('Bearer ')
-                ? authHeader.slice('Bearer '.length)
-                : undefined;
+            const bearerMatch = authHeader ? /^Bearer\s+(\S+)$/i.exec(authHeader) : null;
+            if (authHeader && !bearerMatch) return next(new Error('Invalid authorization header'));
+            const bearerToken = bearerMatch?.[1];
             const token = socket.handshake.auth?.token || bearerToken;
 
             if (!token) {
                 return next(new Error('Authentication required'));
             }
 
-            const principal = jwt.verify(token, getJwtSecret()) as { id?: string; role?: string };
-            if (!principal.id || !principal.role) {
-                return next(new Error('Invalid token'));
-            }
-
-            socket.userId = String(principal.id);
+            const principal = verifySocketPrincipal(String(token));
+            socket.userId = principal.id;
             socket.userRole = principal.role;
             next();
         } catch {
@@ -110,28 +115,8 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
                 let senderId = socket.userId as string;
                 const senderRole = socket.userRole;
 
-                // If staff is sending, use teacher's ID instead (staff acts as teacher)
+                // Sender identity always comes from the verified socket session.
                 console.log('🔍 Message send - senderRole:', senderRole, 'senderId:', senderId);
-                if (senderRole === 'staff') {
-                    console.log('👷 Staff detected, looking for admin user...');
-                    const [teachers] = await getPool().query<RowDataPacket[]>(
-                        `SELECT id, name, phone, role FROM users WHERE role = 'admin' LIMIT 5`
-                    );
-                    console.log('📋 Found admin users:', JSON.stringify(teachers));
-
-                    // Find the main admin
-                    const mainAdmin = teachers.find((t: any) => t.phone === '01024083057');
-                    if (mainAdmin) {
-                        senderId = mainAdmin.id;
-                        console.log('📨 Staff sending as teacher via socket:', senderId, mainAdmin.name);
-                    } else if (teachers.length > 0) {
-                        // Use first admin if main admin not found
-                        senderId = teachers[0].id;
-                        console.log('📨 Using first admin:', senderId, teachers[0].name);
-                    } else {
-                        console.log('⚠️ No admin users found!');
-                    }
-                }
 
                 // Insert message into database - Generate UUID first since table uses uuid() default
                 const [uuidResult] = await getPool().query<RowDataPacket[]>('SELECT UUID() as uuid');
@@ -176,7 +161,7 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
 
                 // Get the complete message with status
                 const [messages] = await getPool().query<RowDataPacket[]>(`
-                    SELECT 
+                    SELECT
                         m.*,
                         ms.is_delivered,
                         ms.delivered_at,
@@ -280,7 +265,7 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
                 if (messages.length > 0 && messages[0].receiver_id === userId) {
                     // Update message status
                     await getPool().query(`
-                        UPDATE message_status 
+                        UPDATE message_status
                         SET is_read = TRUE, read_at = NOW()
                         WHERE message_id = ?
                     `, [messageId]);
@@ -334,7 +319,7 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
                 if (messages.length > 0) {
                     // Update message
                     await getPool().query(`
-                        UPDATE messages 
+                        UPDATE messages
                         SET content = ?, is_edited = TRUE, edited_at = NOW()
                         WHERE id = ?
                     `, [content, messageId]);
@@ -403,7 +388,7 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
                 if (socket.userId) {
                     // Update user online status
                     await getPool().query(`
-                        UPDATE user_online_status 
+                        UPDATE user_online_status
                         SET is_online = FALSE, last_seen = NOW()
                         WHERE user_id = ?
                     `, [socket.userId]);

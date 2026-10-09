@@ -54,7 +54,7 @@ export function SecureVideoPlayer({
     const isLoggedOutRef = useRef(false);
     const animationFrameRef = useRef<number | null>(null);
 
-    // Watermark text
+    // Watermark tex
     const watermarkText = `${studentName} • ${groupName} • ${userId.slice(-4)}`;
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
@@ -218,14 +218,14 @@ export function SecureVideoPlayer({
         if (!hasStarted) return;
 
         const isHosted = sourceType === 'hls' || sourceType === 'mp4';
-        
+
         securityManagerRef.current = new VideoSecurityManager({
             userId,
             videoId,
             studentName,
             isHostedVideo: isHosted,
             onViolation: handleSecurityViolation,
-            onForceLogout: forceLogout
+            onForceLogout: forceLogou
         });
 
         // Start security after a brief grace period
@@ -242,10 +242,10 @@ export function SecureVideoPlayer({
     // RENDER STATIC WATERMARKS (and re-render on resize)
     useEffect(() => {
         renderWatermarks();
-        
+
         const handleResize = () => renderWatermarks();
         window.addEventListener('resize', handleResize);
-        
+
         return () => {
             window.removeEventListener('resize', handleResize);
             if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
@@ -257,7 +257,7 @@ export function SecureVideoPlayer({
         try {
             const container = containerRef.current;
             const video = videoRef.current;
-            
+
             // Hide browser UI on mobile
             if (isMobile) {
                 // Request fullscreen on container
@@ -516,11 +516,11 @@ export function SecureVideoPlayer({
 
     // RENDER
     return (
-        <div 
-            ref={containerRef} 
+        <div
+            ref={containerRef}
             className="fixed inset-0 z-[9999] bg-black flex items-center justify-center select-none overflow-hidden"
-            style={{ 
-                userSelect: 'none', 
+            style={{
+                userSelect: 'none',
                 WebkitUserSelect: 'none',
                 width: '100vw',
                 height: '100dvh',
@@ -652,7 +652,7 @@ export function SecureVideoPlayer({
 
             {/* CONTROLS FOR HOSTED VIDEOS */}
             {(sourceType === 'hls' || sourceType === 'mp4') && hasStarted && !loading && !error && !showBlackScreen && (
-                <div 
+                <div
                     className="absolute inset-0 z-[60] flex flex-col justify-between"
                     onClick={togglePlay}
                 >
@@ -666,29 +666,29 @@ export function SecureVideoPlayer({
                             <span>حماية نشطة</span>
                         </div>
                     </div>
-                    
+
                     {/* CENTER CONTROLS */}
                     <div className="flex justify-center items-center gap-8" onClick={(e) => e.stopPropagation()}>
                         {/* -5 SECONDS */}
-                        <button 
-                            onClick={() => skip(-5)} 
+                        <button
+                            onClick={() => skip(-5)}
                             className="p-3 bg-white/20 rounded-full hover:bg-white/30 text-white transition-colors flex flex-col items-center"
                         >
                             <RotateCcw className="w-7 h-7" />
                             <span className="text-xs mt-1">-5</span>
                         </button>
-                        
+
                         {/* PLAY/PAUSE */}
-                        <button 
-                            onClick={togglePlay} 
+                        <button
+                            onClick={togglePlay}
                             className="p-5 bg-white/25 rounded-full hover:bg-white/35 text-white transition-colors"
                         >
                             {isPlaying ? <Pause className="w-10 h-10" /> : <Play className="w-10 h-10 fill-white" />}
                         </button>
-                        
+
                         {/* +5 SECONDS */}
-                        <button 
-                            onClick={() => skip(5)} 
+                        <button
+                            onClick={() => skip(5)}
                             className="p-3 bg-white/20 rounded-full hover:bg-white/30 text-white transition-colors flex flex-col items-center"
                         >
                             <RotateCw className="w-7 h-7" />
@@ -699,18 +699,18 @@ export function SecureVideoPlayer({
                     {/* BOTTOM BAR - PROGRESS + CONTROLS */}
                     <div className="bg-gradient-to-t from-black/80 to-transparent p-4" onClick={(e) => e.stopPropagation()}>
                         {/* PROGRESS BAR */}
-                        <div 
+                        <div
                             className="w-full h-2 bg-white/30 rounded-full cursor-pointer mb-3 relative group"
                             onClick={seekTo}
                         >
-                            <div 
+                            <div
                                 className="h-full bg-blue-500 rounded-full relative"
                                 style={{ width: `${progress}%` }}
                             >
                                 <div className="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity" />
                             </div>
                         </div>
-                        
+
                         {/* TIME + VOLUME */}
                         <div className="flex justify-between items-center text-white text-sm">
                             <span className="font-mono">{formatTime(currentTime)} / {formatTime(duration)}</span>

@@ -74,7 +74,7 @@ test('authenticateToken attaches a verified principal', async () => {
     try {
         // Generic JWT attachment is independent of the instructor subscription gate,
         // which is integration-tested against tenant/subscription fixtures.
-        const token = jwt.sign({ id: 'user-1', role: 'teacher' }, TEST_SECRET);
+        const token = jwt.sign({ id: 'user-1', role: 'admin' }, TEST_SECRET);
         const request = { headers: { authorization: `Bearer ${token}` } } as AuthRequest;
         const response = createResponse();
         let nextCalled = false;
@@ -83,7 +83,7 @@ test('authenticateToken attaches a verified principal', async () => {
 
         assert.equal(nextCalled, true);
         assert.equal(request.user?.id, 'user-1');
-        assert.equal(request.user?.role, 'teacher');
+        assert.equal(request.user?.role, 'admin');
     } finally {
         if (originalSecret === undefined) {
             delete process.env.JWT_SECRET;

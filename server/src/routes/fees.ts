@@ -1,126 +1,11 @@
 import { Router, Request, Response } from 'express';
-import { authenticateToken, requireRoles } from '../middleware/auth';
+import { AuthRequest, authenticateToken, requireRoles } from '../middleware/auth';
 import { query, queryOne, execute } from '../db';
 
-const DATABASE_NAME = process.env.DB_NAME || 'freelance';
-let feesSchemaEnsured = false;
-
-const ensureFeesSchema = async () => {
-    if (feesSchemaEnsured) {
-        return;
-    }
-
-    await execute(`
-        CREATE TABLE IF NOT EXISTS student_fees (
-            id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
-            student_id CHAR(36),
-            student_name VARCHAR(255) NOT NULL,
-            phone VARCHAR(50),
-            guardian_phone VARCHAR(50),
-            grade_id CHAR(36),
-            grade_name VARCHAR(255),
-            group_id CHAR(36),
-            group_name VARCHAR(255),
-            barcode VARCHAR(50),
-            amount DECIMAL(10, 2) DEFAULT 0,
-            paid_amount DECIMAL(10, 2) DEFAULT 0,
-            remaining_amount DECIMAL(10, 2) GENERATED ALWAYS AS (amount - paid_amount) STORED,
-            status ENUM('pending', 'partial', 'paid', 'overdue') DEFAULT 'pending',
-            payment_method ENUM('cash', 'bank', 'card', 'online') DEFAULT 'cash',
-            is_offline BOOLEAN DEFAULT FALSE,
-            notes TEXT,
-            due_date DATE,
-            payment_date DATE,
-            payment_year INT,
-            payment_month INT,
-            receipt_image_url TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_student_id (student_id),
-            INDEX idx_student_name (student_name),
-            INDEX idx_phone (phone),
-            INDEX idx_guardian_phone (guardian_phone),
-            INDEX idx_status (status),
-            INDEX idx_is_offline (is_offline),
-            INDEX idx_payment_date (payment_date),
-            INDEX idx_payment_year_month (payment_year, payment_month),
-            UNIQUE KEY unique_student_month (student_id, payment_year, payment_month)
-        ) ENGINE=InnoDB;
-    `);
-
-    // Ensure optional columns exist when table was previously created with a limited schema
-    const requiredColumns: Record<string, string> = {
-        student_id: 'ADD COLUMN student_id CHAR(36) NULL',
-        student_name: 'ADD COLUMN student_name VARCHAR(255) NULL',
-        phone: 'ADD COLUMN phone VARCHAR(50) NULL',
-        guardian_phone: 'ADD COLUMN guardian_phone VARCHAR(50) NULL',
-        grade_id: 'ADD COLUMN grade_id CHAR(36) NULL',
-        grade_name: 'ADD COLUMN grade_name VARCHAR(255) NULL',
-        group_id: 'ADD COLUMN group_id CHAR(36) NULL',
-        group_name: 'ADD COLUMN group_name VARCHAR(255) NULL',
-        barcode: 'ADD COLUMN barcode VARCHAR(50) NULL',
-        amount: 'ADD COLUMN amount DECIMAL(10, 2) DEFAULT 0',
-        paid_amount: 'ADD COLUMN paid_amount DECIMAL(10, 2) DEFAULT 0',
-        remaining_amount: 'ADD COLUMN remaining_amount DECIMAL(10, 2) GENERATED ALWAYS AS (amount - paid_amount) STORED',
-        status: "ADD COLUMN status ENUM('pending', 'partial', 'paid', 'overdue') DEFAULT 'pending'",
-        payment_method: "ADD COLUMN payment_method ENUM('cash', 'bank', 'card', 'online') DEFAULT 'cash'",
-        is_offline: 'ADD COLUMN is_offline BOOLEAN DEFAULT FALSE',
-        notes: 'ADD COLUMN notes TEXT NULL',
-        due_date: 'ADD COLUMN due_date DATE NULL',
-        payment_date: 'ADD COLUMN payment_date DATE NULL',
-        payment_year: 'ADD COLUMN payment_year INT NULL',
-        payment_month: 'ADD COLUMN payment_month INT NULL',
-        receipt_image_url: 'ADD COLUMN receipt_image_url TEXT NULL',
-        created_at: 'ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
-        updated_at: 'ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'
-    };
-
-    for (const [column, alterStmt] of Object.entries(requiredColumns)) {
-        const columnExists = await queryOne<{ COLUMN_NAME: string }>(
-            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'student_fees' AND COLUMN_NAME = ?`,
-            [DATABASE_NAME, column]
-        );
-
-        if (!columnExists) {
-            await execute(`ALTER TABLE student_fees ${alterStmt}`);
-        }
-    }
-
-    // Backfill payment_year and payment_month from payment_date for existing records
-    await execute(`
-        UPDATE student_fees 
-        SET payment_year = YEAR(payment_date),
-            payment_month = MONTH(payment_date)
-        WHERE payment_date IS NOT NULL 
-          AND (payment_year IS NULL OR payment_month IS NULL)
-    `);
-
-    // Ensure unique index exists
-    const indexExists = await queryOne<{ INDEX_NAME: string }>(
-        `SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS 
-         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'student_fees' AND INDEX_NAME = 'unique_student_month'`,
-        [DATABASE_NAME]
-    );
-
-    if (!indexExists) {
-        try {
-            await execute(`
-                ALTER TABLE student_fees 
-                ADD UNIQUE KEY unique_student_month (student_id, payment_year, payment_month)
-            `);
-        } catch (err: any) {
-            // Ignore duplicate key error if index already exists
-            if (err.code !== 'ER_DUP_KEYNAME') {
-                console.error('Error creating unique index:', err);
-            }
-        }
-    }
-
-    feesSchemaEnsured = true;
-};
-
 const router = Router();
-router.use(authenticateToken, requireRoles('admin', 'teacher'));
+router.use(authenticateToken, requireRoles('admin', 'instructor', 'teacher', 'staff'));
+const tenantFilter = (req: AuthRequest) => req.user?.role === 'admin' ? '' : ' AND tenant_id=?';
+const tenantParam = (req: AuthRequest) => req.user?.role === 'admin' ? [] : [req.user?.tenantId || ''];
 
 interface Fee {
     id: string;
@@ -147,13 +32,12 @@ interface Fee {
 }
 
 // Get all fees
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', async (req: AuthRequest, res: Response) => {
     try {
-        await ensureFeesSchema();
         const { is_offline, status, phone, name } = req.query;
 
-        let sql = `SELECT * FROM student_fees WHERE 1=1`;
-        const params: unknown[] = [];
+        let sql = `SELECT * FROM student_fees WHERE 1=1${tenantFilter(req)}`;
+        const params: unknown[] = tenantParam(req);
 
         if (is_offline !== undefined) {
             sql += ' AND is_offline = ?';
@@ -186,11 +70,11 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 // Get fee by ID
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', async (req: AuthRequest, res: Response) => {
     try {
         const fee = await queryOne<Fee>(
-            'SELECT * FROM student_fees WHERE id = ?',
-            [req.params.id]
+            `SELECT * FROM student_fees WHERE id = ?${tenantFilter(req)}`,
+            [req.params.id, ...tenantParam(req)]
         );
 
         if (!fee) {
@@ -205,9 +89,8 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // Create new fee
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', async (req: AuthRequest, res: Response) => {
     try {
-        await ensureFeesSchema();
         const {
             student_name,
             phone,
@@ -230,6 +113,8 @@ router.post('/', async (req: Request, res: Response) => {
             receipt_image_url
         } = req.body;
 
+        const tenantId = req.user?.tenantId;
+        if (!tenantId) return res.status(403).json({ error: 'Active tenant membership required' });
         if (!student_name && !phone && !barcode) {
             return res.status(400).json({ error: 'Student information is required' });
         }
@@ -242,8 +127,8 @@ router.post('/', async (req: Request, res: Response) => {
                  FROM students s
                  LEFT JOIN grades g ON s.grade_id = g.id
                  LEFT JOIN \`groups\` grp ON s.group_id = grp.id
-                 WHERE s.barcode = ?`,
-                [barcode]
+                 WHERE s.barcode = ? AND s.tenant_id=?`,
+                [barcode, tenantId]
             );
         }
 
@@ -253,8 +138,8 @@ router.post('/', async (req: Request, res: Response) => {
                  FROM students s
                  LEFT JOIN grades g ON s.grade_id = g.id
                  LEFT JOIN \`groups\` grp ON s.group_id = grp.id
-                 WHERE s.phone = ?`,
-                [phone]
+                 WHERE s.phone = ? AND s.tenant_id=?`,
+                [phone, tenantId]
             );
         }
 
@@ -264,10 +149,10 @@ router.post('/', async (req: Request, res: Response) => {
                  FROM students s
                  LEFT JOIN grades g ON s.grade_id = g.id
                  LEFT JOIN \`groups\` grp ON s.group_id = grp.id
-                 WHERE s.name LIKE ?
+                 WHERE s.name LIKE ? AND s.tenant_id=?
                  ORDER BY CHAR_LENGTH(s.name) ASC
                  LIMIT 1`,
-                [`%${student_name}%`]
+                [`%${student_name}%`, tenantId]
             );
         }
 
@@ -290,9 +175,9 @@ router.post('/', async (req: Request, res: Response) => {
         // Check if student already paid for this month (only if student_id exists)
         if (resolvedStudentId) {
             const existingPayment = await queryOne<Fee>(
-                `SELECT * FROM student_fees 
-                 WHERE student_id = ? AND payment_year = ? AND payment_month = ? AND status = 'paid'`,
-                [resolvedStudentId, finalPaymentYear, finalPaymentMonth]
+                `SELECT * FROM student_fees
+                 WHERE student_id = ? AND tenant_id=? AND payment_year = ? AND payment_month = ? AND status = 'paid'`,
+                [resolvedStudentId, tenantId, finalPaymentYear, finalPaymentMonth]
             );
 
             if (existingPayment) {
@@ -306,11 +191,12 @@ router.post('/', async (req: Request, res: Response) => {
 
         const result = await execute(
             `INSERT INTO student_fees (
-                student_id, student_name, phone, guardian_phone, grade_id, grade_name, group_id, group_name,
+                tenant_id, student_id, student_name, phone, guardian_phone, grade_id, grade_name, group_id, group_name,
                 barcode, amount, paid_amount, status, payment_method, is_offline,
                 notes, due_date, payment_date, payment_year, payment_month, receipt_image_url
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
+                tenantId,
                 resolvedStudentId,
                 resolvedStudentName,
                 resolvedPhone || null,
@@ -338,18 +224,18 @@ router.post('/', async (req: Request, res: Response) => {
 
         if (result.insertId) {
             newFee = await queryOne<Fee>(
-                'SELECT * FROM student_fees WHERE id = ?',
-                [result.insertId]
+                `SELECT * FROM student_fees WHERE id = ?${tenantFilter(req)}`,
+                [result.insertId, ...tenantParam(req)]
             );
         }
 
         if (!newFee) {
             newFee = await queryOne<Fee>(
                 `SELECT * FROM student_fees
-                 WHERE barcode = ?
+                 WHERE barcode = ? AND tenant_id=?
                  ORDER BY created_at DESC
                  LIMIT 1`,
-                [resolvedBarcode]
+                [resolvedBarcode, tenantId]
             );
         }
 
@@ -361,7 +247,7 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // Update fee
-router.put('/:id', async (req: Request, res: Response) => {
+router.put('/:id', async (req: AuthRequest, res: Response) => {
     try {
         const { id } = req.params;
         const {
@@ -384,6 +270,11 @@ router.put('/:id', async (req: Request, res: Response) => {
             payment_month,
             receipt_image_url
         } = req.body;
+
+        if (student_id && req.user?.role !== 'admin') {
+            const ownedStudent = await queryOne('SELECT id FROM students WHERE id=? AND tenant_id=?', [student_id, req.user?.tenantId]);
+            if (!ownedStudent) return res.status(404).json({ error: 'Student not found in your tenant' });
+        }
 
         // If payment_date is updated, recalculate year/month
         let finalPaymentYear = payment_year;
@@ -415,7 +306,7 @@ router.put('/:id', async (req: Request, res: Response) => {
                 payment_month = COALESCE(?, payment_month),
                 receipt_image_url = COALESCE(?, receipt_image_url),
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?`,
+            WHERE id = ?${tenantFilter(req)}`,
             [
                 student_id || null,
                 student_name || null,
@@ -435,13 +326,14 @@ router.put('/:id', async (req: Request, res: Response) => {
                 finalPaymentYear || null,
                 finalPaymentMonth || null,
                 receipt_image_url || null,
-                id
+                id,
+                ...tenantParam(req)
             ]
         );
 
         const updatedFee = await queryOne<Fee>(
-            'SELECT * FROM student_fees WHERE id = ?',
-            [id]
+            `SELECT * FROM student_fees WHERE id = ?${tenantFilter(req)}`,
+            [id, ...tenantParam(req)]
         );
 
         res.json(updatedFee);
@@ -452,11 +344,11 @@ router.put('/:id', async (req: Request, res: Response) => {
 });
 
 // Delete fee
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', async (req: AuthRequest, res: Response) => {
     try {
         const result = await execute(
-            'DELETE FROM student_fees WHERE id = ?',
-            [req.params.id]
+            `DELETE FROM student_fees WHERE id = ?${tenantFilter(req)}`,
+            [req.params.id, ...tenantParam(req)]
         );
 
         if (result.affectedRows === 0) {

@@ -1,20 +1,15 @@
 import { Router, Request, Response } from 'express';
 import { query, queryOne, execute } from '../db';
 import { optionalAuth, instructorScopeId, AuthRequest } from '../middleware/auth';
-import { ensureGroupInstructorColumn } from '../utils/instructor-scope';
 
 const router = Router();
-router.use(async (_req: AuthRequest, _res: Response, next: any) => {
-    await ensureGroupInstructorColumn();
-    next();
-});
 router.use(optionalAuth);
 
 // Get all meetings (for admin/teacher)
 router.get('/', async (req: AuthRequest, res: Response) => {
     try {
         const scopeId = instructorScopeId(req);
-        let sql = `SELECT 
+        let sql = `SELECT
                 m.*,
                 gr.name as group_name,
                 u.name as created_by_name
@@ -51,8 +46,8 @@ router.get('/student/:studentId', async (req: Request, res: Response) => {
 
         // Find student by phone
         const student = await queryOne(`
-            SELECT s.grade_id, s.group_id 
-            FROM students s 
+            SELECT s.grade_id, s.group_id
+            FROM students s
             WHERE s.phone = ?
         `, [user.phone]);
 
@@ -65,7 +60,7 @@ router.get('/student/:studentId', async (req: Request, res: Response) => {
         // 1. It matches the student's grade AND group_id is NULL (for all groups in that grade)
         // 2. It matches the student's grade AND group_id matches student's group
         const meetings = await query(`
-            SELECT 
+            SELECT
                 m.*,
                 gr.name as group_name,
                 u.name as created_by_name
@@ -91,7 +86,7 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
         const { id } = req.params;
         const scopeId = instructorScopeId(req);
         const meeting = await queryOne<any>(`
-            SELECT 
+            SELECT
                 m.*,
                 gr.name as group_name,
                 u.name as created_by_name
@@ -159,13 +154,13 @@ router.post('/', async (req: AuthRequest, res: Response) => {
         const id = uuidResult.uuid;
 
         await execute(`
-            INSERT INTO online_meetings 
+            INSERT INTO online_meetings
             (id, title, description, meeting_link, meeting_type, meeting_password, grade_id, group_id, scheduled_at, duration_minutes, created_by)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [id, title, description || null, meeting_link, meeting_type, meeting_password || null, grade_id, group_id || null, scheduled_at, duration_minutes, ownerId]);
 
         const meeting = await queryOne(`
-            SELECT 
+            SELECT
                 m.*,
                 g.name as grade_name,
                 gr.name as group_name
@@ -229,7 +224,7 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
         `, [title, description, meeting_link, meeting_type, meeting_password, grade_id, group_id, scheduled_at, duration_minutes, is_active, id]);
 
         const meeting = await queryOne(`
-            SELECT 
+            SELECT
                 m.*,
                 g.name as grade_name,
                 gr.name as group_name

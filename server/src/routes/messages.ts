@@ -4,6 +4,7 @@ import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { randomUUID } from 'crypto';
 import { notifyAdminNewMessage, notifyStudentMessageResponse } from '../utils/notifications';
 import { getIO } from '../services/socket';
 import { AuthRequest, authenticateToken } from '../middleware/auth';
@@ -49,21 +50,21 @@ router.get('/conversations', authenticateToken, async (req: AuthRequest, res: Re
         }
 
         const [conversations] = await getPool().query<RowDataPacket[]>(`
-            SELECT 
+            SELECT
                 c.*,
-                CASE 
+                CASE
                     WHEN c.user1_id = ? THEN c.user2_id
                     ELSE c.user1_id
                 END as other_user_id,
-                CASE 
+                CASE
                     WHEN c.user1_id = ? THEN u2.name
                     ELSE u1.name
                 END as other_user_name,
-                CASE 
+                CASE
                     WHEN c.user1_id = ? THEN u2.role
                     ELSE u1.role
                 END as other_user_role,
-                CASE 
+                CASE
                     WHEN c.user1_id = ? THEN c.unread_count_user1
                     ELSE c.unread_count_user2
                 END as unread_count,
@@ -76,8 +77,8 @@ router.get('/conversations', authenticateToken, async (req: AuthRequest, res: Re
             LEFT JOIN users u1 ON c.user1_id = u1.id
             LEFT JOIN users u2 ON c.user2_id = u2.id
             LEFT JOIN messages m ON c.last_message_id = m.id
-            LEFT JOIN user_online_status uos ON 
-                CASE 
+            LEFT JOIN user_online_status uos ON
+                CASE
                     WHEN c.user1_id = ? THEN uos.user_id = c.user2_id
                     ELSE uos.user_id = c.user1_id
                 END
@@ -102,10 +103,10 @@ router.get('/unread-total', authenticateToken, async (req: AuthRequest, res: Res
 
         // Sum all unread messages from conversations where user is either user1 or user2
         const [result] = await getPool().query<RowDataPacket[]>(`
-            SELECT 
+            SELECT
                 COALESCE(
                     (SELECT SUM(unread_count_user1) FROM conversations WHERE user1_id = ?), 0
-                ) + 
+                ) +
                 COALESCE(
                     (SELECT SUM(unread_count_user2) FROM conversations WHERE user2_id = ?), 0
                 ) as total_unread
@@ -131,7 +132,7 @@ router.get('/recent-unread', authenticateToken, async (req: AuthRequest, res: Re
         // Get recent unread messages with sender info
         // Use LEFT JOIN on message_status and check is_read is FALSE or NULL (no status row yet)
         const [messages] = await getPool().query<RowDataPacket[]>(`
-            SELECT 
+            SELECT
                 m.id,
                 m.content,
                 m.message_type,
@@ -180,7 +181,7 @@ router.get('/:userId', authenticateToken, async (req: AuthRequest, res: Response
             if (teacherId) {
                 // Staff sees messages between teacher and selected student
                 query = `
-                    SELECT 
+                    SELECT
                         m.*,
                         ms.is_delivered,
                         ms.delivered_at,
@@ -192,7 +193,7 @@ router.get('/:userId', authenticateToken, async (req: AuthRequest, res: Response
                     LEFT JOIN message_status ms ON m.id = ms.message_id
                     LEFT JOIN users u ON m.sender_id = u.id
                     LEFT JOIN message_deletions md ON m.id = md.message_id AND md.user_id = ?
-                    WHERE 
+                    WHERE
                         ((m.sender_id = ? AND m.receiver_id = ?) OR
                         (m.sender_id = ? AND m.receiver_id = ?))
                         AND md.id IS NULL
@@ -202,7 +203,7 @@ router.get('/:userId', authenticateToken, async (req: AuthRequest, res: Response
             } else {
                 // Fallback: show all messages involving the student
                 query = `
-                    SELECT 
+                    SELECT
                         m.*,
                         ms.is_delivered,
                         ms.delivered_at,
@@ -214,7 +215,7 @@ router.get('/:userId', authenticateToken, async (req: AuthRequest, res: Response
                     LEFT JOIN message_status ms ON m.id = ms.message_id
                     LEFT JOIN users u ON m.sender_id = u.id
                     LEFT JOIN message_deletions md ON m.id = md.message_id AND md.user_id = ?
-                    WHERE 
+                    WHERE
                         (m.sender_id = ? OR m.receiver_id = ?)
                         AND md.id IS NULL
                     ORDER BY m.created_at ASC
@@ -224,7 +225,7 @@ router.get('/:userId', authenticateToken, async (req: AuthRequest, res: Response
         } else {
             // Normal behavior: messages between current user and other user
             query = `
-                SELECT 
+                SELECT
                     m.*,
                     ms.is_delivered,
                     ms.delivered_at,
@@ -236,7 +237,7 @@ router.get('/:userId', authenticateToken, async (req: AuthRequest, res: Response
                 LEFT JOIN message_status ms ON m.id = ms.message_id
                 LEFT JOIN users u ON m.sender_id = u.id
                 LEFT JOIN message_deletions md ON m.id = md.message_id AND md.user_id = ?
-                WHERE 
+                WHERE
                     ((m.sender_id = ? AND m.receiver_id = ?) OR
                     (m.sender_id = ? AND m.receiver_id = ?))
                     AND md.id IS NULL
@@ -322,7 +323,7 @@ router.post('/send', authenticateToken, async (req: AuthRequest, res: Response) 
 
         // Get the created message with status and sender name
         const [messages] = await getPool().query<RowDataPacket[]>(`
-            SELECT 
+            SELECT
                 m.*,
                 ms.is_delivered,
                 ms.delivered_at,
@@ -417,7 +418,15 @@ router.post('/upload-image', authenticateToken, upload.single('image'), async (r
             return res.status(400).json({ error: 'No image uploaded' });
         }
 
-        const imageUrl = `/uploads/messages/${req.file.filename}`;
+        const tenantId = req.user?.tenantId;
+        if (!tenantId || !req.user?.id) return res.status(403).json({ error: 'Tenant membership required' });
+        const fileId = randomUUID();
+        await getPool().execute(
+            `INSERT INTO tenant_media_files (id,tenant_id,uploaded_by,storage_path,original_name,mime_type,byte_size)
+             VALUES (?,?,?,?,?,?,?)`,
+            [fileId, tenantId, req.user.id, path.relative(process.cwd(), req.file.path), req.file.originalname, req.file.mimetype, req.file.size]
+        );
+        const imageUrl = `/api/files/${fileId}/download`;
 
         // Insert message with image
         const [result] = await getPool().query<ResultSetHeader>(`
@@ -461,7 +470,7 @@ router.post('/upload-image', authenticateToken, upload.single('image'), async (r
 
         // Get the created message with sender info
         const [messages] = await getPool().query<RowDataPacket[]>(`
-            SELECT 
+            SELECT
                 m.*,
                 ms.is_delivered,
                 ms.delivered_at,
@@ -514,14 +523,14 @@ router.put('/:id/edit', authenticateToken, async (req: AuthRequest, res: Respons
 
         // Update message
         await getPool().query(`
-            UPDATE messages 
+            UPDATE messages
             SET content = ?, is_edited = TRUE, edited_at = NOW()
             WHERE id = ?
         `, [content, messageId]);
 
         // Get updated message
         const [updatedMessages] = await getPool().query<RowDataPacket[]>(`
-            SELECT 
+            SELECT
                 m.*,
                 ms.is_delivered,
                 ms.delivered_at,
@@ -593,7 +602,7 @@ router.put('/:id/mark-read', authenticateToken, async (req: AuthRequest, res: Re
 
         // Update message status
         await getPool().query(`
-            UPDATE message_status 
+            UPDATE message_status
             SET is_read = TRUE, read_at = NOW()
             WHERE message_id = ?
         `, [messageId]);
@@ -692,7 +701,7 @@ router.get('/users/available', authenticateToken, async (req: AuthRequest, res: 
         if (userRole === 'teacher' || userRole === 'staff') {
             // Teachers and Staff can chat with students (same dashboard)
             query = `
-                SELECT 
+                SELECT
                     u.id,
                     u.name,
                     u.role,
@@ -753,7 +762,7 @@ router.get('/users/available', authenticateToken, async (req: AuthRequest, res: 
         } else if (userRole === 'admin') {
             // Admins can chat with everyone
             query = `
-                SELECT 
+                SELECT
                     u.id,
                     u.name,
                     u.role,

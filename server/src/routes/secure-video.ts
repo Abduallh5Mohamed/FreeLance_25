@@ -97,11 +97,11 @@ router.post('/session', authenticateToken, async (req: AuthRequest, res: Respons
 
         // Verify video exists and user has access
         const video = await queryOne(
-            `SELECT v.*, c.name as course_name 
+            `SELECT v.*, c.name as course_name
              FROM videos v
              LEFT JOIN courses c ON v.course_id = c.id
-             WHERE v.id = ? AND v.status = 'ready'`,
-            [videoId]
+             WHERE v.id = ? AND v.status = 'ready' AND (v.tenant_id=? OR ?=1)`,
+            [videoId, req.user!.tenantId || null, req.user!.role === 'admin' ? 1 : 0]
         );
 
         if (!video) {
@@ -182,7 +182,7 @@ router.post('/session', authenticateToken, async (req: AuthRequest, res: Respons
                 studentPhone = user.phone ? user.phone.slice(-4) : '';
             }
             const student = await queryOne(
-                `SELECT s.name, g.name as group_name FROM students s 
+                `SELECT s.name, g.name as group_name FROM students s
                  LEFT JOIN \`groups\` g ON s.group_id = g.id
                  WHERE s.id = ? AND s.user_id = ?`,
                 [req.user?.studentEnrollmentId || '', userId]
@@ -669,7 +669,7 @@ router.post('/security/log', authenticateToken, async (req: AuthRequest, res: Re
         const userAgent = req.headers['user-agent'] || '';
 
         await execute(
-            `INSERT INTO video_security_logs 
+            `INSERT INTO video_security_logs
              (id, user_id, video_id, activity_type, ip_address, user_agent, details, session_id, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
             [uuidv4(), userId, videoId || null, activityType, ip, userAgent, details || null, sessionId || null]
@@ -743,7 +743,11 @@ async function checkVideoAccess(userId: string, videoId: string, studentEnrollme
     );
 
     if (!user) return false;
-    if (user.role === 'admin' || user.role === 'teacher' || user.role === 'staff') return true;
+    if (user.role === 'admin') return true;
+    if (!tenantId) return false;
+    const tenantVideo = await queryOne('SELECT id FROM videos WHERE id=? AND tenant_id=?', [videoId, tenantId]);
+    if (!tenantVideo) return false;
+    if (user.role === 'teacher' || user.role === 'staff') return true;
 
     const lecture = await queryOne<any>("SELECT id,instructor_id,grade_id,group_id,is_published FROM lectures WHERE video_url=CONCAT('video://',?) LIMIT 1", [videoId]);
     if (!lecture) return false;

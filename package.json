@@ -12,6 +12,8 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "test:access": "tsx --test src/auth/access-control.test.ts",
+    "check:conflicts": "node scripts/check-conflict-markers.mjs",
+    "m1:env": "node scripts/init-m1-env.mjs",
     "preview": "vite preview",
     "db:test": "tsx scripts/test-db.ts",
     "db:setup": "mysql -u root -p < database/mysql-schema.sql"

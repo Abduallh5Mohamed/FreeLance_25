@@ -383,48 +383,7 @@ router.get('/backfill-reviews', authenticateToken, async (req: AuthRequest, res:
 
 router.post('/backfill-reviews/:id/resolve', authenticateToken, async (req: AuthRequest, res: Response) => {
     if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Platform admin access required' });
-    const tenantId = String(req.body.tenant_id || '');
-    const userId = String(req.body.user_id || '');
-    if (!tenantId || !userId) return res.status(400).json({ error: 'tenant_id and user_id are required' });
-    const connection = await pool.getConnection();
-    try {
-        await connection.beginTransaction();
-        const [reviews] = await connection.execute<RowDataPacket[]>(
-            `SELECT r.student_id FROM student_enrollment_backfill_reviews r
-             WHERE r.id=? AND r.status='pending' FOR UPDATE`, [req.params.id]
-        );
-        if (!reviews[0]) { await connection.rollback(); return res.status(404).json({ error: 'Pending review not found' }); }
-        const [tenants] = await connection.execute<RowDataPacket[]>(
-            `SELECT t.id,t.owner_user_id FROM tenants t WHERE t.id=? AND t.status='active' LIMIT 1`, [tenantId]
-        );
-        const [users] = await connection.execute<RowDataPacket[]>(
-            `SELECT id FROM users WHERE id=? AND role='student' AND is_active=1 LIMIT 1`, [userId]
-        );
-        if (!tenants[0] || !users[0]) { await connection.rollback(); return res.status(400).json({ error: 'Invalid active student or instructor workspace' }); }
-        const [duplicate] = await connection.execute<RowDataPacket[]>(
-            'SELECT id FROM students WHERE tenant_id=? AND user_id=? AND id<>? LIMIT 1', [tenantId, userId, reviews[0].student_id]
-        );
-        if (duplicate[0]) { await connection.rollback(); return res.status(409).json({ error: 'This student already has a membership in the workspace' }); }
-        await connection.execute(
-            'UPDATE students SET user_id=?,tenant_id=?,instructor_id=? WHERE id=?',
-            [userId, tenantId, tenants[0].owner_user_id, reviews[0].student_id]
-        );
-        await connection.execute(
-            `UPDATE student_enrollment_backfill_reviews SET status='resolved',resolved_by=?,resolved_at=UTC_TIMESTAMP() WHERE id=?`,
-            [req.user.id, req.params.id]
-        );
-        await connection.execute(
-            `INSERT INTO audit_events (id,actor_user_id,tenant_id,action,resource_type,resource_id,new_value)
-             VALUES (?,?,?,?,?,?,?)`,
-            [randomUUID(), req.user.id, tenantId, 'student.backfill.resolved', 'student', reviews[0].student_id, JSON.stringify({ user_id: userId })]
-        );
-        await connection.commit();
-        res.json({ status: 'resolved' });
-    } catch (error) {
-        await connection.rollback();
-        console.error('Resolve student backfill review error:', error);
-        res.status(500).json({ error: 'Failed to resolve review' });
-    } finally { connection.release(); }
+    return res.status(410).json({ error: 'Legacy identity assignment is disabled until a server-side adjudication workflow is available' });
 });
 
 export async function cleanupEnrollmentPrivacyData(): Promise<void> {

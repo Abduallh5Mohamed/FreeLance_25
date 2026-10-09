@@ -33,12 +33,12 @@ const functionPath = 'supabase/functions/ai-chat-assistant/index.ts';
 if (fs.existsSync(functionPath)) {
   console.log(`  ✓ ${functionPath} exists`);
   const content = fs.readFileSync(functionPath, 'utf-8');
-  
+
   if (content.includes('systemInstruction')) {
     console.log('  ✓ systemInstruction format detected');
   }
-  if (content.includes('AIzaSyAm-hpg9pjc66DqNnS8qHpdgeKBd-FZP70')) {
-    console.log('  ✓ Google API Key is embedded');
+  if (content.includes('GOOGLE_GEMINI_API_KEY')) {
+    console.log('  ✓ Google API key is configured server-side');
   }
   if (content.includes('generativelanguage.googleapis.com')) {
     console.log('  ✓ Google API endpoint is correct');
@@ -54,7 +54,7 @@ const chatPath = 'src/pages/StudentChat.tsx';
 if (fs.existsSync(chatPath)) {
   console.log(`  ✓ ${chatPath} exists`);
   const content = fs.readFileSync(chatPath, 'utf-8');
-  
+
   if (content.includes('VITE_SUPABASE_URL') && content.includes('ai-chat-assistant')) {
     console.log('  ✓ StudentChat correctly calls ai-chat-assistant endpoint');
   }
@@ -72,7 +72,7 @@ const configPath = 'supabase/config.toml';
 if (fs.existsSync(configPath)) {
   const config = fs.readFileSync(configPath, 'utf-8');
   console.log(`  ✓ ${configPath} exists`);
-  
+
   if (config.includes('[functions.ai-chat-assistant]')) {
     console.log('  ✓ ai-chat-assistant function is configured');
   }
@@ -83,8 +83,8 @@ if (fs.existsSync(configPath)) {
 // Test 5: Test Google API directly
 console.log('\n✅ Test 5: Google Generative AI API');
 async function testGoogleAPI() {
-  const API_KEY = 'AIzaSyAm-hpg9pjc66DqNnS8qHpdgeKBd-FZP70';
-  
+  const API_KEY = '[REMOVED_SECRET_ROTATE]';
+
   try {
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${API_KEY}`,

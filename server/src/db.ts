@@ -14,7 +14,7 @@ console.log('🔧 DB Config:', {
 const dbConfig = {
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
+    password: process.env.DB_PASSWORD || process.env.MYSQL_ROOT_PASSWORD || '',
     database: process.env.DB_NAME || 'Freelance',
     port: parseInt(process.env.DB_PORT || '3306'),
     waitForConnections: true,

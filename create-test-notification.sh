@@ -18,7 +18,7 @@ if [ -z "$SENDER_ID" ] || [ -z "$RECEIVER_ID" ]; then
     exit 1
 fi
 
-SENDER_NAME=$(mysql -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" -sN -e "SELECT name FROM users WHERE id='$SENDER_ID';" 2>/dev/null)  
+SENDER_NAME=$(mysql -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" -sN -e "SELECT name FROM users WHERE id='$SENDER_ID';" 2>/dev/null)
 RECEIVER_NAME=$(mysql -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" -sN -e "SELECT name FROM users WHERE id='$RECEIVER_ID';" 2>/dev/null)
 
 echo "👤 Sender: $SENDER_NAME ($SENDER_ID)"
@@ -33,7 +33,7 @@ CONV_ID=$(uuidgen)
 echo "1️⃣ Creating conversation..."
 # Check if conversation exists
 EXISTING_CONV=$(mysql -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" -sN -e "
-SELECT id FROM conversations 
+SELECT id FROM conversations
 WHERE (user1_id='$SENDER_ID' AND user2_id='$RECEIVER_ID')
    OR (user1_id='$RECEIVER_ID' AND user2_id='$SENDER_ID')
 LIMIT 1;
@@ -69,13 +69,13 @@ echo ""
 
 echo "4️⃣ Updating conversation unread count..."
 mysql -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" -e "
-UPDATE conversations 
+UPDATE conversations
 SET unread_count_user2 = unread_count_user2 + 1,
     last_message_id = '$MSG_ID',
     last_message_at = NOW()
 WHERE id = '$CONV_ID' AND user2_id = '$RECEIVER_ID';
 
-UPDATE conversations 
+UPDATE conversations
 SET unread_count_user1 = unread_count_user1 + 1,
     last_message_id = '$MSG_ID',
     last_message_at = NOW()
@@ -86,8 +86,8 @@ echo ""
 
 echo "5️⃣ Verifying..."
 mysql -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" -e "
-SELECT 
-    CONCAT('   Receiver unread count: ', 
+SELECT
+    CONCAT('   Receiver unread count: ',
         COALESCE((SELECT unread_count_user1 FROM conversations WHERE id='$CONV_ID' AND user1_id='$RECEIVER_ID'), 0) +
         COALESCE((SELECT unread_count_user2 FROM conversations WHERE id='$CONV_ID' AND user2_id='$RECEIVER_ID'), 0)
     ) as result;
@@ -106,5 +106,5 @@ echo "   4. Click it to see the test message"
 echo ""
 echo "🌐 Or test API directly:"
 echo "   curl http://localhost:3001/api/messages/unread-total \\"
-echo "        -H 'Authorization: Bearer YOUR_TOKEN'"
+echo "        -H 'Authorization: Bearer ${API_TOKEN}'"
 echo ""

@@ -18,7 +18,7 @@
 ### 2. تحديث Backend (`/supabase/functions/ai-chat-assistant/index.ts`)
 ```
 ✨ التغييرات:
-- Google API Key: AIzaSyAm-hpg9pjc66DqNnS8qHpdgeKBd-FZP70
+- Google API Key: [REMOVED_SECRET_ROTATE]
 - استدعاء Google Generative AI مباشرة
 - System Prompt محدّث بالكامل (نسخة التاريخ)
 - معالجة أخطاء شاملة
@@ -109,7 +109,7 @@ http://localhost:8082/chat-assistant
 
 ### Google API Key
 ```
-المفتاح: AIzaSyAm-hpg9pjc66DqNnS8qHpdgeKBd-FZP70
+المفتاح: [REMOVED_SECRET_ROTATE]
 النموذج: gemini-2.0-flash
 الحد: حسب استخدامك
 ```

@@ -5,7 +5,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt, { Secret } from 'jsonwebtoken';
 import crypto from 'crypto';
-import { queryOne, execute } from '../db';
+import { query, queryOne, execute } from '../db';
 
 export const getJwtSecret = (): Secret => {
     const secret = process.env.JWT_SECRET;
@@ -84,6 +84,37 @@ async function instructorAccountAccess(userId: string) {
     );
 }
 
+/** Resolve tenant scope from persisted membership/enrollment, never from an
+ * untrusted request field. A JWT tenant claim is only a selector and must
+ * still match an active server-side membership. */
+async function resolveTenantContext(userId: string, role: string, claimedTenantId?: string): Promise<string | undefined> {
+    if (role === 'admin') return undefined;
+
+    if (role === 'student') {
+        const enrollments = await query<{ tenant_id: string }>(
+            `SELECT DISTINCT s.tenant_id
+             FROM students s INNER JOIN tenants t ON t.id=s.tenant_id
+             WHERE s.user_id=? AND s.is_active=1 AND t.status='active'
+               AND (? IS NULL OR s.tenant_id=?)
+             ORDER BY s.tenant_id`,
+            [userId, claimedTenantId || null, claimedTenantId || null]
+        );
+        if (enrollments.length !== 1) throw new Error('Exactly one active student tenant enrollment is required');
+        return enrollments[0].tenant_id;
+    }
+
+    const memberships = await query<{ tenant_id: string }>(
+        `SELECT m.tenant_id FROM tenant_memberships m
+         INNER JOIN tenants t ON t.id=m.tenant_id
+         WHERE m.user_id=? AND m.status='active' AND t.status='active'
+           AND (? IS NULL OR m.tenant_id=?)
+         ORDER BY m.created_at DESC`,
+        [userId, claimedTenantId || null, claimedTenantId || null]
+    );
+    if (memberships.length !== 1) throw new Error('Exactly one active tenant membership is required');
+    return memberships[0].tenant_id;
+}
+
 /**
  * Basic JWT authentication - verifies token and attaches user
  */
@@ -97,6 +128,7 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
         }
 
         const decoded = validateClaims(jwt.verify(token, getJwtSecret()));
+        const tenantId = await resolveTenantContext(decoded.id, decoded.role, decoded.tenant_id);
         if (decoded.role === 'student') {
             const tokenState = await queryOne<any>('SELECT token_version,is_active FROM users WHERE id=? AND role=\'student\' LIMIT 1', [decoded.id]);
             if (!tokenState?.is_active || Number(decoded.tv || 0) !== Number(tokenState.token_version || 0)) {
@@ -125,7 +157,7 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
             phone: decoded.phone || null,
             role: decoded.role,
             billingOnly,
-            tenantId: decoded.tenant_id,
+            tenantId,
             studentEnrollmentId: decoded.student_enrollment_id,
             instructorId: decoded.instructor_id,
             groupId: decoded.group_id,
@@ -155,6 +187,7 @@ export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFu
 
         if (token) {
             const decoded = validateClaims(jwt.verify(token, getJwtSecret()));
+            const tenantId = await resolveTenantContext(decoded.id, decoded.role, decoded.tenant_id);
             if (decoded.role === 'student') {
                 const tokenState = await queryOne<any>('SELECT token_version,is_active FROM users WHERE id=? AND role=\'student\' LIMIT 1', [decoded.id]);
                 if (!tokenState?.is_active || Number(decoded.tv || 0) !== Number(tokenState.token_version || 0)) {
@@ -178,7 +211,7 @@ export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFu
                 phone: decoded.phone || null,
                 role: decoded.role,
                 billingOnly,
-                tenantId: decoded.tenant_id,
+                tenantId,
                 studentEnrollmentId: decoded.student_enrollment_id,
                 instructorId: decoded.instructor_id,
                 groupId: decoded.group_id,

@@ -2,15 +2,10 @@ import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { query, queryOne, execute } from '../db';
 import { optionalAuth, instructorScopeId, AuthRequest, authenticateToken } from '../middleware/auth';
-import { ensureGroupInstructorColumn } from '../utils/instructor-scope';
 import { requireTeachingWrite } from '../middleware/teaching-access';
 
 const router = Router();
 
-router.use(async (_req: AuthRequest, _res: Response, next: any) => {
-    await ensureGroupInstructorColumn();
-    next();
-});
 router.use(optionalAuth);
 
 // Instructors can only manage groups that belong to them
@@ -195,7 +190,7 @@ router.put('/:id', requireTeachingWrite('groups'), async (req: AuthRequest, res:
         }
 
         const result = await execute(
-            `UPDATE \`groups\` 
+            `UPDATE \`groups\`
              SET name = COALESCE(?, name),
                  description = COALESCE(?, description),
                  course_id = COALESCE(?, course_id),

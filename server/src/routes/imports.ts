@@ -1,61 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query, queryOne, execute } from '../db';
 
-const DATABASE_NAME = process.env.DB_NAME || 'freelance';
-let importsSchemaEnsured = false;
-
-const ensureImportsSchema = async () => {
-    if (importsSchemaEnsured) {
-        return;
-    }
-
-    // Drop existing table to recreate with new logic
-    await execute(`DROP TABLE IF EXISTS import_items`);
-    await execute(`DROP TABLE IF EXISTS imports`);
-
-    // Create imports table
-    await execute(`
-        CREATE TABLE IF NOT EXISTS imports (
-            id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
-            supplier_name VARCHAR(255) NOT NULL,
-            supplier_phone VARCHAR(50),
-            import_date DATE NOT NULL,
-            payment_method VARCHAR(50),
-            total_amount DECIMAL(10, 2) NOT NULL DEFAULT 0,
-            paid_amount DECIMAL(10, 2) NOT NULL DEFAULT 0,
-            remaining_amount DECIMAL(10, 2) GENERATED ALWAYS AS (
-                CASE 
-                    WHEN total_amount = 0 THEN paid_amount
-                    ELSE total_amount - paid_amount
-                END
-            ) STORED,
-            notes TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_import_date (import_date),
-            INDEX idx_supplier_name (supplier_name)
-        ) ENGINE=InnoDB;
-    `);
-
-    // Create import_items table
-    await execute(`
-        CREATE TABLE IF NOT EXISTS import_items (
-            id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
-            import_id CHAR(36) NOT NULL,
-            item_code VARCHAR(100),
-            item_name VARCHAR(255) NOT NULL,
-            quantity INT NOT NULL,
-            unit_price DECIMAL(10, 2) NOT NULL,
-            total_price DECIMAL(10, 2) GENERATED ALWAYS AS (quantity * unit_price) STORED,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (import_id) REFERENCES imports(id) ON DELETE CASCADE,
-            INDEX idx_import_id (import_id)
-        ) ENGINE=InnoDB;
-    `);
-
-    importsSchemaEnsured = true;
-};
-
 const router = Router();
 
 interface Import {
@@ -85,10 +30,9 @@ interface ImportItem {
 // Get all imports with their items
 router.get('/', async (req: Request, res: Response) => {
     try {
-        await ensureImportsSchema();
-        
+
         const imports = await query<Import>('SELECT * FROM imports ORDER BY created_at DESC');
-        
+
         // Fetch items for each import
         const importsWithItems = await Promise.all(
             (imports as Import[]).map(async (imp) => {
@@ -134,8 +78,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 // Create new import
 router.post('/', async (req: Request, res: Response) => {
     try {
-        await ensureImportsSchema();
-        
+
         const { supplier_name, supplier_phone, import_date, payment_method, total_amount, paid_amount, notes, items } = req.body;
 
         if (!supplier_name || !import_date) {
@@ -147,7 +90,7 @@ router.post('/', async (req: Request, res: Response) => {
 
         // Insert import record with explicit ID
         await execute(
-            `INSERT INTO imports (id, supplier_name, supplier_phone, import_date, payment_method, total_amount, paid_amount, notes) 
+            `INSERT INTO imports (id, supplier_name, supplier_phone, import_date, payment_method, total_amount, paid_amount, notes)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             [importId, supplier_name, supplier_phone || null, import_date, payment_method || 'cash', total_amount || 0, paid_amount || 0, notes || null]
         );
@@ -158,7 +101,7 @@ router.post('/', async (req: Request, res: Response) => {
                 if (item.item_name) {
                     const itemId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
                     await execute(
-                        `INSERT INTO import_items (id, import_id, item_code, item_name, quantity, unit_price) 
+                        `INSERT INTO import_items (id, import_id, item_code, item_name, quantity, unit_price)
                          VALUES (?, ?, ?, ?, ?, ?)`,
                         [itemId, importId, item.item_code || null, item.item_name, item.quantity || 1, item.unit_price || 0]
                     );

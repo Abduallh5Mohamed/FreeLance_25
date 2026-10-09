@@ -24,9 +24,9 @@ import feesRoutes from './routes/fees';
 import paymentRequestsRoutes from './routes/payment-requests';
 import notificationsRoutes from './routes/notifications';
 import subscriptionRequestsRoutes from './routes/subscription-requests';
+import filesRoutes from './routes/files';
 import expensesRoutes from './routes/expenses';
 import importsRoutes from './routes/imports';
-import migrationsRoutes from './routes/migrations';
 import messagesRoutes from './routes/messages';
 import videosRoutes from './routes/videos';
 import secureVideoRoutes from './routes/secure-video';
@@ -53,6 +53,7 @@ import { processVideo } from './services/video-processor';
 import { reconcileTenantSubscriptions } from './services/subscription-lifecycle';
 import { optionalAuth } from './middleware/auth';
 import { enforceStudentWorkspaceBoundary } from './middleware/student-workspace-boundary';
+import { enforceTenantAuthorityBoundary } from './middleware/tenant-authority-boundary';
 
 dotenv.config();
 
@@ -101,7 +102,7 @@ app.get('/health', (req: Request, res: Response) => {
 // API Routes
 // Resolve any supplied credential before route handlers. Invalid credentials
 // must never degrade into anonymous access; public routes still allow no token.
-app.use('/api', optionalAuth, enforceStudentWorkspaceBoundary);
+app.use('/api', optionalAuth, enforceTenantAuthorityBoundary, enforceStudentWorkspaceBoundary);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/groups', groupsRoutes);
@@ -120,9 +121,9 @@ app.use('/api/fees', feesRoutes);
 app.use('/api/payment-requests', paymentRequestsRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/subscription-requests', subscriptionRequestsRoutes);
+app.use('/api/files', filesRoutes);
 app.use('/api/expenses', expensesRoutes);
 app.use('/api/imports', importsRoutes);
-app.use('/api/migrations', migrationsRoutes);
 app.use('/api/messages', messagesRoutes);
 app.use('/api/videos', videosRoutes);
 app.use('/api/secure-video', secureVideoRoutes);
@@ -274,7 +275,7 @@ const startServer = async () => {
             setTimeout(async () => {
                 try {
                     const stuck = await query(
-                        `SELECT id FROM videos WHERE status IN ('processing') AND delivery_provider='minio'
+                        `SELECT id,tenant_id FROM videos WHERE status IN ('processing') AND delivery_provider='minio' AND tenant_id IS NOT NULL
                          AND created_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)`,
                         []
                     );
@@ -282,12 +283,12 @@ const startServer = async () => {
                         console.log(`[Startup] Found ${stuck.length} stuck processing videos, re-triggering...`);
                         for (const video of stuck) {
                             await execute(
-                                `UPDATE videos SET status = 'uploading', processing_progress = 0 WHERE id = ?`,
-                                [video.id]
+                                `UPDATE videos SET status = 'uploading', processing_progress = 0 WHERE id = ? AND tenant_id = ?`,
+                                [video.id, video.tenant_id]
                             );
                             // Stagger processing to avoid overloading
                             await new Promise(r => setTimeout(r, 2000));
-                            processVideo(video.id).catch(err => {
+                            processVideo(video.id, video.tenant_id).catch(err => {
                                 console.error(`[Startup] Failed to re-process video ${video.id}:`, err);
                             });
                         }

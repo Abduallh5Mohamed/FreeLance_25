@@ -1,32 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query, queryOne, execute } from '../db';
 
-const DATABASE_NAME = process.env.DB_NAME || 'freelance';
-let expensesSchemaEnsured = false;
-
-const ensureExpensesSchema = async () => {
-    if (expensesSchemaEnsured) {
-        return;
-    }
-
-    await execute(`
-        CREATE TABLE IF NOT EXISTS expenses (
-            id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
-            description VARCHAR(500) NOT NULL,
-            amount DECIMAL(10, 2) NOT NULL,
-            category VARCHAR(100),
-            date DATE NOT NULL,
-            time TIME,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_date (date),
-            INDEX idx_category (category)
-        ) ENGINE=InnoDB;
-    `);
-
-    expensesSchemaEnsured = true;
-};
-
 const router = Router();
 
 interface Expense {
@@ -43,7 +17,6 @@ interface Expense {
 // Get all expenses
 router.get('/', async (req: Request, res: Response) => {
     try {
-        await ensureExpensesSchema();
         const expenses = await query<Expense>('SELECT * FROM expenses ORDER BY date DESC, time DESC');
         res.json(expenses);
     } catch (error) {
@@ -74,7 +47,6 @@ router.get('/:id', async (req: Request, res: Response) => {
 // Create new expense
 router.post('/', async (req: Request, res: Response) => {
     try {
-        await ensureExpensesSchema();
         const { description, amount, category, date, time } = req.body;
 
         if (!description || !amount || !date) {
@@ -82,7 +54,7 @@ router.post('/', async (req: Request, res: Response) => {
         }
 
         const result = await execute(
-            `INSERT INTO expenses (description, amount, category, date, time) 
+            `INSERT INTO expenses (description, amount, category, date, time)
              VALUES (?, ?, ?, ?, ?)`,
             [description, amount, category || null, date, time || null]
         );

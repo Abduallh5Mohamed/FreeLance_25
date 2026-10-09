@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { AuthRequest, authenticateToken, requireRoles } from '../middleware/auth';
 
 const router = Router();
 
@@ -48,7 +49,7 @@ const upload = multer({
 router.get('/payments/pending', async (req: Request, res: Response) => {
     try {
         const sql = `
-            SELECT 
+            SELECT
                 plp.*,
                 pl.title as lecture_title,
                 pl.price as lecture_price,
@@ -79,7 +80,7 @@ router.get('/payments/student/:studentId', async (req: Request, res: Response) =
         const { studentId } = req.params;
 
         const sql = `
-            SELECT 
+            SELECT
                 plp.*,
                 pl.title as lecture_title,
                 pl.price as lecture_price
@@ -103,7 +104,7 @@ router.get('/payments', async (req: Request, res: Response) => {
         const { status, lecture_id } = req.query;
 
         let sql = `
-            SELECT 
+            SELECT
                 plp.*,
                 pl.title as lecture_title,
                 pl.price as lecture_price,
@@ -141,17 +142,27 @@ router.get('/payments', async (req: Request, res: Response) => {
 });
 
 // Submit payment request with receipt image
-router.post('/payments', upload.single('receipt'), async (req: Request, res: Response) => {
+router.post('/payments', authenticateToken, requireRoles('student'), upload.single('receipt'), async (req: AuthRequest, res: Response) => {
     try {
-        const { student_id, premium_lecture_id, amount, notes } = req.body;
+        const { premium_lecture_id, amount, notes } = req.body;
+        const student_id = req.user!.studentEnrollmentId;
+        const tenantId = req.user!.tenantId;
 
-        if (!student_id || !premium_lecture_id || !req.file) {
+        if (!student_id || !tenantId || !premium_lecture_id || !req.file) {
             return res.status(400).json({ error: 'معرف الطالب والحصة وصورة الإيصال مطلوبين' });
         }
 
+        const lecture = await queryOne(
+            `SELECT pl.id FROM premium_lectures pl
+             INNER JOIN \`groups\` g ON g.id=pl.group_id
+             INNER JOIN tenants t ON t.owner_user_id=g.instructor_id
+             WHERE pl.id=? AND t.id=? AND t.status='active'`, [premium_lecture_id, tenantId]
+        );
+        if (!lecture) return res.status(404).json({ error: 'الحصة غير موجودة في مساحتك' });
+
         // Check if student already has access or pending payment
         const existingPayment = await queryOne(`
-            SELECT id, status FROM premium_lecture_payments 
+            SELECT id, status FROM premium_lecture_payments
             WHERE student_id = ? AND premium_lecture_id = ? AND status IN ('pending', 'approved')
         `, [student_id, premium_lecture_id]);
 
@@ -163,7 +174,13 @@ router.post('/payments', upload.single('receipt'), async (req: Request, res: Res
         }
 
         const id = uuidv4();
-        const receiptUrl = `/uploads/receipts/${req.file.filename}`;
+        const fileId = uuidv4();
+        const receiptUrl = `/api/files/${fileId}/download`;
+        await execute(
+            `INSERT INTO tenant_media_files (id,tenant_id,uploaded_by,storage_path,original_name,mime_type,byte_size)
+             VALUES (?,?,?,?,?,?,?)`,
+            [fileId, tenantId, req.user!.id, path.relative(process.cwd(), req.file.path), req.file.originalname, req.file.mimetype, req.file.size]
+        );
 
         await execute(`
             INSERT INTO premium_lecture_payments (id, student_id, premium_lecture_id, receipt_image_url, amount, notes, status)
@@ -185,7 +202,7 @@ router.post('/payments/:id/approve', async (req: Request, res: Response) => {
         const { reviewed_by } = req.body;
 
         const payment = await queryOne('SELECT * FROM premium_lecture_payments WHERE id = ?', [id]);
-        
+
         if (!payment) {
             return res.status(404).json({ error: 'طلب الدفع غير موجود' });
         }
@@ -196,7 +213,7 @@ router.post('/payments/:id/approve', async (req: Request, res: Response) => {
 
         // Update payment status
         await execute(`
-            UPDATE premium_lecture_payments 
+            UPDATE premium_lecture_payments
             SET status = 'approved', reviewed_by = ?, reviewed_at = NOW()
             WHERE id = ?
         `, [reviewed_by || null, id]);
@@ -222,7 +239,7 @@ router.post('/payments/:id/reject', async (req: Request, res: Response) => {
         const { reviewed_by, rejection_reason } = req.body;
 
         const payment = await queryOne('SELECT * FROM premium_lecture_payments WHERE id = ?', [id]);
-        
+
         if (!payment) {
             return res.status(404).json({ error: 'طلب الدفع غير موجود' });
         }
@@ -232,7 +249,7 @@ router.post('/payments/:id/reject', async (req: Request, res: Response) => {
         }
 
         await execute(`
-            UPDATE premium_lecture_payments 
+            UPDATE premium_lecture_payments
             SET status = 'rejected', reviewed_by = ?, reviewed_at = NOW(), rejection_reason = ?
             WHERE id = ?
         `, [reviewed_by || null, rejection_reason || null, id]);
@@ -255,14 +272,14 @@ router.get('/student/:studentId/available', async (req: Request, res: Response) 
 
         // Get student's grade and group
         const student = await queryOne('SELECT id, grade_id, group_id FROM students WHERE id = ?', [studentId]);
-        
+
         if (!student) {
             return res.status(404).json({ error: 'الطالب غير موجود' });
         }
 
         // Get all published premium lectures for student's grade/group
         const sql = `
-            SELECT 
+            SELECT
                 pl.*,
                 gr.name as grade_name,
                 g.name as group_name,
@@ -273,7 +290,7 @@ router.get('/student/:studentId/available', async (req: Request, res: Response) 
             LEFT JOIN grades gr ON pl.grade_id = gr.id
             LEFT JOIN \`groups\` g ON pl.group_id = g.id
             LEFT JOIN premium_lecture_access pla ON pla.premium_lecture_id = pl.id AND pla.student_id = ?
-            LEFT JOIN premium_lecture_payments plp ON plp.premium_lecture_id = pl.id AND plp.student_id = ? 
+            LEFT JOIN premium_lecture_payments plp ON plp.premium_lecture_id = pl.id AND plp.student_id = ?
                 AND plp.status IN ('pending', 'approved')
             WHERE pl.is_published = TRUE
             AND (pl.grade_id IS NULL OR pl.grade_id = ?)
@@ -295,7 +312,7 @@ router.get('/student/:studentId/purchased', async (req: Request, res: Response) 
         const { studentId } = req.params;
 
         const sql = `
-            SELECT 
+            SELECT
                 pl.*,
                 gr.name as grade_name,
                 g.name as group_name,
@@ -326,7 +343,7 @@ router.get('/access/check/:studentId/:lectureId', async (req: Request, res: Resp
         const { studentId, lectureId } = req.params;
 
         const access = await queryOne(`
-            SELECT * FROM premium_lecture_access 
+            SELECT * FROM premium_lecture_access
             WHERE student_id = ? AND premium_lecture_id = ?
         `, [studentId, lectureId]);
 
@@ -343,7 +360,7 @@ router.get('/', async (req: Request, res: Response) => {
         const { grade_id, group_id } = req.query;
 
         let sql = `
-            SELECT 
+            SELECT
                 pl.*,
                 gr.name as grade_name,
                 g.name as group_name,
@@ -384,7 +401,7 @@ router.get('/', async (req: Request, res: Response) => {
 router.get('/payments/pending', async (req: Request, res: Response) => {
     try {
         const sql = `
-            SELECT 
+            SELECT
                 plp.*,
                 pl.title as lecture_title,
                 pl.price as lecture_price,
@@ -415,7 +432,7 @@ router.get('/payments', async (req: Request, res: Response) => {
         const { status, lecture_id } = req.query;
 
         let sql = `
-            SELECT 
+            SELECT
                 plp.*,
                 pl.title as lecture_title,
                 pl.price as lecture_price,
@@ -470,7 +487,7 @@ router.post('/payments/:id/approve', async (req: Request, res: Response) => {
 
         // Update payment status
         await execute(`
-            UPDATE premium_lecture_payments 
+            UPDATE premium_lecture_payments
             SET status = 'approved', reviewed_by = ?, reviewed_at = NOW()
             WHERE id = ?
         `, [reviewed_by || null, id]);
@@ -506,7 +523,7 @@ router.post('/payments/:id/reject', async (req: Request, res: Response) => {
         }
 
         await execute(`
-            UPDATE premium_lecture_payments 
+            UPDATE premium_lecture_payments
             SET status = 'rejected', reviewed_by = ?, reviewed_at = NOW(), rejection_reason = ?
             WHERE id = ?
         `, [reviewed_by || null, rejection_reason || null, id]);
@@ -524,7 +541,7 @@ router.get('/access/check/:studentId/:lectureId', async (req: Request, res: Resp
         const { studentId, lectureId } = req.params;
 
         const access = await queryOne(`
-            SELECT * FROM premium_lecture_access 
+            SELECT * FROM premium_lecture_access
             WHERE student_id = ? AND premium_lecture_id = ?
         `, [studentId, lectureId]);
 
@@ -544,7 +561,7 @@ router.get('/:id', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
         const lecture = await queryOne(`
-            SELECT 
+            SELECT
                 pl.*,
                 gr.name as grade_name,
                 g.name as group_name
@@ -595,7 +612,7 @@ router.put('/:id', async (req: Request, res: Response) => {
         const { title, description, video_url, thumbnail_url, duration_minutes, price, grade_id, group_id, is_published } = req.body;
 
         await execute(`
-            UPDATE premium_lectures 
+            UPDATE premium_lectures
             SET title = ?, description = ?, video_url = ?, thumbnail_url = ?, duration_minutes = ?, price = ?, grade_id = ?, group_id = ?, is_published = ?
             WHERE id = ?
         `, [title, description || null, video_url, thumbnail_url || null, duration_minutes || 0, price, grade_id || null, group_id || null, is_published ? 1 : 0, id]);
@@ -638,7 +655,7 @@ router.get('/student/:studentId/available', async (req: Request, res: Response) 
 
         // Get all published premium lectures for student's grade/group
         const sql = `
-            SELECT 
+            SELECT
                 pl.*,
                 gr.name as grade_name,
                 g.name as group_name,
@@ -649,7 +666,7 @@ router.get('/student/:studentId/available', async (req: Request, res: Response) 
             LEFT JOIN grades gr ON pl.grade_id = gr.id
             LEFT JOIN \`groups\` g ON pl.group_id = g.id
             LEFT JOIN premium_lecture_access pla ON pla.premium_lecture_id = pl.id AND pla.student_id = ?
-            LEFT JOIN premium_lecture_payments plp ON plp.premium_lecture_id = pl.id AND plp.student_id = ? 
+            LEFT JOIN premium_lecture_payments plp ON plp.premium_lecture_id = pl.id AND plp.student_id = ?
                 AND plp.status IN ('pending', 'approved')
             WHERE pl.is_published = TRUE
             AND (pl.grade_id IS NULL OR pl.grade_id = ?)
@@ -671,7 +688,7 @@ router.get('/student/:studentId/purchased', async (req: Request, res: Response) 
         const { studentId } = req.params;
 
         const sql = `
-            SELECT 
+            SELECT
                 pl.*,
                 gr.name as grade_name,
                 g.name as group_name,
@@ -692,47 +709,8 @@ router.get('/student/:studentId/purchased', async (req: Request, res: Response) 
     }
 });
 
-// ===============================
-// PAYMENT REQUESTS
-// ===============================
-
-// Submit payment request with receipt image
-router.post('/payments', upload.single('receipt'), async (req: Request, res: Response) => {
-    try {
-        const { student_id, premium_lecture_id, amount, notes } = req.body;
-
-        if (!student_id || !premium_lecture_id || !req.file) {
-            return res.status(400).json({ error: 'معرف الطالب والحصة وصورة الإيصال مطلوبين' });
-        }
-
-        // Check if student already has access or pending payment
-        const existingPayment = await queryOne(`
-            SELECT id, status FROM premium_lecture_payments 
-            WHERE student_id = ? AND premium_lecture_id = ? AND status IN ('pending', 'approved')
-        `, [student_id, premium_lecture_id]);
-
-        if (existingPayment) {
-            if (existingPayment.status === 'approved') {
-                return res.status(400).json({ error: 'لديك وصول مسبق لهذه الحصة' });
-            }
-            return res.status(400).json({ error: 'لديك طلب دفع قيد المراجعة' });
-        }
-
-        const id = uuidv4();
-        const receiptUrl = `/uploads/receipts/${req.file.filename}`;
-
-        await execute(`
-            INSERT INTO premium_lecture_payments (id, student_id, premium_lecture_id, receipt_image_url, amount, notes, status)
-            VALUES (?, ?, ?, ?, ?, ?, 'pending')
-        `, [id, student_id, premium_lecture_id, receiptUrl, amount || 0, notes || null]);
-
-        const newPayment = await queryOne('SELECT * FROM premium_lecture_payments WHERE id = ?', [id]);
-        res.status(201).json(newPayment);
-    } catch (error) {
-        console.error('Submit payment error:', error);
-        res.status(500).json({ error: 'فشل في إرسال طلب الدفع' });
-    }
-});
+// The duplicated legacy public payment-upload route was removed. All receipt
+// uploads use the authenticated and tenant-scoped handler above.
 
 // Get student's payment requests
 router.get('/payments/student/:studentId', async (req: Request, res: Response) => {
@@ -740,7 +718,7 @@ router.get('/payments/student/:studentId', async (req: Request, res: Response) =
         const { studentId } = req.params;
 
         const sql = `
-            SELECT 
+            SELECT
                 plp.*,
                 pl.title as lecture_title,
                 pl.price as lecture_price

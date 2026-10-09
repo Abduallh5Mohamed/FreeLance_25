@@ -241,7 +241,7 @@ curl -X POST http://localhost:3001/api/registration-requests \
 
 ### اختبر جلب الطلبات:
 ```bash
-curl -H "Authorization: Bearer ADMIN_TOKEN" \
+curl -H "Authorization: Bearer $AUTH_TOKEN" \
   "http://localhost:3001/api/registration-requests?is_offline=false&status=pending"
 ```
 

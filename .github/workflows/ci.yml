@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Gitleaks
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            | tar -xz -C /tmp gitleaks
+          sudo install /tmp/gitleaks /usr/local/bin/gitleaks
+      - name: Scan complete checkout for secrets
+        run: gitleaks dir . --max-archive-depth 3 --redact --no-banner
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check:conflicts
+      - run: npm run build
+      - run: npm run test:access
+      - name: Backend checks
+        run: |
+          cd server
+          npm ci
+          npm run build
+          npm test
+
+  m1-tenant-isolation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run m1:env
+      - name: Start fresh MySQL 8 and MinIO
+        run: docker compose --env-file .env.m1 -f compose.m1.yaml up -d --wait
+      - name: Seed isolated tenant fixtures
+        run: |
+          set -a
+          . ./.env.m1
+          set +a
+          cd server
+          npm ci
+          npm run build
+          npm run seed:m1
+      - name: Start API with isolated database environment
+        run: |
+          set -a
+          . ./.env.m1
+          set +a
+          cd server
+          nohup npm run dev:server > ../m1-api.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3188/health >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          cat ../m1-api.log
+          exit 1
+      - name: Run API, file, video-token, and job tenant-boundary tests
+        run: cd server && npm run test:m1:integration
+      - if: always()
+        run: docker compose --env-file .env.m1 -f compose.m1.yaml down -v

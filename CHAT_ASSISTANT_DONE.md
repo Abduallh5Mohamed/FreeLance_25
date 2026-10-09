@@ -4,7 +4,7 @@
 
 #### 1. **Google Generative AI Integration** ✨
 ```typescript
-// API Key: AIzaSyAm-hpg9pjc66DqNnS8qHpdgeKBd-FZP70
+// API Key: [REMOVED_SECRET_ROTATE]
 // Model: gemini-2.0-flash
 // متصل مباشرة - جاهز للعمل
 ```

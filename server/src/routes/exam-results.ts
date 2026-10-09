@@ -1,13 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { query, queryOne } from '../db';
 import { optionalAuth, instructorScopeId, AuthRequest } from '../middleware/auth';
-import { ensureGroupInstructorColumn } from '../utils/instructor-scope';
 
 const router = Router();
-router.use(async (_req: AuthRequest, _res: Response, next: any) => {
-    await ensureGroupInstructorColumn();
-    next();
-});
 router.use(optionalAuth);
 
 interface ExamResult {
@@ -35,7 +30,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
         const scopeId = instructorScopeId(req);
 
         let sql = `
-            SELECT 
+            SELECT
                 er.id,
                 er.exam_id,
                 e.title AS exam_title,
@@ -99,7 +94,7 @@ router.get('/student/:studentId', async (req: Request, res: Response) => {
 
         // Get results from BOTH exam_results AND exam_attempts
         const sql = `
-            SELECT 
+            SELECT
                 COALESCE(er.id, ea.id) AS id,
                 COALESCE(er.exam_id, ea.exam_id) AS exam_id,
                 e.title AS exam_title,
@@ -107,8 +102,8 @@ router.get('/student/:studentId', async (req: Request, res: Response) => {
                 COALESCE(er.marks_obtained, ea.score) AS score,
                 COALESCE(er.total_marks, e.total_marks) AS total_marks,
                 e.passing_marks,
-                COALESCE(ea.status, 
-                    CASE 
+                COALESCE(ea.status,
+                    CASE
                         WHEN COALESCE(er.marks_obtained, ea.score) >= e.passing_marks THEN 'passed'
                         ELSE 'failed'
                     END
@@ -148,7 +143,7 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
         const scopeId = instructorScopeId(req);
 
         const sql = `
-            SELECT 
+            SELECT
                 er.id,
                 er.exam_id,
                 e.title AS exam_title,

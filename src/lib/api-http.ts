@@ -318,11 +318,6 @@ export const submitPlatformPayment = (subscriptionId: string, data: { amount: st
     });
 export const verifyPlatformPayment = (id: string) =>
     request<{ status: string; login_enabled: boolean }>(`/admin/platform/payments/${id}/verify`, { method: 'POST' });
-export const permanentlyDeletePlatformTenant = (tenantId: string, confirmation: string) =>
-    request<{ deleted: boolean; detached_teaching_data: boolean }>(`/admin/platform/tenants/${tenantId}/permanent`, {
-        method: 'DELETE', body: JSON.stringify({ confirmation }),
-    });
-
 export interface InstructorAccountStatement {
     generated_at: string;
     permissions: {

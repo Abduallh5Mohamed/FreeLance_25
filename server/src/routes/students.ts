@@ -3,15 +3,10 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { getPool, query, queryOne, execute } from '../db';
 import { optionalAuth, instructorScopeId, AuthRequest, authenticateToken } from '../middleware/auth';
-import { ensureGroupInstructorColumn } from '../utils/instructor-scope';
 import { requireTeachingWrite } from '../middleware/teaching-access';
 import { normalizeEgyptianPhone, phoneLookupCandidates } from '../security/phone';
 
 const router = Router();
-router.use(async (_req: AuthRequest, _res: Response, next: any) => {
-    await ensureGroupInstructorColumn();
-    next();
-});
 router.use(optionalAuth);
 
 // Does this student belong to the instructor? Either directly assigned
@@ -69,14 +64,14 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
         if (req.user?.role === 'student') return res.status(403).json({ error: 'Use /students/me' });
         const scopeId = instructorScopeId(req);
         let sql = `SELECT
-                s.*, 
-                g.name AS grade_name, 
+                s.*,
+                g.name AS grade_name,
                 grp.name AS group_name,
                 s.created_at AS enrollment_date,
                 (
                     SELECT GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ',')
-                    FROM student_courses sc 
-                    INNER JOIN courses c ON sc.course_id = c.id 
+                    FROM student_courses sc
+                    INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
                 ) AS course_names
              FROM students s
@@ -119,15 +114,15 @@ router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => 
 router.get('/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const student = await queryOne(
-            `SELECT 
-                s.*, 
-                g.name AS grade_name, 
+            `SELECT
+                s.*,
+                g.name AS grade_name,
                 grp.name AS group_name,
                 s.created_at AS enrollment_date,
                 (
                     SELECT GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ',')
-                    FROM student_courses sc 
-                    INNER JOIN courses c ON sc.course_id = c.id 
+                    FROM student_courses sc
+                    INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
                 ) AS course_names
              FROM students s
@@ -153,15 +148,15 @@ router.get('/:id', authenticateToken, async (req: AuthRequest, res: Response) =>
 router.get('/email/:email', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const student = await queryOne(
-            `SELECT 
-                s.*, 
-                g.name AS grade_name, 
+            `SELECT
+                s.*,
+                g.name AS grade_name,
                 grp.name AS group_name,
                 s.created_at AS enrollment_date,
                 (
                     SELECT GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ',')
-                    FROM student_courses sc 
-                    INNER JOIN courses c ON sc.course_id = c.id 
+                    FROM student_courses sc
+                    INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
                 ) AS course_names
              FROM students s
@@ -188,15 +183,15 @@ router.get('/phone/:phone', authenticateToken, async (req: AuthRequest, res: Res
     try {
         if (req.user?.role === 'student') return res.status(403).json({ error: 'Use /students/me' });
         const student = await queryOne(
-            `SELECT 
-                s.*, 
-                g.name AS grade_name, 
+            `SELECT
+                s.*,
+                g.name AS grade_name,
                 grp.name AS group_name,
                 s.created_at AS enrollment_date,
                 (
                     SELECT GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ',')
-                    FROM student_courses sc 
-                    INNER JOIN courses c ON sc.course_id = c.id 
+                    FROM student_courses sc
+                    INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
                 ) AS course_names
              FROM students s
@@ -222,15 +217,15 @@ router.get('/phone/:phone', authenticateToken, async (req: AuthRequest, res: Res
 router.get('/barcode/:barcode', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const student = await queryOne(
-            `SELECT 
-                s.*, 
-                g.name AS grade_name, 
+            `SELECT
+                s.*,
+                g.name AS grade_name,
                 grp.name AS group_name,
                 s.created_at AS enrollment_date,
                 (
                     SELECT GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ',')
-                    FROM student_courses sc 
-                    INNER JOIN courses c ON sc.course_id = c.id 
+                    FROM student_courses sc
+                    INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
                 ) AS course_names
              FROM students s
@@ -336,15 +331,15 @@ router.post('/', requireTeachingWrite('students'), async (req: AuthRequest, res:
         } finally { connection.release(); }
 
         const newStudent = await queryOne(
-            `SELECT 
-                s.*, 
-                g.name AS grade_name, 
+            `SELECT
+                s.*,
+                g.name AS grade_name,
                 grp.name AS group_name,
                 s.created_at AS enrollment_date,
                 (
                     SELECT GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ',')
-                    FROM student_courses sc 
-                    INNER JOIN courses c ON sc.course_id = c.id 
+                    FROM student_courses sc
+                    INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
                 ) AS course_names
              FROM students s
@@ -512,15 +507,15 @@ router.put('/:id', requireTeachingWrite('students'), async (req: AuthRequest, re
         }
 
         const updatedStudent = await queryOne(
-            `SELECT 
-                s.*, 
-                g.name AS grade_name, 
+            `SELECT
+                s.*,
+                g.name AS grade_name,
                 grp.name AS group_name,
                 s.created_at AS enrollment_date,
                 (
                     SELECT GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ',')
-                    FROM student_courses sc 
-                    INNER JOIN courses c ON sc.course_id = c.id 
+                    FROM student_courses sc
+                    INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
                 ) AS course_names
              FROM students s

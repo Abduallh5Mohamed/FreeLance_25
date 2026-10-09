@@ -284,15 +284,15 @@ async function generateEncryptionKey(videoId: string, outputDir: string): Promis
     // Generate random 16-byte key
     const key = crypto.randomBytes(16);
     const keyHex = key.toString('hex');
-    
+
     // Generate random IV
     const iv = crypto.randomBytes(16);
     const ivHex = iv.toString('hex');
-    
+
     // Save key file
     const keyPath = path.join(outputDir, 'encryption.key');
     await fs.writeFile(keyPath, key);
-    
+
     // Create key info file for FFmpeg
     // Format: key URL\nkey file path\nIV (optional)
     const apiBase = process.env.API_BASE_URL || 'http://localhost:3001';
@@ -300,9 +300,9 @@ async function generateEncryptionKey(videoId: string, outputDir: string): Promis
     const keyInfoContent = `${keyUrl}\n${keyPath}\n${ivHex}`;
     const keyInfoPath = path.join(outputDir, 'enc.keyinfo');
     await fs.writeFile(keyInfoPath, keyInfoContent);
-    
+
     console.log(`[Encryption] Generated AES-128 key for video ${videoId}`);
-    
+
     return { keyPath, keyInfoPath, keyHex, ivHex };
 }
 
@@ -310,12 +310,21 @@ async function generateEncryptionKey(videoId: string, outputDir: string): Promis
  * Process a video: download, convert to encrypted HLS, upload to private storage.
  * FFmpeg is mandatory; the original file is never used as a playback fallback.
  */
-export async function processVideo(videoId: string): Promise<void> {
+export async function processVideo(videoId: string, tenantId: string): Promise<void> {
     console.log(`[VideoProcessor] Starting processing for video ${videoId}`);
+
+    const video = await queryOne<any>(
+        `SELECT v.*,COALESCE(t.business_name,u.name,'INSTRUCTOR') watermark_owner
+         FROM videos v LEFT JOIN users u ON u.id=v.uploaded_by
+         LEFT JOIN tenants t ON t.id=v.tenant_id
+         WHERE v.id=? AND v.tenant_id=?`,
+        [videoId, tenantId]
+    );
+    if (!video) throw new Error(`Video ${videoId} is outside the requested tenant`);
 
     // Check if FFmpeg is available
     const ffmpegAvailable = await checkFfmpegAvailable();
-    
+
     if (!ffmpegAvailable) throw new Error('FFmpeg is required: original videos are never exposed for playback');
 
     await ensureTempDir();
@@ -323,22 +332,11 @@ export async function processVideo(videoId: string): Promise<void> {
     await fs.mkdir(workDir, { recursive: true });
 
     try {
-        // Update status to processing
+        // Update status to processing only after the tenant-owned row is verified.
         await execute(
-            'UPDATE videos SET status = ?, processing_progress = ? WHERE id = ?',
-            ['processing', 0, videoId]
+            'UPDATE videos SET status = ?, processing_progress = ? WHERE id = ? AND tenant_id = ?',
+            ['processing', 0, videoId, tenantId]
         );
-
-        // Get video info and the instructor label burned into every rendition.
-        const video = await queryOne(
-            `SELECT v.*,COALESCE(t.business_name,u.name,'INSTRUCTOR') watermark_owner
-             FROM videos v LEFT JOIN users u ON u.id=v.uploaded_by
-             LEFT JOIN tenants t ON t.owner_user_id=v.uploaded_by WHERE v.id=?`,
-            [videoId]
-        );
-        if (!video) {
-            throw new Error(`Video ${videoId} not found in database`);
-        }
 
         // Download original from MinIO
         const originalPath = path.join(workDir, 'original.mp4');
@@ -390,7 +388,7 @@ export async function processVideo(videoId: string): Promise<void> {
         // Generate encryption key if encryption is enabled
         let encryptionKeyInfo: string | undefined;
         let encryptionData: { keyHex: string; ivHex: string } | undefined;
-        
+
         if (ENABLE_ENCRYPTION) {
             console.log(`[VideoProcessor] Generating encryption key...`);
             const encryption = await generateEncryptionKey(videoId, workDir);
@@ -423,9 +421,9 @@ export async function processVideo(videoId: string): Promise<void> {
         );
 
         // Update database with final info (including encryption key if encrypted)
-        const updateQuery = encryptionData 
-            ? `UPDATE videos SET 
-                status = ?, 
+        const updateQuery = encryptionData
+            ? `UPDATE videos SET
+                status = ?,
                 processing_progress = 100,
                 hls_key = ?,
                 qualities_available = ?,
@@ -434,14 +432,14 @@ export async function processVideo(videoId: string): Promise<void> {
                 is_encrypted = 1,
                 processed_at = NOW()
             WHERE id = ?`
-            : `UPDATE videos SET 
-                status = ?, 
+            : `UPDATE videos SET
+                status = ?,
                 processing_progress = 100,
                 hls_key = ?,
                 qualities_available = ?,
                 processed_at = NOW()
             WHERE id = ?`;
-        
+
         const updateParams = encryptionData
             ? ['ready', `${videoId}/playlist.m3u8`, JSON.stringify(qualities), encryptionData.keyHex, encryptionData.ivHex, videoId]
             : ['ready', `${videoId}/playlist.m3u8`, JSON.stringify(qualities), videoId];
@@ -459,8 +457,8 @@ export async function processVideo(videoId: string): Promise<void> {
         console.error(`[VideoProcessor] Error processing video ${videoId}:`, error);
 
         await execute(
-            'UPDATE videos SET status = ?, processing_error = ? WHERE id = ?',
-            ['failed', error instanceof Error ? error.message : 'Unknown error', videoId]
+            'UPDATE videos SET status = ?, processing_error = ? WHERE id = ? AND tenant_id = ?',
+            ['failed', error instanceof Error ? error.message : 'Unknown error', videoId, tenantId]
         );
 
         throw error;

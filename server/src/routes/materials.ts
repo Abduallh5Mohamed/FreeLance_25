@@ -4,14 +4,9 @@ import https from 'https';
 import type { IncomingMessage } from 'http';
 import crypto from 'crypto';
 import { authenticateToken, optionalAuth, instructorScopeId, AuthRequest } from '../middleware/auth';
-import { ensureGroupInstructorColumn } from '../utils/instructor-scope';
 import { requireTeachingWrite } from '../middleware/teaching-access';
 
 const router = Router();
-router.use(async (_req: AuthRequest, _res: Response, next: any) => {
-    await ensureGroupInstructorColumn();
-    next();
-});
 router.use(optionalAuth);
 
 // Material is editable by an instructor when it's linked to at least one of their groups
@@ -59,7 +54,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
         const scopeId = instructorScopeId(req);
 
         let sql = `
-            SELECT 
+            SELECT
                 cm.*,
                 c.name as course_name,
                 c.subject as course_subject
@@ -167,7 +162,7 @@ router.get('/:id', authenticateToken, async (req: AuthRequest, res: Response) =>
     try {
         const scopeId = instructorScopeId(req);
         const material = await queryOne(
-            `SELECT 
+            `SELECT
                 cm.*,
                 c.name as course_name,
                 c.subject as course_subject
@@ -237,9 +232,9 @@ router.post('/', requireTeachingWrite('materials'), async (req: AuthRequest, res
         const materialId = crypto.randomUUID();
 
         const result = await execute(
-            `INSERT INTO course_materials 
-            (id, course_id, title, description, material_type, file_url, file_size, 
-             duration_minutes, display_order, is_free, is_published) 
+            `INSERT INTO course_materials
+            (id, course_id, title, description, material_type, file_url, file_size,
+             duration_minutes, display_order, is_free, is_published)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 materialId,
@@ -332,7 +327,7 @@ router.put('/:id', requireTeachingWrite('materials'), async (req: AuthRequest, r
         }
 
         const result = await execute(
-            `UPDATE course_materials 
+            `UPDATE course_materials
              SET title = COALESCE(?, title),
                  description = COALESCE(?, description),
                  material_type = COALESCE(?, material_type),
@@ -544,4 +539,3 @@ router.post('/get-stream-url', async (req: Request, res: Response) => {
 });
 
 export default router;
-

@@ -3,15 +3,11 @@ import { query, queryOne, execute } from '../db';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { randomUUID } from 'crypto';
 import { optionalAuth, instructorScopeId, AuthRequest } from '../middleware/auth';
-import { ensureGroupInstructorColumn } from '../utils/instructor-scope';
 import { requireTeachingWrite } from '../middleware/teaching-access';
 
 const router = Router();
-router.use(async (_req: AuthRequest, _res: Response, next: any) => {
-    await ensureGroupInstructorColumn();
-    next();
-});
 router.use(optionalAuth);
 
 // Exams belong to an instructor when the exam is linked to at least one of
@@ -115,7 +111,7 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
         if (student.group_id) {
             // Try getting exams via exam_groups first
             exams = await query<Exam>(
-                `SELECT DISTINCT e.* 
+                `SELECT DISTINCT e.*
                  FROM exams e
                  LEFT JOIN exam_groups eg ON e.id = eg.exam_id
                  WHERE (eg.group_id = ? OR (e.grade_id = ? AND eg.exam_id IS NULL))
@@ -128,7 +124,7 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
         // If no exams found via groups, try by grade_id directly
         if (exams.length === 0 && student.grade_id) {
             exams = await query<Exam>(
-                `SELECT DISTINCT e.* 
+                `SELECT DISTINCT e.*
                  FROM exams e
                  WHERE (e.grade_id = ? OR e.grade_id IS NULL)
                    AND e.is_active = TRUE
@@ -144,8 +140,8 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
             `SELECT exam_id, COUNT(*) as count,
                     MAX(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as has_in_progress,
                     MAX(CASE WHEN status = 'in_progress' THEN started_at ELSE NULL END) as in_progress_started_at
-             FROM exam_attempts 
-             WHERE student_id = ? 
+             FROM exam_attempts
+             WHERE student_id = ?
              GROUP BY exam_id`,
             [userId]
         );
@@ -274,9 +270,9 @@ router.get('/', async (req: AuthRequest, res: Response) => {
         if (student_id) {
             // ✅ جلب عدد المحاولات الفعلية لكل امتحان
             const attempts = await query<any>(
-                `SELECT exam_id, COUNT(*) as count 
-                 FROM exam_attempts 
-                 WHERE student_id = ? 
+                `SELECT exam_id, COUNT(*) as count
+                 FROM exam_attempts
+                 WHERE student_id = ?
                  GROUP BY exam_id`,
                 [student_id]
             );
@@ -629,9 +625,9 @@ router.put('/:id', requireTeachingWrite('exams'), async (req: AuthRequest, res: 
 router.get('/:examId/groups', async (req: Request, res: Response) => {
     try {
         const groups = await query<any>(
-            `SELECT eg.group_id, g.name as group_name 
-             FROM exam_groups eg 
-             LEFT JOIN \`groups\` g ON eg.group_id = g.id 
+            `SELECT eg.group_id, g.name as group_name
+             FROM exam_groups eg
+             LEFT JOIN \`groups\` g ON eg.group_id = g.id
              WHERE eg.exam_id = ?`,
             [req.params.examId]
         );
@@ -666,13 +662,21 @@ router.delete('/:id', requireTeachingWrite('exams'), async (req: AuthRequest, re
 });
 
 // Upload question image
-router.post('/upload-question-image', requireTeachingWrite('exams'), upload.single('image'), async (req: Request, res: Response) => {
+router.post('/upload-question-image', requireTeachingWrite('exams'), upload.single('image'), async (req: AuthRequest, res: Response) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No image file provided' });
         }
 
-        const imageUrl = `/uploads/questions/${req.file.filename}`;
+        const tenantId = req.user?.tenantId;
+        if (!tenantId || !req.user?.id) return res.status(403).json({ error: 'Tenant membership required' });
+        const fileId = randomUUID();
+        await execute(
+            `INSERT INTO tenant_media_files (id,tenant_id,uploaded_by,storage_path,original_name,mime_type,byte_size)
+             VALUES (?,?,?,?,?,?,?)`,
+            [fileId, tenantId, req.user.id, path.relative(process.cwd(), req.file.path), req.file.originalname, req.file.mimetype, req.file.size]
+        );
+        const imageUrl = `/api/files/${fileId}/download`;
 
         res.json({
             success: true,
@@ -1099,10 +1103,10 @@ router.post('/:examId/save-progress/:studentId', async (req: Request, res: Respo
 
         // Update exam_attempts table only if status is 'in_progress'
         const result = await execute(
-            `UPDATE exam_attempts 
+            `UPDATE exam_attempts
              SET answers = ?
-             WHERE exam_id = ? 
-             AND student_id = ? 
+             WHERE exam_id = ?
+             AND student_id = ?
              AND status = 'in_progress'`,
             [JSON.stringify(allAnswers), examId, studentId]
         );
@@ -1259,8 +1263,8 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
         // Update exam_attempts table
         console.log('🔄 Updating exam_attempts table...');
         await execute(
-            `UPDATE exam_attempts 
-             SET status = ?, 
+            `UPDATE exam_attempts
+             SET status = ?,
                  completed_at = NOW(),
                  score = ?,
                  answers = ?
@@ -1304,7 +1308,7 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
             await execute(
                 `INSERT INTO exam_results (exam_id, student_id, marks_obtained, total_marks, submitted_at)
                  VALUES (?, ?, ?, ?, NOW())
-                 ON DUPLICATE KEY UPDATE 
+                 ON DUPLICATE KEY UPDATE
                     marks_obtained = VALUES(marks_obtained),
                     total_marks = VALUES(total_marks),
                     submitted_at = VALUES(submitted_at)`,
@@ -1387,7 +1391,7 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
 
             if (studentAnswer !== null) {
                 await execute(
-                    `INSERT INTO exam_student_answers 
+                    `INSERT INTO exam_student_answers
                      (exam_id, student_id, question_id, student_answer, is_correct, points_earned)
                      VALUES (?, ?, ?, ?, ?, ?)
                      ON DUPLICATE KEY UPDATE
@@ -1407,7 +1411,7 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
         await execute(
             `INSERT INTO exam_results (exam_id, student_id, marks_obtained, total_marks, submitted_at)
              VALUES (?, ?, ?, ?, NOW())
-             ON DUPLICATE KEY UPDATE 
+             ON DUPLICATE KEY UPDATE
                 marks_obtained = VALUES(marks_obtained),
                 total_marks = VALUES(total_marks),
                 submitted_at = VALUES(submitted_at)`,
@@ -1446,7 +1450,7 @@ router.get('/:examId/attempts', async (req: AuthRequest, res: Response) => {
         const { examId } = req.params;
         const scopeId = instructorScopeId(req);
 
-        let sql = `SELECT 
+        let sql = `SELECT
                 ea.*,
                 s.name as student_name,
                 s.phone as student_phone,
@@ -1516,12 +1520,12 @@ router.put('/:examId/questions/:questionId', requireTeachingWrite('exams'), asyn
         const { question_text, question_image, question_type, options, correct_answer, points, explanation } = req.body;
 
         await execute(
-            `UPDATE exam_questions 
-             SET question_text = ?, 
+            `UPDATE exam_questions
+             SET question_text = ?,
                  question_image = ?,
-                 question_type = ?, 
-                 options = ?, 
-                 correct_answer = ?, 
+                 question_type = ?,
+                 options = ?,
+                 correct_answer = ?,
                  points = ?,
                  explanation = ?
              WHERE id = ? AND exam_id = ?`,
@@ -1603,7 +1607,7 @@ router.get('/:examId/review/:studentId', async (req: AuthRequest, res: Response)
 
         // Get exam attempt
         const attempt = await queryOne<any>(
-            `SELECT * FROM exam_attempts 
+            `SELECT * FROM exam_attempts
              WHERE exam_id = ? AND student_id = ?
              ORDER BY started_at DESC LIMIT 1`,
             [examId, studentId]

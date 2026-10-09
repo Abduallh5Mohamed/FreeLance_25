@@ -1,16 +1,19 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response } from 'express';
 import { query, execute } from '../db';
 import { sendSubscriptionApprovalNotification } from '../services/whatsapp-free';
+import { AuthRequest, authenticateToken, requireRoles } from '../middleware/auth';
 
 const router = Router();
+router.use(authenticateToken);
 
 // Get all subscription requests
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', requireRoles('admin', 'instructor', 'teacher', 'staff'), async (req: AuthRequest, res: Response) => {
   try {
     const { status } = req.query;
 
-    let sql = 'SELECT * FROM subscription_requests WHERE 1=1';
-    const params: unknown[] = [];
+    let sql = 'SELECT * FROM subscription_requests WHERE tenant_id=?';
+    const params: unknown[] = [req.user!.tenantId || ''];
+    if (req.user!.role === 'admin') { sql = 'SELECT * FROM subscription_requests WHERE 1=1'; params.length = 0; }
 
     if (status) {
       sql += ' AND status = ?';
@@ -28,7 +31,7 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 // Create new subscription request
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', requireRoles('student', 'instructor', 'teacher', 'staff'), async (req: AuthRequest, res: Response) => {
   try {
     const {
       student_name,
@@ -44,6 +47,8 @@ router.post('/', async (req: Request, res: Response) => {
       notes,
       receipt_image_url
     } = req.body;
+    const tenantId = req.user!.tenantId;
+    if (!tenantId) return res.status(403).json({ error: 'Active tenant membership required' });
 
     if (!student_name || !phone) {
       return res.status(400).json({ error: 'Student name and phone are required' });
@@ -54,10 +59,10 @@ router.post('/', async (req: Request, res: Response) => {
     const requestId = randomUUID();
 
     await execute(
-      `INSERT INTO subscription_requests 
-       (id, student_name, phone, guardian_phone, grade_id, grade_name, group_id, group_name, subscription_plan_id, subscription_plan_name, amount, notes, receipt_image_url, status) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-      [requestId, student_name, phone, guardian_phone || null, grade_id || null, grade_name || null, group_id || null, group_name || null, subscription_plan_id || null, subscription_plan_name || null, amount || null, notes || null, receipt_image_url || null]
+      `INSERT INTO subscription_requests
+       (id, tenant_id, student_name, phone, guardian_phone, grade_id, grade_name, group_id, group_name, subscription_plan_id, subscription_plan_name, amount, notes, receipt_image_url, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      [requestId, tenantId, student_name, phone, guardian_phone || null, grade_id || null, grade_name || null, group_id || null, group_name || null, subscription_plan_id || null, subscription_plan_name || null, amount || null, notes || null, receipt_image_url || null]
     );
 
     res.status(201).json({
@@ -71,13 +76,13 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // Approve subscription request
-router.post('/:id/approve', async (req: Request, res: Response) => {
+router.post('/:id/approve', requireRoles('admin', 'instructor', 'teacher', 'staff'), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
 
     const requests = await query(
-      'SELECT * FROM subscription_requests WHERE id = ?',
-      [id]
+      `SELECT * FROM subscription_requests WHERE id = ?${req.user!.role === 'admin' ? '' : ' AND tenant_id=?'}`,
+      req.user!.role === 'admin' ? [id] : [id, req.user!.tenantId || '']
     ) as unknown[];
 
     if (!Array.isArray(requests) || requests.length === 0) {
@@ -92,8 +97,8 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
 
     // Check if student already exists
     const existingStudents = await query(
-      'SELECT id FROM students WHERE phone = ?',
-      [request.phone]
+      'SELECT id FROM students WHERE phone = ? AND tenant_id = ?',
+      [request.phone, request.tenant_id]
     ) as unknown[];
 
     // Validate grade_id and group_id before inserting
@@ -124,10 +129,10 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
     if (!Array.isArray(existingStudents) || existingStudents.length === 0) {
       // Add student to students table (online)
       const result = await execute(
-        `INSERT INTO students 
-         (name, phone, grade_id, group_id, is_offline, approval_status) 
-         VALUES (?, ?, ?, ?, FALSE, 'approved')`,
-        [request.student_name, request.phone, validGradeId, validGroupId]
+        `INSERT INTO students
+         (name, phone, grade_id, group_id, tenant_id, instructor_id, is_offline, approval_status)
+         VALUES (?, ?, ?, ?, ?, ?, FALSE, 'approved')`,
+        [request.student_name, request.phone, validGradeId, validGroupId, request.tenant_id, req.user!.id]
       );
       studentId = (result as any).insertId;
     } else {
@@ -136,16 +141,16 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
 
     // Add fee record with paid_amount = amount (since they already paid)
     await execute(
-      `INSERT INTO student_fees 
-       (student_name, phone, grade_id, grade_name, group_id, group_name, amount, paid_amount, status, is_offline, payment_method, notes, receipt_image_url, payment_date) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'paid', FALSE, 'online', ?, ?, NOW())`,
-      [request.student_name, request.phone, validGradeId, request.grade_name, validGroupId, request.group_name, request.amount || 0, request.amount || 0, request.notes, request.receipt_image_url]
+      `INSERT INTO student_fees
+       (tenant_id, student_id, student_name, phone, grade_id, grade_name, group_id, group_name, amount, paid_amount, status, is_offline, payment_method, notes, receipt_image_url, payment_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paid', FALSE, 'online', ?, ?, NOW())`,
+      [request.tenant_id, studentId, request.student_name, request.phone, validGradeId, request.grade_name, validGroupId, request.group_name, request.amount || 0, request.amount || 0, request.notes, request.receipt_image_url]
     );
 
     // Update request status
     await execute(
-      'UPDATE subscription_requests SET status = ?, updated_at = NOW() WHERE id = ?',
-      ['approved', id]
+      `UPDATE subscription_requests SET status = ?, updated_at = NOW() WHERE id = ? AND tenant_id = ?`,
+      ['approved', id, request.tenant_id]
     );
 
     // Send WhatsApp message to guardian if guardian_phone exists
@@ -187,7 +192,7 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
 });
 
 // Reject subscription request
-router.post('/:id/reject', async (req: Request, res: Response) => {
+router.post('/:id/reject', requireRoles('admin', 'instructor', 'teacher', 'staff'), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { rejection_reason } = req.body;
@@ -197,8 +202,8 @@ router.post('/:id/reject', async (req: Request, res: Response) => {
     }
 
     const requests = await query(
-      'SELECT * FROM subscription_requests WHERE id = ?',
-      [id]
+      `SELECT * FROM subscription_requests WHERE id = ?${req.user!.role === 'admin' ? '' : ' AND tenant_id=?'}`,
+      req.user!.role === 'admin' ? [id] : [id, req.user!.tenantId || '']
     ) as unknown[];
 
     if (!Array.isArray(requests) || requests.length === 0) {
@@ -212,8 +217,8 @@ router.post('/:id/reject', async (req: Request, res: Response) => {
     }
 
     await execute(
-      'UPDATE subscription_requests SET status = ?, rejection_reason = ?, updated_at = NOW() WHERE id = ?',
-      ['rejected', rejection_reason, id]
+      'UPDATE subscription_requests SET status = ?, rejection_reason = ?, updated_at = NOW() WHERE id = ? AND tenant_id = ?',
+      ['rejected', rejection_reason, id, request.tenant_id]
     );
 
     res.json({ message: 'Subscription request rejected successfully' });
@@ -224,13 +229,13 @@ router.post('/:id/reject', async (req: Request, res: Response) => {
 });
 
 // Delete subscription request (cleanup)
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', requireRoles('admin', 'instructor', 'teacher', 'staff'), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
 
     const result = await execute(
-      'DELETE FROM subscription_requests WHERE id = ?',
-      [id]
+      `DELETE FROM subscription_requests WHERE id = ?${req.user!.role === 'admin' ? '' : ' AND tenant_id=?'}`,
+      req.user!.role === 'admin' ? [id] : [id, req.user!.tenantId || '']
     );
 
     if (result.affectedRows === 0) {
@@ -245,7 +250,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 });
 
 // Bulk delete approved requests by month
-router.delete('/cleanup/month', async (req: Request, res: Response) => {
+router.delete('/cleanup/month', requireRoles('admin', 'instructor', 'teacher', 'staff'), async (req: AuthRequest, res: Response) => {
   try {
     const { month, year } = req.query;
 
@@ -254,8 +259,8 @@ router.delete('/cleanup/month', async (req: Request, res: Response) => {
     }
 
     const result = await execute(
-      'DELETE FROM subscription_requests WHERE status = ? AND MONTH(updated_at) = ? AND YEAR(updated_at) = ?',
-      ['approved', month, year]
+      `DELETE FROM subscription_requests WHERE status = ? AND MONTH(updated_at) = ? AND YEAR(updated_at) = ?${req.user!.role === 'admin' ? '' : ' AND tenant_id=?'}`,
+      req.user!.role === 'admin' ? ['approved', month, year] : ['approved', month, year, req.user!.tenantId || '']
     );
 
     res.json({

@@ -51,6 +51,12 @@ const usePublicIp = configuredEndpoint === 'localhost';
 // For local development, always use localhost since frontend and MinIO are on the same machine
 const minioEndpoint = usePublicIp ? 'localhost' : configuredEndpoint;
 
+const minioAccessKey = process.env.MINIO_ACCESS_KEY;
+const minioSecretKey = process.env.MINIO_SECRET_KEY;
+if (!minioAccessKey || !minioSecretKey) {
+    throw new Error('MINIO_ACCESS_KEY and MINIO_SECRET_KEY are required');
+}
+
 console.log(`📱 MinIO Service: Configured endpoint: ${minioEndpoint} (Original: ${configuredEndpoint})`);
 
 // MinIO client configuration
@@ -58,8 +64,8 @@ const minioClient = new Minio.Client({
     endPoint: minioEndpoint,
     port: parseInt(process.env.MINIO_PORT || '9000'),
     useSSL: process.env.MINIO_USE_SSL === 'true',
-    accessKey: process.env.MINIO_ACCESS_KEY || 'minioadmin',
-    secretKey: process.env.MINIO_SECRET_KEY || 'minioadmin'
+    accessKey: minioAccessKey,
+    secretKey: minioSecretKey
 });
 
 // Bucket names

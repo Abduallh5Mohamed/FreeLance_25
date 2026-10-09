@@ -13,12 +13,13 @@ serve(async (req) => {
 
   try {
     const { message, studentId } = await req.json();
-    
+
     if (!message) {
       throw new Error('Message is required');
     }
 
-    const googleApiKey = 'AIzaSyAm-hpg9pjc66DqNnS8qHpdgeKBd-FZP70';
+    const googleApiKey = Deno.env.get('GOOGLE_GEMINI_API_KEY');
+    if (!googleApiKey) throw new Error('AI service is not configured');
 
     const systemPrompt = `أنت مساعد ذكي تعليمي متخصص حصراً في مساعدة طلاب المرحلة الثانوية المصريين في دراسة التاريخ.
 
@@ -97,7 +98,7 @@ serve(async (req) => {
     if (!response.ok) {
       const errorText = await response.text();
       console.error('Google AI error:', response.status, errorText);
-      
+
       if (response.status === 429) {
         throw new Error('تم تجاوز حد الاستخدام، يرجى المحاولة لاحقاً');
       }
@@ -107,12 +108,12 @@ serve(async (req) => {
       if (response.status === 401 || response.status === 403) {
         throw new Error('مفتاح API غير صحيح أو غير مصرح');
       }
-      
+
       throw new Error('حدث خطأ في الاتصال بالمساعد الذكي');
     }
 
     const data = await response.json();
-    
+
     // Extract text from Google API response format
     let aiResponse = '';
     if (data.candidates && data.candidates[0]?.content?.parts?.[0]?.text) {
@@ -122,26 +123,26 @@ serve(async (req) => {
     }
 
     return new Response(
-      JSON.stringify({ 
+      JSON.stringify({
         success: true,
         response: aiResponse
       }),
-      { 
+      {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 200 
+        status: 200
       }
     );
 
   } catch (error) {
     console.error('Error in ai-chat-assistant:', error);
     return new Response(
-      JSON.stringify({ 
+      JSON.stringify({
         success: false,
-        error: error.message || 'حدث خطأ غير متوقع' 
+        error: error.message || 'حدث خطأ غير متوقع'
       }),
-      { 
+      {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 500 
+        status: 500
       }
     );
   }

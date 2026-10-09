@@ -1,10 +1,11 @@
 // Test script to verify Google Generative AI API works
-const API_KEY = 'AIzaSyAm-hpg9pjc66DqNnS8qHpdgeKBd-FZP70';
+const API_KEY = process.env.GOOGLE_GEMINI_API_KEY;
+if (!API_KEY) throw new Error('Set GOOGLE_GEMINI_API_KEY in the environment.');
 
 async function testAI() {
   try {
     console.log('🚀 Testing Google Generative AI API...\n');
-    
+
     const payload = {
       systemInstruction: {
         parts: [{
@@ -46,7 +47,7 @@ async function testAI() {
     }
 
     console.log('✅ API Response Successful!\n');
-    
+
     if (data.candidates && data.candidates[0]?.content?.parts?.[0]?.text) {
       const aiResponse = data.candidates[0].content.parts[0].text;
       console.log('🤖 AI Response:');

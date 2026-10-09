@@ -3,8 +3,9 @@ console.log('🧪 Final Test: StudentChat AI Direct to Google API\n');
 console.log('=' .repeat(70));
 
 async function testStudentChatAI() {
-  const googleApiKey = 'AIzaSyAm-hpg9pjc66DqNnS8qHpdgeKBd-FZP70';
-  
+  const googleApiKey = process.env.GOOGLE_GEMINI_API_KEY;
+  if (!googleApiKey) throw new Error('Set GOOGLE_GEMINI_API_KEY in the environment.');
+
   const systemPrompt = `أنت مساعد ذكي تعليمي متخصص حصراً في مساعدة طلاب المرحلة الثانوية المصريين في دراسة التاريخ.
 
 وظيفتك الأساسية:
@@ -76,7 +77,7 @@ async function testStudentChatAI() {
 // Run test
 (async () => {
   const success = await testStudentChatAI();
-  
+
   console.log('\n' + '=' .repeat(70));
   if (success) {
     console.log('\n✅ FINAL TEST PASSED!');

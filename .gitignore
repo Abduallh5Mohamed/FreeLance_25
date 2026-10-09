@@ -23,3 +23,21 @@ dist-ssr
 *.sln
 *.sw?
 .env
+.env.*
+!.env.example
+/.gitleaks-m1-report.json
+
+# Local browser state and generated deployment output are not source
+/.qa/
+/HOSTINGER_FINAL_PACKAGE/
+/hostinger-upload/
+/frontend.zip
+/frontend-update.zip
+/dist.tar.gz
+/dist-fixed.zip
+/deploy.zip
+/dist.zip
+/HOSTINGER_FINAL_PACKAGE.zip
+
+
+/temp-chunks/

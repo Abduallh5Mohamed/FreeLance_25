@@ -50,7 +50,7 @@ DB_NAME=freelance
 
 ### المستخدم الافتراضي (Admin)
 - ✅ Email: hodabdh3@gmail.com
-- ✅ Password: Mahmoud12345
+- ✅ Password: [configure locally; never commit]
 - ✅ Role: admin
 
 ⚠️ **ملاحظة:** ستحتاج لتحديث الباسوورد لاحقاً باستخدام bcrypt hash.

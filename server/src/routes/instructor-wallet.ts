@@ -16,46 +16,6 @@ interface QueryResult {
     affectedRows: number;
 }
 
-// Ensure wallet tables exist before any query
-let tablesEnsured = false;
-async function ensureWalletTables() {
-    if (tablesEnsured) return;
-    try {
-        await execute(`CREATE TABLE IF NOT EXISTS instructor_wallets (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            instructor_id CHAR(36) NOT NULL,
-            balance DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uq_instructor_wallet (instructor_id),
-            FOREIGN KEY (instructor_id) REFERENCES users(id) ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-
-        await execute(`CREATE TABLE IF NOT EXISTS instructor_wallet_transactions (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            instructor_id CHAR(36) NOT NULL,
-            type ENUM('credit', 'debit') NOT NULL,
-            amount DECIMAL(10,2) NOT NULL,
-            balance_after DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-            description VARCHAR(500),
-            reference_id INT DEFAULT NULL,
-            created_by CHAR(36) DEFAULT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (instructor_id) REFERENCES users(id) ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-
-        tablesEnsured = true;
-        console.log('✅ Instructor wallet tables ensured');
-    } catch (error) {
-        console.error('⚠️ Instructor wallet table migration error (non-fatal):', error);
-    }
-}
-
-router.use(async (_req, _res, next) => {
-    await ensureWalletTables();
-    next();
-});
-
 // ============================================================
 // GET /api/instructor-wallet/:instructorId
 // Get current balance + summary

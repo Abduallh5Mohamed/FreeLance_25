@@ -24,7 +24,7 @@ echo ""
 echo "2️⃣  Fetching registration requests..."
 echo "Note: This requires authentication token"
 echo ""
-echo "Example: curl -H 'Authorization: Bearer YOUR_TOKEN' http://localhost:3001/api/registration-requests?is_offline=false"
+echo "Example: curl -H 'Authorization: Bearer $AUTH_TOKEN' http://localhost:3001/api/registration-requests?is_offline=false"
 echo ""
 
 echo "=== Test Complete ==="

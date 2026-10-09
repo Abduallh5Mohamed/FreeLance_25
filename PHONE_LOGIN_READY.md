@@ -5,7 +5,7 @@
 ✅ Server: http://localhost:3001
 ✅ Admin User Created:
 - Phone: 01095336760
-- Password: 11223344
+- Password: [configure locally; never commit]
 - Role: admin
 
 ## System Already Supports Phone Login
@@ -48,7 +48,7 @@ Content-Type: application/json
     "role": "admin",
     "is_active": true
   },
-  "token": "eyJhbGciOiJIUzI1..."
+  "token": "<redacted JWT>"
 }
 ```
 
@@ -58,10 +58,10 @@ Update your login form to send `phone` instead of `email`:
 
 ```javascript
 // Old way (email):
-{ email: "user@example.com", password: "password" }
+{ email: "user@example.com", password: [configure locally; never commit]
 
 // New way (phone):
-{ phone: "01095336760", password: "11223344" }
+{ phone: "01095336760", password: [configure locally; never commit]
 ```
 
 ## Notes

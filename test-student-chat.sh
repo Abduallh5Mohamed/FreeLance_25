@@ -19,7 +19,7 @@ echo "Test 2: Simulating AI Chat Request..."
 RESPONSE=$(curl -s -X POST \
   "https://xvzsuqihfbzrquhbpuhp.supabase.co/functions/v1/ai-chat-assistant" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2enN1cWloZmJ6cnF1aGJwdWhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MDk0MDcwODksImV4cCI6MTk5OTk5OTk5OX0.gKfz3PlJFM7iWCyH4sKHYXCHPvgB8DT-MIECPIhvCQk" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -d '{"message":"ما هي الثورة الفرنسية؟","studentId":"test-student"}')
 
 if echo "$RESPONSE" | grep -q "success"; then

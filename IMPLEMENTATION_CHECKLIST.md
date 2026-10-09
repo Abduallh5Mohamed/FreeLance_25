@@ -183,21 +183,21 @@ curl -X POST http://localhost:3001/api/registration-requests \
 
 ### 2. اختبار جلب الطلبات الأونلاين
 ```bash
-curl -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+curl -H "Authorization: Bearer $AUTH_TOKEN" \
   "http://localhost:3001/api/registration-requests?is_offline=false&status=pending"
 ```
 
 ### 3. اختبار قبول الطلب
 ```bash
 curl -X POST http://localhost:3001/api/registration-requests/{REQUEST_ID}/approve \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+  -H "Authorization: Bearer $AUTH_TOKEN"
 ```
 
 ### 4. اختبار رفض الطلب
 ```bash
 curl -X POST http://localhost:3001/api/registration-requests/{REQUEST_ID}/reject \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -d '{
     "reason": "البيانات غير صحيحة"
   }'
