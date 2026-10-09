@@ -289,7 +289,8 @@ export class VideoSecurityManager {
         // Block PiP enter
         this.addListener(document, 'enterpictureinpicture', (e: Event) => {
             e.preventDefault();
-            (e.target as HTMLVideoElement)?.exitPictureInPicture?.();
+            const pipDocument = document as Document & { exitPictureInPicture?: () => Promise<void> };
+            void pipDocument.exitPictureInPicture?.().catch(() => undefined);
             this.triggerViolation('pip', 'محاولة استخدام Picture-in-Picture');
         }, { capture: true });
     }

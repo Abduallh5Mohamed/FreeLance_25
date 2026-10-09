@@ -8,6 +8,7 @@ const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 interface SecureVideoPlayerProps {
     videoId: string;
+    offerId?: string;
     userId: string;
     studentName: string;
     groupName: string;
@@ -17,6 +18,7 @@ interface SecureVideoPlayerProps {
 
 export function SecureVideoPlayer({
     videoId,
+    offerId,
     userId,
     studentName,
     groupName,
@@ -49,6 +51,15 @@ export function SecureVideoPlayer({
     const [violationCount, setViolationCount] = useState(0);
     const [showWarning, setShowWarning] = useState(false);
     const [warningMessage, setWarningMessage] = useState('');
+    const [consentRequired, setConsentRequired] = useState(false);
+    const [consentTermsVersion, setConsentTermsVersion] = useState<string | null>(null);
+    const [sessionRetry, setSessionRetry] = useState(0);
+    const [sessionActive, setSessionActive] = useState(false);
+
+    const sessionIdRef = useRef<string | null>(null);
+    const sessionTokenRef = useRef<string | null>(null);
+    const fingerprintRef = useRef<string | null>(null);
+    const screenResRef = useRef<string | null>(null);
 
     const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const isLoggedOutRef = useRef(false);
@@ -172,6 +183,7 @@ export function SecureVideoPlayer({
         }
 
         // Clear local storage
+        localStorage.removeItem('authToken');
         localStorage.removeItem('auth_token');
         localStorage.removeItem('user_data');
         sessionStorage.clear();
@@ -182,6 +194,31 @@ export function SecureVideoPlayer({
             window.location.reload();
         }, 2000);
     }, [navigate]);
+
+    const acceptVideoSecurityTerms = async () => {
+        const authToken = localStorage.getItem('authToken');
+        if (!authToken || !consentTermsVersion) {
+            setError('سجّل الدخول من جديد لقبول شروط حماية الفيديو.');
+            return;
+        }
+
+        try {
+            const response = await fetch(`${API_BASE}/secure-video/consent`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${authToken}`,
+                },
+                body: JSON.stringify({ accepted: true, termsVersion: consentTermsVersion }),
+            });
+            if (!response.ok) throw new Error('تعذر حفظ الموافقة. حاول مرة أخرى.');
+            setConsentRequired(false);
+            setError(null);
+            setSessionRetry(value => value + 1);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'تعذر حفظ الموافقة. حاول مرة أخرى.');
+        }
+    };
 
     // SECURITY VIOLATION HANDLER
     const handleSecurityViolation = useCallback((violation: SecurityViolation) => {
@@ -350,15 +387,45 @@ export function SecureVideoPlayer({
     // LOAD VIDEO
     useEffect(() => {
         setLoading(true);
+        setError(null);
+        setConsentRequired(false);
+        setSessionActive(false);
+        sessionIdRef.current = null;
+        sessionTokenRef.current = null;
 
         const setupVideo = async () => {
             try {
-                let finalUrl = directUrl || '';
+                const isExternalUrl = Boolean(directUrl && /(?:youtube\.com|youtu\.be|drive\.google\.com)/i.test(directUrl));
+                let finalUrl = isExternalUrl ? directUrl! : '';
 
-                if (!directUrl) {
-                    const response = await fetch(`${API_BASE}/videos/stream/${videoId}?userId=${userId}`);
-                    if (!response.ok) throw new Error('Failed to load video');
-                    const data = await response.json();
+                if (!isExternalUrl) {
+                    const authToken = localStorage.getItem('authToken');
+                    if (!authToken) throw new Error('سجّل الدخول لمشاهدة هذا الفيديو.');
+
+                    const fingerprint = window.crypto.randomUUID();
+                    const screenRes = `${window.screen.width}x${window.screen.height}`;
+                    const response = await fetch(`${API_BASE}/secure-video/session`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            Authorization: `Bearer ${authToken}`,
+                        },
+                        body: JSON.stringify({ videoId, fingerprint, screenRes, ...(offerId ? { offerId } : {}) }),
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (response.status === 428 && data.code === 'VIDEO_CONSENT_REQUIRED') {
+                        setConsentRequired(true);
+                        setConsentTermsVersion(data.termsVersion || null);
+                        setLoading(false);
+                        return;
+                    }
+                    if (!response.ok) throw new Error(data.message || data.error || 'تعذر بدء جلسة الفيديو الآمنة.');
+
+                    sessionIdRef.current = data.sessionId;
+                    sessionTokenRef.current = data.sessionToken;
+                    fingerprintRef.current = fingerprint;
+                    screenResRef.current = screenRes;
+                    setSessionActive(true);
                     finalUrl = data.streamUrl.startsWith('http') ? data.streamUrl : `${window.location.origin}${data.streamUrl}`;
                 }
 
@@ -377,10 +444,9 @@ export function SecureVideoPlayer({
                     setSourceType('hls');
                     if (videoRef.current && Hls.isSupported()) {
                         const hls = new Hls({
-                            xhrSetup: (xhr, url) => {
-                                if (url.includes('/key/')) {
-                                    xhr.open('GET', `${url}${url.includes('?') ? '&' : '?'}userId=${userId}`, true);
-                                }
+                            xhrSetup: (xhr) => {
+                                const authToken = localStorage.getItem('authToken');
+                                if (authToken) xhr.setRequestHeader('Authorization', `Bearer ${authToken}`);
                             }
                         });
                         hlsRef.current = hls;
@@ -430,13 +496,102 @@ export function SecureVideoPlayer({
         setupVideo();
 
         return () => {
+            sessionIdRef.current = null;
+            sessionTokenRef.current = null;
+            fingerprintRef.current = null;
+            screenResRef.current = null;
             if (hlsRef.current) hlsRef.current.destroy();
             if (videoRef.current) {
                 videoRef.current.pause();
                 videoRef.current.src = '';
             }
         };
-    }, [videoId, userId, directUrl]);
+    }, [videoId, userId, directUrl, offerId, sessionRetry]);
+
+    // Keep the server-side session alive and rotate the short-lived manifest token.
+    useEffect(() => {
+        if (!sessionActive) return;
+        let heartbeatBusy = false;
+        let refreshBusy = false;
+        const authToken = localStorage.getItem('authToken');
+        if (!authToken) {
+            forceLogout('انتهت جلسة تسجيل الدخول');
+            return;
+        }
+
+        const heartbeat = window.setInterval(async () => {
+            if (heartbeatBusy || !sessionIdRef.current || !sessionTokenRef.current) return;
+            heartbeatBusy = true;
+            try {
+                const response = await fetch(`${API_BASE}/secure-video/heartbeat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+                    body: JSON.stringify({ sessionId: sessionIdRef.current, sessionToken: sessionTokenRef.current }),
+                });
+                if (!response.ok) forceLogout('انتهت جلسة الفيديو الآمنة');
+            } catch {
+                // Fail closed: the server ends sessions that miss their heartbeat window.
+                forceLogout('تعذر التحقق من جلسة الفيديو الآمنة');
+            } finally {
+                heartbeatBusy = false;
+            }
+        }, 5000);
+
+        const refresh = window.setInterval(async () => {
+            if (refreshBusy || !sessionIdRef.current || !fingerprintRef.current || !screenResRef.current) return;
+            refreshBusy = true;
+            try {
+                const response = await fetch(`${API_BASE}/secure-video/refresh-token`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+                    body: JSON.stringify({
+                        sessionId: sessionIdRef.current,
+                        fingerprint: fingerprintRef.current,
+                        screenRes: screenResRef.current,
+                    }),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.sessionToken) {
+                    forceLogout('تعذر تجديد جلسة الفيديو الآمنة');
+                    return;
+                }
+                sessionTokenRef.current = data.sessionToken;
+                if (data.streamUrl) {
+                    const streamUrl = data.streamUrl.startsWith('http')
+                        ? data.streamUrl
+                        : `${window.location.origin}${data.streamUrl}`;
+                    const video = videoRef.current;
+                    const hls = hlsRef.current;
+                    const resumeAt = video?.currentTime || 0;
+                    const shouldResume = Boolean(video && !video.paused);
+                    if (hls) {
+                        const onManifest = () => {
+                            hls.off(Hls.Events.MANIFEST_PARSED, onManifest);
+                            if (video && resumeAt > 0) video.currentTime = resumeAt;
+                            if (shouldResume) video?.play().catch(() => undefined);
+                        };
+                        hls.on(Hls.Events.MANIFEST_PARSED, onManifest);
+                        hls.loadSource(streamUrl);
+                    } else if (video) {
+                        video.src = streamUrl;
+                        video.addEventListener('loadedmetadata', () => {
+                            if (resumeAt > 0) video.currentTime = resumeAt;
+                            if (shouldResume) video.play().catch(() => undefined);
+                        }, { once: true });
+                    }
+                }
+            } catch {
+                forceLogout('تعذر تجديد جلسة الفيديو الآمنة');
+            } finally {
+                refreshBusy = false;
+            }
+        }, 40000);
+
+        return () => {
+            window.clearInterval(heartbeat);
+            window.clearInterval(refresh);
+        };
+    }, [sessionActive, forceLogout]);
 
     // VIDEO CONTROLS
     const togglePlay = () => {
@@ -563,6 +718,18 @@ export function SecureVideoPlayer({
             {/* SECURITY BLUR OVERLAY */}
             {isSecurityBlurred && !showBlackScreen && (
                 <div className="absolute inset-0 z-[9998] backdrop-blur-xl bg-black/50" />
+            )}
+
+            {consentRequired && (
+                <div className="absolute inset-0 z-[10000] bg-black/95 flex flex-col items-center justify-center gap-5 p-6 text-center text-white">
+                    <Shield className="h-16 w-16 text-blue-400" />
+                    <h2 className="text-2xl font-bold">شروط حماية الفيديو</h2>
+                    <p className="max-w-xl text-gray-300">بالموافقة، ستبدأ جلسة مشاهدة آمنة وتُسجّل موافقتك على شروط حماية الفيديو لهذه النسخة.</p>
+                    <button onClick={acceptVideoSecurityTerms} className="rounded-lg bg-blue-600 px-6 py-3 font-bold hover:bg-blue-700">
+                        أوافق وأتابع
+                    </button>
+                    <button onClick={handleClose} className="text-gray-400 underline">إلغاء</button>
+                </div>
             )}
 
             {/* START SESSION OVERLAY - Skip on Mobile, show on Desktop */}

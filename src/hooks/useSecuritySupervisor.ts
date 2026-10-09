@@ -329,8 +329,11 @@ export function useSecuritySupervisor(config: SecurityConfig) {
 
                 // @ts-ignore
                 navigator.mediaDevices.getUserMedia = (constraints: MediaStreamConstraints) => {
-                    if (constraints?.video?.mediaSource === 'screen' ||
-                        constraints?.video?.mediaSource === 'window') {
+                    const videoConstraints = constraints?.video && typeof constraints.video === 'object'
+                        ? constraints.video as MediaTrackConstraints & { mediaSource?: string }
+                        : undefined;
+                    if (videoConstraints?.mediaSource === 'screen' ||
+                        videoConstraints?.mediaSource === 'window') {
                         forceLogout('Screen capture through getUserMedia detected');
                         return Promise.reject(new Error('Screen capture blocked'));
                     }
