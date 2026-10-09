@@ -630,6 +630,7 @@ export function SecureVideoPlayer({
         setIsMuted(val === 0);
     };
 
+<<<<<<< HEAD
     const toggleMute = () => {
         const vid = videoRef.current;
         if (!vid) return;
@@ -717,8 +718,238 @@ export function SecureVideoPlayer({
             </div>
         );
     }
+=======
+                if (!directUrl) {
+                    const response = await fetch(`${API_BASE}/videos/stream/${videoId}?userId=${userId}`);
+                    if (!response.ok) throw new Error('Failed to load video');
+                    const data = await response.json();
+                    finalUrl = data.streamUrl.startsWith('http') ? data.streamUrl : `${window.location.origin}${data.streamUrl}`;
+                }
 
+                // Determine type
+                if (finalUrl.includes('youtube') || finalUrl.includes('youtu.be')) {
+                    const { type, url } = getEmbedUrl(finalUrl);
+                    setSourceType(type as any);
+                    setEmbedUrl(url);
+                    setLoading(false);
+                } else if (finalUrl.includes('drive.google.com')) {
+                    const { type, url } = getEmbedUrl(finalUrl);
+                    setSourceType(type as any);
+                    setEmbedUrl(url);
+                    setLoading(false);
+                } else if (finalUrl.includes('.m3u8')) {
+                    setSourceType('hls');
+                    if (videoRef.current && Hls.isSupported()) {
+                        const hls = new Hls({
+                            xhrSetup: (xhr, url) => {
+                                if (url.includes('/key/')) {
+                                    xhr.open('GET', `${url}${url.includes('?') ? '&' : '?'}userId=${userId}`, true);
+                                }
+                            }
+                        });
+                        hlsRef.current = hls;
+                        hls.loadSource(finalUrl);
+                        hls.attachMedia(videoRef.current);
+                        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                            setLoading(false);
+                            // Auto-start on mobile
+                            if (isMobile && videoRef.current) {
+                                setHasStarted(true);
+                                videoRef.current.play().catch(() => {});
+                            }
+                        });
+                        hls.on(Hls.Events.ERROR, (_, data) => {
+                            if (data.fatal) {
+                                setError('فشل تحميل الفيديو');
+                                setLoading(false);
+                            }
+                        });
+                    } else if (videoRef.current?.canPlayType('application/vnd.apple.mpegurl')) {
+                        videoRef.current.src = finalUrl;
+                        setLoading(false);
+                        // Auto-start on mobile for Safari
+                        if (isMobile) {
+                            setHasStarted(true);
+                            videoRef.current.play().catch(() => {});
+                        }
+                    }
+                } else {
+                    setSourceType('mp4');
+                    if (videoRef.current) {
+                        videoRef.current.src = finalUrl;
+                        setLoading(false);
+                        // Auto-start on mobile
+                        if (isMobile) {
+                            setHasStarted(true);
+                            videoRef.current.play().catch(() => {});
+                        }
+                    }
+                }
+            } catch (err: any) {
+                setError(err.message);
+                setLoading(false);
+            }
+        };
+
+        setupVideo();
+
+        return () => {
+            if (hlsRef.current) hlsRef.current.destroy();
+            if (videoRef.current) {
+                videoRef.current.pause();
+                videoRef.current.src = '';
+            }
+        };
+    }, [videoId, userId, directUrl]);
+
+<<<<<<< HEAD
+    // VIDEO CONTROLS
+    const togglePlay = () => {
+        if (videoRef.current) {
+            if (isPlaying) {
+                videoRef.current.pause();
+            } else {
+                videoRef.current.play();
+            }
+=======
+    // ANTI-RECORDING EVENTS
+    useEffect(() => {
+        // ✅ Instead of forceLogout on visibility/blur, just pause the video
+        // This prevents false-positive logouts from notifications, address bar clicks, etc.
+
+        const handleVisibilityChange = () => {
+            if (document.hidden && videoRef.current) {
+                // Just pause the video when tab is hidden — don't logout
+                videoRef.current.pause();
+                console.log('⏸️ Video paused - tab hidden');
+            }
+        };
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // Block PrintScreen and screen recording shortcuts
+            if (e.key === 'PrintScreen') {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                videoRef.current?.pause();
+                setShowBlackScreen(true);
+                forceLogout('محاولة تصوير الشاشة (PrintScreen)');
+                return;
+            }
+
+            // Block F12 (DevTools), Ctrl+U (view source), Ctrl+Shift+I (DevTools)
+            if (e.key === 'F12' ||
+                (e.ctrlKey && e.key.toLowerCase() === 'u') ||
+                (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'i')) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+            }
+        };
+
+        const handleContextMenu = (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+        };
+
+        // Add Listeners with CAPTURE phase to catch events early
+        document.addEventListener('visibilitychange', handleVisibilityChange, true);
+        window.addEventListener('keydown', handleKeyDown, true);
+        window.addEventListener('contextmenu', handleContextMenu, true);
+
+        // Disable Screen Capture API
+        if (navigator.mediaDevices) {
+            // @ts-ignore
+            navigator.mediaDevices.getDisplayMedia = () => {
+                forceLogout('محاولة تسجيل الشاشة');
+                return Promise.reject('Blocked');
+            };
+>>>>>>> fa4890504d4d7555af0a310ca9671668c6ae2bef
+        }
+    };
+
+    const toggleMute = () => {
+        if (videoRef.current) {
+            videoRef.current.muted = !videoRef.current.muted;
+            setIsMuted(!isMuted);
+        }
+    };
+
+    // SKIP FORWARD/BACKWARD
+    const skip = (seconds: number) => {
+        if (videoRef.current) {
+            videoRef.current.currentTime = Math.max(0, Math.min(duration, videoRef.current.currentTime + seconds));
+        }
+    };
+
+    // SEEK TO POSITION
+    const seekTo = (e: React.MouseEvent<HTMLDivElement>) => {
+        if (videoRef.current && duration) {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const percentage = x / rect.width;
+            videoRef.current.currentTime = percentage * duration;
+        }
+    };
+
+    // FORMAT TIME
+    const formatTime = (time: number) => {
+        if (!time || !isFinite(time)) return '0:00';
+        const mins = Math.floor(time / 60);
+        const secs = Math.floor(time % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    };
+
+    const handleClose = () => {
+        securityManagerRef.current?.stop();
+        if (hlsRef.current) hlsRef.current.destroy();
+        if (document.fullscreenElement) {
+            document.exitFullscreen().catch(() => {});
+        }
+        onClose();
+    };
+
+    // TIME UPDATE
+    useEffect(() => {
+        const video = videoRef.current;
+        if (!video) return;
+
+        const handleTimeUpdate = () => {
+            setCurrentTime(video.currentTime);
+            setProgress((video.currentTime / video.duration) * 100);
+        };
+
+        const handleDurationChange = () => {
+            setDuration(video.duration);
+        };
+
+        const handlePlay = () => setIsPlaying(true);
+        const handlePause = () => setIsPlaying(false);
+
+        video.addEventListener('timeupdate', handleTimeUpdate);
+        video.addEventListener('durationchange', handleDurationChange);
+        video.addEventListener('play', handlePlay);
+        video.addEventListener('pause', handlePause);
+
+        return () => {
+<<<<<<< HEAD
+            video.removeEventListener('timeupdate', handleTimeUpdate);
+            video.removeEventListener('durationchange', handleDurationChange);
+            video.removeEventListener('play', handlePlay);
+            video.removeEventListener('pause', handlePause);
+=======
+            document.removeEventListener('visibilitychange', handleVisibilityChange, true);
+            window.removeEventListener('keydown', handleKeyDown, true);
+            window.removeEventListener('contextmenu', handleContextMenu, true);
+>>>>>>> fa4890504d4d7555af0a310ca9671668c6ae2bef
+        };
+    }, []);
+>>>>>>> 4186fad3086d08ad3d0b5b236cccebe07eb6b76c
+
+    // RENDER
     return (
+<<<<<<< HEAD
         <div
             ref={containerRef}
             className="fixed inset-0 z-[9999] bg-black flex items-center justify-center select-none overflow-hidden secure-video-container"
@@ -746,6 +977,94 @@ export function SecureVideoPlayer({
                     >
                         ▶️ متابعة المشاهدة
                     </button>
+=======
+        <div 
+            ref={containerRef} 
+            className="fixed inset-0 z-[9999] bg-black flex items-center justify-center select-none overflow-hidden"
+            style={{ 
+                userSelect: 'none', 
+                WebkitUserSelect: 'none',
+                width: '100vw',
+                height: '100dvh',
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0
+            }}
+        >
+            {/* BLACK SCREEN ON VIOLATION */}
+            {showBlackScreen && (
+                <div className="absolute inset-0 z-[10001] bg-black flex flex-col items-center justify-center text-white animate-pulse">
+                    <Shield className="w-32 h-32 text-red-600 mb-6" />
+                    <h2 className="text-3xl font-bold mb-4 text-red-500">🚨 تم اكتشاف انتهاك أمني!</h2>
+                    <p className="text-xl text-gray-400 mb-2">Security Violation Detected</p>
+                    <p className="text-lg text-gray-500">{securityViolation}</p>
+                    <p className="text-sm text-gray-600 mt-8">جاري تسجيل الخروج...</p>
+                </div>
+            )}
+
+            {/* WARNING TOAST FOR EXTERNAL VIDEOS */}
+            {showWarning && (
+                <div className="absolute top-8 left-1/2 -translate-x-1/2 z-[10000] bg-yellow-600/90 text-white px-6 py-4 rounded-lg shadow-2xl flex items-center gap-3 animate-bounce">
+                    <AlertTriangle className="w-6 h-6" />
+                    <div>
+                        <p className="font-bold">تحذير أمني!</p>
+                        <p className="text-sm">{warningMessage}</p>
+                        <p className="text-xs mt-1">({violationCount}/3 تحذيرات)</p>
+                    </div>
+                </div>
+            )}
+
+            {/* SECURITY BLUR OVERLAY */}
+            {isSecurityBlurred && !showBlackScreen && (
+                <div className="absolute inset-0 z-[9998] backdrop-blur-xl bg-black/50" />
+            )}
+
+            {/* START SESSION OVERLAY - Skip on Mobile, show on Desktop */}
+            {!hasStarted && !loading && (sourceType === 'hls' || sourceType === 'mp4') && !isMobile && (
+                <div
+                    className="absolute inset-0 z-[9000] bg-black/95 flex flex-col items-center justify-center text-white cursor-pointer"
+                    onClick={startSession}
+                >
+                    {isMobile ? (
+                        <div className="flex flex-col items-center">
+                            <div className="w-24 h-24 bg-blue-600 rounded-full flex items-center justify-center shadow-lg shadow-blue-500/50 mb-6 animate-pulse">
+                                <Play className="w-10 h-10 fill-white text-white ml-1" />
+                            </div>
+                            <p className="text-gray-400 text-lg">اضغط للتشغيل الآمن</p>
+                            <p className="text-gray-600 text-sm mt-2">سيتم تفعيل الحماية تلقائياً</p>
+                        </div>
+                    ) : (
+                        <>
+                            <Shield className="w-24 h-24 text-blue-500 mb-8" />
+                            <h2 className="text-3xl font-bold mb-4">🔒 جلسة مشاهدة آمنة</h2>
+                            <div className="bg-gray-900/50 p-6 rounded-lg max-w-lg mb-8 border border-gray-700">
+                                <h3 className="text-yellow-500 font-bold mb-3 flex items-center gap-2">
+                                    <AlertTriangle className="w-5 h-5" />
+                                    تحذير أمني هام
+                                </h3>
+                                <ul className="text-gray-400 space-y-2 text-sm">
+                                    <li>• عند البدء، سيتم تفعيل وضع الحماية القصوى</li>
+                                    <li>• محاولة التقاط صورة للشاشة = تسجيل خروج فوري</li>
+                                    <li>• محاولة تسجيل الشاشة = تسجيل خروج فوري</li>
+                                    <li>• التبديل بين النوافذ = تسجيل خروج فوري</li>
+                                    <li>• فتح أدوات المطورين = تسجيل خروج فوري</li>
+                                </ul>
+                            </div>
+                            <button
+                                onClick={(e) => { e.stopPropagation(); startSession(); }}
+                                className="px-10 py-4 bg-blue-600 hover:bg-blue-700 rounded-full text-xl font-bold transition-all shadow-lg hover:shadow-blue-500/30 flex items-center gap-3"
+                            >
+                                <Shield className="w-6 h-6" />
+                                بدء المشاهدة الآمنة
+                            </button>
+                            <button onClick={handleClose} className="mt-6 text-gray-500 hover:text-white underline">
+                                إلغاء
+                            </button>
+                        </>
+                    )}
+>>>>>>> 4186fad3086d08ad3d0b5b236cccebe07eb6b76c
                 </div>
             )}
 
@@ -763,24 +1082,50 @@ export function SecureVideoPlayer({
             {sourceType === 'youtube' || sourceType === 'drive' || sourceType === 'vdocipher' ? (
                 <iframe
                     src={embedUrl}
-                    className="w-full h-full object-contain pointer-events-auto"
+                    className={`${isSecurityBlurred ? 'blur-xl' : ''}`}
                     allow="autoplay; encrypted-media; fullscreen"
                     allowFullScreen
+<<<<<<< HEAD
                     style={{ pointerEvents: 'auto' }}
+=======
+                    style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '100%',
+                        border: 'none',
+                        objectFit: 'contain'
+                    }}
+>>>>>>> 4186fad3086d08ad3d0b5b236cccebe07eb6b76c
                 />
             ) : (
                 <video
                     ref={videoRef}
-                    className="w-full h-full object-contain"
+                    className={`${!hasStarted ? 'blur-lg' : ''} ${isSecurityBlurred ? 'blur-xl' : ''}`}
                     playsInline
                     disablePictureInPicture
+<<<<<<< HEAD
                     disableRemotePlayback
+=======
+>>>>>>> 4186fad3086d08ad3d0b5b236cccebe07eb6b76c
                     controlsList="nodownload nofullscreen noremoteplayback"
+                    onContextMenu={(e) => e.preventDefault()}
                     onPlay={() => setIsPlaying(true)}
                     onPause={() => setIsPlaying(false)}
+                    style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'contain',
+                        backgroundColor: '#000'
+                    }}
                 />
             )}
 
+<<<<<<< HEAD
             {/* MULTI-LAYER OVERLAYS */}
             <canvas ref={canvasRef} className="absolute inset-0 pointer-events-none z-[50]" />
             {effectiveRestrictions.qualityCap !== null && (
@@ -906,26 +1251,132 @@ export function SecureVideoPlayer({
             {/* CLOSE FOR IFRAMES */}
             {(sourceType === 'youtube' || sourceType === 'drive') && !isBlocked && (
                 <button onClick={onClose} className="absolute top-6 left-6 z-[70] p-3 bg-red-600 rounded-full hover:bg-red-700 text-white shadow-lg">
+=======
+            {/* CANVAS WATERMARK */}
+            <canvas
+                ref={canvasRef}
+                className="absolute inset-0 pointer-events-none z-[50]"
+            />
+
+            {/* CONTROLS FOR HOSTED VIDEOS */}
+            {(sourceType === 'hls' || sourceType === 'mp4') && hasStarted && !loading && !error && !showBlackScreen && (
+                <div 
+                    className="absolute inset-0 z-[60] flex flex-col justify-between"
+                    onClick={togglePlay}
+                >
+                    {/* TOP BAR */}
+                    <div className="flex justify-between items-center p-4 bg-gradient-to-b from-black/70 to-transparent">
+                        <button onClick={(e) => { e.stopPropagation(); handleClose(); }} className="p-2 bg-red-600/80 rounded-full hover:bg-red-600 text-white transition-colors">
+                            <X className="w-5 h-5" />
+                        </button>
+                        <div className="flex items-center gap-2 text-green-500 text-xs">
+                            <Shield className="w-3 h-3" />
+                            <span>حماية نشطة</span>
+                        </div>
+                    </div>
+                    
+                    {/* CENTER CONTROLS */}
+                    <div className="flex justify-center items-center gap-8" onClick={(e) => e.stopPropagation()}>
+                        {/* -5 SECONDS */}
+                        <button 
+                            onClick={() => skip(-5)} 
+                            className="p-3 bg-white/20 rounded-full hover:bg-white/30 text-white transition-colors flex flex-col items-center"
+                        >
+                            <RotateCcw className="w-7 h-7" />
+                            <span className="text-xs mt-1">-5</span>
+                        </button>
+                        
+                        {/* PLAY/PAUSE */}
+                        <button 
+                            onClick={togglePlay} 
+                            className="p-5 bg-white/25 rounded-full hover:bg-white/35 text-white transition-colors"
+                        >
+                            {isPlaying ? <Pause className="w-10 h-10" /> : <Play className="w-10 h-10 fill-white" />}
+                        </button>
+                        
+                        {/* +5 SECONDS */}
+                        <button 
+                            onClick={() => skip(5)} 
+                            className="p-3 bg-white/20 rounded-full hover:bg-white/30 text-white transition-colors flex flex-col items-center"
+                        >
+                            <RotateCw className="w-7 h-7" />
+                            <span className="text-xs mt-1">+5</span>
+                        </button>
+                    </div>
+
+                    {/* BOTTOM BAR - PROGRESS + CONTROLS */}
+                    <div className="bg-gradient-to-t from-black/80 to-transparent p-4" onClick={(e) => e.stopPropagation()}>
+                        {/* PROGRESS BAR */}
+                        <div 
+                            className="w-full h-2 bg-white/30 rounded-full cursor-pointer mb-3 relative group"
+                            onClick={seekTo}
+                        >
+                            <div 
+                                className="h-full bg-blue-500 rounded-full relative"
+                                style={{ width: `${progress}%` }}
+                            >
+                                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity" />
+                            </div>
+                        </div>
+                        
+                        {/* TIME + VOLUME */}
+                        <div className="flex justify-between items-center text-white text-sm">
+                            <span className="font-mono">{formatTime(currentTime)} / {formatTime(duration)}</span>
+                            <button onClick={toggleMute} className="p-2 bg-white/10 rounded-full hover:bg-white/20">
+                                {isMuted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* CLOSE BUTTON FOR EXTERNAL */}
+            {(sourceType === 'youtube' || sourceType === 'drive') && (
+                <button onClick={handleClose} className="absolute top-6 left-6 z-[70] p-3 bg-red-600 rounded-full hover:bg-red-700 text-white shadow-lg">
+>>>>>>> 4186fad3086d08ad3d0b5b236cccebe07eb6b76c
                     <X className="w-6 h-6" />
                 </button>
             )}
 
             {/* LOADING */}
             {loading && (
+<<<<<<< HEAD
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-[80] pointer-events-none">
                     <Loader2 className="w-12 h-12 text-teal-500 animate-spin mb-4" />
                     <p className="text-gray-400 text-sm">جاري تحميل الفيديو المشفّر...</p>
+=======
+                <div className="absolute inset-0 flex items-center justify-center bg-black z-[80]">
+                    <div className="flex flex-col items-center">
+                        <Loader2 className="w-16 h-16 text-blue-500 animate-spin mb-4" />
+                        <p className="text-white">جاري تحميل الفيديو...</p>
+                    </div>
+>>>>>>> 4186fad3086d08ad3d0b5b236cccebe07eb6b76c
                 </div>
             )}
 
             {/* ERROR */}
+<<<<<<< HEAD
             {error && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-[80]">
                     <ShieldAlert className="w-16 h-16 text-red-500 mb-4" />
                     <p className="text-white text-lg mb-4">{error}</p>
                     <button onClick={onClose} className="px-6 py-3 bg-gray-700 rounded-lg text-white hover:bg-gray-600">إغلاق</button>
+=======
+            {error && !loading && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black z-[80]">
+                    <div className="flex flex-col items-center text-center">
+                        <AlertTriangle className="w-16 h-16 text-red-500 mb-4" />
+                        <p className="text-white text-xl mb-2">حدث خطأ</p>
+                        <p className="text-gray-400">{error}</p>
+                        <button onClick={handleClose} className="mt-6 px-6 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg">
+                            إغلاق
+                        </button>
+                    </div>
+>>>>>>> 4186fad3086d08ad3d0b5b236cccebe07eb6b76c
                 </div>
             )}
         </div>
     );
 }
+
+export default SecureVideoPlayer;

@@ -28,6 +28,7 @@ const router = Router();
 /**
  * Log security violation attempts
  * Called by frontend when suspicious activity is detected
+ * Version 4.0 - Enhanced security logging with force logout support
  */
 router.post('/security/log', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
@@ -42,20 +43,117 @@ router.post('/security/log', authenticateToken, async (req: AuthRequest, res: Re
         const ipAddress = req.ip || req.headers['x-forwarded-for'] || 'unknown';
         const userAgent = req.headers['user-agent'] || 'unknown';
 
+        // Enhanced logging with platform info
+        const enhancedDetails = `[Platform: ${platform}] ${details || 'No details provided'} | IP: ${ipAddress}`;
+
         await execute(
             `INSERT INTO video_security_logs 
             (id, user_id, video_id, activity_type, ip_address, user_agent, details, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
-            [logId, userId, videoId, activityType, ipAddress, userAgent, details || null]
+            [logId, userId, videoId, activityType, ipAddress, userAgent, enhancedDetails]
         );
 
-        console.log(`[Security] Logged ${activityType} for user ${userId} on video ${videoId}`);
+        // Log severity based on activity type
+        const severeViolations = ['screenshot', 'screenrecord', 'devtools', 'alttab', 'focus_loss'];
+        const severity = severeViolations.includes(activityType) ? '🚨 SEVERE' : '⚠️ Warning';
+        
+        console.log(`[Security] ${severity} - ${activityType} for user ${userId} on video ${videoId}`);
+        console.log(`[Security] Details: ${enhancedDetails}`);
+        console.log(`[Security] User-Agent: ${userAgent}`);
 
-        res.json({ success: true, logId });
+        // If force logout requested, invalidate user session (optional enhancement)
+        if (forceLogout) {
+            console.log(`[Security] Force logout triggered for user ${userId}`);
+            // In a production system, you could invalidate tokens here
+            // For now, we just log and return the logout flag
+        }
+
+        // Count violations for this user
+        const violationCount = await queryOne(
+            `SELECT COUNT(*) as count FROM video_security_logs 
+             WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)`,
+            [userId]
+        );
+
+        res.json({ 
+            success: true, 
+            logId,
+            forceLogout,
+            violationCount: violationCount?.count || 0,
+            message: forceLogout ? 'User will be logged out' : 'Violation logged'
+        });
 
     } catch (error) {
         console.error('[Security] Logging error:', error);
         res.status(500).json({ error: 'Failed to log security event' });
+    }
+});
+
+/**
+ * Get security violations for a user (Admin endpoint)
+ */
+router.get('/security/violations/:userId', async (req: Request, res: Response) => {
+    try {
+        const { userId } = req.params;
+        const { limit = 50 } = req.query;
+
+        const violations = await query(
+            `SELECT * FROM video_security_logs 
+             WHERE user_id = ? 
+             ORDER BY created_at DESC 
+             LIMIT ?`,
+            [userId, parseInt(limit as string)]
+        );
+
+        const stats = await queryOne(
+            `SELECT 
+                COUNT(*) as total_violations,
+                COUNT(DISTINCT video_id) as videos_affected,
+                MAX(created_at) as last_violation
+             FROM video_security_logs WHERE user_id = ?`,
+            [userId]
+        );
+
+        res.json({ violations, stats });
+
+    } catch (error) {
+        console.error('[Security] Get violations error:', error);
+        res.status(500).json({ error: 'Failed to get violations' });
+    }
+});
+
+/**
+ * Get all security violations (Admin dashboard)
+ */
+router.get('/security/all-violations', async (req: Request, res: Response) => {
+    try {
+        const { limit = 100, hours = 24 } = req.query;
+
+        const violations = await query(
+            `SELECT vsl.*, u.name as user_name, u.phone as user_phone
+             FROM video_security_logs vsl
+             LEFT JOIN users u ON vsl.user_id = u.id
+             WHERE vsl.created_at > DATE_SUB(NOW(), INTERVAL ? HOUR)
+             ORDER BY vsl.created_at DESC
+             LIMIT ?`,
+            [parseInt(hours as string), parseInt(limit as string)]
+        );
+
+        const summary = await queryOne(
+            `SELECT 
+                COUNT(*) as total,
+                COUNT(DISTINCT user_id) as unique_users,
+                SUM(CASE WHEN activity_type IN ('screenshot', 'screenrecord') THEN 1 ELSE 0 END) as severe_count
+             FROM video_security_logs 
+             WHERE created_at > DATE_SUB(NOW(), INTERVAL ? HOUR)`,
+            [parseInt(hours as string)]
+        );
+
+        res.json({ violations, summary });
+
+    } catch (error) {
+        console.error('[Security] Get all violations error:', error);
+        res.status(500).json({ error: 'Failed to get violations' });
     }
 });
 
