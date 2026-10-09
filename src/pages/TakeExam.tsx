@@ -30,6 +30,31 @@ interface Question {
   display_order?: number;
 }
 
+type ExamScoreBreakdown = {
+  hasEssayQuestions: boolean;
+  autoScore: number;
+  manualScore: number;
+  pendingManualReview: boolean;
+};
+
+type SubmittedExamResult = {
+  score: number;
+  total: number;
+  percentage: number;
+  passed: boolean;
+} & ExamScoreBreakdown;
+
+type PreviousAttemptResult = {
+  score: number;
+  total: number;
+  passed: boolean;
+  passingMarks: number;
+  hasEssayQuestions: boolean;
+  autoScore: number | null;
+  manualScore: number | null;
+  pendingManualReview: boolean;
+};
+
 interface ExamData {
   id: string;
   title: string;
@@ -61,11 +86,11 @@ const TakeExam = () => {
   const [timeLeft, setTimeLeft] = useState(0); // in seconds
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [result, setResult] = useState<{ score: number; total: number; percentage: number; passed: boolean } | null>(null);
+  const [result, setResult] = useState<SubmittedExamResult | null>(null);
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [canAttempt, setCanAttempt] = useState(true);
   const [attemptMessage, setAttemptMessage] = useState('');
-  const [attemptResult, setAttemptResult] = useState<{ score: number; total: number; passed: boolean; passingMarks: number } | null>(null);
+  const [attemptResult, setAttemptResult] = useState<PreviousAttemptResult | null>(null);
   const [examStartTime, setExamStartTime] = useState<Date | null>(null);
   const [generatingPDF, setGeneratingPDF] = useState(false);
   const [studentId, setStudentId] = useState<string>('');
@@ -229,16 +254,30 @@ const TakeExam = () => {
                 const examData = await getExamById(examId) as any;
                 const qs = await getExamQuestions(examId);
                 const computedTotal = Array.isArray(qs)
-                  ? qs.reduce((sum: number, q: any) => sum + (q.marks || q.points || 1), 0)
+                  ? qs.reduce((sum: number, q: any) => sum + Number(q.marks || q.points || 1), 0)
                   : 0;
-                const rawTotal = examData?.total_marks || examData?.totalMarks || computedTotal;
-                const rawPassing = examData?.passing_marks || examData?.passingMarks || 0;
+                const rawTotal = Number(examData?.total_marks || examData?.totalMarks) || computedTotal;
+                const rawPassing = Number(examData?.passing_marks || examData?.passingMarks) || 0;
                 const passingMarks = rawTotal > 0 && rawPassing > rawTotal && rawPassing <= 100
                   ? Math.ceil((rawPassing / 100) * rawTotal)
                   : rawPassing;
-                const existingScore = attemptCheck.score || 0;
-                const passed = existingScore >= passingMarks;
-                setAttemptResult({ score: existingScore, total: rawTotal, passed, passingMarks });
+                const existingScore = Number(attemptCheck.score) || 0;
+                const hasEssayQuestions = Array.isArray(qs) && qs.some((q: any) => q.question_type === 'essay');
+                const essayMaximum = Array.isArray(qs)
+                  ? qs.filter((q: any) => q.question_type === 'essay')
+                    .reduce((sum: number, q: any) => sum + Number(q.marks || q.points || 1), 0)
+                  : 0;
+                const pendingManualReview = attemptCheck.attemptStatus === 'pending_review';
+                setAttemptResult({
+                  score: existingScore,
+                  total: rawTotal,
+                  passed: !pendingManualReview && Boolean(attemptCheck.passed),
+                  passingMarks,
+                  hasEssayQuestions,
+                  autoScore: pendingManualReview ? existingScore : null,
+                  manualScore: pendingManualReview ? essayMaximum : null,
+                  pendingManualReview,
+                });
               } catch (e) {
                 console.error('Failed to load exam for attempt summary', e);
               }
@@ -425,7 +464,10 @@ const TakeExam = () => {
   };
 
   const calculateScore = useCallback(() => {
-    if (!exam) return { score: 0, total: 0, percentage: 0, passed: false, hasEssayQuestions: false, autoScore: 0, manualScore: 0 };
+    if (!exam) return {
+      score: 0, total: 0, percentage: 0, passed: false,
+      hasEssayQuestions: false, autoScore: 0, manualScore: 0, pendingManualReview: false,
+    };
 
     let autoScore = 0;  // درجة الاختياري (تلقائي)
     let manualScore = 0;  // درجة المقالي (يدوي)
@@ -496,7 +538,8 @@ const TakeExam = () => {
       passed,
       hasEssayQuestions,
       autoScore,
-      manualScore
+      manualScore,
+      pendingManualReview: hasEssayQuestions
     };
   }, [exam, answers, essayAnswers]);
 
@@ -529,7 +572,10 @@ const TakeExam = () => {
         const finalScore = response.score !== undefined ? response.score : examResult.autoScore;
         const totalMarks = response.total_marks !== undefined ? response.total_marks : examResult.total;
         const passingMarks = response.passing_marks !== undefined ? response.passing_marks : (exam?.passing_marks || exam?.passingMarks || 0);
-        const passed = response.passed ?? (finalScore >= passingMarks);
+        const pendingManualReview = response.status !== undefined
+          ? response.status === 'pending_review'
+          : examResult.pendingManualReview;
+        const passed = pendingManualReview ? false : (response.passed ?? (finalScore >= passingMarks));
 
         const finalResult = {
           score: finalScore,
@@ -538,7 +584,8 @@ const TakeExam = () => {
           passed: passed,
           hasEssayQuestions: examResult.hasEssayQuestions,
           autoScore: examResult.autoScore,
-          manualScore: examResult.manualScore
+          manualScore: examResult.manualScore,
+          pendingManualReview
         };
 
         setResult(finalResult);
@@ -907,13 +954,13 @@ const TakeExam = () => {
           >
             <Card className="shadow-2xl border-2">
               <CardHeader className="text-center pb-4">
-                <div className={`mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4 ${attemptResult.hasEssayQuestions
+                <div className={`mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4 ${attemptResult.pendingManualReview
                   ? 'bg-blue-100 dark:bg-blue-900/20'
                   : attemptResult.passed
                     ? 'bg-green-100 dark:bg-green-900/20'
                     : 'bg-red-100 dark:bg-red-900/20'
                   }`}>
-                  {attemptResult.hasEssayQuestions ? (
+                  {attemptResult.pendingManualReview ? (
                     <AlertCircle className="w-8 h-8 text-blue-600 dark:text-blue-500" />
                   ) : attemptResult.passed ? (
                     <CheckCircle2 className="w-8 h-8 text-green-600 dark:text-green-500" />
@@ -922,11 +969,11 @@ const TakeExam = () => {
                   )}
                 </div>
                 <CardTitle className="text-2xl">
-                  {attemptResult.hasEssayQuestions ? 'تم تسليم الامتحان' : 'نتيجة الامتحان'}
+                  {attemptResult.pendingManualReview ? 'تم تسليم الامتحان' : 'نتيجة الامتحان'}
                 </CardTitle>
               </CardHeader>
               <CardContent className="text-center space-y-4">
-                {attemptResult.hasEssayQuestions ? (
+                {attemptResult.pendingManualReview ? (
                   <>
                     <div className="bg-blue-50 dark:bg-blue-900/10 p-4 rounded-lg border border-blue-200 dark:border-blue-800">
                       <p className="text-lg font-semibold text-blue-700 dark:text-blue-400 mb-2">
@@ -937,12 +984,10 @@ const TakeExam = () => {
                       </p>
                     </div>
                     <div className="bg-muted/50 p-4 rounded-lg">
-                      <p className="text-sm font-medium mb-2">الدرجة المبدئية (الأسئلة الموضوعية):</p>
-                      <p className="text-2xl font-bold text-primary">
-                        {attemptResult.autoScore} / {attemptResult.autoScore + attemptResult.manualScore}
-                      </p>
+                      <p className="text-sm font-medium mb-2">درجة الأسئلة الموضوعية المسجلة:</p>
+                      <p className="text-2xl font-bold text-primary">{attemptResult.autoScore ?? attemptResult.score}</p>
                       <p className="text-xs text-muted-foreground mt-1">
-                        في انتظار تصحيح الأسئلة المقالية ({attemptResult.manualScore} درجة)
+                        في انتظار تصحيح الأسئلة المقالية ({attemptResult.manualScore ?? 0} درجة متاحة)
                       </p>
                     </div>
                   </>
@@ -1071,8 +1116,8 @@ const TakeExam = () => {
     .reduce((sum, q) => sum + (q.marks || q.points || 1), 0) || 0;
 
   if (isSubmitted && result) {
-    // ✅ تحديد حالة العرض بناءً على وجود أسئلة مقالية
-    const isPendingReview = hasEssayQuestions;
+    // Use the persisted submission state so graded essay attempts show their final result.
+    const isPendingReview = result.pendingManualReview;
     const showPassFail = !isPendingReview;
 
     return (
@@ -1468,7 +1513,7 @@ const TakeExam = () => {
                     )}
                   </Button>
 
-                  {result?.hasEssayQuestions && (
+                  {result.pendingManualReview && (
                     <p className="text-sm text-center text-muted-foreground">
                       💡 يمكنك تحميل الامتحان الآن وستظهر النتيجة النهائية بعد التصحيح
                     </p>

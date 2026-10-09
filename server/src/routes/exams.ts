@@ -919,7 +919,8 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
                         message: 'انتهى وقت الامتحان',
                         score: attempt.score || 0,
                         totalMarks: exam.total_marks || 0,
-                        passed: false
+                        passed: false,
+                        attemptStatus: 'failed'
                     });
                 }
 
@@ -940,7 +941,8 @@ router.get('/:examId/can-attempt/:studentId', async (req: Request, res: Response
                 message: 'لقد قمت بالامتحان من قبل',
                 score: attempt.score,
                 totalMarks: exam.total_marks || 0,
-                passed: attempt.status === 'passed'
+                passed: attempt.status === 'passed',
+                attemptStatus: attempt.status
             });
         }
 
