@@ -20,6 +20,7 @@ import {
   GraduationCap
 } from 'lucide-react';
 import axios from 'axios';
+import { sendAiChatMessage } from '@/lib/api';
 
 const API_URL = '/api';
 
@@ -71,7 +72,8 @@ export default function StudentChat() {
   const [user, setUser] = useState<any>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [teacher, setTeacher] = useState<User | null>(null);
+  const [academicContacts, setAcademicContacts] = useState<User[]>([]);
+  const [contactsError, setContactsError] = useState<string | null>(null);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageText, setMessageText] = useState('');
@@ -107,7 +109,7 @@ export default function StudentChat() {
       const userData = JSON.parse(userStr);
       setUser(userData);
       loadConversations();
-      loadTeacher();
+      loadAcademicContacts();
       initializeSocket(userData);
     } catch { navigate('/auth'); }
   }, []);
@@ -116,7 +118,8 @@ export default function StudentChat() {
   const initializeSocket = (userData: any) => {
     const newSocket = io(window.location.origin, {
       auth: { token: localStorage.getItem('authToken') },
-      path: '/socket.io'
+      path: '/socket.io',
+      transports: ['websocket', 'polling']
     });
 
     newSocket.on('connect', () => {
@@ -176,9 +179,11 @@ export default function StudentChat() {
     });
 
     newSocket.on('user:status', (data: { userId: string; isOnline: boolean; lastSeen?: Date }) => {
-      if (teacher && teacher.id === data.userId) {
-        setTeacher(prev => prev ? { ...prev, is_online: data.isOnline, last_seen: data.lastSeen?.toString() } : null);
-      }
+      setAcademicContacts((previous) => previous.map((contact) =>
+        contact.id === data.userId
+          ? { ...contact, is_online: data.isOnline, last_seen: data.lastSeen?.toString() }
+          : contact
+      ));
       if (selectedUser && selectedUser.id === data.userId) {
         setSelectedUser(prev => prev ? { ...prev, is_online: data.isOnline, last_seen: data.lastSeen?.toString() } : null);
       }
@@ -214,26 +219,18 @@ export default function StudentChat() {
     }
   };
 
-  const loadTeacher = async () => {
+  const loadAcademicContacts = async () => {
     try {
       const token = getToken();
-      const teacherData: User = {
-        id: '01024083057', username: 'الأستاذ محمد رمضان', name: 'الأستاذ محمد رمضان',
-        role: 'teacher', phone: '01024083057', is_online: false, last_seen: null
-      };
-      try {
-        const teacherRes = await axios.get(`${API_URL}/auth/search-by-phone/01024083057`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        if (teacherRes.data) {
-          teacherData.id = teacherRes.data.id;
-          teacherData.username = teacherRes.data.name || 'الأستاذ محمد رمضان';
-          teacherData.name = teacherRes.data.name || 'الأستاذ محمد رمضان';
-        }
-      } catch { /* Use defaults */ }
-      setTeacher(teacherData);
+      const response = await axios.get<User[]>(`${API_URL}/messages/users/available`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setAcademicContacts(response.data || []);
+      setContactsError(null);
     } catch (error) {
-      console.error('Error loading teacher:', error);
+      console.error('Error loading academic contacts:', error);
+      setAcademicContacts([]);
+      setContactsError('تعذر تحميل جهات التواصل المسموح بها. حاول مرة أخرى.');
     }
   };
 
@@ -292,31 +289,12 @@ export default function StudentChat() {
       if (textareaRef.current) textareaRef.current.style.height = '48px';
       setIsTyping(true);
 
-      const groqApiKey = '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';
-      const systemPrompt = `أنت مساعد ذكي تعليمي متخصص حصراً في مساعدة طلاب المرحلة الثانوية المصريين في دراسة التاريخ.
-وظيفتك الأساسية:
-- شرح الأحداث التاريخية والشخصيات والفترات بوضوح ودقة
-- مساعدة الطلاب على فهم دروس المنهج المصري للتاريخ
-- تقديم ملخصات وتحليلات ومقارنات للأحداث التاريخية
-- الإجابة على أسئلة من نمط الامتحانات
-- مساعدة الطالب على كتابة الإجابات الطويلة
-رد دائماً بالعربية فقط، وكن ودوداً وصبوراً - بدو كمعلم مختص وليس روبوت.`;
-
-      fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${groqApiKey}` },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: currentMessage }],
-          temperature: 0.7, max_tokens: 1000,
-        }),
-      })
-        .then(response => response.json())
-        .then(data => {
-          if (data.choices?.[0]?.message?.content) {
+      sendAiChatMessage(currentMessage)
+        .then(aiResponse => {
+          if (aiResponse) {
             setMessages(prev => [...prev, {
               id: Date.now() + 1, sender_id: 'ai-assistant', receiver_id: user.id,
-              content: data.choices[0].message.content, message_type: 'text',
+              content: aiResponse, message_type: 'text',
               is_edited: false, is_deleted: false, created_at: new Date().toISOString(),
               is_delivered: true, is_read: true
             }]);
@@ -425,9 +403,8 @@ export default function StudentChat() {
     } catch { return ''; }
   };
 
-  const getTeacherUnread = () => {
-    if (!teacher) return 0;
-    const conv = conversations.find(c => c.other_user_id === teacher.id);
+  const getContactUnread = (contactId: string) => {
+    const conv = conversations.find(c => c.other_user_id === contactId);
     return conv?.unread_count || 0;
   };
 
@@ -490,51 +467,56 @@ export default function StudentChat() {
             </div>
 
             <ScrollArea className="flex-1">
-              {/* Teacher - Pinned at top */}
-              {teacher && (
+              {/* Academic contacts allowed by the backend */}
+              {academicContacts.length > 0 && (
                 <div className="p-2">
                   <h3 className="text-xs font-bold text-orange-500 px-3 mb-2 flex items-center gap-1">
                     <GraduationCap className="w-3 h-3" />
-                    المدرس
+                    المدرسون
                   </h3>
-                  <button
-                    onClick={() => selectUser(teacher)}
-                    className={`
-                      w-full p-3 rounded-xl flex items-center gap-3 transition-all duration-200 text-right
-                      ${selectedUser?.id === teacher.id
-                        ? 'bg-orange-50 ring-2 ring-orange-200 shadow-sm'
-                        : 'hover:bg-slate-50'}
-                    `}
-                  >
-                    <div className="relative shrink-0">
-                      <Avatar className="bg-gradient-to-br from-orange-400 to-amber-500">
-                        <AvatarFallback className="text-white font-bold">
-                          {(teacher.name || teacher.username || 'م').substring(0, 2)}
-                        </AvatarFallback>
-                      </Avatar>
-                      {teacher.is_online && (
-                        <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></span>
-                      )}
-                    </div>
-                    <div className="flex-1 overflow-hidden min-w-0">
-                      <div className="flex items-center justify-between mb-0.5">
-                        <span className="font-semibold truncate text-sm">{teacher.name || teacher.username || 'الأستاذ'}</span>
+                  {academicContacts
+                    .filter((contact) => (contact.name || contact.username || '').toLowerCase().includes(searchQuery.toLowerCase()))
+                    .map((contact) => (
+                    <button
+                      key={contact.id}
+                      onClick={() => selectUser(contact)}
+                      className={`
+                        w-full p-3 rounded-xl flex items-center gap-3 transition-all duration-200 text-right mb-1
+                        ${selectedUser?.id === contact.id
+                          ? 'bg-orange-50 ring-2 ring-orange-200 shadow-sm'
+                          : 'hover:bg-slate-50'}
+                      `}
+                    >
+                      <div className="relative shrink-0">
+                        <Avatar className="bg-gradient-to-br from-orange-400 to-amber-500">
+                          <AvatarFallback className="text-white font-bold">
+                            {(contact.name || contact.username || 'م').substring(0, 2)}
+                          </AvatarFallback>
+                        </Avatar>
+                        {contact.is_online && (
+                          <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></span>
+                        )}
                       </div>
-                      <p className="text-xs text-muted-foreground">
-                        {teacher.is_online ? (
-                          <span className="text-green-600 flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 bg-green-500 rounded-full"></span>
-                            متصل الآن
-                          </span>
-                        ) : 'مدرس التاريخ'}
-                      </p>
-                    </div>
-                    {getTeacherUnread() > 0 && (
-                      <span className="bg-orange-500 text-white text-xs px-2 py-0.5 rounded-full min-w-[20px] text-center shrink-0">
-                        {getTeacherUnread()}
-                      </span>
-                    )}
-                  </button>
+                      <div className="flex-1 overflow-hidden min-w-0">
+                        <span className="font-semibold truncate text-sm block">{contact.name || contact.username || 'مدرس'}</span>
+                        <p className="text-xs text-muted-foreground">
+                          {contact.is_online ? 'متصل الآن' : contact.role === 'instructor' ? 'مدرس المنصة' : 'المدرس'}
+                        </p>
+                      </div>
+                      {getContactUnread(contact.id) > 0 && (
+                        <span className="bg-orange-500 text-white text-xs px-2 py-0.5 rounded-full min-w-[20px] text-center shrink-0">
+                          {getContactUnread(contact.id)}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {contactsError && (
+                <div className="mx-3 my-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+                  <p>{contactsError}</p>
+                  <button className="mt-2 font-semibold underline" onClick={loadAcademicContacts}>إعادة المحاولة</button>
                 </div>
               )}
 

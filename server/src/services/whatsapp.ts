@@ -117,7 +117,7 @@ export async function sendSubscriptionApprovalNotification(
         `📚 *الصف:* ${gradeName || 'غير محدد'}\n` +
         `👥 *المجموعة:* ${groupName || 'غير محدد'}\n\n` +
         `شكراً لثقتكم بنا 🙏\n` +
-        `مركز القائد التعليمي`;
+        `Tabweb Academy`;
 
     return await sendWhatsAppMessage(formattedPhone, message);
 }

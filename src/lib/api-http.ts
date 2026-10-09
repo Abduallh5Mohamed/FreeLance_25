@@ -43,8 +43,9 @@ async function request<T>(
 ): Promise<T> {
     const token = getAuthToken();
 
+    const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
     const headers: HeadersInit = {
-        'Content-Type': 'application/json',
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
         ...options.headers,
     };
 
@@ -58,7 +59,20 @@ async function request<T>(
     });
 
     if (!response.ok) {
-        const error = await response.json().catch(() => ({ error: 'Request failed' }));
+        const error = await response.json().catch(() => ({ error: 'Request failed', code: undefined }));
+        if (response.status === 403 && error.code === 'BILLING_ONLY') {
+            try {
+                const current = JSON.parse(localStorage.getItem('currentUser') || 'null');
+                if (current?.role === 'instructor') localStorage.setItem('currentUser', JSON.stringify({ ...current, billing_only: true }));
+            } catch { /* malformed local session will be handled by the auth guard */ }
+            if (!['/instructor-subscription', '/instructor-wallet', '/support'].includes(window.location.pathname)) {
+                window.location.assign('/instructor-subscription');
+            }
+        }
+        if (response.status === 403 && error.code === 'TENANT_SUSPENDED') {
+            clearAuthToken();
+            if (window.location.pathname !== '/auth') window.location.assign('/auth');
+        }
         throw new Error(error.error || `HTTP ${response.status}`);
     }
 
@@ -74,10 +88,89 @@ export interface User {
     email?: string | null;
     phone?: string | null;
     name: string;
-    role: 'admin' | 'teacher' | 'student';
+    role: 'admin' | 'teacher' | 'student' | 'instructor' | 'staff';
     is_active: boolean;
     student_id?: string | null;
+    accessible_pages?: string[];
+    admin_member?: boolean;
+    admin_permissions?: string[];
+    admin_roles?: string[];
+    billing_only?: boolean;
 }
+
+export interface AdminDashboardMetric {
+    key: string; label: string; value: number | string; href?: string; tone?: string;
+}
+export interface AdminDashboardQueueItem {
+    id: string; title: string; detail?: string; status?: string; created_at?: string; href: string;
+}
+export interface AdminDashboardData {
+    roles: string[]; primary_role: string; title: string; description: string; permissions: string[];
+    metrics: AdminDashboardMetric[];
+    queues: Array<{ key: string; title: string; href: string; items: AdminDashboardQueueItem[] }>;
+}
+export const getAdminDashboard = () => request<AdminDashboardData>('/admin/dashboard');
+
+export interface AdminFinanceData {
+    generated_at: string; months: number;
+    summary: {
+        revenue_month: number; revenue_previous_month: number; revenue_growth_percent: number | null;
+        revenue_total: number; cash_collected_total: number; topup_cash_collected: number; unused_service_credit: number;
+        pending_amount: number; verified_month: number; verified_attempts: number;
+        submitted_attempts: number; rejected_attempts: number; payment_approval_rate: number | null;
+        average_verified_payment: number; avg_review_hours: number;
+        total_subscriptions: number; active_subscriptions: number; pending_subscriptions: number;
+        past_due_subscriptions: number; grace_subscriptions: number; expired_subscriptions: number;
+        expiring_7_days: number; expiring_30_days: number;
+        total_tenants: number; active_tenants: number; suspended_tenants: number; new_tenants_month: number;
+        tenant_growth_percent: number | null; instructors: number; students: number; online_students: number;
+        offline_students: number; average_students_per_instructor: number; unassigned_students: number;
+        tenants_without_subscription: number; duplicate_references: number; invalid_review_timestamps: number;
+    };
+    trend: Array<{ month_key: string; revenue: number; payments: number; subscriptions_paid: number }>;
+    subscription_breakdown: Array<{ label: string; count: number; amount: number }>;
+    payment_methods: Array<{ label: string; attempts: number; verified: number; revenue: number }>;
+    instructor_portfolio: Array<{ bucket: string; instructors: number; students: number }>;
+    recent: Array<{ id: string; business_name: string; amount: string; method: string; reference_number: string; reviewed_at: string }>;
+    detailed: boolean; can_export: boolean; can_calculate: boolean; can_export_pdf: boolean;
+}
+export const getAdminFinance = (months = 12) => request<AdminFinanceData>(`/admin/insights/finance?months=${months}`);
+export const downloadAdminFinanceReport = async (months = 12): Promise<void> => {
+    const response = await fetch(`${API_BASE_URL}/admin/insights/finance/export?months=${months}`, {
+        headers: { Authorization: `Bearer ${getAuthToken() || ''}` },
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: 'فشل تنزيل التقرير' }));
+        throw new Error(error.error || 'فشل تنزيل التقرير');
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] || 'platform-analytics.csv';
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url; anchor.download = filename; document.body.appendChild(anchor); anchor.click(); anchor.remove();
+    URL.revokeObjectURL(url);
+};
+export interface AnalystCalculation {
+    id: string; name: string; left_metric: string; operator: 'add' | 'subtract' | 'multiply' | 'divide' | 'percent_of' | 'growth';
+    right_metric?: string | null; constant_value?: string | number | null; result_format: 'number' | 'money' | 'percent'; created_at: string;
+}
+export const getAnalystCalculations = () => request<AnalystCalculation[]>('/admin/insights/finance/calculations');
+export const createAnalystCalculation = (data: Omit<AnalystCalculation, 'id' | 'created_at'>) =>
+    request<{ id: string }>('/admin/insights/finance/calculations', { method: 'POST', body: JSON.stringify(data) });
+export const deleteAnalystCalculation = (id: string) =>
+    request<{ success: boolean }>(`/admin/insights/finance/calculations/${id}`, { method: 'DELETE' });
+export const recordAnalystPdfExport = (months: number, calculationCount: number) =>
+    request<{ recorded: boolean }>('/admin/insights/finance/pdf-export-event', {
+        method: 'POST', body: JSON.stringify({ months, calculation_count: calculationCount }),
+    });
+
+export interface AdminSecurityData {
+    summary: { events_24h: number; admin_changes_24h: number; financial_changes_24h: number };
+    events: Array<{ id: string; action: string; resource_type: string; resource_id: string; reason?: string | null; request_id?: string | null; created_at: string; actor_name?: string | null; business_name?: string | null }>;
+    page: number; limit: number;
+}
+export const getAdminSecurity = (page = 1) => request<AdminSecurityData>(`/admin/insights/security?page=${page}`);
 
 export interface AuthResponse {
     user: User | null;
@@ -162,6 +255,276 @@ export const getCurrentUser = async (): Promise<User | null> => {
     }
 };
 
+// SaaS administration APIs use the same authenticated HTTP boundary as legacy pages.
+export interface AdminWorkItem {
+    id: string;
+    type: string;
+    title: string;
+    priority: string;
+    status: string;
+    tenant_id?: string | null;
+    assigned_team_id?: string | null;
+    assigned_admin_id?: string | null;
+    due_at?: string | null;
+    created_at: string;
+}
+
+export const getAdminWorkItems = (page = 1) =>
+    request<{ data: AdminWorkItem[]; page: number; limit: number }>(`/admin/work-items?page=${page}`);
+
+export const createAdminWorkItem = (item: {
+    type: string; title: string; description?: string; priority: string; tenant_id?: string;
+}) => request<{ id: string }>('/admin/work-items', { method: 'POST', body: JSON.stringify(item) });
+
+export const getAdminWorkItem = (id: string) =>
+    request<{ item: AdminWorkItem; events: Array<{ id: string; event_type: string; body?: string; created_at: string }> }>(`/admin/work-items/${id}`);
+
+export const addAdminWorkItemComment = (id: string, body: string) =>
+    request<{ id: string }>(`/admin/work-items/${id}/comments`, { method: 'POST', body: JSON.stringify({ body }) });
+
+export interface PlatformPlan {
+    id: string; code: string; name: string; duration_months: number; duration_days: number; price?: string; currency: string; is_active: boolean;
+}
+
+export interface PlatformTenant {
+    id: string; business_name: string; subject_type?: string; status: string; owner_user_id: string; owner_name: string; owner_phone?: string;
+    subscription_id?: string | null; subscription_status?: string | null; agreed_price?: string | null;
+    period_ends_at?: string | null; legacy_compat: boolean;
+}
+
+export const getPlatformPlans = () => request<PlatformPlan[]>('/admin/platform/plans');
+export const createPlatformPlan = (data: { code: string; name: string; duration_months: number; duration_days: number; price: string }) =>
+    request<{ id: string }>('/admin/platform/plans', { method: 'POST', body: JSON.stringify(data) });
+export const getPlatformTenants = (page = 1) =>
+    request<{ data: PlatformTenant[]; page: number; limit: number }>(`/admin/platform/tenants?page=${page}`);
+export const createPlatformTenant = (data: {
+    business_name: string; subject_type: string; owner_name: string; owner_phone: string; owner_email?: string; password: string; plan_id: string;
+}) => request<{ tenant_id: string; subscription_id: string; status: string }>('/admin/platform/tenants', {
+    method: 'POST', body: JSON.stringify(data),
+});
+export const createPlatformRenewal = (tenantId: string, planId: string) =>
+    request<{ subscription_id: string; status: string }>(`/admin/platform/tenants/${tenantId}/renewals`, {
+        method: 'POST', body: JSON.stringify({ plan_id: planId }),
+    });
+export interface PlatformPayment {
+    id: string; subscription_id: string; amount?: string; method?: string; reference_number?: string;
+    status: string; submitted_by?: string; created_at: string; tenant_id: string; business_name: string;
+}
+export const getPlatformPayments = () =>
+    request<{ data: PlatformPayment[]; page: number; limit: number }>('/admin/platform/payments');
+export const submitPlatformPayment = (subscriptionId: string, data: { amount: string; method: string; reference_number: string }) =>
+    request<{ id: string; status: string }>(`/admin/platform/subscriptions/${subscriptionId}/payments`, {
+        method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(data),
+    });
+export const verifyPlatformPayment = (id: string) =>
+    request<{ status: string; login_enabled: boolean }>(`/admin/platform/payments/${id}/verify`, { method: 'POST' });
+export const permanentlyDeletePlatformTenant = (tenantId: string, confirmation: string) =>
+    request<{ deleted: boolean; detached_teaching_data: boolean }>(`/admin/platform/tenants/${tenantId}/permanent`, {
+        method: 'DELETE', body: JSON.stringify({ confirmation }),
+    });
+
+export interface InstructorAccountStatement {
+    generated_at: string;
+    permissions: {
+        can_view_amounts: boolean; can_view_payment_details: boolean; can_manage_billing_profile: boolean;
+        can_create_renewal: boolean; can_submit_payment: boolean; can_verify_payment: boolean;
+        can_add_note: boolean; can_view_teaching_detail: boolean; can_view_audit: boolean;
+    };
+    instructor: {
+        owner_user_id: string; owner_name: string; owner_phone?: string | null; owner_email?: string | null;
+        login_active: boolean; account_created_at: string;
+    };
+    tenant: { id: string; business_name: string; subject_type?: string | null; status: string; legacy_compat: boolean; created_at: string } | null;
+    billing_profile: {
+        billing_cycle_day: number; reminder_days_before: number; collection_status: string;
+        next_followup_at?: string | null; updated_at?: string | null;
+    } | null;
+    teaching: { students: number; online_students: number; offline_students: number; lectures: number };
+    summary: {
+        subscription_periods: number; paid_periods: number; paid_months: number; current_plan?: string | null;
+        current_period_months: number; current_status: string; current_starts_at?: string | null;
+        current_ends_at?: string | null; next_renewal_at?: string | null; remaining_days?: number | null;
+        remaining_months_estimate?: number | null; last_payment_at?: string | null;
+        total_contract?: number; total_verified_paid?: number; total_pending?: number;
+        total_outstanding?: number; current_due?: number; normalized_monthly_price?: number;
+    };
+    subscriptions: Array<{
+        id: string; status: string; plan_id: string; plan_code: string; plan_name: string; duration_months: number;
+        currency: string; starts_at?: string | null; period_ends_at?: string | null; grace_until?: string | null;
+        cancel_at_period_end: boolean; created_at: string; updated_at: string; last_verified_at?: string | null;
+        verified_payments: number; pending_payments: number; agreed_price?: number; discount_amount?: number;
+        amount_due?: number; verified_paid?: number; pending_paid?: number; outstanding?: number;
+    }>;
+    payments: Array<{
+        id: string; subscription_id: string; status: string; created_at: string; reviewed_at?: string | null;
+        plan_name: string; duration_months: number; amount?: number; currency?: string; method?: string;
+        reference_number?: string | null; rejection_reason?: string | null; submitted_by_name?: string | null;
+        reviewed_by_name?: string | null;
+    }>;
+    notes: Array<{
+        id: string; note_type: string; body: string; followup_at?: string | null; created_at: string; created_by_name: string;
+    }>;
+    audit: Array<{
+        id: string; action: string; resource_type: string; resource_id: string; reason?: string | null;
+        created_at: string; actor_name?: string | null;
+    }>;
+    warnings: string[];
+}
+
+export const getInstructorAccountStatement = (ownerUserId: string) =>
+    request<InstructorAccountStatement>(`/admin/platform/instructors/${ownerUserId}/account`);
+export const updateInstructorBillingProfile = (ownerUserId: string, data: {
+    billing_cycle_day: number; reminder_days_before: number; collection_status: string; next_followup_at?: string | null;
+}) => request<{ updated: boolean }>(`/admin/platform/instructors/${ownerUserId}/billing-profile`, {
+    method: 'PATCH', body: JSON.stringify(data),
+});
+export const addInstructorAccountNote = (ownerUserId: string, data: {
+    note_type: string; body: string; followup_at?: string | null;
+}) => request<{ id: string }>(`/admin/platform/instructors/${ownerUserId}/account-notes`, {
+    method: 'POST', body: JSON.stringify(data),
+});
+export const redeemTenantInvitation = (token: string, password: string) =>
+    request<{ success: boolean }>('/tenant-invitations/redeem', { method: 'POST', body: JSON.stringify({ token, password }) });
+
+export interface MyTenantSubscription {
+    tenant_id: string; business_name: string; tenant_status: string; legacy_compat: boolean;
+    subscription_id: string | null; subscription_status: string | null; agreed_price: string | null;
+    currency: string | null; starts_at: string | null; period_ends_at: string | null;
+    grace_until: string | null; plan_name: string | null; duration_months: number | null; duration_days: number | null;
+    days_remaining: number | null; grace_seconds_remaining: number | null;
+}
+export const getMyTenantSubscription = () => request<MyTenantSubscription>('/tenants/me/subscription');
+
+export interface InstructorTopupRequest {
+    id: string;
+    tenant_id?: string;
+    instructor_id?: string;
+    instructor_name?: string;
+    instructor_phone?: string;
+    business_name?: string;
+    purpose_code: 'subscription_renewal' | 'other';
+    amount: string;
+    currency: string;
+    method: string;
+    reference_number?: string | null;
+    paid_at: string;
+    notes?: string | null;
+    status: 'submitted' | 'verified' | 'rejected';
+    rejection_reason?: string | null;
+    reviewed_at?: string | null;
+    created_at: string;
+    duplicate_suspected?: boolean;
+    renewal_result?: string | null;
+}
+
+export interface InstructorBillingData {
+    server_now: string;
+    billing_only: boolean;
+    tenant: { id: string; business_name: string; status: string; legacy_compat: boolean };
+    subscription: null | {
+        id: string; status: string; plan_id: string; plan_name: string;
+        agreed_price: string; discount_amount: string; charge_amount: number; currency: string;
+        starts_at: string | null; period_ends_at: string | null; grace_until: string | null;
+        duration_months: number; duration_days: number;
+        period_seconds_remaining: number; grace_seconds_remaining: number;
+    };
+    wallet: { balance: string; updated_at: string | null };
+    renewal_intent: null | {
+        id: string; status: string; trigger_type: 'topup' | 'manual'; charge_amount: string;
+        paid_at: string | null; created_at: string; plan_name: string;
+    };
+    topups: InstructorTopupRequest[];
+}
+
+export const getMyTenantBilling = () => request<InstructorBillingData>('/tenants/me/billing');
+export const submitInstructorTopup = (data: FormData, idempotencyKey = crypto.randomUUID()) =>
+    request<{ id: string; status: string; duplicate?: boolean }>('/tenants/me/topups', {
+        method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: data,
+    });
+export const getOwnTopupProofUrl = (id: string) =>
+    request<{ url: string; expires_in: number }>(`/tenants/me/topups/${id}/proof-url`);
+export const requestManualRenewal = () =>
+    request<{ id: string; status: string; subscriptionId?: string }>('/tenants/me/renewal-intents/manual', {
+        method: 'POST', body: JSON.stringify({ confirmed: true }),
+    });
+export const cancelRenewalIntent = (id: string) =>
+    request<{ status: string }>(`/tenants/me/renewal-intents/${id}/cancel`, { method: 'POST' });
+
+export const getAdminTopups = (filters: { page?: number; status?: string; search?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (filters.page) params.set('page', String(filters.page));
+    if (filters.status) params.set('status', filters.status);
+    if (filters.search) params.set('q', filters.search);
+    const suffix = params.toString() ? `?${params}` : '';
+    return request<{ data: InstructorTopupRequest[]; page: number; limit: number; total?: number }>(`/admin/platform/topups${suffix}`);
+};
+
+export interface VideoSecurityViolation {
+    id: string;
+    activity_type: string;
+    details?: string;
+    violation_score: number;
+    violation_weight: number;
+    confidence: 'low' | 'medium' | 'high';
+    created_at: string;
+    masked_ip?: string;
+    user_agent?: string;
+    student_user_id: string;
+    student_name: string;
+    video_title?: string;
+}
+
+export const getInstructorVideoViolations = () =>
+    request<VideoSecurityViolation[]>('/secure-video/instructor/violations');
+
+export const suspendStudentForVideoSecurity = (studentUserId: string, minutes = 30, reason = 'مراجعة مخالفة حماية الفيديو') =>
+    request<{ suspended: true; minutes: number }>(`/secure-video/instructor/students/${encodeURIComponent(studentUserId)}/suspend`, {
+        method: 'POST', body: JSON.stringify({ minutes, reason }),
+    });
+
+export const unsuspendStudentForVideoSecurity = (studentUserId: string) =>
+    request<{ suspended: false }>(`/secure-video/instructor/students/${encodeURIComponent(studentUserId)}/unsuspend`, { method: 'POST' });
+export const getAdminTopupProofUrl = (id: string) =>
+    request<{ url: string; expires_in: number }>(`/admin/platform/topups/${id}/proof-url`);
+export const verifyAdminTopup = (id: string) =>
+    request<{ status: string; balance: string; renewal?: { status: string } | null }>(`/admin/platform/topups/${id}/verify`, { method: 'POST' });
+export const rejectAdminTopup = (id: string, reason: string) =>
+    request<{ status: string }>(`/admin/platform/topups/${id}/reject`, {
+        method: 'POST', body: JSON.stringify({ reason }),
+    });
+
+export interface AdminApproval {
+    id: string; action_key: string; resource_id: string; requested_value: { amount: string } | string;
+    reason: string; status: string; requested_by: string; created_at: string;
+}
+export const getAdminApprovals = () => request<AdminApproval[]>('/admin/approvals');
+export const requestServiceCreditAdjustment = (data: { instructor_id: string; action_key: string; amount: string; reason: string }) =>
+    request<{ id: string; status: string }>('/admin/approvals', { method: 'POST', body: JSON.stringify(data) });
+export const approveAdminApproval = (id: string) =>
+    request<{ status: string; new_balance: string }>(`/admin/approvals/${id}/approve`, { method: 'POST' });
+export const rejectAdminApproval = (id: string, reason: string) =>
+    request<{ status: string }>(`/admin/approvals/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) });
+
+export interface AdminRole { code: string; name: string; }
+export interface AdminMember {
+    id: string; name: string; email?: string | null; phone?: string | null; is_active: boolean; roles: string;
+}
+export const getAdminRoles = () => request<AdminRole[]>('/admin/members/roles');
+export const getAdminMembers = () => request<AdminMember[]>('/admin/members');
+export const createAdminMember = (data: { name: string; phone: string; email?: string; password: string; role_code: string }) =>
+    request<{ id: string; role_code: string }>('/admin/members', { method: 'POST', body: JSON.stringify(data) });
+export const updateAdminMember = (id: string, data: { role_code?: string; is_active?: boolean; password?: string; reason: string }) =>
+    request<{ success: boolean }>(`/admin/members/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+
+export const sendAiChatMessage = async (message: string): Promise<string> => {
+    const response = await request<{ response: string }>('/ai-chat/chat', {
+        method: 'POST',
+        body: JSON.stringify({ message }),
+    });
+
+    return response.response;
+};
+
 // ====================================
 // Students Functions
 // ====================================
@@ -180,6 +543,7 @@ export interface Student {
     barcode?: string;
     is_offline: boolean;
     approval_status: 'pending' | 'approved' | 'rejected';
+    password?: string;
 }
 
 export const getStudents = async (): Promise<Student[]> => {
@@ -542,6 +906,7 @@ export interface Lecture {
     description?: string;
     video_url: string;
     duration_minutes?: number;
+    price?: number;
     display_order?: number;
     is_free: boolean;
     is_published: boolean;
@@ -1554,3 +1919,417 @@ export const rejectPremiumPayment = async (paymentId: string, rejectionReason?: 
 export const checkPremiumLectureAccess = async (studentId: string, lectureId: string): Promise<{ hasAccess: boolean }> => {
     return request<{ hasAccess: boolean }>(`/premium-lectures/access/check/${studentId}/${lectureId}`);
 };
+
+// ====================================
+// Instructor Management (Admin)
+// ====================================
+
+export interface Instructor {
+    id: string;
+    name: string;
+    email?: string | null;
+    phone?: string | null;
+    is_active: boolean;
+    created_at: string;
+    wallet_balance: number;
+    total_lectures?: number;
+    total_students?: number;
+}
+
+export interface InstructorStats {
+    wallet_balance: number;
+    total_lectures: number;
+    total_students: number;
+    pending_sent_requests: number;
+    pending_received_requests: number;
+}
+
+export interface InstructorWalletTransaction {
+    id: number;
+    instructor_id: number;
+    type: 'credit' | 'debit';
+    amount: number;
+    balance_after: number;
+    description: string;
+    reference_id?: number;
+    created_by?: number;
+    created_by_name?: string;
+    created_at: string;
+}
+
+export interface InstructorVideoRequest {
+    id: number;
+    requester_id: string;
+    owner_id: string;
+    requested_title: string;
+    requested_grade: string;
+    requested_group: string;
+    status: 'open' | 'awaiting_requester' | 'completed' | 'cancelled_by_requester' | 'cancelled_by_owner' | 'expired' | 'failed_insufficient_balance';
+    message?: string;
+    expires_at: string;
+    completed_at?: string;
+    cancellation_reason?: string;
+    created_at: string;
+    updated_at: string;
+    requester_name?: string;
+    owner_name?: string;
+    active_offer_id?: string;
+    active_lecture_id?: string;
+    active_video_id?: string;
+    active_offer_title?: string;
+    active_offer_price?: number;
+}
+
+export interface VideoOffer {
+    id: string;
+    request_id: number;
+    lecture_id: string;
+    video_id: string;
+    title_snapshot: string;
+    price_snapshot: number;
+    status: 'proposed' | 'rejected' | 'accepted' | 'superseded';
+    rejection_reason?: string;
+    proposed_at: string;
+    decided_at?: string;
+    description?: string;
+    duration_minutes?: number;
+}
+
+export interface ShareableLecture {
+    id: string;
+    title: string;
+    description?: string;
+    price: number;
+    duration_minutes?: number;
+    grade_id?: string;
+    grade_name?: string;
+    video_id: string;
+    preview_duration_seconds: number;
+}
+
+export interface SharedLecture {
+    shared_lecture_id: number;
+    lecture_id: string;
+    request_id: number;
+    obtained_at: string;
+    title: string;
+    description?: string;
+    video_url?: string;
+    duration_minutes?: number;
+    owner_name: string;
+    gross_amount?: number;
+    commission_amount?: number;
+    is_published: boolean;
+    grade_id?: string;
+    grade_name?: string;
+    group_ids: string[];
+    group_names: string[];
+}
+
+// Get all instructors
+export const getInstructors = async (): Promise<Instructor[]> => {
+    return request<Instructor[]>('/instructors');
+};
+
+// Get single instructor
+export const getInstructor = async (id: string): Promise<Instructor> => {
+    return request<Instructor>(`/instructors/${id}`);
+};
+
+// Get instructor stats
+export const getInstructorStats = async (id: string): Promise<InstructorStats> => {
+    return request<InstructorStats>(`/instructors/${id}/stats`);
+};
+
+// Get instructor's lectures
+export const getInstructorLectures = async (id: string): Promise<any[]> => {
+    return request<any[]>(`/instructors/${id}/lectures`);
+};
+
+// Create a lecture for an instructor
+export const createInstructorLecture = async (data: {
+    instructor_id: string;
+    title: string;
+    description?: string;
+    video_url: string;
+    grade_id?: string;
+    group_id?: string;
+    duration_minutes?: number;
+    price: number;
+    is_free?: boolean;
+}): Promise<any> => {
+    return request('/lectures', {
+        method: 'POST',
+        body: JSON.stringify({
+            ...data,
+            is_published: true,
+        }),
+    });
+};
+
+// Get instructor's students
+export const getInstructorStudents = async (id: string): Promise<any[]> => {
+    return request<any[]>(`/instructors/${id}/students`);
+};
+
+// Create instructor
+export const createInstructor = async (data: {
+    name: string; email?: string; phone?: string; password: string;
+}): Promise<Instructor> => {
+    return request<Instructor>('/instructors', {
+        method: 'POST',
+        body: JSON.stringify(data),
+    });
+};
+
+// Update instructor
+export const updateInstructor = async (id: string, data: Partial<{
+    name: string; email: string; phone: string; password: string; is_active: boolean;
+}>): Promise<{ message: string }> => {
+    return request<{ message: string }>(`/instructors/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+    });
+};
+
+// Delete instructor
+export const deleteInstructor = async (id: string): Promise<{ message: string }> => {
+    return request<{ message: string }>(`/instructors/${id}`, { method: 'DELETE' });
+};
+
+// ====================================
+// Instructor Wallet
+// ====================================
+
+export const getInstructorWallet = async (instructorId: string): Promise<{
+    instructor_id: string;
+    balance: number;
+    last_updated: string;
+    summary: { total_credited: number; total_debited: number; credit_count: number; debit_count: number };
+}> => {
+    return request(`/instructor-wallet/${instructorId}`);
+};
+
+export const getInstructorWalletTransactions = async (
+    instructorId: string,
+    page = 1,
+    limit = 20,
+    type?: 'credit' | 'debit'
+): Promise<{ data: InstructorWalletTransaction[]; pagination: any }> => {
+    const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+    if (type) params.append('type', type);
+    return request(`/instructor-wallet/${instructorId}/transactions?${params}`);
+};
+
+export const creditInstructorWallet = async (
+    instructorId: string,
+    amount: number,
+    description?: string,
+    created_by?: string
+): Promise<{ message: string; new_balance: number }> => {
+    return request(`/instructor-wallet/${instructorId}/credit`, {
+        method: 'POST',
+        body: JSON.stringify({ amount, description, created_by }),
+    });
+};
+
+export const debitInstructorWallet = async (
+    instructorId: string,
+    amount: number,
+    description?: string,
+    created_by?: string
+): Promise<{ message: string; new_balance: number }> => {
+    return request(`/instructor-wallet/${instructorId}/debit`, {
+        method: 'POST',
+        body: JSON.stringify({ amount, description, created_by }),
+    });
+};
+
+// ====================================
+// Instructor Video Requests
+// ====================================
+
+export const getAllVideoRequests = async (status?: string): Promise<InstructorVideoRequest[]> => {
+    const params = status ? `?status=${status}` : '';
+    return request<InstructorVideoRequest[]>(`/instructor-video-requests${params}`);
+};
+
+export const getAvailableLecturesForRequest = async (instructorId: string): Promise<any[]> => {
+    void instructorId;
+    return [];
+};
+
+export const reprocessVideo = async (videoId: string): Promise<{ success: boolean; message: string }> => {
+    return request(`/videos/${videoId}/reprocess`, { method: 'POST' });
+};
+
+export const getMySentRequests = async (instructorId: string): Promise<InstructorVideoRequest[]> => {
+    void instructorId;
+    return request<InstructorVideoRequest[]>('/instructor-video-requests/mine?direction=sent');
+};
+
+export const getReceivedRequests = async (instructorId: string): Promise<InstructorVideoRequest[]> => {
+    void instructorId;
+    return request<InstructorVideoRequest[]>('/instructor-video-requests/mine?direction=received');
+};
+
+export const getSharedWithMe = async (instructorId: string): Promise<SharedLecture[]> => {
+    void instructorId;
+    return request<SharedLecture[]>('/instructor-video-requests/library/shared');
+};
+
+export const sendVideoRequest = async (data: {
+    owner_id: string;
+    requested_title: string;
+    requested_grade: string;
+    requested_group: string;
+    message?: string;
+}): Promise<{ id: number; expires_in_hours: number }> => {
+    return request<{ id: number; expires_in_hours: number }>('/instructor-video-requests', {
+        method: 'POST',
+        body: JSON.stringify(data),
+    });
+};
+
+export const searchVideoRequestInstructors = (q: string) => request<Array<{ id: string; name: string; phone?: string }>>(`/instructor-video-requests/search-instructors?q=${encodeURIComponent(q)}`);
+export const getShareableLectures = () => request<ShareableLecture[]>('/instructor-video-requests/shareable-lectures');
+export const getVideoRequestOffers = (requestId: number) => request<VideoOffer[]>(`/instructor-video-requests/${requestId}/offers`);
+export const proposeVideoOffer = (requestId: number, lectureId: string) => request<{ id: string; expires_in_hours: number }>(`/instructor-video-requests/${requestId}/offers`, { method: 'POST', body: JSON.stringify({ lecture_id: lectureId }) });
+export const getVideoOfferPreview = (offerId: string) => request<{
+    url?: string;
+    player_url?: string;
+    provider?: 'vdocipher';
+    title: string;
+    price: number;
+    duration_seconds: number;
+    expires_in: number;
+}>(`/instructor-video-requests/offers/${offerId}/preview`);
+export const rejectVideoOffer = (offerId: string, reason: string) => request<{ status: string }>(`/instructor-video-requests/offers/${offerId}/reject`, { method: 'POST', body: JSON.stringify({ reason }) });
+export const acceptVideoOffer = (offerId: string) => request<{ status: string; purchase_id: string; gross: number; commission: number; seller_net: number }>(`/instructor-video-requests/offers/${offerId}/accept`, { method: 'POST' });
+export const cancelVideoRequest = (requestId: number, reason?: string) => request<{ status: string }>(`/instructor-video-requests/${requestId}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
+export const publishSharedLecture = (sharedId: number, gradeId: string, groupIds: string[]) => request<{ published: boolean }>(`/instructor-video-requests/library/shared/${sharedId}/publications`, { method: 'PUT', body: JSON.stringify({ grade_id: gradeId, group_ids: groupIds }) });
+
+export const getVideoCommission = () => request<{ percent: number; updated_at: string | null; can_manage: boolean }>('/admin/insights/video-commission');
+export const updateVideoCommission = (percent: number) => request<{ percent: number }>('/admin/insights/video-commission', { method: 'PUT', body: JSON.stringify({ percent }) });
+
+// ====================================
+// Tenant-scoped student enrollment
+// ====================================
+export interface EnrollmentInviteInfo {
+    business_name: string;
+    subject_type?: string;
+    expires_at: string;
+    grades: Array<{ id: string; name: string }>;
+    groups: Array<{ id: string; name: string; grade_id: string; course_id?: string | null }>;
+    courses: Array<{ id: string; name: string; grade?: string | null }>;
+}
+export interface EnrollmentRequest {
+    id: string; student_name: string; phone: string; guardian_name: string; guardian_phone: string;
+    grade_id: string; group_id: string; requested_courses?: string | string[] | null;
+    grade_name?: string; group_name?: string; status: 'pending' | 'approved' | 'rejected' | 'expired';
+    rejection_reason?: string | null; created_at: string;
+}
+export interface StudentSpace {
+    student_enrollment_id: string; tenant_id: string; business_name: string;
+    grade_id?: string; group_id?: string; grade_name?: string; group_name?: string;
+}
+export interface StudentPasswordResetRequest {
+    id: string; status: 'pending' | 'approved' | 'used' | 'rejected' | 'expired';
+    name: string; phone: string; created_at: string;
+}
+export const getEnrollmentInviteInfo = (token: string) =>
+    request<EnrollmentInviteInfo>(`/student-enrollment/join/${encodeURIComponent(token)}`);
+export const submitEnrollmentRequest = (token: string, data: {
+    student_name: string; phone: string; guardian_name: string; guardian_phone: string;
+    password?: string; grade_id: string; group_id: string; requested_courses?: string[];
+}) => request<{ message: string }>(`/student-enrollment/join/${encodeURIComponent(token)}/requests`, {
+    method: 'POST', body: JSON.stringify(data),
+});
+export const rotateStudentInvite = () => request<{ id: string; token: string; expires_in_days: number }>(
+    '/student-enrollment/invites/rotate', { method: 'POST' }
+);
+export const getCurrentStudentInvite = () => request<{ id: string; expires_at: string; created_at: string } | null>(
+    '/student-enrollment/invites/current'
+);
+export const getEnrollmentRequests = () => request<EnrollmentRequest[]>('/student-enrollment/requests');
+export const approveEnrollmentRequest = (id: string, data: { grade_id?: string; group_id?: string; requested_courses?: string[] } = {}) =>
+    request<{ status: string; student_enrollment_id: string }>(`/student-enrollment/requests/${id}/approve`, { method: 'POST', body: JSON.stringify(data) });
+export const rejectEnrollmentRequest = (id: string, reason: string) =>
+    request<{ status: string }>(`/student-enrollment/requests/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) });
+export const getStudentSpaces = () => request<StudentSpace[]>('/student-enrollment/spaces');
+export const selectStudentSpace = async (studentEnrollmentId: string) => {
+    const result = await request<{ token: string; tenant_id: string; student_enrollment_id: string }>(
+        `/student-enrollment/spaces/${studentEnrollmentId}/select`, { method: 'POST' }
+    );
+    setAuthToken(result.token);
+    return result;
+};
+export const getCurrentStudentEnrollment = () => request<Student & { tenant_id: string; business_name: string }>('/students/me');
+export const requestStudentPasswordReset = (inviteToken: string, phone: string) =>
+    request<{ message: string }>(`/student-enrollment/join/${encodeURIComponent(inviteToken)}/password-reset`, {
+        method: 'POST', body: JSON.stringify({ phone }),
+    });
+export const getStudentPasswordResetRequests = () =>
+    request<StudentPasswordResetRequest[]>('/student-enrollment/password-resets');
+export const approveStudentPasswordReset = (id: string) =>
+    request<{ reset_token: string; expires_in_minutes: number }>(`/student-enrollment/password-resets/${id}/approve`, { method: 'POST' });
+export const completeStudentPasswordReset = (token: string, password: string) =>
+    request<{ success: boolean }>('/student-enrollment/password-resets/complete', {
+        method: 'POST', body: JSON.stringify({ token, password }),
+    });
+
+// ====================================
+// Support Tickets
+// ====================================
+
+export type SupportCategory = 'technical' | 'account' | 'billing' | 'content' | 'exam' | 'video' | 'other';
+export type SupportStatus = 'open' | 'waiting_on_support' | 'waiting_on_user' | 'resolved' | 'closed';
+
+export interface SupportTicket {
+    id: string;
+    ticket_number: string;
+    user_id?: string;
+    user_name?: string;
+    user_phone?: string;
+    category: SupportCategory;
+    subject: string;
+    description?: string;
+    status: SupportStatus;
+    priority: 'low' | 'normal' | 'high' | 'urgent';
+    created_at: string;
+    updated_at: string;
+}
+
+export interface SupportReply {
+    id: string;
+    sender_id: string;
+    sender_name: string;
+    sender_role: string;
+    body: string;
+    created_at: string;
+}
+
+export const createSupportTicket = (data: { category: SupportCategory; subject: string; description: string }) =>
+    request<SupportTicket>('/support-tickets', { method: 'POST', body: JSON.stringify(data) });
+
+export const getMySupportTickets = () => request<SupportTicket[]>('/support-tickets/mine');
+
+export const getSupportQueue = (filters?: { status?: SupportStatus; category?: SupportCategory }) => {
+    const params = new URLSearchParams();
+    if (filters?.status) params.set('status', filters.status);
+    if (filters?.category) params.set('category', filters.category);
+    const query = params.toString();
+    return request<SupportTicket[]>(`/support-tickets${query ? `?${query}` : ''}`);
+};
+
+export const getSupportTicket = (id: string) =>
+    request<{ ticket: SupportTicket; replies: SupportReply[] }>(`/support-tickets/${id}`);
+
+export const replyToSupportTicket = (id: string, body: string) =>
+    request<SupportReply>(`/support-tickets/${id}/replies`, { method: 'POST', body: JSON.stringify({ body }) });
+
+export const updateSupportTicketStatus = (id: string, status: SupportStatus) =>
+    request<{ success: boolean; status: SupportStatus }>(`/support-tickets/${id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+    });

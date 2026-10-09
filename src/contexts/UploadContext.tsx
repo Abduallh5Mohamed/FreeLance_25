@@ -64,9 +64,11 @@ export function UploadProvider({ children }: { children: ReactNode }) {
 
     const cancelUpload = async (id: string) => {
         try {
+            const token = localStorage.getItem('authToken');
             // Call backend to delete files and database record
             await fetch(`${API_BASE}/videos/upload/cancel/${id}`, {
-                method: 'DELETE'
+                method: 'DELETE',
+                headers: token ? { Authorization: `Bearer ${token}` } : {},
             });
 
             // Stop polling
@@ -130,7 +132,9 @@ export function UploadProvider({ children }: { children: ReactNode }) {
 
         const interval = setInterval(async () => {
             try {
-                const response = await fetch(`${API_BASE}/videos/upload/status/${videoId}`);
+                const token = localStorage.getItem('authToken');
+                const headers = token ? { Authorization: `Bearer ${token}` } : {};
+                const response = await fetch(`${API_BASE}/videos/upload/status/${videoId}`, { headers });
                 const data = await response.json();
 
                 if (data.status === 'ready') {
@@ -175,7 +179,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
                     try {
                         const completeRes = await fetch(`${API_BASE}/videos/upload/complete`, {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: { 'Content-Type': 'application/json', ...headers },
                             body: JSON.stringify({ videoId })
                         });
                         if (completeRes.ok) {

@@ -1,7 +1,11 @@
 import { Router, Request, Response } from 'express';
+import { authenticateToken, requireRoles } from '../middleware/auth';
 import { query } from '../db';
 
 const router = Router();
+// Legacy payment requests have no trusted tenant identity yet. Keep their
+// existing admin/teacher workflow, but never expose financial records publicly.
+router.use(authenticateToken, requireRoles('admin', 'teacher'));
 
 // Get all payment requests (with filters)
 router.get('/', async (req: Request, res: Response) => {

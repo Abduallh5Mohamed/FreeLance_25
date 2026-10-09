@@ -2,6 +2,16 @@ import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt, { Secret } from 'jsonwebtoken';
 import { query, queryOne } from '../db';
+import {
+    AuthRequest,
+    authenticateToken,
+    getJwtSecret,
+    requireRoles,
+} from '../middleware/auth';
+import { resolvePublicRegistrationRole } from '../security/registration-policy';
+import { getAdminPermissions, getAdminRoleCodes } from '../security/admin-permissions';
+import { rateLimit } from '../middleware/rate-limit';
+import { normalizeEgyptianPhone, phoneLookupCandidates } from '../security/phone';
 
 const router = Router();
 
@@ -10,13 +20,15 @@ interface User {
     email?: string;
     phone?: string;
     name: string;
-    role: 'admin' | 'teacher' | 'student';
+    role: 'admin' | 'teacher' | 'student' | 'instructor' | 'staff';
     is_active: boolean;
     email_verified?: number;
     phone_verified?: number;
     created_at?: string;
     updated_at?: string;
     password_hash?: string;
+    student_id?: string;
+    token_version?: number;
 }
 
 interface JWTPayload {
@@ -44,9 +56,9 @@ interface Staff {
 }
 
 // Login endpoint - checks both users and staff tables
-router.post('/login', async (req: Request, res: Response) => {
+router.post('/login', rateLimit('auth-login', 12, 15 * 60_000), async (req: Request, res: Response) => {
     try {
-        console.log('🔐 Login attempt:', req.body);
+        console.log('Login attempt:', { identifierType: req.body?.phone ? 'phone' : 'email', hasPassword: Boolean(req.body?.password) });
         // Prefer phone-based login; fall back to email for backwards compatibility
         const { phone, email, password } = req.body;
 
@@ -55,15 +67,17 @@ router.post('/login', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Phone (or email) and password are required' });
         }
 
-        const identifier = phone ? phone.trim() : (email || '').toLowerCase().trim();
-        const where = phone ? 'phone = ?' : 'email = ?';
-        console.log('🔍 Looking for user with:', where, identifier);
+        const normalizedPhone = phone ? normalizeEgyptianPhone(phone) : null;
+        const identifier = phone ? (normalizedPhone || phone.trim()) : (email || '').toLowerCase().trim();
+        const candidates = phone ? phoneLookupCandidates(phone) : [];
+        const where = phone && candidates.length ? `phone IN (${candidates.map(() => '?').join(',')})` : (phone ? 'phone = ?' : 'email = ?');
+        console.log('Looking up active user by normalized identifier');
 
         // First, check in users table
         const user = await queryOne<User>(
-            `SELECT id, email, phone, name, role, is_active, email_verified, phone_verified, created_at, updated_at, password_hash 
+            `SELECT id, email, phone, name, role, student_id, is_active, email_verified, phone_verified, created_at, updated_at, password_hash
              FROM users WHERE ${where} AND is_active = 1`,
-            [identifier]
+            phone && candidates.length ? candidates : [identifier]
         );
 
         console.log('👤 User found in users table:', user ? 'Yes' : 'No');
@@ -74,28 +88,68 @@ router.post('/login', async (req: Request, res: Response) => {
             console.log('🔑 Password valid:', isValidPassword);
 
             if (isValidPassword) {
+                let billingOnly = false;
+                if (user.role === 'instructor') {
+                    const access = await queryOne<{ tenant_status: string; legacy_compat: number; allowed: number }>(
+                        `SELECT t.status AS tenant_status, t.legacy_compat,
+                                EXISTS(
+                                  SELECT 1 FROM tenant_subscriptions s
+                                  WHERE s.tenant_id=t.id AND (
+                                    (s.status IN ('active','past_due') AND (
+                                      s.period_ends_at>UTC_TIMESTAMP() OR DATE_ADD(s.period_ends_at,INTERVAL 4 DAY)>UTC_TIMESTAMP()
+                                    )) OR
+                                    (s.status='grace_period' AND s.grace_until>UTC_TIMESTAMP())
+                                  )
+                                ) AS allowed
+                         FROM tenants t
+                         INNER JOIN tenant_memberships m ON m.tenant_id=t.id AND m.user_id=? AND m.status='active'
+                         WHERE t.owner_user_id=?
+                         ORDER BY t.created_at DESC LIMIT 1`,
+                        [user.id, user.id]
+                    );
+                    if (!access || access.tenant_status !== 'active') {
+                        return res.status(403).json({ error: 'Instructor account is administratively suspended', code: 'TENANT_SUSPENDED' });
+                    }
+                    billingOnly = !Boolean(access.legacy_compat || access.allowed);
+                }
                 // Generate JWT token
-                const jwtSecret: Secret = process.env.JWT_SECRET || 'secret';
+                const jwtSecret: Secret = getJwtSecret();
                 const jwtExpiry = process.env.JWT_EXPIRES_IN || '7d';
                 const token = jwt.sign(
-                    { id: user.id, email: user.email || null, phone: user.phone || null, role: user.role },
+                    { id: user.id, email: user.email || null, phone: user.phone || null, role: user.role,
+                        tv: Number(user.token_version || 0) },
                     jwtSecret,
                     { expiresIn: jwtExpiry } as jwt.SignOptions
                 );
 
+                let adminPermissions: string[] = [];
+                let adminRoles: string[] = [];
+                try { adminPermissions = await getAdminPermissions(user.id); } catch { /* migration not installed yet */ }
+                try { adminRoles = await getAdminRoleCodes(user.id); } catch { /* migration not installed yet */ }
+                let legacyPages: string[] = [];
+                if (user.role === 'staff') {
+                    const staffProfile = await queryOne<{ accessible_pages: string | string[] }>(
+                        'SELECT accessible_pages FROM staff WHERE id = ?', [user.id]
+                    );
+                    if (staffProfile) {
+                        legacyPages = typeof staffProfile.accessible_pages === 'string'
+                            ? JSON.parse(staffProfile.accessible_pages) : (staffProfile.accessible_pages || []);
+                    }
+                }
                 // Remove password hash from response
                 const { password_hash, ...userWithoutPassword } = user;
 
-                console.log('✅ Login successful for user:', user.phone);
+                console.log('Login successful for user id:', user.id);
                 return res.json({
-                    user: userWithoutPassword,
+                    user: { ...userWithoutPassword, accessible_pages: legacyPages, billing_only: billingOnly,
+                        admin_member: adminPermissions.length > 0, admin_permissions: adminPermissions, admin_roles: adminRoles },
                     token,
                 });
             }
         }
 
         // If not found in users or password invalid, check staff table
-        console.log('🔍 Looking for staff with phone:', identifier);
+        console.log('Looking up active staff account');
         const staff = await queryOne<Staff>(
             `SELECT id, name, email, phone, password_hash, role, accessible_pages, is_active 
              FROM staff WHERE phone = ? AND is_active = 1`,
@@ -115,7 +169,7 @@ router.post('/login', async (req: Request, res: Response) => {
                     : (staff.accessible_pages || []);
 
                 // Generate JWT token
-                const jwtSecret: Secret = process.env.JWT_SECRET || 'secret';
+                const jwtSecret: Secret = getJwtSecret();
                 const jwtExpiry = process.env.JWT_EXPIRES_IN || '7d';
                 const token = jwt.sign(
                     {
@@ -128,7 +182,7 @@ router.post('/login', async (req: Request, res: Response) => {
                     { expiresIn: jwtExpiry } as jwt.SignOptions
                 );
 
-                console.log('✅ Staff login successful for:', staff.phone);
+                console.log('Staff login successful for id:', staff.id);
                 return res.json({
                     user: {
                         id: staff.id,
@@ -157,7 +211,8 @@ router.post('/login', async (req: Request, res: Response) => {
 router.post('/register', async (req: Request, res: Response) => {
     try {
         // Register with phone (preferred). For backward compatibility email may still be used.
-        const { phone, email, password, name, role = 'student' } = req.body;
+        const { phone, email, password, name, role: requestedRole } = req.body;
+        const role = resolvePublicRegistrationRole(requestedRole);
 
         if ((!phone && !email) || !password || !name) {
             return res.status(400).json({ error: 'Phone (or email), password, and name are required' });
@@ -188,10 +243,10 @@ router.post('/register', async (req: Request, res: Response) => {
         const userId = (result as unknown as QueryResult).insertId;
 
         // Generate JWT token
-        const jwtSecret: Secret = process.env.JWT_SECRET || 'secret';
+        const jwtSecret: Secret = getJwtSecret();
         const jwtExpiry = process.env.JWT_EXPIRES_IN || '7d';
         const token = jwt.sign(
-            { id: userId, email: email || null, phone: phone || null, role },
+            { id: userId, email: email || null, phone: phone || null, role, tv: 0 },
             jwtSecret,
             { expiresIn: jwtExpiry } as jwt.SignOptions
         );
@@ -216,26 +271,22 @@ router.post('/register', async (req: Request, res: Response) => {
 });
 
 // Get current user (requires token)
-router.get('/me', async (req: Request, res: Response) => {
+router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
-        const token = req.headers.authorization?.replace('Bearer ', '');
-
-        if (!token) {
-            return res.status(401).json({ error: 'No token provided' });
-        }
-
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret') as JWTPayload;
-
         const user = await queryOne<User>(
             'SELECT id, email, name, role, is_active FROM users WHERE id = ? AND is_active = TRUE',
-            [decoded.id]
+            [req.user?.id]
         );
 
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        res.json({ user });
+        let adminPermissions: string[] = [];
+        let adminRoles: string[] = [];
+        try { adminPermissions = await getAdminPermissions(user.id); } catch { /* migration not installed yet */ }
+        try { adminRoles = await getAdminRoleCodes(user.id); } catch { /* migration not installed yet */ }
+        res.json({ user: { ...user, billing_only: Boolean(req.user?.billingOnly), admin_member: adminPermissions.length > 0, admin_permissions: adminPermissions, admin_roles: adminRoles } });
     } catch (error) {
         console.error('Get user error:', error);
         res.status(401).json({ error: 'Invalid token' });
@@ -244,7 +295,7 @@ router.get('/me', async (req: Request, res: Response) => {
 
 // Delete user by student_id (for admins to delete student user accounts)
 // This will delete BOTH from users table AND students table (complete removal)
-router.delete('/users/student/:studentId', async (req: Request, res: Response) => {
+router.delete('/users/student/:studentId', authenticateToken, requireRoles('admin', 'teacher'), async (req: Request, res: Response) => {
     try {
         const { studentId } = req.params;
 
@@ -311,7 +362,7 @@ router.delete('/users/student/:studentId', async (req: Request, res: Response) =
 });
 
 // Search user by phone
-router.get('/search-by-phone/:phone', async (req: Request, res: Response) => {
+router.get('/search-by-phone/:phone', authenticateToken, async (req: Request, res: Response) => {
     try {
         const { phone } = req.params;
 

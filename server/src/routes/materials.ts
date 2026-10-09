@@ -3,8 +3,38 @@ import { query, queryOne, execute } from '../db';
 import https from 'https';
 import type { IncomingMessage } from 'http';
 import crypto from 'crypto';
+import { authenticateToken, optionalAuth, instructorScopeId, AuthRequest } from '../middleware/auth';
+import { ensureGroupInstructorColumn } from '../utils/instructor-scope';
+import { requireTeachingWrite } from '../middleware/teaching-access';
 
 const router = Router();
+router.use(async (_req: AuthRequest, _res: Response, next: any) => {
+    await ensureGroupInstructorColumn();
+    next();
+});
+router.use(optionalAuth);
+
+// Material is editable by an instructor when it's linked to at least one of their groups
+const materialInScope = async (materialId: string, scopeId: string): Promise<boolean> => {
+    const row = await queryOne(
+        `SELECT mg.material_id
+         FROM material_groups mg
+         INNER JOIN \`groups\` g ON mg.group_id = g.id
+         WHERE mg.material_id = ? AND g.instructor_id = ?
+         LIMIT 1`,
+        [materialId, scopeId]
+    );
+    return !!row;
+};
+
+const areGroupsInScope = async (groupIds: any[], scopeId: string): Promise<boolean> => {
+    if (!Array.isArray(groupIds) || groupIds.length === 0) return false;
+    const rows = await query<any>(
+        `SELECT COUNT(*) AS cnt FROM \`groups\` WHERE instructor_id = ? AND id IN (${groupIds.map(() => '?').join(',')})`,
+        [scopeId, ...groupIds]
+    );
+    return rows[0]?.cnt === groupIds.length;
+};
 
 interface CourseMaterial {
     id: string;
@@ -23,9 +53,10 @@ interface CourseMaterial {
 }
 
 // Get all materials (with optional course filter)
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const { course_id } = req.query;
+        const scopeId = instructorScopeId(req);
 
         let sql = `
             SELECT 
@@ -36,11 +67,25 @@ router.get('/', async (req: Request, res: Response) => {
             LEFT JOIN courses c ON cm.course_id = c.id
             WHERE cm.is_published = TRUE
         `;
-        const params: string[] = [];
+        const params: any[] = [];
 
         if (course_id && typeof course_id === 'string') {
             sql += ' AND cm.course_id = ?';
             params.push(course_id);
+        }
+
+        // Instructors only see materials linked to their groups (or ungrouped ones)
+        if (scopeId) {
+            sql += ` AND (NOT EXISTS (SELECT 1 FROM material_groups mgx WHERE mgx.material_id = cm.id)
+                      OR EXISTS (SELECT 1 FROM material_groups mg2 INNER JOIN \`groups\` g2 ON mg2.group_id = g2.id
+                                 WHERE mg2.material_id = cm.id AND g2.instructor_id = ?))`;
+            params.push(scopeId);
+        }
+        if (req.user?.role === 'student') {
+            if (!req.user.studentEnrollmentId || !req.user.groupId) return res.status(403).json({ error: 'Select an instructor workspace first' });
+            sql += ` AND EXISTS (SELECT 1 FROM material_groups student_mg
+                                 WHERE student_mg.material_id=cm.id AND student_mg.group_id=?)`;
+            params.push(req.user.groupId);
         }
 
         sql += ' ORDER BY cm.display_order ASC, cm.created_at DESC';
@@ -64,40 +109,24 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 // Get materials for a specific student based on their group
-router.get('/student/:userId', async (req: Request, res: Response) => {
+router.get('/student/:userId', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const { userId } = req.params;
-
-        console.log(`[Materials] Looking up student for userId: ${userId}`);
-
-        // First, get user info to find their phone
-        const userRecord = await queryOne(
-            'SELECT id, phone, role FROM users WHERE id = ? AND role = "student"',
-            [userId]
-        );
-
-        if (!userRecord || !userRecord.phone) {
-            console.log(`[Materials] User not found or has no phone: ${userId}`);
-            return res.json([]);
+        if (req.user?.role !== 'student' || String(req.user.id) !== String(userId)
+            || !req.user.studentEnrollmentId || !req.user.tenantId) {
+            return res.status(403).json({ error: 'Student workspace access required' });
         }
-
-        console.log(`[Materials] Found user with phone: ${userRecord.phone}`);
-
-        // Find student by phone (students table has phone directly)
         const student = await queryOne(
-            'SELECT id, name, phone, group_id, grade_id FROM students WHERE phone = ? AND is_active = TRUE',
-            [userRecord.phone]
+            `SELECT id,group_id,grade_id FROM students
+             WHERE id=? AND user_id=? AND tenant_id=? AND is_active=TRUE AND approval_status='approved'`,
+            [req.user.studentEnrollmentId, req.user.id, req.user.tenantId]
         );
 
         if (!student) {
-            console.log(`[Materials] Student not found for phone: ${userRecord.phone}`);
             return res.json([]);
         }
 
-        console.log(`[Materials] Found student: ${student.name} (group: ${student.group_id})`);
-
         if (!student.group_id) {
-            console.log(`[Materials] Student ${student.name} has no group assigned`);
             return res.json([]);
         }
 
@@ -134,8 +163,9 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
 });
 
 // Get material by ID
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
         const material = await queryOne(
             `SELECT 
                 cm.*,
@@ -150,6 +180,14 @@ router.get('/:id', async (req: Request, res: Response) => {
         if (!material) {
             return res.status(404).json({ error: 'Material not found' });
         }
+        if (scopeId && !(await materialInScope(req.params.id, scopeId))) {
+            return res.status(404).json({ error: 'Material not found' });
+        }
+        if (req.user?.role === 'student') {
+            if (!req.user.groupId) return res.status(403).json({ error: 'Select an instructor workspace first' });
+            const assigned = await queryOne('SELECT 1 FROM material_groups WHERE material_id=? AND group_id=?', [req.params.id, req.user.groupId]);
+            if (!assigned) return res.status(404).json({ error: 'Material not found' });
+        }
 
         res.json(material);
     } catch (error) {
@@ -159,8 +197,9 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // Create new material
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', requireTeachingWrite('materials'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
         const {
             course_id,
             title,
@@ -182,10 +221,15 @@ router.post('/', async (req: Request, res: Response) => {
             });
         }
 
-        // For video type, file_url is required (Google Drive link)
-        if (material_type === 'video' && !file_url) {
+        // Instructors can only publish materials to their own groups
+        if (scopeId && !(await areGroupsInScope(group_ids, scopeId))) {
+            return res.status(403).json({ error: 'يجب ربط المادة بمجموعة من مجموعاتك فقط' });
+        }
+
+        // Video materials must reference an internally uploaded video.
+        if (material_type === 'video' && (!file_url || !String(file_url).startsWith('video://'))) {
             return res.status(400).json({
-                error: 'Video URL is required for video materials'
+                error: 'External video links are not allowed. Upload the video to the platform.'
             });
         }
 
@@ -262,8 +306,12 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // Update material
-router.put('/:id', async (req: Request, res: Response) => {
+router.put('/:id', requireTeachingWrite('materials'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await materialInScope(req.params.id, scopeId))) {
+            return res.status(404).json({ error: 'Material not found' });
+        }
         const {
             title,
             description,
@@ -275,6 +323,13 @@ router.put('/:id', async (req: Request, res: Response) => {
             is_free,
             is_published
         } = req.body;
+
+        const existingMaterial = await queryOne<any>('SELECT material_type,file_url FROM course_materials WHERE id=?', [req.params.id]);
+        const finalType = material_type ?? existingMaterial?.material_type;
+        const finalUrl = file_url ?? existingMaterial?.file_url;
+        if (finalType === 'video' && (!finalUrl || !String(finalUrl).startsWith('video://'))) {
+            return res.status(400).json({ error: 'External video links are not allowed. Upload the video to the platform.' });
+        }
 
         const result = await execute(
             `UPDATE course_materials 
@@ -320,8 +375,12 @@ router.put('/:id', async (req: Request, res: Response) => {
 });
 
 // Delete material (soft delete by unpublishing)
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', requireTeachingWrite('materials'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await materialInScope(req.params.id, scopeId))) {
+            return res.status(404).json({ error: 'Material not found' });
+        }
         const result = await execute(
             'UPDATE course_materials SET is_published = FALSE WHERE id = ?',
             [req.params.id]
@@ -340,6 +399,8 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
 // Helper endpoint: Convert Google Drive sharing link to embeddable URL
 router.post('/convert-drive-url', async (req: Request, res: Response) => {
+    return res.status(410).json({ error: 'External video links are disabled. Upload videos to the platform.' });
+    /* legacy document-link helper intentionally unreachable for video */
     try {
         const { url } = req.body;
 
@@ -391,6 +452,9 @@ router.post('/convert-drive-url', async (req: Request, res: Response) => {
 
 // Stream video from Google Drive
 router.get('/stream/:fileId', async (req: Request, res: Response): Promise<void> => {
+    res.status(410).json({ error: 'External video streaming is disabled. Upload videos to the platform.' });
+    return;
+    /* legacy implementation intentionally unreachable */
     try {
         const { fileId } = req.params;
 
@@ -428,6 +492,8 @@ router.get('/stream/:fileId', async (req: Request, res: Response): Promise<void>
 
 // Get direct download URL for Google Drive files
 router.post('/get-stream-url', async (req: Request, res: Response) => {
+    return res.status(410).json({ error: 'External video stream URLs are disabled. Upload videos to the platform.' });
+    /* legacy implementation intentionally unreachable */
     try {
         const { file_url } = req.body;
 

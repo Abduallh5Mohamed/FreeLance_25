@@ -238,7 +238,7 @@ export const useScreenRecordingPrevention = (options: ProtectionOptions = {}) =>
           const watermarkText = [studentInfo, gradeInfo, groupInfo].filter(Boolean).join(' | ') || studentInfo;
           watermarkHTML += `
             <div class="watermark-text" style="top: ${top}%; left: ${left}%;">
-              ${watermarkText} | منصة القائد
+              ${watermarkText} | Tabweb Academy
             </div>
           `;
         }

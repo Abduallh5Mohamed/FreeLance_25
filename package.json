@@ -1,5 +1,5 @@
 {
-  "name": "vite_react_shadcn_ts",
+  "name": "tabweb-academy",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -11,6 +11,7 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
+    "test:access": "tsx --test src/auth/access-control.test.ts",
     "preview": "vite preview",
     "db:test": "tsx scripts/test-db.ts",
     "db:setup": "mysql -u root -p < database/mysql-schema.sql"

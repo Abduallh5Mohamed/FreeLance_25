@@ -1,8 +1,8 @@
 import { Button } from "@/components/ui/button";
-import { GraduationCap, BookOpen, Users, Award, ChevronDown, Mail, Phone, MapPin, Facebook, Twitter, Instagram, Youtube, Star, TrendingUp, Target, Zap, Shield, Clock, CheckCircle, Sparkles, Trophy, Rocket, X, Music } from "lucide-react";
+import { GraduationCap, BookOpen, Users, Award, ChevronDown, Mail, Phone, MapPin, Facebook, Twitter, Instagram, Star, TrendingUp, Target, Zap, Shield, Clock, CheckCircle, Sparkles, Trophy, Rocket, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import alQaedLogo from "@/assets/Hero_Logo.png";
-import heroBgImage from "@/assets/Hero-bg.jpg";
+import tabwebAcademyLogo from "@/assets/Tabweb_Academy_Logo.png";
+import heroBgImage from "@/assets/Tabweb_Hero.png";
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useEffect, useMemo } from "react";
 
@@ -212,18 +212,19 @@ const Index = () => {
               </button>
             </div>
 
-            {/* Logo on the right */}
-            <div className="flex-shrink-0 relative mt-1" style={{ transform: 'scale(1.35)', transformOrigin: 'center' }}>
+            {/* Tabweb Academy brand */}
+            <div className="flex-shrink-0 relative mt-1 flex items-center gap-3" dir="ltr">
               <img
-                src={alQaedLogo}
-                alt="Qaad Logo"
-                className="h-24 w-auto cursor-pointer relative z-10 transition-transform duration-300 p-1"
+                src={tabwebAcademyLogo}
+                alt="Tabweb Academy"
+                className="h-16 w-16 object-contain cursor-pointer relative z-10 transition-transform duration-300 p-1"
                 style={{
                   filter: 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1)) brightness(1.02) saturate(1.1)',
                   WebkitFilter: 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1)) brightness(1.02) saturate(1.1)'
                 }}
                 onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
               />
+              <span className="hidden sm:block text-xl font-black tracking-tight text-[#0f4c5c]">Tabweb Academy</span>
             </div>
 
           </div>
@@ -334,7 +335,7 @@ const Index = () => {
           <div className="absolute inset-0 bg-gradient-to-br from-[#031b2f]/70 via-[#04364d]/55 to-[#041f2f]/85 mix-blend-multiply" />
           <div className="absolute inset-0 bg-gradient-to-br from-[#0ea5e9]/18 via-[#22d3ee]/14 to-transparent" />
 
-          {/* Teacher Name - Top Right */}
+          {/* Brand statement - Top Right */}
           <div className="absolute top-4 right-4 sm:top-6 sm:right-6 md:top-8 md:right-8 z-30">
             <motion.p
               initial={{ opacity: 0, y: -20 }}
@@ -342,8 +343,7 @@ const Index = () => {
               transition={{ duration: 0.8, delay: 0.6 }}
               className="text-white font-bold drop-shadow-[0_4px_8px_rgba(0,0,0,0.3)]"
             >
-              <span className="text-sm sm:text-base md:text-lg lg:text-xl">أ/</span>
-              <span className="text-base sm:text-lg md:text-xl lg:text-2xl">محمد رمضان</span>
+              <span className="text-base sm:text-lg md:text-xl lg:text-2xl" dir="ltr">Build • Code • Launch</span>
             </motion.p>
           </div>
 
@@ -922,8 +922,8 @@ const Index = () => {
           <div className="border-t-2 border-[#0d9488]/20 pt-12 mt-8">
             <div className="flex flex-col md:flex-row items-center justify-between gap-8">
               <div className="flex items-center gap-6">
-                <img src={alQaedLogo} alt="القائد" className="h-14 object-contain drop-shadow-[0_0_15px_rgba(13,148,136,0.3)]" />
-                <p className="text-gray-700 text-lg font-semibold">© 2025 القائد. جميع الحقوق محفوظة</p>
+                <img src={tabwebAcademyLogo} alt="Tabweb Academy" className="h-14 w-14 object-contain drop-shadow-[0_0_15px_rgba(13,148,136,0.3)]" />
+                <p className="text-gray-700 text-lg font-semibold">© {new Date().getFullYear()} Tabweb Academy. جميع الحقوق محفوظة</p>
               </div>
               <div className="flex gap-5">
                 <motion.a
@@ -945,28 +945,6 @@ const Index = () => {
                   className="bg-gradient-to-br from-[#0d9488] to-[#06b6d4] w-14 h-14 rounded-xl flex items-center justify-center cursor-pointer shadow-lg shadow-[#0d9488]/50 hover:shadow-[#06b6d4]/50 transition-all duration-300"
                 >
                   <Facebook className="w-7 h-7 text-white font-black" />
-                </motion.a>
-                <motion.a
-                  href="https://www.tiktok.com/@mohamed_ramadan_96"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  whileHover={{ scale: 1.25, rotate: 5 }}
-                  whileTap={{ scale: 0.9 }}
-                  className="bg-gradient-to-br from-[#0d9488] to-[#06b6d4] w-14 h-14 rounded-xl flex items-center justify-center cursor-pointer shadow-lg shadow-[#0d9488]/50 hover:shadow-[#06b6d4]/50 transition-all duration-300"
-                >
-                  <svg className="w-7 h-7 text-white" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z" />
-                  </svg>
-                </motion.a>
-                <motion.a
-                  href="https://youtube.com/@moramadan96-history"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  whileHover={{ scale: 1.25, rotate: 5 }}
-                  whileTap={{ scale: 0.9 }}
-                  className="bg-gradient-to-br from-[#0d9488] to-[#06b6d4] w-14 h-14 rounded-xl flex items-center justify-center cursor-pointer shadow-lg shadow-[#0d9488]/50 hover:shadow-[#06b6d4]/50 transition-all duration-300"
-                >
-                  <Youtube className="w-7 h-7 text-white font-black" />
                 </motion.a>
               </div>
             </div>

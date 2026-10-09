@@ -213,6 +213,8 @@ All colors MUST be HSL for consistency and theme support.
     @apply bg-background text-foreground;
     font-family: var(--font-arabic);
     direction: rtl;
+    margin-right: var(--sidebar-width, 0px);
+    transition: margin-right 0.3s ease;
   }
 
   html {
@@ -294,4 +296,23 @@ All colors MUST be HSL for consistency and theme support.
 
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
+}
+
+/* Sidebar width variable - default 0 when no sidebar is present */
+:root {
+  --sidebar-width: 0px;
+}
+
+/* Protected media is never rendered into the browser print pipeline. */
+@media print {
+  .protected-video-surface,
+  .secure-video-container {
+    background: #000 !important;
+    color: transparent !important;
+  }
+
+  .protected-video-surface > *,
+  .secure-video-container > * {
+    visibility: hidden !important;
+  }
 }

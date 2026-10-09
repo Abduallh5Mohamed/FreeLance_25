@@ -17,7 +17,7 @@ import {
   Sparkles,
   Crown
 } from 'lucide-react';
-import mohamedRamadanLogo from '@/assets/mohamed-ramadan-logo.jpg';
+import tabwebAcademyLogo from '@/assets/Tabweb_Academy_Logo.png';
 
 const PromoVideo = () => {
   const navigate = useNavigate();
@@ -25,7 +25,7 @@ const PromoVideo = () => {
 
   const scenes = [
     {
-      title: "منصة القائد التعليمية",
+      title: "Tabweb Academy",
       subtitle: "نظام إدارة تعليمي متكامل",
       icon: <Crown className="w-24 h-24 text-primary animate-pulse" />,
       gradient: "from-primary/20 via-accent/20 to-primary/20"
@@ -37,8 +37,8 @@ const PromoVideo = () => {
       gradient: "from-blue-500/20 via-purple-500/20 to-blue-500/20"
     },
     {
-      title: "الأستاذ محمد رمضان",
-      subtitle: "معلم التاريخ والجغرافيا",
+      title: "تعلم بلا حدود",
+      subtitle: "تجربة تعليمية رقمية متطورة",
       icon: <GraduationCap className="w-20 h-20 text-primary animate-pulse" />,
       gradient: "from-green-500/20 via-emerald-500/20 to-green-500/20"
     },
@@ -175,16 +175,16 @@ const PromoVideo = () => {
           <div className="mt-12 text-center space-y-6">
             <div className="flex items-center justify-center gap-4 animate-fade-in">
               <img 
-                src={mohamedRamadanLogo}
-                alt="الأستاذ محمد رمضان"
-                className="w-20 h-20 rounded-full border-4 border-primary shadow-glow object-cover"
+                src={tabwebAcademyLogo}
+                alt="Tabweb Academy"
+                className="w-20 h-20 rounded-full border-4 border-primary shadow-glow object-contain"
               />
               <div className="text-right">
                 <h2 className="text-3xl font-bold text-primary flex items-center gap-2">
                   <Sparkles className="w-6 h-6" />
-                  الأستاذ محمد رمضان
+                  Tabweb Academy
                 </h2>
-                <p className="text-muted-foreground">قائد علم التاريخ والجغرافيا</p>
+                <p className="text-muted-foreground" dir="ltr">Build • Code • Launch</p>
               </div>
             </div>
 

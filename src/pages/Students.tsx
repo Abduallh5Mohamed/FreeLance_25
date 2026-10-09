@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -15,6 +15,7 @@ import { getStudents, getGrades, getGroups, getCourses, getSubscriptions, update
 import { supabase } from "@/integrations/supabase/client";
 
 const Students = () => {
+  const currentRole = (() => { try { return JSON.parse(localStorage.getItem('currentUser') || '{}').role as string | undefined; } catch { return undefined; } })();
   const [students, setStudents] = useState([]);
   const [courses, setCourses] = useState([]);
   const [subscriptions, setSubscriptions] = useState([]);
@@ -43,7 +44,7 @@ const Students = () => {
   useEffect(() => {
     fetchStudents();
     fetchCourses();
-    fetchSubscriptions();
+    if (currentRole !== 'instructor') fetchSubscriptions();
     fetchGroups();
     fetchGrades();
   }, []);
@@ -248,6 +249,7 @@ const Students = () => {
             <DialogContent className="max-w-md">
               <DialogHeader>
                 <DialogTitle>تعديل بيانات الطالب</DialogTitle>
+                <DialogDescription>راجع بيانات الطالب والكورسات المرتبطة به.</DialogDescription>
               </DialogHeader>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="space-y-2">
@@ -347,6 +349,7 @@ const Students = () => {
                     <p className="text-xs text-muted-foreground">سيتم توليد كلمة مرور تلقائياً إذا تركت هذا الحقل فارغاً</p>
                   )}
                 </div>
+                {currentRole !== 'instructor' && <>
                 <div className="space-y-2">
                   <Label htmlFor="subscription">خطة الاشتراك</Label>
                   <Select value={formData.subscription_id} onValueChange={(value) => {
@@ -381,6 +384,7 @@ const Students = () => {
                     placeholder="500"
                   />
                 </div>
+                </>}
                 <div className="space-y-2">
                   <Label>الكورسات المسجلة</Label>
                   <div className="space-y-2">

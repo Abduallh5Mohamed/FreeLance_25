@@ -1,40 +1,14 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import { Router, Request, Response } from 'express';
 import { getPool } from '../db';
 import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import jwt from 'jsonwebtoken';
 import { notifyAdminNewMessage, notifyStudentMessageResponse } from '../utils/notifications';
 import { getIO } from '../services/socket';
+import { AuthRequest, authenticateToken } from '../middleware/auth';
 
 const router = Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
-
-// Authentication middleware
-interface AuthRequest extends Request {
-    user?: {
-        id: string;
-        role: string;
-    };
-}
-
-const authenticateToken = (req: AuthRequest, res: Response, next: NextFunction) => {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-
-    if (!token) {
-        return res.status(401).json({ error: 'Authentication required' });
-    }
-
-    jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
-        if (err) {
-            return res.status(403).json({ error: 'Invalid or expired token' });
-        }
-        req.user = user;
-        next();
-    });
-};
 
 // Setup multer for image uploads
 const storage = multer.diskStorage({
@@ -729,10 +703,30 @@ router.get('/users/available', authenticateToken, async (req: AuthRequest, res: 
                 WHERE u.role = 'student' AND u.id != ?
                 ORDER BY uos.is_online DESC, u.name ASC
             `;
-        } else if (userRole === 'student') {
-            // Students can chat with teachers only
+        } else if (userRole === 'instructor') {
+            // Instructors can initiate conversations only with students in
+            // their own workspace. Existing conversations remain available
+            // through the conversations endpoint.
             query = `
-                SELECT 
+                SELECT DISTINCT
+                    u.id,
+                    u.name,
+                    u.role,
+                    uos.is_online,
+                    uos.last_seen
+                FROM users u
+                INNER JOIN students s ON s.phone = u.phone
+                LEFT JOIN user_online_status uos ON u.id = uos.user_id
+                WHERE u.role = 'student'
+                  AND u.id != ?
+                  AND s.instructor_id = ?
+                ORDER BY uos.is_online DESC, u.name ASC
+            `;
+        } else if (userRole === 'student') {
+            // Keep the legacy teacher available while limiting instructors to
+            // the instructor actually assigned to this student record.
+            query = `
+                SELECT DISTINCT
                     u.id,
                     u.name,
                     u.role,
@@ -740,7 +734,20 @@ router.get('/users/available', authenticateToken, async (req: AuthRequest, res: 
                     uos.last_seen
                 FROM users u
                 LEFT JOIN user_online_status uos ON u.id = uos.user_id
-                WHERE u.role = 'teacher' AND u.id != ?
+                WHERE u.id != ?
+                  AND (
+                    u.role = 'teacher'
+                    OR (
+                      u.role = 'instructor'
+                      AND EXISTS (
+                        SELECT 1
+                        FROM students s
+                        INNER JOIN users current_user ON current_user.phone = s.phone
+                        WHERE current_user.id = ?
+                          AND s.instructor_id = u.id
+                      )
+                    )
+                  )
                 ORDER BY uos.is_online DESC, u.name ASC
             `;
         } else if (userRole === 'admin') {
@@ -761,7 +768,10 @@ router.get('/users/available', authenticateToken, async (req: AuthRequest, res: 
             return res.status(403).json({ error: 'Invalid user role' });
         }
 
-        const [users] = await getPool().query<RowDataPacket[]>(query, [userId]);
+        const params = userRole === 'student' || userRole === 'instructor'
+            ? [userId, userId]
+            : [userId];
+        const [users] = await getPool().query<RowDataPacket[]>(query, params);
         console.log('✅ Found users:', users.length);
         res.json(users);
     } catch (error) {

@@ -15,7 +15,7 @@ import { getCourses, getLectures, createLecture, deleteLecture, getGrades, getGr
 import VideoUploader from '@/components/VideoUploader';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { VideoPlayer } from '@/components/VideoPlayer';
-import SimpleVideoPlayer from '@/components/SimpleVideoPlayer';
+import { SecureVideoPlayer } from '@/components/SecureVideoPlayer';
 
 export default function TeacherLectures() {
   const { toast } = useToast();
@@ -74,7 +74,7 @@ export default function TeacherLectures() {
       }
 
       const user = JSON.parse(userStr) as User;
-      if (user.role !== 'admin' && user.role !== 'teacher' && user.role !== 'staff') {
+      if (user.role !== 'admin' && user.role !== 'teacher' && user.role !== 'staff' && user.role !== 'instructor') {
         navigate('/auth');
         toast({
           variant: "destructive",
@@ -236,9 +236,12 @@ export default function TeacherLectures() {
             {/* Video Container */}
             <div className="flex-1 bg-black relative" style={{ minHeight: '500px' }}>
               {playingVideo.url.startsWith('video://') ? (
-                <SimpleVideoPlayer
+                <SecureVideoPlayer
                   videoId={playingVideo.url.replace('video://', '')}
                   userId={currentUser.id}
+                  studentName={currentUser.name || ''}
+                  groupName=""
+                  onClose={handleCloseVideo}
                 />
               ) : (
                 <VideoPlayer

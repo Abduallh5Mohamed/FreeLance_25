@@ -102,7 +102,7 @@ export function WhatsAppPending() {
                             `📚 الصف: ${msg.grade_name || 'غير محدد'}\n` +
                             `👥 المجموعة: ${msg.group_name || 'غير محدد'}\n\n` +
                             `شكراً لثقتكم بنا 🙏\n` +
-                            `مركز القائد التعليمي`;
+                            `Tabweb Academy`;
 
                         const link = msg.whatsapp_link || generateWhatsAppLink(msg.guardian_phone, message);
 

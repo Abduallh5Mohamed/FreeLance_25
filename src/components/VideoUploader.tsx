@@ -27,6 +27,16 @@ interface UploadState {
     error?: string;
 }
 
+interface ManagedDrmUpload {
+    uploadLink: string;
+    policy: string;
+    key: string;
+    'x-amz-signature': string;
+    'x-amz-algorithm': string;
+    'x-amz-date': string;
+    'x-amz-credential': string;
+}
+
 /**
  * Chunked video uploader with resumable upload support
  * Uploads directly to MinIO via presigned URLs
@@ -92,6 +102,8 @@ export function VideoUploader({
 
     const startUpload = useCallback(async () => {
         if (!file) return;
+        const authToken = localStorage.getItem('authToken');
+        const apiHeaders = { 'Content-Type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) };
 
         abortControllerRef.current = new AbortController();
 
@@ -101,7 +113,7 @@ export function VideoUploader({
 
             const initResponse = await fetch(`${API_BASE}/videos/upload/init`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: apiHeaders,
                 body: JSON.stringify({
                     course_id: courseId,
                     lecture_id: lectureId,
@@ -120,7 +132,14 @@ export function VideoUploader({
                 throw new Error(error.error || 'Failed to initialize upload');
             }
 
-            const { videoId, uploadUrl } = await initResponse.json();
+            const initData = await initResponse.json();
+            const { videoId, uploadUrl, shadowUploadUrl, provider, upload } = initData as {
+                videoId: string;
+                uploadUrl?: string;
+                shadowUploadUrl?: string;
+                provider: 'minio' | 'vdocipher';
+                upload?: ManagedDrmUpload;
+            };
             uploadIdRef.current = videoId;
 
             // Add to global upload context with onComplete callback
@@ -129,14 +148,22 @@ export function VideoUploader({
                 onUploadComplete?.(completedVideoId);
             });
 
-            // Step 2: Upload file directly to MinIO
+            // Step 2: Upload directly to the configured private delivery provider.
             setUploadState({ status: 'uploading', progress: 0, videoId });
             updateUpload(videoId, { stage: 'uploading', progress: 0 });
 
-            await uploadToMinIO(uploadUrl, file, (progress) => {
+            const updateProgress = (progress: number) => {
                 setUploadState(prev => ({ ...prev, progress }));
                 updateUpload(videoId, { progress });
-            }, abortControllerRef.current.signal);
+            };
+            if (provider === 'vdocipher') {
+                if (!upload || !shadowUploadUrl) throw new Error('DRM upload credentials are missing');
+                await uploadToManagedDrm(upload, file, progress => updateProgress(Math.round(progress / 2)), abortControllerRef.current.signal);
+                await uploadToMinIO(shadowUploadUrl, file, progress => updateProgress(50 + Math.round(progress / 2)), abortControllerRef.current.signal);
+            } else {
+                if (!uploadUrl) throw new Error('Upload URL is missing');
+                await uploadToMinIO(uploadUrl, file, updateProgress, abortControllerRef.current.signal);
+            }
 
             // Step 3: Complete upload and start processing (with retry)
             setUploadState(prev => ({ ...prev, status: 'processing', progress: 0 }));
@@ -148,7 +175,7 @@ export function VideoUploader({
                 try {
                     const completeResponse = await fetch(`${API_BASE}/videos/upload/complete`, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: apiHeaders,
                         body: JSON.stringify({ videoId }),
                         signal: abortControllerRef.current.signal
                     });
@@ -249,6 +276,41 @@ export function VideoUploader({
             xhr.open('PUT', uploadUrl);
             xhr.setRequestHeader('Content-Type', file.type);
             xhr.send(file);
+        });
+    }
+
+    /** Upload with the provider's one-time S3 policy. The API secret never leaves the server. */
+    async function uploadToManagedDrm(
+        upload: ManagedDrmUpload,
+        videoFile: File,
+        onProgress: (progress: number) => void,
+        signal: AbortSignal
+    ): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const form = new FormData();
+            form.append('policy', upload.policy);
+            form.append('key', upload.key);
+            form.append('x-amz-signature', upload['x-amz-signature']);
+            form.append('x-amz-algorithm', upload['x-amz-algorithm']);
+            form.append('x-amz-date', upload['x-amz-date']);
+            form.append('x-amz-credential', upload['x-amz-credential']);
+            form.append('success_action_status', '201');
+            form.append('success_action_redirect', '');
+            form.append('file', videoFile, videoFile.name);
+
+            const xhr = new XMLHttpRequest();
+            xhr.upload.addEventListener('progress', event => {
+                if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+            });
+            xhr.addEventListener('load', () => {
+                if (xhr.status >= 200 && xhr.status < 300) resolve();
+                else reject(new Error(`DRM upload failed with status ${xhr.status}`));
+            });
+            xhr.addEventListener('error', () => reject(new Error('Network error during DRM upload')));
+            xhr.addEventListener('abort', () => reject(new DOMException('Upload cancelled', 'AbortError')));
+            signal.addEventListener('abort', () => xhr.abort(), { once: true });
+            xhr.open('POST', upload.uploadLink);
+            xhr.send(form);
         });
     }
 

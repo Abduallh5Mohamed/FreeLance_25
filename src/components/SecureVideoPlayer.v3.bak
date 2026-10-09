@@ -1,0 +1,653 @@
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
+import Hls from 'hls.js';
+import { Loader2, X, Play, Pause, Volume2, VolumeX, Maximize, Minimize, RotateCcw, RotateCw, Shield, ShieldAlert } from 'lucide-react';
+
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
+interface SecureVideoPlayerProps {
+    videoId: string;
+    userId: string;
+    studentName: string;
+    groupName: string;
+    onClose: () => void;
+    directUrl?: string;
+}
+
+export function SecureVideoPlayer({
+    videoId,
+    userId,
+    studentName,
+    groupName,
+    onClose,
+    directUrl
+}: SecureVideoPlayerProps) {
+    const navigate = useNavigate();
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const hlsRef = useRef<Hls | null>(null);
+
+    const [loading, setLoading] = useState(true);
+    const [buffering, setBuffering] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [isMuted, setIsMuted] = useState(false);
+    const [volume, setVolume] = useState(1);
+    const [isFullscreen, setIsFullscreen] = useState(false);
+    const [progress, setProgress] = useState(0);
+    const [currentTime, setCurrentTime] = useState(0);
+    const [duration, setDuration] = useState(0);
+    const [showControls, setShowControls] = useState(true);
+    const [securityViolation, setSecurityViolation] = useState<string | null>(null);
+    const [isSecurityBlurred, setIsSecurityBlurred] = useState(false);
+    const [showBlackScreen, setShowBlackScreen] = useState(false);
+    const [sourceType, setSourceType] = useState<'hls' | 'mp4' | 'youtube' | 'drive' | 'unknown'>('unknown');
+    const [embedUrl, setEmbedUrl] = useState<string>('');
+    const [isScreenBlocked, setIsScreenBlocked] = useState(false);
+
+    const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const isLoggedOutRef = useRef(false);
+    const animationFrameRef = useRef<number | null>(null);
+    const clipboardIntervalRef = useRef<NodeJS.Timeout | null>(null);
+    const wasPlayingBeforeBlock = useRef(false);
+    const isInitializedRef = useRef(false);
+    const isClearingClipboardRef = useRef(false);
+
+    // Watermark text
+    const watermarkText = `${studentName} • ${groupName} • ${userId.slice(-4)}`;
+
+    // CANVAS WATERMARK RENDERER
+    const renderWatermarks = useCallback(() => {
+        const canvas = canvasRef.current;
+        const container = containerRef.current;
+        if (!canvas || !container) return;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        if (canvas.width !== container.clientWidth || canvas.height !== container.clientHeight) {
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+        }
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const time = Date.now() / 2000;
+        const count = 15;
+
+        for (let i = 0; i < count; i++) {
+            const x = (Math.sin(time + i) * 0.5 + 0.5) * canvas.width;
+            const y = (Math.cos(time * 0.7 + i * 2) * 0.5 + 0.5) * canvas.height;
+
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(-0.5 + Math.sin(time + i) * 0.2);
+            ctx.globalAlpha = 0.25 + Math.sin(time * 2 + i) * 0.15;
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 18px sans-serif';
+            ctx.fillText(watermarkText, 0, 0);
+            ctx.restore();
+        }
+
+        // Center big watermark
+        ctx.save();
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.rotate(-0.5);
+        ctx.globalAlpha = 0.15;
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 40px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(watermarkText, 0, 0);
+        ctx.restore();
+
+        // Version indicator
+        ctx.save();
+        ctx.font = '12px monospace';
+        ctx.fillStyle = 'rgba(0, 255, 0, 0.5)';
+        ctx.fillText('Protected Mode v3.0 Active', 10, canvas.height - 10);
+        ctx.restore();
+
+        animationFrameRef.current = requestAnimationFrame(renderWatermarks);
+    }, [watermarkText]);
+
+    useEffect(() => {
+        renderWatermarks();
+        return () => {
+            if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+        };
+    }, [renderWatermarks]);
+
+    // FORCE LOGOUT
+    const forceLogout = useCallback((reason: string) => {
+        if (isLoggedOutRef.current) return;
+        isLoggedOutRef.current = true;
+
+        fetch(`${API_BASE}/videos/security/log`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, videoId, activityType: 'violation', details: reason })
+        }).catch(console.error);
+
+        setSecurityViolation(reason);
+        navigate('/auth', { replace: true });
+        window.location.reload();
+    }, [userId, videoId, navigate]);
+
+    // BLOCK SCREEN - Show black overlay, pause video (NOT logout)
+    const blockScreen = useCallback((reason: string) => {
+        if (isLoggedOutRef.current) return;
+        // Don't block during initialization (first 2 seconds)
+        if (!isInitializedRef.current) {
+            console.log('🛡️ Skipping block during init:', reason);
+            return;
+        }
+        console.log('🛡️ Screen blocked:', reason);
+        wasPlayingBeforeBlock.current = !!(videoRef.current && !videoRef.current.paused);
+        if (videoRef.current) videoRef.current.pause();
+        setIsScreenBlocked(true);
+
+        // Log the attempt (but don't force logout)
+        fetch(`${API_BASE}/videos/security/log`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, videoId, activityType: 'screen_blocked', details: reason })
+        }).catch(console.error);
+    }, [userId, videoId]);
+
+    // UNBLOCK SCREEN - Resume watching
+    const unblockScreen = useCallback(() => {
+        setIsScreenBlocked(false);
+        if (wasPlayingBeforeBlock.current && videoRef.current) {
+            videoRef.current.play().catch(() => {});
+        }
+    }, []);
+
+    // CLEAR CLIPBOARD (only use modern API — legacy execCommand('copy') causes infinite recursion with copy event listener)
+    const clearClipboard = useCallback(() => {
+        if (isClearingClipboardRef.current) return;
+        isClearingClipboardRef.current = true;
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText('').catch(() => {});
+            }
+        } catch (e) { /* ignore */ }
+        setTimeout(() => { isClearingClipboardRef.current = false; }, 100);
+    }, []);
+
+    // PREPARE EXTERNAL URLS
+    const getEmbedUrl = (url: string) => {
+        if (url.includes('youtube.com') || url.includes('youtu.be')) {
+            let id = '';
+            if (url.includes('v=')) id = url.split('v=')[1]?.split('&')[0];
+            else if (url.includes('youtu.be/')) id = url.split('youtu.be/')[1]?.split('?')[0];
+            else if (url.includes('embed/')) id = url.split('embed/')[1]?.split('?')[0];
+            if (id) return { type: 'youtube', url: `https://www.youtube.com/embed/${id}?autoplay=1&controls=1&modestbranding=1&rel=0` };
+        }
+        if (url.includes('drive.google.com')) {
+            const cleanUrl = url.replace('/view', '/preview').replace('/edit', '/preview');
+            return { type: 'drive', url: cleanUrl };
+        }
+        return { type: 'unknown', url };
+    };
+
+    // LOAD VIDEO
+    useEffect(() => {
+        setLoading(true);
+
+        const setupVideo = async () => {
+            try {
+                let finalUrl = directUrl || '';
+
+                if (!directUrl) {
+                    const response = await fetch(`${API_BASE}/videos/stream/${videoId}?userId=${userId}`);
+                    if (!response.ok) throw new Error('Failed to load video');
+                    const data = await response.json();
+                    finalUrl = data.streamUrl.startsWith('http') ? data.streamUrl : `${window.location.origin}${data.streamUrl}`;
+                }
+
+                if (finalUrl.includes('youtube') || finalUrl.includes('youtu.be')) {
+                    const { type, url } = getEmbedUrl(finalUrl);
+                    setSourceType(type as any);
+                    setEmbedUrl(url);
+                    setLoading(false);
+                } else if (finalUrl.includes('drive.google.com')) {
+                    const { type, url } = getEmbedUrl(finalUrl);
+                    setSourceType(type as any);
+                    setEmbedUrl(url);
+                    setLoading(false);
+                } else if (finalUrl.includes('.m3u8')) {
+                    setSourceType('hls');
+                    if (videoRef.current && Hls.isSupported()) {
+                        const hls = new Hls({
+                            xhrSetup: (xhr, url) => {
+                                if (url.includes('/key/')) {
+                                    xhr.open('GET', `${url}${url.includes('?') ? '&' : '?'}userId=${userId}`, true);
+                                }
+                            }
+                        });
+                        hlsRef.current = hls;
+                        hls.loadSource(finalUrl);
+                        hls.attachMedia(videoRef.current);
+                        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                            setLoading(false);
+                            videoRef.current?.play().catch(() => { });
+                        });
+                    }
+                } else {
+                    setSourceType('mp4');
+                    if (videoRef.current) {
+                        videoRef.current.src = finalUrl;
+                        videoRef.current.play().catch(() => { });
+                        setLoading(false);
+                    }
+                }
+            } catch (err: any) {
+                setError(err.message);
+                setLoading(false);
+            }
+        };
+
+        setupVideo();
+
+        return () => {
+            if (hlsRef.current) hlsRef.current.destroy();
+            if (videoRef.current) {
+                videoRef.current.pause();
+                videoRef.current.src = '';
+                videoRef.current.load();
+            }
+        };
+    }, [videoId, userId, directUrl]);
+
+    // =============================================
+    // COMPREHENSIVE ANTI-SCREENSHOT & ANTI-RECORDING
+    // =============================================
+    useEffect(() => {
+        // 1. VISIBILITY CHANGE — black screen overlay when tab is hidden
+        const handleVisibilityChange = () => {
+            if (document.hidden) {
+                blockScreen('تم إخفاء التبويب');
+                clearClipboard();
+            }
+        };
+
+        // 2. WINDOW BLUR — REMOVED (too many false positives, fires on mount)
+        // visibilitychange is sufficient for tab-switch detection
+
+        // 3. KEYBOARD SHORTCUTS — block ALL screenshot/recording shortcuts
+        const handleKeyDown = (e: KeyboardEvent) => {
+            const key = e.key?.toLowerCase();
+
+            // PrintScreen — FORCE LOGOUT
+            if (e.key === 'PrintScreen') {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                clearClipboard();
+                forceLogout('محاولة تصوير الشاشة (PrintScreen)');
+                return;
+            }
+
+            // Windows: Win+Shift+S (Snipping Tool)
+            if (e.metaKey && e.shiftKey && key === 's') {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                clearClipboard();
+                blockScreen('محاولة تصوير الشاشة (Snipping Tool)');
+                return;
+            }
+
+            // Windows: Win+G (Game Bar recording)
+            if (e.metaKey && key === 'g') {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                blockScreen('محاولة تسجيل الشاشة (Game Bar)');
+                return;
+            }
+
+            // Windows: Win+Alt+R (Game Bar record)
+            if (e.metaKey && e.altKey && key === 'r') {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                blockScreen('محاولة تسجيل الشاشة');
+                return;
+            }
+
+            // Mac: Cmd+Shift+3 (Full screenshot)
+            if (e.metaKey && e.shiftKey && (e.key === '3' || e.key === '#')) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                clearClipboard();
+                blockScreen('محاولة تصوير الشاشة');
+                return;
+            }
+
+            // Mac: Cmd+Shift+4 (Partial screenshot)
+            if (e.metaKey && e.shiftKey && (e.key === '4' || e.key === '$')) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                clearClipboard();
+                blockScreen('محاولة تصوير الشاشة');
+                return;
+            }
+
+            // Mac: Cmd+Shift+5 (Screenshot/Record panel)
+            if (e.metaKey && e.shiftKey && (e.key === '5' || e.key === '%')) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                blockScreen('محاولة تصوير الشاشة');
+                return;
+            }
+
+            // Ctrl+P (Print)
+            if (e.ctrlKey && key === 'p') {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                return;
+            }
+
+            // Ctrl+S (Save page)
+            if (e.ctrlKey && key === 's') {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                return;
+            }
+
+            // Block F12, Ctrl+Shift+I, Ctrl+U (DevTools)
+            if (e.key === 'F12' ||
+                (e.ctrlKey && e.shiftKey && key === 'i') ||
+                (e.ctrlKey && key === 'u') ||
+                (e.ctrlKey && e.shiftKey && key === 'j') ||
+                (e.ctrlKey && e.shiftKey && key === 'c')) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                return;
+            }
+        };
+
+        // Also capture keyup for PrintScreen (some browsers fire it on keyup)
+        const handleKeyUp = (e: KeyboardEvent) => {
+            if (e.key === 'PrintScreen') {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                clearClipboard();
+            }
+        };
+
+        // 4. CONTEXT MENU — block right-click
+        const handleContextMenu = (e: Event) => {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+        };
+
+        // 5. DRAG — prevent dragging video content
+        const handleDragStart = (e: Event) => {
+            e.preventDefault();
+            return false;
+        };
+
+        // 6. COPY/CUT — block copy attempts
+        const handleCopy = (e: ClipboardEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            // Don't call clearClipboard here — it could re-trigger copy events
+            if (e.clipboardData) {
+                e.clipboardData.setData('text/plain', '');
+            }
+        };
+
+        // 7. DEVTOOLS DETECTION — detect by window size difference
+        let devToolsCheckInterval: NodeJS.Timeout | null = null;
+        const checkDevTools = () => {
+            const widthThreshold = window.outerWidth - window.innerWidth > 160;
+            const heightThreshold = window.outerHeight - window.innerHeight > 160;
+            if (widthThreshold || heightThreshold) {
+                blockScreen('تم اكتشاف أدوات المطور');
+            }
+        };
+        devToolsCheckInterval = setInterval(checkDevTools, 2000);
+
+        // 8. CLIPBOARD CLEARING — clear clipboard every 2 seconds while video plays
+        clipboardIntervalRef.current = setInterval(() => {
+            if (videoRef.current && !videoRef.current.paused) {
+                clearClipboard();
+            }
+        }, 2000);
+
+        // 9. DISABLE SCREEN CAPTURE API
+        if (navigator.mediaDevices) {
+            const originalGetDisplayMedia = navigator.mediaDevices.getDisplayMedia;
+            // @ts-ignore
+            navigator.mediaDevices.getDisplayMedia = () => {
+                blockScreen('محاولة تسجيل الشاشة');
+                return Promise.reject(new Error('Screen capture is not allowed'));
+            };
+            // Also override getUserMedia to block screen capture
+            const originalGetUserMedia = navigator.mediaDevices.getUserMedia?.bind(navigator.mediaDevices);
+            // @ts-ignore
+            navigator.mediaDevices.getUserMedia = (constraints: any) => {
+                // If they request display/screen capture via getUserMedia
+                if (constraints?.video?.mediaSource === 'screen' ||
+                    constraints?.video?.mediaSource === 'window' ||
+                    constraints?.video?.mediaSource === 'monitor') {
+                    blockScreen('محاولة تسجيل الشاشة');
+                    return Promise.reject(new Error('Screen capture is not allowed'));
+                }
+                return originalGetUserMedia ? originalGetUserMedia(constraints) : Promise.reject();
+            };
+        }
+
+        // 10. CSS-BASED PROTECTION — inject styles to prevent capture
+        const styleSheet = document.createElement('style');
+        styleSheet.id = 'secure-video-styles';
+        styleSheet.textContent = `
+            /* Prevent text/image selection */
+            .secure-video-container, .secure-video-container * {
+                -webkit-user-select: none !important;
+                -moz-user-select: none !important;
+                -ms-user-select: none !important;
+                user-select: none !important;
+                -webkit-touch-callout: none !important;
+                -webkit-tap-highlight-color: transparent !important;
+            }
+            /* Prevent drag */
+            .secure-video-container img,
+            .secure-video-container video,
+            .secure-video-container canvas {
+                -webkit-user-drag: none !important;
+                -khtml-user-drag: none !important;
+                -moz-user-drag: none !important;
+                user-drag: none !important;
+                pointer-events: none !important;
+            }
+            /* Enable controls on video but prevent drag */
+            .secure-video-container video {
+                pointer-events: auto !important;
+            }
+            /* CSS to interfere with some screen capture tools */
+            .secure-video-container {
+                -webkit-filter: none;
+                backdrop-filter: none;
+            }
+            /* Disable printing of the video page */
+            @media print {
+                .secure-video-container,
+                .secure-video-container * {
+                    display: none !important;
+                    visibility: hidden !important;
+                }
+                body::after {
+                    content: 'طباعة المحتوى غير مسموحة' !important;
+                    display: block !important;
+                    font-size: 48px !important;
+                    text-align: center !important;
+                    padding-top: 200px !important;
+                    color: red !important;
+                }
+            }
+        `;
+        document.head.appendChild(styleSheet);
+
+        // Set initialization flag after 2 seconds
+        const initTimer = setTimeout(() => {
+            isInitializedRef.current = true;
+            console.log('🛡️ Security protection initialized');
+        }, 2000);
+
+        // Add all event listeners with CAPTURE phase
+        document.addEventListener('visibilitychange', handleVisibilityChange, true);
+        window.addEventListener('keydown', handleKeyDown, true);
+        window.addEventListener('keyup', handleKeyUp, true);
+        window.addEventListener('contextmenu', handleContextMenu, true);
+        document.addEventListener('dragstart', handleDragStart, true);
+        document.addEventListener('copy', handleCopy, true);
+        document.addEventListener('cut', handleCopy, true);
+
+        // 11. TOUCH SCREENSHOT DETECTION (Mobile)
+        // On iOS, screenshot triggers a resize event followed by visibilitychange
+        // On Android, there's no reliable detection, but overlay on blur helps
+        let touchStartTime = 0;
+        const handleTouchStart = (e: TouchEvent) => {
+            // Detect multi-touch (used in some screenshot gestures)
+            if (e.touches.length >= 3) {
+                blockScreen('اكتشاف محاولة التقاط');
+            }
+            touchStartTime = Date.now();
+        };
+        window.addEventListener('touchstart', handleTouchStart, { passive: true, capture: true });
+
+        // 12. OVERRIDE window.print
+        const origPrint = window.print;
+        window.print = () => {
+            console.log('🛡️ Print blocked');
+        };
+
+        return () => {
+            clearTimeout(initTimer);
+            isInitializedRef.current = false;
+            document.removeEventListener('visibilitychange', handleVisibilityChange, true);
+            window.removeEventListener('keydown', handleKeyDown, true);
+            window.removeEventListener('keyup', handleKeyUp, true);
+            window.removeEventListener('contextmenu', handleContextMenu, true);
+            document.removeEventListener('dragstart', handleDragStart, true);
+            document.removeEventListener('copy', handleCopy, true);
+            document.removeEventListener('cut', handleCopy, true);
+            window.removeEventListener('touchstart', handleTouchStart, true);
+            if (devToolsCheckInterval) clearInterval(devToolsCheckInterval);
+            if (clipboardIntervalRef.current) clearInterval(clipboardIntervalRef.current);
+            const style = document.getElementById('secure-video-styles');
+            if (style) style.remove();
+            window.print = origPrint;
+        };
+    }, [forceLogout, blockScreen, clearClipboard]);
+
+    return (
+        <div
+            ref={containerRef}
+            className="fixed inset-0 z-[9999] bg-black flex items-center justify-center select-none overflow-hidden secure-video-container"
+            onDragStart={(e) => e.preventDefault()}
+            onCopy={(e) => e.preventDefault()}
+            style={{
+                WebkitUserSelect: 'none',
+                userSelect: 'none',
+                WebkitTouchCallout: 'none',
+            } as React.CSSProperties}
+        >
+
+            {/* SCREEN BLOCKED OVERLAY — shown when user tries to screenshot/switch tabs */}
+            {isScreenBlocked && !securityViolation && (
+                <div className="absolute inset-0 z-[10001] bg-black flex flex-col items-center justify-center text-white">
+                    <ShieldAlert className="w-20 h-20 text-yellow-500 mb-6 animate-bounce" />
+                    <h2 className="text-2xl sm:text-3xl font-bold mb-3 text-center px-4">
+                        ⚠️ تم إيقاف المحاضرة
+                    </h2>
+                    <p className="text-base sm:text-lg text-gray-400 mb-2 text-center px-4">
+                        لا يُسمح بتصوير الشاشة أو تسجيل الفيديو
+                    </p>
+                    <p className="text-sm text-gray-500 mb-8 text-center px-4">
+                        تم تسجيل هذه المحاولة
+                    </p>
+                    <button
+                        onClick={unblockScreen}
+                        className="px-8 py-4 bg-gradient-to-r from-teal-600 to-teal-500 text-white rounded-xl text-lg font-bold hover:from-teal-700 hover:to-teal-600 transition-all shadow-lg active:scale-95"
+                    >
+                        ▶️ متابعة المشاهدة
+                    </button>
+                </div>
+            )}
+
+            {/* VIOLATION SCREEN (PrintScreen = logout) */}
+            {securityViolation && (
+                <div className="absolute inset-0 z-[10002] bg-black flex flex-col items-center justify-center text-white">
+                    <Shield className="w-24 h-24 text-red-600 mb-6 animate-pulse" />
+                    <h2 className="text-3xl font-bold mb-2">تم اكتشاف انتهاك أمني!</h2>
+                    <p className="text-xl text-gray-400">جاري تسجيل الخروج...</p>
+                </div>
+            )}
+
+            {/* VIDEO CONTENT */}
+            {sourceType === 'youtube' || sourceType === 'drive' ? (
+                <iframe
+                    src={embedUrl}
+                    className="w-full h-full object-contain pointer-events-auto"
+                    allow="autoplay; encrypted-media; fullscreen"
+                    allowFullScreen
+                    style={{ pointerEvents: 'auto' }}
+                />
+            ) : (
+                <video
+                    ref={videoRef}
+                    className="w-full h-full object-contain"
+                    playsInline
+                    disablePictureInPicture
+                    // @ts-ignore
+                    controlsList="nodownload nofullscreen noremoteplayback"
+                    onPlay={() => setIsPlaying(true)}
+                    onPause={() => setIsPlaying(false)}
+                />
+            )}
+
+            {/* CANVAS WATERMARK (Always On Top) */}
+            <canvas
+                ref={canvasRef}
+                className="absolute inset-0 pointer-events-none z-[50]"
+            />
+
+            {/* CONTROLS (Only for Native Video) */}
+            {(sourceType === 'hls' || sourceType === 'mp4') && !loading && !error && showControls && !isScreenBlocked && (
+                <div className="absolute inset-0 z-[60] flex flex-col justify-between p-6 bg-gradient-to-b from-black/80 via-transparent to-black/80">
+                    <div className="flex justify-between items-center">
+                        <button onClick={onClose} className="p-2 bg-white/10 rounded-full hover:bg-white/20 text-white">
+                            <X className="w-6 h-6" />
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* CLOSE BUTTON FOR IFRAMES */}
+            {(sourceType === 'youtube' || sourceType === 'drive') && !isScreenBlocked && (
+                <button onClick={onClose} className="absolute top-6 left-6 z-[70] p-3 bg-red-600 rounded-full hover:bg-red-700 text-white shadow-lg">
+                    <X className="w-6 h-6" />
+                </button>
+            )}
+
+            {loading && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-[80] pointer-events-none">
+                    <Loader2 className="w-12 h-12 text-blue-500 animate-spin" />
+                </div>
+            )}
+        </div>
+    );
+}

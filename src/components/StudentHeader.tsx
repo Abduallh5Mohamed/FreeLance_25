@@ -20,7 +20,8 @@ import {
   MessageSquare,
   Bot,
   ChevronDown,
-  LayoutDashboard
+  LayoutDashboard,
+  Headphones
 } from "lucide-react";
 import {
   Dialog,
@@ -47,7 +48,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { getGrades, getGroups, createSubscriptionRequest, getSubscriptions, type Subscription } from "@/lib/api-http";
-import alQaedLogo from "@/assets/Qaad_Logo.png";
+import tabwebAcademyLogo from "@/assets/Tabweb_Academy_Logo.png";
 
 const StudentHeader = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -157,6 +158,7 @@ const StudentHeader = () => {
     { name: "البروفايل", href: "/student", icon: User },
     { name: "المحادثات", href: "/student-chat", icon: MessageCircle },
     { name: "المساعد الذكي", href: "/student-ai-chat", icon: Bot },
+    { name: "التواصل مع الإدارة", href: "/support", icon: Headphones },
   ];
 
   // Learning menu items
@@ -230,8 +232,8 @@ const StudentHeader = () => {
         <div className="flex items-center justify-between py-1.5 gap-0.5">
           {/* Brand */}
           <div className="flex-shrink-0 min-w-0">
-            <h1 className="text-xs sm:text-sm font-bold text-white truncate">منصة القائد</h1>
-            <p className="text-white/90 text-[8px] hidden sm:block truncate">أ. محمد رمضان</p>
+            <h1 className="text-xs sm:text-sm font-bold text-white truncate">Tabweb Academy</h1>
+            <p className="text-white/90 text-[8px] hidden sm:block truncate" dir="ltr">Build • Code • Launch</p>
           </div>
 
           {/* Desktop Navigation */}

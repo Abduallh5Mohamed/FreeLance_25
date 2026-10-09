@@ -38,7 +38,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { getGrades, getGroups, createSubscriptionRequest } from "@/lib/api-http";
 import { NotificationBell } from "@/components/NotificationBell";
-import alQaedLogo from "@/assets/Qaad_Logo.png";
 
 const StudentHeader = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -229,7 +228,7 @@ const StudentHeader = () => {
         <div className="flex items-center gap-2">
           {/* Brand - Very Compact */}
           <div className="flex-shrink-0">
-            <h1 className="text-xs sm:text-sm font-bold text-white whitespace-nowrap">القائد</h1>
+            <h1 className="text-xs sm:text-sm font-bold text-white whitespace-nowrap">Tabweb Academy</h1>
           </div>
 
           {/* Scrollable Navigation - ALWAYS VISIBLE */}

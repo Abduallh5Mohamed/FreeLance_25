@@ -66,7 +66,7 @@ export default function EditExam() {
     const userStr = localStorage.getItem('currentUser');
     const user: User | null = userStr ? JSON.parse(userStr) : null;
 
-    if (!user || (user.role !== 'teacher' && user.role !== 'admin' && user.role !== 'staff')) {
+    if (!user || (user.role !== 'teacher' && user.role !== 'admin' && user.role !== 'staff' && user.role !== 'instructor')) {
       navigate('/auth');
       return;
     }

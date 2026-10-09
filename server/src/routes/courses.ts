@@ -1,13 +1,33 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response } from 'express';
 import { query, queryOne, execute } from '../db';
+import { AuthRequest, optionalAuth } from '../middleware/auth';
+import { requireTeachingWrite } from '../middleware/teaching-access';
 
 const router = Router();
+router.use(optionalAuth);
 
 // Get all courses
-router.get('/', async (req: Request, res: Response) => {
+async function instructorTenant(instructorId: string) {
+    return queryOne<{ id: string }>(
+        `SELECT t.id FROM tenants t
+         INNER JOIN tenant_memberships m ON m.tenant_id=t.id AND m.user_id=? AND m.status='active'
+         WHERE t.owner_user_id=? AND t.status='active' LIMIT 1`, [instructorId, instructorId]
+    );
+}
+
+const courseScope = (req: AuthRequest): { clause: string; params: string[] } => {
+    if (req.user?.role === 'instructor') return { clause: ' AND instructor_id=?', params: [req.user.id] };
+    if (req.user?.role === 'student' && req.user.tenantId) return { clause: ' AND tenant_id=?', params: [req.user.tenantId] };
+    if (req.user?.role === 'admin') return { clause: '', params: [] };
+    return { clause: ' AND tenant_id IS NULL', params: [] };
+};
+
+// Get courses visible inside the current caller's teaching space.
+router.get('/', async (req: AuthRequest, res: Response) => {
     try {
+        const scope = courseScope(req);
         const courses = await query(
-            'SELECT * FROM courses WHERE is_active = TRUE ORDER BY name'
+            `SELECT * FROM courses WHERE is_active=TRUE${scope.clause} ORDER BY name`, scope.params
         );
         res.json(courses);
     } catch (error) {
@@ -17,11 +37,12 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 // Get course by ID
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', async (req: AuthRequest, res: Response) => {
     try {
+        const scope = courseScope(req);
         const course = await queryOne(
-            'SELECT * FROM courses WHERE id = ? AND is_active = TRUE',
-            [req.params.id]
+            `SELECT * FROM courses WHERE id=? AND is_active=TRUE${scope.clause}`,
+            [req.params.id, ...scope.params]
         );
 
         if (!course) {
@@ -36,12 +57,23 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // Create new course
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', requireTeachingWrite('courses'), async (req: AuthRequest, res: Response) => {
     try {
         const { name, subject, description, grade, price = 0 } = req.body;
+        const normalizedName = String(name || '').trim();
+        const normalizedSubject = String(subject || '').trim();
 
-        if (!name) {
+        if (!normalizedName || normalizedName.length > 255 || normalizedSubject.length > 100) {
             return res.status(400).json({ error: 'Course name is required' });
+        }
+
+        let tenantId: string | null = null;
+        let instructorId: string | null = null;
+        if (req.user?.role === 'instructor') {
+            const tenant = await instructorTenant(req.user.id);
+            if (!tenant) return res.status(409).json({ error: 'Active instructor workspace required' });
+            tenantId = tenant.id;
+            instructorId = req.user.id;
         }
 
         // Generate UUID for the new course
@@ -49,8 +81,9 @@ router.post('/', async (req: Request, res: Response) => {
         const newId = idResult[0].id;
 
         await execute(
-            'INSERT INTO courses (id, name, subject, description, grade, price) VALUES (?, ?, ?, ?, ?, ?)',
-            [newId, name, subject || null, description || null, grade || null, price]
+            `INSERT INTO courses (id,tenant_id,instructor_id,name,subject,description,grade,price)
+             VALUES (?,?,?,?,?,?,?,?)`,
+            [newId, tenantId, instructorId, normalizedName, normalizedSubject || null, description || null, grade || null, price]
         );
 
         const newCourse = await queryOne(
@@ -66,15 +99,22 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // Update course
-router.put('/:id', async (req: Request, res: Response) => {
+router.put('/:id', requireTeachingWrite('courses'), async (req: AuthRequest, res: Response) => {
     try {
         const { name, subject, description, grade, price } = req.body;
         const { id } = req.params;
+        const normalizedName = String(name || '').trim();
+        const normalizedSubject = String(subject || '').trim();
+        if (!normalizedName || normalizedName.length > 255 || normalizedSubject.length > 100) {
+            return res.status(400).json({ error: 'Valid course name and subject are required' });
+        }
 
-        await execute(
-            'UPDATE courses SET name = ?, subject = ?, description = ?, grade = ?, price = ? WHERE id = ?',
-            [name, subject || null, description || null, grade || null, price || 0, id]
+        const scope = courseScope(req);
+        const result = await execute(
+            `UPDATE courses SET name=?,subject=?,description=?,grade=?,price=? WHERE id=?${scope.clause}`,
+            [normalizedName, normalizedSubject || null, description || null, grade || null, price || 0, id, ...scope.params]
         );
+        if (!result.affectedRows) return res.status(404).json({ error: 'Course not found in your workspace' });
 
         const updatedCourse = await queryOne(
             'SELECT * FROM courses WHERE id = ?',
@@ -89,14 +129,16 @@ router.put('/:id', async (req: Request, res: Response) => {
 });
 
 // Delete course
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', requireTeachingWrite('courses'), async (req: AuthRequest, res: Response) => {
     try {
         const { id } = req.params;
         
-        await execute(
-            'UPDATE courses SET is_active = FALSE WHERE id = ?',
-            [id]
+        const scope = courseScope(req);
+        const result = await execute(
+            `UPDATE courses SET is_active=FALSE WHERE id=?${scope.clause}`,
+            [id, ...scope.params]
         );
+        if (!result.affectedRows) return res.status(404).json({ error: 'Course not found in your workspace' });
 
         res.json({ message: 'Course deleted successfully' });
     } catch (error) {

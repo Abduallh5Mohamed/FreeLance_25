@@ -1,8 +1,21 @@
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { query, queryOne, execute } from '../db';
+import { optionalAuth, instructorScopeId, AuthRequest, authenticateToken } from '../middleware/auth';
+import { ensureGroupInstructorColumn } from '../utils/instructor-scope';
+import { requireTeachingWrite } from '../middleware/teaching-access';
 
 const router = Router();
+
+router.use(async (_req: AuthRequest, _res: Response, next: any) => {
+    await ensureGroupInstructorColumn();
+    next();
+});
+router.use(optionalAuth);
+
+// Instructors can only manage groups that belong to them
+const canManageGroup = (group: any, scopeId: string | null): boolean =>
+    !scopeId ? true : !!group?.instructor_id && group.instructor_id === scopeId;
 
 interface Group {
     id: string;
@@ -19,11 +32,20 @@ interface Group {
 }
 
 // Get all groups
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
-        const groups = await query<Group>(
-            'SELECT id, name, description, course_id, grade_id, max_students, current_students, is_active, schedule_days, schedule_time FROM `groups` WHERE is_active = TRUE ORDER BY name'
-        );
+        const scopeId = instructorScopeId(req);
+
+        let sql = 'SELECT id, name, description, course_id, grade_id, max_students, current_students, is_active, schedule_days, schedule_time, instructor_id FROM `groups` WHERE is_active = TRUE';
+        const params: any[] = [];
+        if (scopeId) {
+            // Instructors only see the groups that belong to them
+            sql += ' AND instructor_id = ?';
+            params.push(scopeId);
+        }
+        sql += ' ORDER BY name';
+
+        const groups = await query<Group>(sql, params);
         res.json(groups);
     } catch (error) {
         console.error('Get groups error:', error);
@@ -32,14 +54,18 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 // Get group by ID
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
-        const group = await queryOne<Group>(
+        const scopeId = instructorScopeId(req);
+        const group = await queryOne<any>(
             'SELECT * FROM `groups` WHERE id = ? AND is_active = TRUE',
             [req.params.id]
         );
 
         if (!group) {
+            return res.status(404).json({ error: 'Group not found' });
+        }
+        if (!canManageGroup(group, scopeId)) {
             return res.status(404).json({ error: 'Group not found' });
         }
 
@@ -51,8 +77,9 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // Create new group
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', requireTeachingWrite('groups'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
         const { name, description, max_students, is_active = true, grade_id } = req.body;
         let course_id = (req.body && req.body.course_id) ?? null;
 
@@ -104,8 +131,8 @@ router.post('/', async (req: Request, res: Response) => {
         // groups.id is CHAR(36) (UUID) in schema. Generate id client-side for reliable fetch.
         const newId = randomUUID();
         await execute(
-            'INSERT INTO `groups` (id, name, description, course_id, grade_id, max_students, is_active, schedule_days, schedule_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [newId, name, description || null, course_id, finalGradeId, max_students || 30, is_active, schedule_days, schedule_time ?? null]
+            'INSERT INTO `groups` (id, name, description, course_id, grade_id, instructor_id, max_students, is_active, schedule_days, schedule_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [newId, name, description || null, course_id, finalGradeId, scopeId, max_students || 30, is_active, schedule_days, schedule_time ?? null]
         );
 
         const newGroup = await queryOne<Group>(
@@ -121,8 +148,15 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // Update group
-router.put('/:id', async (req: Request, res: Response) => {
+router.put('/:id', requireTeachingWrite('groups'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId) {
+            const existing = await queryOne<any>('SELECT * FROM `groups` WHERE id = ?', [req.params.id]);
+            if (!existing || !canManageGroup(existing, scopeId)) {
+                return res.status(404).json({ error: 'Group not found' });
+            }
+        }
         const { name, description, max_students, is_active, grade_id } = req.body;
         let course_id = (req.body && req.body.course_id) ?? null;
         let schedule_days = (req.body && (req.body.schedule_days ?? null)) as any;
@@ -202,8 +236,15 @@ router.put('/:id', async (req: Request, res: Response) => {
 });
 
 // Delete group (hard delete - permanent deletion from database)
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', requireTeachingWrite('groups'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId) {
+            const existing = await queryOne<any>('SELECT * FROM `groups` WHERE id = ?', [req.params.id]);
+            if (!existing || !canManageGroup(existing, scopeId)) {
+                return res.status(404).json({ error: 'Group not found' });
+            }
+        }
         const result = await execute(
             'DELETE FROM `groups` WHERE id = ?',
             [req.params.id]

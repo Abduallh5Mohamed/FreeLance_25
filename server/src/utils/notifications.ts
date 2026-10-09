@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 interface NotificationData {
     user_id: string;
-    user_type: 'admin' | 'student';
+    user_type: 'admin' | 'student' | 'instructor' | 'teacher' | 'staff';
     title: string;
     message: string;
     type: 'message' | 'exam_graded' | 'payment' | 'subscription' | 'general';

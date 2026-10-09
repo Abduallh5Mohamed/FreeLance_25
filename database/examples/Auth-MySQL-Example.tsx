@@ -13,7 +13,7 @@ import { useNavigate } from "react-router-dom";
 // استبدال Supabase بـ API الجديد
 import { signIn, signUp } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
-import alQaedLogo from "@/assets/al-qaed-logo-new.jpg";
+import tabwebAcademyLogo from "@/assets/Tabweb_Academy_Logo.png";
 
 const Auth = () => {
     const [isLogin, setIsLogin] = useState(true);
@@ -108,12 +108,12 @@ const Auth = () => {
                 <CardHeader className="text-center space-y-4">
                     <div className="flex justify-center">
                         <div className="w-20 h-20 rounded-xl overflow-hidden shadow-medium">
-                            <img src={alQaedLogo} alt="منصة القائد" className="w-full h-full object-cover" />
+                            <img src={tabwebAcademyLogo} alt="Tabweb Academy" className="w-full h-full object-contain" />
                         </div>
                     </div>
                     <div>
-                        <CardTitle className="text-2xl text-foreground">منصة القائد</CardTitle>
-                        <p className="text-muted-foreground">أ/ محمد رمضان - التاريخ والجغرافيا</p>
+                        <CardTitle className="text-2xl text-foreground">Tabweb Academy</CardTitle>
+                        <p className="text-muted-foreground">منصة تعليم إلكتروني متكاملة</p>
                     </div>
                 </CardHeader>
                 <CardContent>

@@ -1,7 +1,9 @@
 import { X } from "lucide-react";
 import { Button } from "./ui/button";
-import { useEffect, useMemo, memo } from "react";
+import { useEffect, useMemo, memo, useState } from "react";
 import { HLSVideoPlayer } from "./HLSVideoPlayer";
+import { ProtectedVideoSurface } from "./ProtectedVideoSurface";
+import { SecureVideoPlayer } from "./SecureVideoPlayer";
 
 interface VideoPlayerProps {
     url: string;
@@ -16,6 +18,9 @@ interface VideoPlayerProps {
  * - MinIO: video://[videoId] format - uses HLS player for adaptive streaming
  */
 const VideoPlayerComponent = ({ url, title, userId, onClose }: VideoPlayerProps) => {
+    const [externalPolicy, setExternalPolicy] = useState<'checking' | 'allowed' | 'blocked'>(
+        url.startsWith('video://') ? 'allowed' : 'checking'
+    );
     // Handle ESC key to close
     useEffect(() => {
         const handleEscape = (e: KeyboardEvent) => {
@@ -29,10 +34,29 @@ const VideoPlayerComponent = ({ url, title, userId, onClose }: VideoPlayerProps)
     const isMinIOVideo = useMemo(() => url.startsWith('video://'), [url]);
     const videoId = useMemo(() => isMinIOVideo ? url.replace('video://', '') : null, [url, isMinIOVideo]);
 
-    // Convert Google Drive sharing URL to embed URL - use useMemo
+    useEffect(() => {
+        if (isMinIOVideo) return;
+        fetch(`${import.meta.env.VITE_API_URL || '/api'}/videos/drm/status`, {
+            headers: { Authorization: `Bearer ${localStorage.getItem('authToken') || ''}` },
+        })
+            .then(response => response.ok ? response.json() : null)
+            .then(policy => setExternalPolicy(policy && !policy.required ? 'allowed' : 'blocked'))
+            .catch(() => setExternalPolicy('blocked'));
+    }, [isMinIOVideo]);
+
+    // Convert YouTube/Google Drive sharing URLs to embed URLs - use useMemo
     const embedUrl = useMemo(() => {
-        const getEmbedUrl = (driveUrl: string): string => {
-            // Extract file ID from various Google Drive URL formats
+        const getEmbedUrl = (rawUrl: string): string => {
+            // YouTube: watch?v=, youtu.be/, embed/, shorts/ all become embed URLs
+            // (youtube.com/watch cannot be embedded in an iframe - YouTube blocks it)
+            const youtubeMatch = rawUrl.match(
+                /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{6,})/
+            );
+            if (youtubeMatch && youtubeMatch[1]) {
+                return `https://www.youtube.com/embed/${youtubeMatch[1]}`;
+            }
+
+            // Google Drive: extract file ID from various URL formats
             const patterns = [
                 /\/file\/d\/([a-zA-Z0-9_-]+)/,
                 /[?&]id=([a-zA-Z0-9_-]+)/,
@@ -40,7 +64,7 @@ const VideoPlayerComponent = ({ url, title, userId, onClose }: VideoPlayerProps)
             ];
 
             for (const pattern of patterns) {
-                const match = driveUrl.match(pattern);
+                const match = rawUrl.match(pattern);
                 if (match && match[1]) {
                     // Try using the preview URL which works better in most cases
                     return `https://drive.google.com/file/d/${match[1]}/preview`;
@@ -48,11 +72,18 @@ const VideoPlayerComponent = ({ url, title, userId, onClose }: VideoPlayerProps)
             }
 
             // If already an embed URL or unknown format, return as-is
-            return driveUrl;
+            return rawUrl;
         };
 
         return getEmbedUrl(url);
     }, [url]);
+
+    if (isMinIOVideo && videoId) {
+        let currentUser: { id?: string; name?: string } = {};
+        try { currentUser = JSON.parse(localStorage.getItem('currentUser') || '{}'); } catch { /* auth guard handles invalid storage */ }
+        return <SecureVideoPlayer videoId={videoId} userId={userId || currentUser.id || ''}
+            studentName={currentUser.name || ''} groupName="" onClose={onClose} />;
+    }
 
     return (
         <div className="fixed inset-0 z-50 bg-black flex items-center justify-center">
@@ -88,8 +119,15 @@ const VideoPlayerComponent = ({ url, title, userId, onClose }: VideoPlayerProps)
                             autoPlay={true}
                             className="w-full h-full"
                         />
+                    ) : externalPolicy === 'checking' ? (
+                        <div className="p-6 text-center text-white/70">جاري التحقق من سياسة حماية الفيديو...</div>
+                    ) : externalPolicy === 'blocked' ? (
+                        <div className="p-6 text-center text-white">
+                            <p className="font-bold">تم إيقاف هذا الفيديو الخارجي</p>
+                            <p className="mt-2 text-sm text-white/60">أعد رفعه على المنصة ليتم تشفيره وتشغيله عبر DRM.</p>
+                        </div>
                     ) : (
-                        <>
+                        <ProtectedVideoSurface className="w-full h-full">
                             <iframe
                                 src={embedUrl}
                                 className="w-full h-full"
@@ -117,7 +155,7 @@ const VideoPlayerComponent = ({ url, title, userId, onClose }: VideoPlayerProps)
                                     </div>
                                 </div>
                             </noscript>
-                        </>
+                        </ProtectedVideoSurface>
                     )}
                 </div>
 

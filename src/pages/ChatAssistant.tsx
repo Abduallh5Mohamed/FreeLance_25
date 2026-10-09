@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card } from '@/components/ui/card';
 import { Send, Loader } from 'lucide-react';
-import { supabase } from '@/integrations/supabase/client';
+import Header from '@/components/Header';
+import StudentHeader from '@/components/StudentHeader';
+import { sendAiChatMessage } from '@/lib/api';
 
 interface Message {
   id: string;
@@ -13,6 +14,20 @@ interface Message {
 }
 
 export default function ChatAssistant() {
+  // Render the correct app shell for the logged-in role: the vertical
+  // sidebar (Header) for teacher/admin/instructor accounts and the
+  // student top bar (StudentHeader) for students — so the sidebar never
+  // disappears when this page is opened.
+  const isStudent = (() => {
+    try {
+      const raw = localStorage.getItem('currentUser');
+      if (!raw) return false;
+      return JSON.parse(raw)?.role === 'student';
+    } catch {
+      return false;
+    }
+  })();
+
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
@@ -47,53 +62,13 @@ export default function ChatAssistant() {
     setLoading(true);
 
     try {
-      // Call Groq API directly
-      const groqApiKey = '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';
-      
-      const systemPrompt = `أنت مساعد ذكي تعليمي متخصص حصراً في مساعدة طلاب المرحلة الثانوية المصريين في دراسة التاريخ.
+      const aiResponse = await sendAiChatMessage(input);
 
-وظيفتك الأساسية:
-- شرح الأحداث التاريخية والشخصيات والفترات بوضوح ودقة
-- مساعدة الطلاب على فهم دروس المنهج المصري للتاريخ
-- تقديم ملخصات وتحليلات ومقارنات للأحداث التاريخية
-- الإجابة على أسئلة من نمط الامتحانات
-- مساعدة الطالب على كتابة الإجابات الطويلة
-
-رد دائماً بالعربية فقط، وكن ودوداً وصبوراً - بدو كمعلم مختص وليس روبوت.`;
-
-      const response = await fetch(
-        'https://api.groq.com/openai/v1/chat/completions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${groqApiKey}`,
-          },
-          body: JSON.stringify({
-            model: 'llama-3.3-70b-versatile',
-            messages: [
-              {
-                role: 'system',
-                content: systemPrompt
-              },
-              {
-                role: 'user',
-                content: input
-              }
-            ],
-            temperature: 0.7,
-            max_tokens: 1000,
-          }),
-        }
-      );
-
-      const data = await response.json();
-
-      if (response.ok && data.choices?.[0]?.message?.content) {
+      if (aiResponse) {
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),
           role: 'assistant',
-          content: data.choices[0].message.content,
+          content: aiResponse,
           timestamp: new Date(),
         };
         setMessages((prev) => [...prev, assistantMessage]);
@@ -122,8 +97,11 @@ export default function ChatAssistant() {
 
   return (
     <div className="h-screen w-full flex flex-col bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
+      {/* App shell: sidebar for teacher/admin/instructor, top bar for students */}
+      {isStudent ? <StudentHeader /> : <Header />}
+
       {/* Header */}
-      <div className="bg-white dark:bg-slate-800 border-b border-primary/20 p-4 shadow-sm">
+      <div className="bg-white dark:bg-slate-800 border-b border-primary/20 p-4 shadow-sm shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
             <span className="text-lg">🤖</span>
@@ -178,7 +156,7 @@ export default function ChatAssistant() {
       </div>
 
       {/* Input Area - FIXED AT BOTTOM */}
-      <div className="bg-white dark:bg-slate-800 border-t border-primary/20 p-4 shadow-lg">
+      <div className="bg-white dark:bg-slate-800 border-t border-primary/20 p-4 shadow-lg shrink-0">
         <form onSubmit={sendMessage} className="flex gap-2">
           <Input
             type="text"

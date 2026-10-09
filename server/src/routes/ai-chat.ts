@@ -1,39 +1,13 @@
-import express, { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
+import express, { Response } from 'express';
+import { AuthRequest, authenticateToken } from '../middleware/auth';
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
-
-// Authentication middleware
-interface AuthRequest extends Request {
-  user?: {
-    id: string;
-    role: string;
-  };
-}
-
-const authenticateToken = (req: AuthRequest, res: Response, next: NextFunction) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    return res.status(401).json({ error: 'Authentication required' });
-  }
-
-  jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
-    if (err) {
-      return res.status(403).json({ error: 'Invalid or expired token' });
-    }
-    req.user = user;
-    next();
-  });
-};
 
 // AI Chat endpoint
 router.post('/chat', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const { message } = req.body;
-    const apiKey = process.env.GROQ_API_KEY || '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';
+    const apiKey = process.env.GROQ_API_KEY;
 
     console.log('🤖 AI Chat request received:', { message: message?.substring(0, 50), userId: req.user?.id });
 
@@ -44,10 +18,10 @@ router.post('/chat', authenticateToken, async (req: AuthRequest, res: Response) 
 
     if (!apiKey) {
       console.log('❌ AI Chat: API key not configured');
-      return res.status(500).json({ error: 'AI API key not configured' });
+      return res.status(503).json({ error: 'AI service is not configured' });
     }
 
-    const systemPrompt = `أنت "القائد" - المساعد التعليمي الذكي الخاص بمنصة مستر محمد رمضان لتدريس مادة التاريخ.
+    const systemPrompt = `أنت مساعد Tabweb Academy التعليمي الذكي الخاص بالمنصة.
 
 📚 **تخصصك الحصري:**
 - مادة التاريخ للمرحلة الثانوية المصرية (الصف الأول والثاني والثالث الثانوي)
@@ -68,7 +42,7 @@ router.post('/chat', authenticateToken, async (req: AuthRequest, res: Response) 
 - قدم أمثلة من المنهج المصري
 - اذكر الدروس والوحدات المرتبطة عند الإمكان
 
-👨‍🏫 المنصة: القائد - مستر محمد رمضان للتاريخ`;
+🎓 المنصة: Tabweb Academy`;
 
     // Try Groq models (fast and high rate limits)
     const groqModels = [

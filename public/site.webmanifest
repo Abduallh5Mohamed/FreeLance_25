@@ -1,7 +1,7 @@
 {
-  "name": "منصة القائد - مستر محمد رمضان تاريخ",
-  "short_name": "القائد",
-  "description": "منصة القائد التعليمية - مستر محمد رمضان - تاريخ محمد رمضان - القائد للتاريخ. أفضل منصة تعليم التاريخ للثانوية العامة في مصر. تاريخ اولى ثانوي، تانية ثانوي، تالتة ثانوي.",
+  "name": "Tabweb Academy",
+  "short_name": "Tabweb",
+  "description": "Tabweb Academy منصة تعليم إلكتروني متكاملة للدورات والمحاضرات والامتحانات.",
   "start_url": "/",
   "id": "/",
   "display": "standalone",
@@ -17,74 +17,42 @@
   "prefer_related_applications": false,
   "icons": [
     {
-      "src": "/favicon.ico",
-      "sizes": "48x48",
-      "type": "image/x-icon"
-    },
-    {
-      "src": "/favicon-32x32.png",
-      "sizes": "32x32",
-      "type": "image/png"
-    },
-    {
-      "src": "/favicon-16x16.png",
-      "sizes": "16x16",
-      "type": "image/png"
-    },
-    {
-      "src": "/apple-touch-icon.png",
-      "sizes": "180x180",
-      "type": "image/png"
-    },
-    {
-      "src": "/android-chrome-192x192.png",
-      "sizes": "192x192",
+      "src": "/tabweb-academy-logo.png",
+      "sizes": "1254x1254",
       "type": "image/png",
       "purpose": "any"
-    },
-    {
-      "src": "/android-chrome-512x512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any"
-    },
-    {
-      "src": "/maskable-icon-512x512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "maskable"
     }
   ],
   "screenshots": [
     {
       "src": "/og-image.png",
-      "sizes": "1200x630",
+      "sizes": "1254x1254",
       "type": "image/png",
       "form_factor": "wide",
-      "label": "منصة القائد - مستر محمد رمضان تاريخ - الصفحة الرئيسية"
+      "label": "Tabweb Academy - الصفحة الرئيسية"
     }
   ],
   "shortcuts": [
     {
       "name": "المحاضرات",
       "short_name": "محاضرات",
-      "description": "محاضرات تاريخ مستر محمد رمضان",
+      "description": "محاضرات Tabweb Academy",
       "url": "/student-lectures",
-      "icons": [{"src": "/favicon-32x32.png", "sizes": "32x32"}]
+      "icons": [{"src": "/tabweb-academy-logo.png", "sizes": "1254x1254", "type": "image/png"}]
     },
     {
       "name": "الامتحانات",
       "short_name": "امتحانات",
       "description": "امتحانات تاريخ الكترونية",
       "url": "/student-exams",
-      "icons": [{"src": "/favicon-32x32.png", "sizes": "32x32"}]
+      "icons": [{"src": "/tabweb-academy-logo.png", "sizes": "1254x1254", "type": "image/png"}]
     },
     {
       "name": "البث المباشر",
       "short_name": "لايف",
-      "description": "بث مباشر تاريخ مستر محمد رمضان",
+      "description": "البث المباشر على Tabweb Academy",
       "url": "/student-meetings",
-      "icons": [{"src": "/favicon-32x32.png", "sizes": "32x32"}]
+      "icons": [{"src": "/tabweb-academy-logo.png", "sizes": "1254x1254", "type": "image/png"}]
     }
   ],
   "related_applications": [],

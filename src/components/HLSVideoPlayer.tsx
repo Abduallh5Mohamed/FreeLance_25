@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback, memo } from 'react';
 import Hls from 'hls.js';
+import { ProtectedVideoSurface } from './ProtectedVideoSurface';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import {
@@ -45,12 +46,14 @@ interface HLSVideoPlayerProps {
 }
 
 interface StreamData {
+    provider?: 'minio' | 'vdocipher';
     videoId: string;
     title: string;
     description?: string;
     duration: number;
     qualities: string[];
-    streamUrl: string;
+    streamUrl?: string;
+    playerUrl?: string;
     thumbnailUrl?: string;
     expiresIn: number;
 }
@@ -94,8 +97,11 @@ const HLSVideoPlayerComponent = ({
         try {
             const response = await fetch(`${API_BASE}/videos/stream/${videoId}/refresh`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userId })
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`,
+                },
+                body: JSON.stringify({})
             });
 
             if (response.ok) {
@@ -115,7 +121,7 @@ const HLSVideoPlayerComponent = ({
         } catch (err) {
             console.error('Error refreshing stream URL:', err);
         }
-    }, [videoId, userId]);
+    }, [videoId]);
 
     // Fetch stream URL
     const fetchStreamUrl = useCallback(async () => {
@@ -129,7 +135,11 @@ const HLSVideoPlayerComponent = ({
             console.log('🆔 Video ID:', videoId);
             console.log('👤 User ID:', userId);
 
-            const response = await fetch(streamUrl);
+            const response = await fetch(streamUrl, {
+                headers: {
+                    'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`,
+                },
+            });
             console.log('📡 Response status:', response.status);
 
             if (!response.ok) {
@@ -142,6 +152,10 @@ const HLSVideoPlayerComponent = ({
             console.log('✅ Stream data received:', data);
             setStreamData(data);
 
+            if (data.provider === 'vdocipher' && data.playerUrl) {
+                return null;
+            }
+
             // Schedule URL refresh before expiry
             if (refreshTimerRef.current) {
                 clearTimeout(refreshTimerRef.current);
@@ -152,7 +166,7 @@ const HLSVideoPlayerComponent = ({
                 refreshTimerRef.current = setTimeout(() => refreshStreamUrl(), refreshIn);
             }
 
-            return data.streamUrl;
+            return data.streamUrl || null;
         } catch (err) {
             console.error('❌ Error fetching stream:', err);
             setError(err instanceof Error ? err.message : 'فشل تحميل الفيديو');
@@ -190,6 +204,9 @@ const HLSVideoPlayerComponent = ({
                 console.log('✅ HLS.js is supported, creating instance');
                 // Use HLS.js for browsers that support it
                 const hls = new Hls({
+                    xhrSetup: (xhr) => {
+                        xhr.setRequestHeader('Authorization', `Bearer ${localStorage.getItem('authToken') || ''}`);
+                    },
                     enableWorker: true,
                     lowLatencyMode: false,
                     backBufferLength: 90,
@@ -503,21 +520,32 @@ const HLSVideoPlayerComponent = ({
     }
 
     return (
-        <div
-            ref={containerRef}
-            className={`relative bg-black w-full h-full flex items-center justify-center ${className}`}
-            onContextMenu={handleContextMenu}
-        >
-            {/* Video Element */}
-            <video
-                ref={videoRef}
-                className="h-full w-auto"
-                style={{ maxWidth: '100vw' }}
-                playsInline
-                preload="auto"
-                onClick={togglePlay}
-                controls
-            />
+        <ProtectedVideoSurface className={`w-full h-full flex items-center justify-center ${className}`}>
+        <div ref={containerRef} className="relative w-full h-full flex items-center justify-center" onContextMenu={handleContextMenu}>
+            {/* Managed DRM is rendered by the provider player so keys stay in EME/CDM. */}
+            {streamData?.provider === 'vdocipher' && streamData.playerUrl ? (
+                <iframe
+                    src={streamData.playerUrl}
+                    title={title || streamData.title || 'DRM video'}
+                    className="h-full w-full border-0"
+                    allow="encrypted-media; fullscreen"
+                    allowFullScreen
+                    referrerPolicy="strict-origin-when-cross-origin"
+                />
+            ) : (
+                <video
+                    ref={videoRef}
+                    className="h-full w-auto"
+                    style={{ maxWidth: '100vw' }}
+                    playsInline
+                    preload="auto"
+                    onClick={togglePlay}
+                    controls
+                    disablePictureInPicture
+                    disableRemotePlayback
+                    controlsList="nodownload noremoteplayback"
+                />
+            )}
 
             {/* Close Button */}
             {onClose && (
@@ -541,7 +569,7 @@ const HLSVideoPlayerComponent = ({
             )}
 
             {/* Play/Pause Overlay */}
-            {!isPlaying && (
+            {streamData?.provider !== 'vdocipher' && !isPlaying && (
                 <div
                     className="absolute inset-0 flex items-center justify-center cursor-pointer"
                     onClick={togglePlay}
@@ -553,7 +581,7 @@ const HLSVideoPlayerComponent = ({
             )}
 
             {/* Controls */}
-            <div
+            {streamData?.provider !== 'vdocipher' && <div
                 className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4 transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0'
                     }`}
             >
@@ -676,8 +704,9 @@ const HLSVideoPlayerComponent = ({
                         </Button>
                     </div>
                 </div>
-            </div>
+            </div>}
         </div>
+        </ProtectedVideoSurface>
     );
 };
 

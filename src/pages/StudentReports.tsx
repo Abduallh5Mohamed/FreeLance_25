@@ -120,16 +120,16 @@ const StudentReports = () => {
     const userStr = localStorage.getItem('currentUser');
     const user: User | null = userStr ? JSON.parse(userStr) : null;
 
-    if (!user || (user.role !== 'admin' && user.role !== 'teacher' && user.role !== 'staff')) {
+    if (!user || (user.role !== 'admin' && user.role !== 'teacher' && user.role !== 'staff' && user.role !== 'instructor')) {
       navigate('/auth');
       return;
     }
 
-    loadData();
+    loadData(user.role);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadData = async () => {
+  const loadData = async (role?: string) => {
     try {
       setLoading(true);
 
@@ -138,7 +138,7 @@ const StudentReports = () => {
         getGroups(),
         getGrades(),
         getAttendance({}),
-        getFees(),
+        role === 'instructor' ? Promise.resolve([]) : getFees(),
       ]);
 
       setStudents(studentsData || []);
@@ -356,7 +356,7 @@ const StudentReports = () => {
       message += `📝 *ملاحظات الإدارة:*\n${report.notes}\n\n`;
     }
 
-    message += `\n_تقرير من سنتر القائد - ${new Date().toLocaleDateString('ar-EG')}_`;
+    message += `\n_تقرير من Tabweb Academy - ${new Date().toLocaleDateString('ar-EG')}_`;
 
     return encodeURIComponent(message);
   };

@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { BookOpen, Plus, Edit2, Trash2, Users, Calendar } from "lucide-react";
 import Header from "@/components/Header";
@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/alert-dialog";
 
 const Courses = () => {
+  const currentRole = (() => { try { return JSON.parse(localStorage.getItem('currentUser') || '{}').role as string | undefined; } catch { return undefined; } })();
   const [courses, setCourses] = useState([]);
   const [grades, setGrades] = useState([]);
   const [subscriptions, setSubscriptions] = useState([]);
@@ -46,7 +47,7 @@ const Courses = () => {
   useEffect(() => {
     fetchCourses();
     fetchGrades();
-    fetchSubscriptions();
+    if (currentRole !== 'instructor') fetchSubscriptions();
   }, []);
 
   const fetchGrades = async () => {
@@ -212,6 +213,7 @@ const Courses = () => {
                 <DialogTitle>
                   {editingCourse ? "تعديل الكورس" : "إضافة كورس جديد"}
                 </DialogTitle>
+                <DialogDescription>أدخل بيانات الكورس ثم احفظها.</DialogDescription>
               </DialogHeader>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="space-y-2">
@@ -268,7 +270,7 @@ const Courses = () => {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-2">
+                {currentRole !== 'instructor' && <div className="space-y-2">
                   <Label htmlFor="subscription">خطة الاشتراك</Label>
                   <Select
                     value={formData.subscription_id}
@@ -291,7 +293,7 @@ const Courses = () => {
                       )}
                     </SelectContent>
                   </Select>
-                </div>
+                </div>}
                 <div className="space-y-2">
                   <Label htmlFor="price">السعر (جنيه)</Label>
                   <Input
@@ -380,6 +382,7 @@ const Courses = () => {
           <DialogContent className="max-w-md">
             <DialogHeader>
               <DialogTitle>تفاصيل الكورس</DialogTitle>
+              <DialogDescription>عرض بيانات الكورس المسجلة.</DialogDescription>
             </DialogHeader>
             {selectedCourse && (
               <div className="space-y-4">

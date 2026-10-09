@@ -1,25 +1,20 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response } from 'express';
 import { query } from '../db';
+import { authenticateToken, AuthRequest } from '../middleware/auth';
 
 const router = Router();
+router.use(authenticateToken);
 
 // Get notifications for a user
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', async (req: AuthRequest, res: Response) => {
   try {
-    const { user_id, user_type, is_read } = req.query;
+    const { is_read } = req.query;
     
     let sql = 'SELECT * FROM notifications WHERE 1=1';
     const params: unknown[] = [];
     
-    if (user_id) {
-      sql += ' AND user_id = ?';
-      params.push(user_id);
-    }
-    
-    if (user_type) {
-      sql += ' AND user_type = ?';
-      params.push(user_type);
-    }
+    sql += ' AND user_id = ?';
+    params.push(req.user!.id);
     
     if (is_read !== undefined) {
       sql += ' AND is_read = ?';
@@ -37,13 +32,13 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 // Mark notification as read
-router.put('/:id/read', async (req: Request, res: Response) => {
+router.put('/:id/read', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     
     await query(
-      'UPDATE notifications SET is_read = TRUE WHERE id = ?',
-      [id]
+      'UPDATE notifications SET is_read = TRUE WHERE id = ? AND user_id = ?',
+      [id, req.user!.id]
     );
     
     res.json({ message: 'Notification marked as read' });
@@ -54,17 +49,11 @@ router.put('/:id/read', async (req: Request, res: Response) => {
 });
 
 // Mark all notifications as read for a user
-router.put('/read-all', async (req: Request, res: Response) => {
+router.put('/read-all', async (req: AuthRequest, res: Response) => {
   try {
-    const { user_id, user_type } = req.body;
-    
-    if (!user_id || !user_type) {
-      return res.status(400).json({ error: 'user_id and user_type are required' });
-    }
-    
     await query(
-      'UPDATE notifications SET is_read = TRUE WHERE user_id = ? AND user_type = ?',
-      [user_id, user_type]
+      'UPDATE notifications SET is_read = TRUE WHERE user_id = ?',
+      [req.user!.id]
     );
     
     res.json({ message: 'All notifications marked as read' });
@@ -75,17 +64,11 @@ router.put('/read-all', async (req: Request, res: Response) => {
 });
 
 // Get unread count
-router.get('/unread-count', async (req: Request, res: Response) => {
+router.get('/unread-count', async (req: AuthRequest, res: Response) => {
   try {
-    const { user_id, user_type } = req.query;
-    
-    if (!user_id || !user_type) {
-      return res.status(400).json({ error: 'user_id and user_type are required' });
-    }
-    
     const result = await query(
-      'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND user_type = ? AND is_read = FALSE',
-      [user_id, user_type]
+      'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = FALSE',
+      [req.user!.id]
     ) as unknown[];
     
     const count = Array.isArray(result) && result.length > 0 ? (result[0] as Record<string, unknown>).count : 0;

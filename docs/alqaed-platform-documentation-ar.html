@@ -1,0 +1,1253 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>توثيق ميزات منصة تعليمية متكاملة</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 0;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    body {
+      margin: 0;
+      color: #172033;
+      background: #f5f7fb;
+      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      line-height: 1.75;
+      direction: rtl;
+      text-align: right;
+    }
+
+    .document {
+      width: 210mm;
+      margin: 0 auto;
+      background: #fff;
+    }
+
+    .page {
+      width: 210mm;
+      min-height: 297mm;
+      padding: 0;
+      page-break-after: always;
+      position: relative;
+      overflow: hidden;
+      background: #ffffff;
+    }
+
+    .page:last-child {
+      page-break-after: auto;
+    }
+
+    .cover {
+      min-height: 297mm;
+      padding: 28mm 19mm 18mm;
+      color: #fff;
+      background:
+        linear-gradient(135deg, rgba(7, 31, 54, 0.94), rgba(0, 134, 139, 0.82)),
+        url("../src/assets/Hero-bg.jpg") center/cover no-repeat;
+    }
+
+    .cover-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 22px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-mark {
+      width: 66px;
+      height: 66px;
+      background: rgba(255, 255, 255, 0.94);
+      border-radius: 18px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #0f766e;
+      font-weight: 900;
+      font-size: 20px;
+    }
+
+    .brand-name {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .brand-subtitle {
+      font-size: 11px;
+      opacity: 0.82;
+      margin-top: 2px;
+    }
+
+    .cover-badge {
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      border-radius: 999px;
+      padding: 8px 14px;
+      font-size: 11px;
+      background: rgba(255, 255, 255, 0.13);
+    }
+
+    .cover-main {
+      margin-top: 55mm;
+      max-width: 650px;
+    }
+
+    .kicker {
+      color: #8be7dd;
+      font-size: 13px;
+      font-weight: 800;
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 42px;
+      line-height: 1.24;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+
+    .cover-lead {
+      margin: 18px 0 0;
+      max-width: 610px;
+      font-size: 17px;
+      line-height: 1.9;
+      color: rgba(255, 255, 255, 0.9);
+    }
+
+    .cover-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-top: 34px;
+    }
+
+    .strip-item {
+      padding: 13px 12px;
+      background: rgba(255, 255, 255, 0.13);
+      border: 1px solid rgba(255, 255, 255, 0.24);
+      border-radius: 10px;
+      min-height: 76px;
+    }
+
+    .strip-item strong {
+      display: block;
+      font-size: 20px;
+      line-height: 1.1;
+      margin-bottom: 6px;
+      color: #ffffff;
+    }
+
+    .strip-item span {
+      display: block;
+      font-size: 10.5px;
+      color: rgba(255, 255, 255, 0.78);
+      line-height: 1.55;
+    }
+
+    .cover-footer {
+      position: absolute;
+      right: 19mm;
+      left: 19mm;
+      bottom: 18mm;
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      border-top: 1px solid rgba(255, 255, 255, 0.25);
+      padding-top: 12px;
+      color: rgba(255, 255, 255, 0.82);
+      font-size: 11px;
+    }
+
+    .content {
+      padding: 17mm 16mm 15mm;
+    }
+
+    .running-header {
+      height: 14mm;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16mm;
+      color: #637083;
+      font-size: 10px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+
+    .section-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #0d9488;
+      font-weight: 800;
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      color: #0f2a43;
+      font-size: 24px;
+      line-height: 1.35;
+      font-weight: 900;
+    }
+
+    h3 {
+      margin: 20px 0 9px;
+      color: #0f766e;
+      font-size: 16px;
+      line-height: 1.45;
+      font-weight: 850;
+    }
+
+    p {
+      margin: 0 0 10px;
+      font-size: 12px;
+      color: #344054;
+    }
+
+    .lead {
+      font-size: 13.3px;
+      color: #314056;
+      line-height: 1.9;
+      margin-bottom: 14px;
+    }
+
+    .note {
+      border-right: 5px solid #14b8a6;
+      background: #eefdfa;
+      padding: 13px 15px;
+      border-radius: 10px 4px 4px 10px;
+      margin: 13px 0 16px;
+      color: #134e4a;
+      font-size: 12px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+
+    .feature-card,
+    .metric-card {
+      border: 1px solid #dbe4ee;
+      background: #ffffff;
+      border-radius: 10px;
+      padding: 12px 13px;
+      box-shadow: 0 8px 22px rgba(15, 42, 67, 0.06);
+      break-inside: avoid;
+    }
+
+    .feature-card h4,
+    .metric-card h4 {
+      margin: 0 0 6px;
+      color: #0f2a43;
+      font-size: 13.2px;
+      font-weight: 850;
+      line-height: 1.55;
+    }
+
+    .feature-card p,
+    .metric-card p {
+      margin: 0;
+      color: #475467;
+      font-size: 10.8px;
+      line-height: 1.72;
+    }
+
+    .metric-card {
+      background: linear-gradient(180deg, #ffffff, #f8fbfd);
+      border-top: 4px solid #14b8a6;
+      min-height: 112px;
+    }
+
+    .metric-card .num {
+      display: block;
+      color: #0d9488;
+      font-size: 25px;
+      font-weight: 900;
+      line-height: 1.05;
+      margin-bottom: 6px;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin: 10px 0 14px;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: #e8f6f5;
+      color: #0f766e;
+      border: 1px solid #bfe7e1;
+      font-size: 10.5px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    ul {
+      margin: 0 0 12px;
+      padding: 0 20px 0 0;
+    }
+
+    li {
+      margin: 0 0 5px;
+      padding-right: 2px;
+      font-size: 11.2px;
+      color: #344054;
+      line-height: 1.68;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 15px;
+      font-size: 10.5px;
+      break-inside: avoid;
+      table-layout: fixed;
+    }
+
+    th {
+      background: #0f766e;
+      color: #fff;
+      font-weight: 800;
+      padding: 8px 9px;
+      border: 1px solid #0d655e;
+      text-align: right;
+    }
+
+    td {
+      padding: 8px 9px;
+      border: 1px solid #d8e2ed;
+      color: #344054;
+      vertical-align: top;
+      background: #fff;
+    }
+
+    tr:nth-child(even) td {
+      background: #f8fbfd;
+    }
+
+    .timeline {
+      border-right: 3px solid #99f6e4;
+      padding-right: 16px;
+      margin-top: 10px;
+    }
+
+    .step {
+      position: relative;
+      margin-bottom: 14px;
+      break-inside: avoid;
+    }
+
+    .step::before {
+      content: "";
+      position: absolute;
+      right: -23px;
+      top: 8px;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: #0d9488;
+      box-shadow: 0 0 0 5px #ccfbf1;
+    }
+
+    .step h4 {
+      margin: 0 0 4px;
+      color: #0f2a43;
+      font-size: 12.8px;
+      font-weight: 850;
+    }
+
+    .step p {
+      margin: 0;
+      font-size: 11px;
+    }
+
+    .band {
+      background: linear-gradient(135deg, #ecfeff, #f0fdf4);
+      border: 1px solid #c6f4ed;
+      border-radius: 12px;
+      padding: 14px 15px;
+      margin: 13px 0 15px;
+      break-inside: avoid;
+    }
+
+    .band strong {
+      color: #0f766e;
+    }
+
+    .toc {
+      counter-reset: toc;
+      margin-top: 14px;
+    }
+
+    .toc-row {
+      display: grid;
+      grid-template-columns: 38px 1fr;
+      gap: 12px;
+      align-items: start;
+      border-bottom: 1px solid #e8eef5;
+      padding: 9px 0;
+      break-inside: avoid;
+    }
+
+    .toc-row::before {
+      counter-increment: toc;
+      content: counter(toc, decimal-leading-zero);
+      color: #0d9488;
+      font-weight: 900;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .toc-row strong {
+      display: block;
+      color: #0f2a43;
+      font-size: 12px;
+      margin-bottom: 2px;
+    }
+
+    .toc-row span {
+      display: block;
+      color: #667085;
+      font-size: 10.5px;
+      line-height: 1.6;
+    }
+
+    .quote {
+      font-size: 15px;
+      line-height: 1.9;
+      color: #0f2a43;
+      font-weight: 800;
+      margin: 18px 0 10px;
+      padding: 15px 17px;
+      background: #f8fbfd;
+      border: 1px solid #dbe4ee;
+      border-radius: 12px;
+    }
+
+    .footer-mark {
+      position: absolute;
+      left: 16mm;
+      right: 16mm;
+      bottom: 7mm;
+      border-top: 1px solid #e2e8f0;
+      padding-top: 5px;
+      display: flex;
+      justify-content: space-between;
+      color: #8a96a8;
+      font-size: 9px;
+    }
+
+    .accent-line {
+      height: 5px;
+      width: 72px;
+      background: linear-gradient(90deg, #0d9488, #f59e0b);
+      border-radius: 999px;
+      margin: 0 0 15px;
+    }
+
+    .avoid-break {
+      break-inside: avoid;
+    }
+
+    .compact p {
+      font-size: 11px;
+      line-height: 1.68;
+      margin-bottom: 7px;
+    }
+
+    .small {
+      font-size: 10px;
+      color: #667085;
+    }
+  </style>
+</head>
+<body>
+  <main class="document">
+    <section class="cover page">
+      <div class="cover-top">
+        <div class="brand">
+          <div class="brand-mark">EDU</div>
+          <div>
+            <div class="brand-name">منصة تعليمية متكاملة</div>
+            <div class="brand-subtitle">نظام إدارة تعليمية رقمي</div>
+          </div>
+        </div>
+        <div class="cover-badge">وثيقة عرض رسمية</div>
+      </div>
+
+      <div class="cover-main">
+        <div class="kicker">توثيق شامل لميزات المنصة</div>
+        <h1>منصة تعليمية متكاملة لإدارة الطلاب والمحتوى والاختبارات والمدفوعات</h1>
+        <p class="cover-lead">
+          مستند احترافي يستعرض القيمة العملية للمنصة، وحداتها الرئيسية، وتجربة كل من الإدارة والمعلم والطالب في بيئة عربية حديثة، منظمة، وآمنة.
+        </p>
+
+        <div class="cover-strip">
+          <div class="strip-item"><strong>25+</strong><span>واجهة ووحدة تشغيلية لإدارة المنصة التعليمية</span></div>
+          <div class="strip-item"><strong>3</strong><span>أنواع مستخدمين رئيسية: إدارة، موظفون، طلاب</span></div>
+          <div class="strip-item"><strong>RTL</strong><span>تجربة عربية كاملة ومتوافقة مع مختلف الشاشات</span></div>
+          <div class="strip-item"><strong>HLS</strong><span>منظومة فيديو مؤمنة مع بث ومعالجة ذاتية</span></div>
+        </div>
+      </div>
+
+      <div class="cover-footer">
+        <div>إصدار العرض: أغسطس 2026</div>
+        <div>Prepared for platform presentation</div>
+      </div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>ملخص تنفيذي</span>
+      </div>
+      <div class="content">
+        <span class="section-label">01 / نظرة عامة</span>
+        <h2>ملخص تنفيذي</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          هذه المنصة التعليمية هي نظام رقمي متكامل لإدارة تجربة التعليم من لحظة تسجيل الطالب وحتى متابعة حضوره ونتائجه ومدفوعاته ومحتواه التعليمي. تجمع المنصة بين لوحة تحكم إدارية قوية، تجربة طالب سهلة، نظام امتحانات إلكتروني، إدارة محتوى ومحاضرات، مراسلات فورية، إشعارات، حضور بالباركود، وإدارة مالية منظمة.
+        </p>
+        <div class="note">
+          تم إعداد هذا المستند ليكون وثيقة عرض رسمية تركز على ميزات المنصة وقيمتها التشغيلية، مع صياغة عربية منظمة ومناسبة للعرض التجاري والمؤسسي.
+        </div>
+
+        <div class="grid-3">
+          <div class="metric-card">
+            <span class="num">إدارة كاملة</span>
+            <h4>تشغيل اليوم الدراسي من مكان واحد</h4>
+            <p>إدارة الطلاب، المجموعات، الصفوف، الكورسات، المحتوى، الحضور، المدفوعات، الموظفين، والتقارير.</p>
+          </div>
+          <div class="metric-card">
+            <span class="num">تعلم رقمي</span>
+            <h4>تجربة طالب واضحة وسريعة</h4>
+            <p>محاضرات، مواد تعليمية، امتحانات، نتائج، اجتماعات مباشرة، رسائل، ومساعد ذكي تعليمي.</p>
+          </div>
+          <div class="metric-card">
+            <span class="num">حماية</span>
+            <h4>منظومة صلاحيات وفيديو مؤمن</h4>
+            <p>JWT، صلاحيات حسب الدور، جلسات فيديو، روابط مشاهدة موقعة، علامات مائية، وسجلات متابعة أمنية.</p>
+          </div>
+        </div>
+
+        <h3>فلسفة المنتج</h3>
+        <p>
+          تم تصميم المنصة لتخدم مراكز التعليم والمدرسين الذين يحتاجون إلى نظام واحد يجمع الإدارة الأكاديمية والمالية والتواصل مع الطلاب. الفكرة الأساسية هي تقليل الاعتماد على الجداول اليدوية والتطبيقات المتفرقة، وتحويل كل عملية إلى مسار واضح داخل لوحة تحكم واحدة.
+        </p>
+
+        <h3>محاور القيمة</h3>
+        <div class="pill-row">
+          <span class="pill">إدارة الطلاب</span>
+          <span class="pill">المحتوى التعليمي</span>
+          <span class="pill">الاختبارات والنتائج</span>
+          <span class="pill">الدفع والاشتراكات</span>
+          <span class="pill">الحضور بالباركود</span>
+          <span class="pill">المراسلات والإشعارات</span>
+          <span class="pill">الأمان والصلاحيات</span>
+          <span class="pill">الفيديو المؤمّن</span>
+        </div>
+
+        <div class="quote">
+          المنصة ليست مجرد موقع لعرض المحتوى، بل نظام إدارة تعليمية وتشغيلية متكامل يساعد الإدارة على المتابعة، ويساعد الطالب على التعلم، ويجعل البيانات متاحة ومنظمة في كل مرحلة.
+        </div>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>فهرس الميزات</span>
+      </div>
+      <div class="content">
+        <span class="section-label">02 / فهرس المستند</span>
+        <h2>خريطة محتوى الوثيقة</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          يعرض هذا الفهرس الوحدات الرئيسية للمنصة بطريقة تساعد القارئ على فهم نطاق النظام بسرعة قبل الدخول في التفاصيل.
+        </p>
+
+        <div class="toc">
+          <div class="toc-row"><div><strong>تجربة المستخدمين والصلاحيات</strong><span>الأدوار الأساسية داخل النظام ومسارات الدخول والحماية.</span></div></div>
+          <div class="toc-row"><div><strong>لوحة الإدارة والمعلم</strong><span>مركز تشغيل المنصة وإدارة الطلاب والكورسات والمحتوى.</span></div></div>
+          <div class="toc-row"><div><strong>إدارة الطلاب والتسجيل</strong><span>طلبات التسجيل، القبول، الرفض، الطلاب الأونلاين والأوفلاين.</span></div></div>
+          <div class="toc-row"><div><strong>المحتوى والمحاضرات</strong><span>رفع المحاضرات، إدارة المواد، الحصص المدفوعة، الفيديوهات المؤمنة.</span></div></div>
+          <div class="toc-row"><div><strong>الامتحانات والنتائج</strong><span>إنشاء الامتحانات، الأسئلة، المحاولات، التصحيح، النتائج، التقارير.</span></div></div>
+          <div class="toc-row"><div><strong>الحضور والباركود</strong><span>إنشاء باركود للطلاب، تسجيل حضور فوري، سجل شهري، وتنبيهات واتساب.</span></div></div>
+          <div class="toc-row"><div><strong>المالية والاشتراكات</strong><span>الرسوم، الدفعات، الاشتراكات، المصروفات، الواردات، كشف الحساب، الأرباح.</span></div></div>
+          <div class="toc-row"><div><strong>التواصل والإشعارات</strong><span>رسائل فورية، حالة قراءة، صور، إشعارات، ومساعد ذكي تعليمي.</span></div></div>
+          <div class="toc-row"><div><strong>البنية التقنية والأمان</strong><span>React، Express، MySQL، Socket.IO، MinIO، HLS، JWT، وسجلات الأمان.</span></div></div>
+        </div>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>الأدوار وتجربة الدخول</span>
+      </div>
+      <div class="content">
+        <span class="section-label">03 / المستخدمون</span>
+        <h2>الأدوار والصلاحيات</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          تعتمد المنصة على فصل واضح بين أنواع المستخدمين لضمان تجربة مناسبة لكل دور، مع حماية الصفحات والعمليات الحساسة من خلال تسجيل دخول وصلاحيات محددة.
+        </p>
+
+        <div class="grid-2">
+          <div class="feature-card">
+            <h4>الإدارة والمعلم</h4>
+            <p>صلاحيات واسعة لإدارة الطلاب، الكورسات، المجموعات، الحضور، المحتوى، الامتحانات، المدفوعات، الرسائل، التقارير، والموظفين.</p>
+          </div>
+          <div class="feature-card">
+            <h4>الموظفون</h4>
+            <p>إمكانية إنشاء حسابات موظفين بصلاحيات محددة حسب الصفحات أو الأقسام، مثل الطلاب أو الحضور أو المالية أو الرسائل.</p>
+          </div>
+          <div class="feature-card">
+            <h4>الطلاب</h4>
+            <p>واجهة خاصة لمتابعة المحاضرات والمواد والاختبارات والنتائج والاجتماعات والرسائل والمدفوعات.</p>
+          </div>
+          <div class="feature-card">
+            <h4>حماية الوصول</h4>
+            <p>نظام تحقق يحمي الصفحات حسب الدور، مع تخزين جلسة المستخدم وتوجيهه للواجهة المناسبة فور تسجيل الدخول.</p>
+          </div>
+        </div>
+
+        <h3>مسارات الدخول</h3>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 28%">المسار</th>
+              <th style="width: 32%">المستخدم المستهدف</th>
+              <th>الوصف</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>تسجيل دخول برقم الهاتف أو البريد</td>
+              <td>الإدارة، المعلم، الموظف، الطالب</td>
+              <td>يدعم النظام الدخول باستخدام رقم الهاتف كخيار أساسي، مع دعم البريد الإلكتروني للتوافق.</td>
+            </tr>
+            <tr>
+              <td>إنشاء حساب طالب</td>
+              <td>الطلاب الأونلاين</td>
+              <td>يرسل الطالب طلب تسجيل ينتظر موافقة الإدارة قبل تفعيل الحساب.</td>
+            </tr>
+            <tr>
+              <td>حسابات الموظفين</td>
+              <td>فريق التشغيل</td>
+              <td>يتم تحديد الصفحات المتاحة لكل موظف من لوحة الإدارة.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="band">
+          <strong>ميزة تشغيلية مهمة:</strong>
+          فصل الصلاحيات يجعل المنصة مناسبة للمراكز التي يعمل بها أكثر من شخص، حيث يمكن توزيع المهام بدون منح صلاحيات كاملة لكل موظف.
+        </div>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>لوحة الإدارة</span>
+      </div>
+      <div class="content">
+        <span class="section-label">04 / الإدارة والمعلم</span>
+        <h2>لوحة تحكم مركزية لإدارة المنصة</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          توفر لوحة الإدارة نقطة تشغيل واحدة لمتابعة المؤشرات اليومية والوصول السريع إلى أهم وحدات المنصة، مع تصميم عربي واضح وملائم للعمل اليومي.
+        </p>
+
+        <div class="grid-3">
+          <div class="feature-card"><h4>مؤشرات سريعة</h4><p>إجمالي الطلاب، معدل الحضور، الإيرادات، والكورسات النشطة في بطاقات قابلة للقراءة السريعة.</p></div>
+          <div class="feature-card"><h4>تنقل منظم</h4><p>قوائم منفصلة للطلاب، الكورسات، الحضور، المالية، الإدارة، والمحتوى التعليمي.</p></div>
+          <div class="feature-card"><h4>إجراءات مباشرة</h4><p>أزرار وصول سريع لإدارة الطلاب، الكورسات، الحضور، المحتوى، ونتائج الامتحانات.</p></div>
+        </div>
+
+        <h3>وحدات لوحة الإدارة</h3>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 25%">الوحدة</th>
+              <th style="width: 35%">القدرات الأساسية</th>
+              <th>القيمة العملية</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>إدارة الطلاب</td>
+              <td>عرض، بحث، تعديل، حذف، تصنيف أونلاين وأوفلاين، وتقارير فردية.</td>
+              <td>تحكم واضح في قاعدة الطلاب وحالاتهم وبيانات التواصل الخاصة بهم.</td>
+            </tr>
+            <tr>
+              <td>إدارة الكورسات</td>
+              <td>إنشاء كورسات وربطها بالصفوف والمجموعات والمواد التعليمية.</td>
+              <td>تنظيم المحتوى التعليمي بطريقة تناسب الهيكل الدراسي.</td>
+            </tr>
+            <tr>
+              <td>الصفوف والمجموعات</td>
+              <td>إدارة الصف الدراسي، المجموعة، المواعيد، وربط الطلاب بالمجموعات المناسبة.</td>
+              <td>تشغيل مرن للمجموعات الدراسية وحصص السنتر.</td>
+            </tr>
+            <tr>
+              <td>التقارير</td>
+              <td>تقارير حضور، تقارير مالية، أداء الطلاب، وتقارير الكورسات.</td>
+              <td>متابعة مستمرة لاتجاهات الأداء والالتزام والتحصيل.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>إدارة الموظفين</h3>
+        <p>
+          تتضمن المنصة صفحة لإدارة الموظفين مع إنشاء حسابات، تعديل البيانات، تعطيل الحسابات، وتحديد الصلاحيات المتاحة لكل موظف. هذا يسمح بتوزيع المهام اليومية مثل متابعة الحضور أو الرسوم أو الرسائل مع الحفاظ على تحكم الإدارة الكامل.
+        </p>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>إدارة الطلاب والتسجيل</span>
+      </div>
+      <div class="content">
+        <span class="section-label">05 / الطلاب</span>
+        <h2>إدارة الطلاب وطلبات التسجيل</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          تدعم المنصة دورة تسجيل منظمة تبدأ من إرسال طلب الطالب، ثم مراجعة الإدارة، ثم قبول الحساب وربطه بالصف والمجموعة والكورسات، أو رفض الطلب مع حفظ سبب الرفض.
+        </p>
+
+        <div class="timeline">
+          <div class="step">
+            <h4>إرسال طلب التسجيل</h4>
+            <p>يدخل الطالب اسمه ورقم هاتفه وكلمة المرور والصف والمجموعة والكورسات المطلوبة، مع تحديد نوع الطالب.</p>
+          </div>
+          <div class="step">
+            <h4>مراجعة الإدارة</h4>
+            <p>تظهر الطلبات المعلقة في صفحة مخصصة تحتوي على بيانات الطالب والتاريخ والصف والمجموعة والكورسات.</p>
+          </div>
+          <div class="step">
+            <h4>القبول والتفعيل</h4>
+            <p>عند القبول يتم إنشاء حساب مستخدم للطالب وإضافته إلى قائمة الطلاب وربطه بالكورسات المناسبة.</p>
+          </div>
+          <div class="step">
+            <h4>التنظيم المستمر</h4>
+            <p>يمكن تعديل بيانات الطالب وتحديث الصف أو المجموعة أو بيانات التواصل مع الحفاظ على سجل منظم.</p>
+          </div>
+        </div>
+
+        <h3>ميزات إدارة الطلاب</h3>
+        <div class="grid-2">
+          <div class="feature-card"><h4>طلاب أونلاين</h4><p>قائمة مخصصة للطلاب الذين سجلوا عبر المنصة بعد اعتماد الإدارة.</p></div>
+          <div class="feature-card"><h4>طلاب أوفلاين</h4><p>دعم إدارة طلاب السنتر داخل نفس النظام لتوحيد البيانات والمتابعة.</p></div>
+          <div class="feature-card"><h4>بطاقات وباركود</h4><p>إنشاء باركود فريد لكل طالب واستخدامه في التسجيل والمتابعة.</p></div>
+          <div class="feature-card"><h4>ملاحظات وتقارير</h4><p>متابعة بيانات الطالب، الحضور، الدرجات، والمدفوعات داخل تقارير مخصصة.</p></div>
+        </div>
+
+        <div class="band">
+          <strong>نتيجة مباشرة:</strong>
+          تصبح قاعدة الطلاب موحدة بين التعليم الأونلاين والسنتر، مع سهولة البحث والتصنيف والمتابعة.
+        </div>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>المحتوى والمحاضرات</span>
+      </div>
+      <div class="content">
+        <span class="section-label">06 / التعليم والمحتوى</span>
+        <h2>إدارة المحتوى التعليمي والمحاضرات</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          تقدم المنصة منظومة محتوى تسمح للمعلم برفع المحاضرات والمواد التعليمية وتنظيمها حسب الصفوف والمجموعات والكورسات، مع تجربة مشاهدة سهلة للطالب.
+        </p>
+
+        <div class="grid-3">
+          <div class="feature-card"><h4>محاضرات فيديو</h4><p>رفع محاضرات وربطها بالكورس أو المجموعة، مع عرضها داخل واجهة الطالب.</p></div>
+          <div class="feature-card"><h4>مواد تعليمية</h4><p>إدارة ملفات تعليمية وروابط ومواد مساعدة مثل PDF أو عروض أو فيديوهات.</p></div>
+          <div class="feature-card"><h4>محتوى حسب المجموعة</h4><p>إتاحة المحتوى للطلاب المناسبين حسب الصف والمجموعة لضبط تجربة التعلم.</p></div>
+          <div class="feature-card"><h4>حالة النشر</h4><p>التحكم في نشر المحتوى أو إبقائه كمسودة حتى يصبح جاهزا للطلاب.</p></div>
+          <div class="feature-card"><h4>مشاهدة داخلية</h4><p>تشغيل الفيديوهات والملفات داخل المنصة لتقليل التشتت وتحسين تجربة الطالب.</p></div>
+          <div class="feature-card"><h4>تكامل Google Drive وYouTube</h4><p>دعم روابط خارجية إلى جانب نظام الرفع المباشر، بما يسهّل الانتقال التدريجي للمنصة.</p></div>
+        </div>
+
+        <h3>الحصص المدفوعة</h3>
+        <p>
+          تحتوي المنصة على وحدة خاصة للحصص الإضافية المدفوعة، تشمل إنشاء الحصة وتحديد سعرها والصف والمجموعة، واستقبال طلبات الدفع من الطلاب، ومراجعة الإيصالات، ثم منح الوصول بعد الموافقة.
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 27%">الميزة</th>
+              <th style="width: 36%">ما تقدمه</th>
+              <th>أثرها على التشغيل</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>إنشاء حصة مدفوعة</td>
+              <td>عنوان، وصف، سعر، مدة، صف، مجموعة، وحالة نشر.</td>
+              <td>بيع محتوى إضافي بشكل منظم داخل نفس المنصة.</td>
+            </tr>
+            <tr>
+              <td>طلبات الدفع</td>
+              <td>يرفع الطالب إيصال الدفع وترى الإدارة الطلبات المعلقة والمقبولة.</td>
+              <td>تبسيط مراجعة المدفوعات ومنح الوصول.</td>
+            </tr>
+            <tr>
+              <td>التحكم في الوصول</td>
+              <td>لا تظهر الحصة للطالب إلا حسب حالته وصلاحية الوصول.</td>
+              <td>حماية القيمة التعليمية وربطها بالدفع الفعلي.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>الفيديو المؤمن</span>
+      </div>
+      <div class="content">
+        <span class="section-label">07 / البث والحماية</span>
+        <h2>نظام فيديو مؤمن وذاتي الاستضافة</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          تعتمد المنصة على مسار فيديو متطور يجمع بين الرفع المباشر، التخزين الذاتي، معالجة الفيديو، البث عبر HLS، وروابط مشاهدة موقعة. هذا يجعل تجربة المحاضرات أكثر احترافية وقابلة للإدارة.
+        </p>
+
+        <div class="grid-2">
+          <div class="feature-card"><h4>رفع مباشر وقابل للاستكمال</h4><p>رفع الفيديوهات عبر أجزاء، مع تتبع حالة الرفع والمعالجة واستعادة الفيديوهات العالقة عند التشغيل.</p></div>
+          <div class="feature-card"><h4>معالجة FFmpeg</h4><p>تحويل الفيديوهات إلى HLS وتجهيز جودات مشاهدة مناسبة للطلاب.</p></div>
+          <div class="feature-card"><h4>تخزين MinIO</h4><p>استخدام تخزين متوافق مع S3 للفيديوهات الأصلية وملفات HLS والصور المصغرة.</p></div>
+          <div class="feature-card"><h4>روابط موقعة</h4><p>إتاحة المشاهدة عبر روابط مؤقتة مرتبطة بحق الوصول، بدلا من نشر الملفات بشكل مباشر.</p></div>
+        </div>
+
+        <h3>طبقات حماية الفيديو</h3>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 30%">الطبقة</th>
+              <th>الوصف</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>جلسة مشاهدة مؤمنة</td>
+              <td>إنشاء جلسة مرتبطة بالمستخدم والفيديو والجهاز، مع تحديث token قصير العمر أثناء المشاهدة.</td>
+            </tr>
+            <tr>
+              <td>Heartbeat</td>
+              <td>تتبع استمرار الجلسة وإيقاف الجلسات غير النشطة بشكل تلقائي.</td>
+            </tr>
+            <tr>
+              <td>علامات مائية</td>
+              <td>عرض بيانات الطالب داخل الفيديو لتقليل مشاركة أو تصوير المحتوى دون إذن.</td>
+            </tr>
+            <tr>
+              <td>رصد المخالفات</td>
+              <td>تسجيل أنشطة مثل تغيّر IP أو محاولة تسجيل الشاشة أو فتح أدوات المطور، مع اتخاذ إجراءات تلقائية.</td>
+            </tr>
+            <tr>
+              <td>تشفير HLS</td>
+              <td>دعم مفاتيح تشفير للفيديوهات وتسليم المفاتيح من خلال endpoint مصرح به.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="band">
+          <strong>ميزة تنافسية:</strong>
+          وجود نظام فيديو ذاتي الاستضافة يقلل الاعتماد الكامل على منصات خارجية، ويمنح الإدارة تحكما أكبر في الوصول والمشاهدة والتتبع.
+        </div>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>الامتحانات والنتائج</span>
+      </div>
+      <div class="content">
+        <span class="section-label">08 / الاختبارات</span>
+        <h2>نظام امتحانات إلكتروني متكامل</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          توفر المنصة وحدة امتحانات كاملة للمعلم والطالب، بداية من إنشاء الامتحان والأسئلة وتحديد الوقت والمجموعات، حتى أداء الطالب للامتحان وظهور النتائج والتقارير.
+        </p>
+
+        <div class="grid-3">
+          <div class="feature-card"><h4>إنشاء امتحانات</h4><p>عنوان، وصف، مدة، تاريخ، وقت، درجة كلية، وربط بالمجموعات.</p></div>
+          <div class="feature-card"><h4>أنواع أسئلة متعددة</h4><p>أسئلة اختيارية ومقالية، مع إمكانية إضافة صور للأسئلة.</p></div>
+          <div class="feature-card"><h4>حفظ التقدم</h4><p>يدعم استرجاع إجابات الطالب واستكمال الامتحان من حيث توقف عند الحاجة.</p></div>
+          <div class="feature-card"><h4>تصحيح تلقائي ويدوي</h4><p>تصحيح الأسئلة الموضوعية تلقائيا، مع صفحة خاصة لتصحيح الأسئلة المقالية.</p></div>
+          <div class="feature-card"><h4>نتائج وتقارير</h4><p>عرض النتائج، النسب، الإجابات، حالة النجاح، وتقارير الطلاب الذين أدوا أو لم يؤدوا الامتحان.</p></div>
+          <div class="feature-card"><h4>تحميل PDF</h4><p>إمكانية تحميل نتيجة الامتحان والأسئلة والإجابات كملف PDF من واجهة الطالب.</p></div>
+        </div>
+
+        <h3>مسار الامتحان</h3>
+        <div class="timeline">
+          <div class="step"><h4>إعداد الامتحان</h4><p>المعلم ينشئ الامتحان ويضيف الأسئلة والدرجات ويحدد المجموعات المستهدفة.</p></div>
+          <div class="step"><h4>إتاحة الامتحان</h4><p>يظهر الامتحان للطالب المناسب داخل لوحة الطالب حسب المجموعة والوقت المحدد.</p></div>
+          <div class="step"><h4>تنفيذ الامتحان</h4><p>يدخل الطالب الامتحان، يجيب على الأسئلة، ويمكن رفع صورة في الأسئلة التي تحتاج ذلك.</p></div>
+          <div class="step"><h4>النتيجة والمراجعة</h4><p>تظهر النتيجة وتفاصيل الإجابات، مع تقارير للمعلم وتصحيح يدوي للأسئلة المقالية.</p></div>
+        </div>
+
+        <div class="band">
+          <strong>قيمة تعليمية:</strong>
+          نظام الامتحانات يحول الاختبار من عملية يدوية منفصلة إلى تجربة رقمية قابلة للقياس والمتابعة والتحليل.
+        </div>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>الحضور والباركود</span>
+      </div>
+      <div class="content">
+        <span class="section-label">09 / الحضور</span>
+        <h2>إدارة حضور دقيقة بالباركود</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          تقدم المنصة نظام حضور حديث يعتمد على باركود فريد لكل طالب، مع تسجيل فوري للحضور، منع التكرار اليومي، وسجل حضور يمكن الرجوع إليه ومشاركته.
+        </p>
+
+        <div class="grid-2">
+          <div class="feature-card"><h4>إنشاء باركود لكل طالب</h4><p>توليد باركود فريد للطالب مع إمكانية تحديثه وإدارته من صفحة مخصصة.</p></div>
+          <div class="feature-card"><h4>تسجيل حضور تلقائي</h4><p>مسح الباركود أو إدخاله يدويا لتسجيل الحضور مباشرة في قاعدة البيانات.</p></div>
+          <div class="feature-card"><h4>منع التكرار</h4><p>التحقق من عدم تسجيل نفس الطالب أكثر من مرة في نفس اليوم.</p></div>
+          <div class="feature-card"><h4>سجل وتقويم</h4><p>متابعة حضور وغياب الطلاب على مستوى اليوم أو الشهر مع فلاتر للطلاب والمجموعات.</p></div>
+        </div>
+
+        <h3>الربط مع ولي الأمر</h3>
+        <p>
+          يحتوي النظام على إمكانية إعداد رسائل WhatsApp جاهزة لإبلاغ ولي الأمر بحضور الطالب أو غيابه، مع الاعتماد على رقم ولي الأمر المخزن في بيانات الطالب أو بيانات الدفع.
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>الميزة</th>
+              <th>الاستخدام</th>
+              <th>الأثر</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>إدارة الباركود</td>
+              <td>إنشاء، تحديث، حذف، أو إنشاء جماعي للباركودات.</td>
+              <td>تجهيز الطلاب للدخول السريع دون بحث يدوي.</td>
+            </tr>
+            <tr>
+              <td>الحضور اليومي</td>
+              <td>تسجيل الطلاب فوريا عند المسح.</td>
+              <td>تقليل وقت الطابور وزيادة دقة السجل.</td>
+            </tr>
+            <tr>
+              <td>الغائبون</td>
+              <td>عرض الطلاب الذين لم يتم تسجيل حضورهم.</td>
+              <td>متابعة سريعة واتصال أسهل مع أولياء الأمور.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>النظام المالي</span>
+      </div>
+      <div class="content">
+        <span class="section-label">10 / المالية</span>
+        <h2>إدارة مالية ورسوم واشتراكات</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          تجمع المنصة العمليات المالية التعليمية في منظومة واحدة تشمل رسوم الطلاب، خطط الاشتراك، طلبات الدفع، المصروفات، الواردات، كشف الحساب، وتقرير الأرباح.
+        </p>
+
+        <div class="grid-3">
+          <div class="feature-card"><h4>مصروفات الطلاب</h4><p>تسجيل المدفوعات، المبلغ المستحق، المبلغ المدفوع، طريقة الدفع، والشهر والسنة.</p></div>
+          <div class="feature-card"><h4>منع تكرار الدفع الشهري</h4><p>ربط كل دفعة بالطالب والشهر والسنة لمنع تسجيل نفس الشهر مرتين.</p></div>
+          <div class="feature-card"><h4>طلبات اشتراك</h4><p>إرسال طلب دفع من الطالب مع صورة إيصال ومراجعة الإدارة للقبول أو الرفض.</p></div>
+          <div class="feature-card"><h4>خطط الاشتراك</h4><p>إدارة خطط الاشتراك والأسعار ومدد الاشتراك وربطها بطلبات الطلاب.</p></div>
+          <div class="feature-card"><h4>المصروفات والواردات</h4><p>تسجيل مصروفات السنتر والواردات والمشتريات أو الالتزامات التشغيلية.</p></div>
+          <div class="feature-card"><h4>الأرباح وكشف الحساب</h4><p>حساب الإيرادات، المصروفات، صافي الربح، ومتوسطات شهرية مفيدة للإدارة.</p></div>
+        </div>
+
+        <h3>دورة دفع الاشتراك</h3>
+        <div class="timeline">
+          <div class="step"><h4>اختيار الخطة</h4><p>الطالب يختار الصف والمجموعة وخطة الاشتراك والمبلغ.</p></div>
+          <div class="step"><h4>رفع الإيصال</h4><p>يدخل بياناته ورقم ولي الأمر ويرفع صورة إيصال الدفع.</p></div>
+          <div class="step"><h4>مراجعة الإدارة</h4><p>تظهر الطلبات في قسم المراجعة مع التفاصيل والصورة.</p></div>
+          <div class="step"><h4>إشعار ولي الأمر</h4><p>بعد الموافقة، يمكن فتح WhatsApp برسالة جاهزة تؤكد قبول الدفع.</p></div>
+        </div>
+
+        <div class="band">
+          <strong>قيمة إدارية:</strong>
+          يجمع النظام المالي بين إدارة التحصيل والمتابعة والتقارير، مما يجعل صورة الإيرادات والمصروفات أوضح للإدارة.
+        </div>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>تجربة الطالب</span>
+      </div>
+      <div class="content">
+        <span class="section-label">11 / الطالب</span>
+        <h2>واجهة طالب غنية وسهلة الاستخدام</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          يحصل الطالب على لوحة خاصة تعرض بياناته، الباركود الخاص به، المجموعة، روابط الوصول السريع، الامتحانات المتاحة، النتائج، الرسائل، المحاضرات، المواد التعليمية، الحصص المدفوعة، والاجتماعات المباشرة.
+        </p>
+
+        <div class="grid-2">
+          <div class="feature-card"><h4>بروفايل الطالب</h4><p>عرض بيانات الطالب، الصف، المجموعة، والباركود داخل واجهة مرئية منظمة.</p></div>
+          <div class="feature-card"><h4>الوصول السريع</h4><p>اختصارات مباشرة للمحاضرات، المحتوى، الامتحانات، النتائج، والاجتماعات.</p></div>
+          <div class="feature-card"><h4>المحاضرات والمواد</h4><p>عرض محتوى الطالب حسب مجموعته وكورسه، مع تشغيل الفيديو أو عرض الملفات.</p></div>
+          <div class="feature-card"><h4>الامتحانات والنتائج</h4><p>دخول الامتحانات، متابعة المواعيد، مشاهدة النتائج، الفلترة والبحث في النتائج.</p></div>
+          <div class="feature-card"><h4>الدفع من الحساب</h4><p>إرسال طلب دفع أو اشتراك مع الإيصال والبيانات المطلوبة دون مغادرة المنصة.</p></div>
+          <div class="feature-card"><h4>الرسائل والمساعد الذكي</h4><p>تواصل مباشر مع الإدارة أو المعلم، إلى جانب مساعد ذكي متخصص في شرح المحتوى التعليمي.</p></div>
+        </div>
+
+        <h3>مزايا تجربة الطالب</h3>
+        <ul>
+          <li>واجهة عربية RTL منظمة تعمل على سطح المكتب والموبايل.</li>
+          <li>عرض المحتوى المتاح للطالب بناء على المجموعة والصف.</li>
+          <li>متابعة الرسائل الأخيرة والتنقل إلى المحادثات الكاملة.</li>
+          <li>إمكانية تحميل نتيجة الامتحان كملف PDF عند توفر النتيجة.</li>
+          <li>دعم اجتماعات مباشرة وروابط حضور أونلاين.</li>
+        </ul>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>التواصل والمساعد الذكي</span>
+      </div>
+      <div class="content">
+        <span class="section-label">12 / التواصل</span>
+        <h2>رسائل فورية وإشعارات ومساعد ذكي</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          تدعم المنصة التواصل المباشر بين الطلاب والمعلمين أو الإدارة عبر رسائل فورية، مع إشعارات داخلية، ومساعد ذكي تعليمي يساعد الطلاب في الفهم والتحضير.
+        </p>
+
+        <div class="grid-3">
+          <div class="feature-card"><h4>محادثات فورية</h4><p>إرسال واستقبال رسائل نصية في الوقت الفعلي باستخدام Socket.IO.</p></div>
+          <div class="feature-card"><h4>صور داخل المحادثة</h4><p>رفع وإرسال صور داخل الشات، مثل أسئلة أو ملاحظات أو إيصالات.</p></div>
+          <div class="feature-card"><h4>حالة الرسالة</h4><p>تتبع الإرسال والتوصيل والقراءة مع عرض حالة كل رسالة.</p></div>
+          <div class="feature-card"><h4>تعديل وحذف</h4><p>إمكانية تعديل الرسائل أو حذفها بشكل منظم مع حفظ منطق المحادثة.</p></div>
+          <div class="feature-card"><h4>حالة الاتصال</h4><p>عرض حالة الأونلاين وآخر ظهور للمستخدمين داخل المحادثات.</p></div>
+          <div class="feature-card"><h4>إشعارات داخلية</h4><p>جرس إشعارات يعرض الرسائل والتنبيهات وعدد غير المقروء مع روابط للصفحات.</p></div>
+        </div>
+
+        <h3>المساعد الذكي للتاريخ</h3>
+        <p>
+          تحتوي المنصة على مساعد ذكي مخصص للمحتوى التعليمي، يجيب باللغة العربية، يساعد الطالب على فهم الدروس، تنظيم الأفكار، كتابة إجابات طويلة، والتدريب على نمط أسئلة الامتحانات.
+        </p>
+
+        <div class="band">
+          <strong>أثر تعليمي مباشر:</strong>
+          يضيف المساعد الذكي طبقة دعم شخصية للطالب خارج وقت الحصة، مما يحسن تجربة التعلم ويجعل المنصة أكثر من مجرد مكتبة محاضرات.
+        </div>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>التقارير والتحليلات</span>
+      </div>
+      <div class="content">
+        <span class="section-label">13 / التقارير</span>
+        <h2>تقارير تشغيلية وتعليمية ومالية</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          توفر المنصة أكثر من مستوى للمتابعة، من إحصائيات لوحة التحكم العامة إلى تقارير الطلاب التفصيلية وتقارير الامتحانات والحضور والماليات.
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 27%">نوع التقرير</th>
+              <th style="width: 37%">البيانات المتاحة</th>
+              <th>الفائدة</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>تقرير الطالب</td>
+              <td>الحضور والغياب، الدرجات، الامتحانات، الملاحظات، وبيانات التواصل.</td>
+              <td>متابعة فردية دقيقة لكل طالب وإمكانية مشاركة التقرير عبر WhatsApp.</td>
+            </tr>
+            <tr>
+              <td>نتائج الامتحانات</td>
+              <td>نتائج الطلاب، النسب، المحاولات، الطلاب الذين لم يؤدوا الامتحان، وتفاصيل الإجابات.</td>
+              <td>تحليل أداء المجموعة وتحديد نقاط القوة والاحتياج.</td>
+            </tr>
+            <tr>
+              <td>سجل الحضور</td>
+              <td>تواريخ الحضور والغياب حسب الطالب أو المجموعة أو الشهر.</td>
+              <td>متابعة الالتزام وتحسين التواصل مع ولي الأمر.</td>
+            </tr>
+            <tr>
+              <td>التقارير المالية</td>
+              <td>الإيرادات، المدفوعات، المصروفات، الواردات، وصافي الربح.</td>
+              <td>رؤية أوضح للوضع المالي وإدارة التحصيل.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="grid-2">
+          <div class="feature-card"><h4>فلاتر وبحث</h4><p>استخدام فلاتر حسب الطالب، الامتحان، التاريخ، المجموعة، أو حالة الدفع لتقليل وقت الوصول للمعلومة.</p></div>
+          <div class="feature-card"><h4>عرض بصري منظم</h4><p>استخدام بطاقات وجداول ومؤشرات رقمية لتسهيل قراءة البيانات دون تعقيد.</p></div>
+        </div>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>البنية التقنية</span>
+      </div>
+      <div class="content compact">
+        <span class="section-label">14 / التقنية</span>
+        <h2>بنية تقنية حديثة قابلة للتطوير</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          تم بناء المنصة باستخدام تقنيات حديثة في الواجهة والخادم وقاعدة البيانات، مع فصل واضح بين Frontend وBackend وواجهات API، مما يسهل التطوير والنشر والصيانة.
+        </p>
+
+        <div class="grid-2">
+          <div class="feature-card"><h4>Frontend</h4><p>React 18، TypeScript، Vite، Tailwind CSS، shadcn/ui، Radix UI، Framer Motion، Recharts، HLS.js.</p></div>
+          <div class="feature-card"><h4>Backend</h4><p>Node.js، Express، TypeScript، REST APIs، JWT، bcrypt، Socket.IO، multer، MySQL.</p></div>
+          <div class="feature-card"><h4>التخزين والفيديو</h4><p>MinIO للتخزين، FFmpeg للمعالجة، HLS للبث، وروابط موقعة لإتاحة المحتوى.</p></div>
+          <div class="feature-card"><h4>الذكاء الاصطناعي</h4><p>مساعد تعليمي مدمج يعتمد على API خارجي مع prompt متخصص في دعم المحتوى التعليمي.</p></div>
+        </div>
+
+        <h3>واجهات API الرئيسية</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>النطاق</th>
+              <th>أمثلة على المسارات</th>
+              <th>الغرض</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>المصادقة</td><td>/api/auth/login, /api/auth/register, /api/auth/me</td><td>تسجيل الدخول، إنشاء الحساب، والتحقق من المستخدم.</td></tr>
+            <tr><td>الطلاب</td><td>/api/students, /api/registration-requests</td><td>إدارة الطلاب وطلبات التسجيل.</td></tr>
+            <tr><td>المحتوى</td><td>/api/courses, /api/materials, /api/lectures</td><td>إدارة الكورسات والمواد والمحاضرات.</td></tr>
+            <tr><td>الامتحانات</td><td>/api/exams, /api/exam-results, /api/manual-grading</td><td>إنشاء الاختبارات، تسليم الإجابات، التصحيح، والنتائج.</td></tr>
+            <tr><td>الحضور</td><td>/api/attendance</td><td>تسجيل حضور الطلاب وسجلات الحضور.</td></tr>
+            <tr><td>المالية</td><td>/api/fees, /api/payment-requests, /api/subscriptions</td><td>المدفوعات، الرسوم، الاشتراكات، والطلبات.</td></tr>
+            <tr><td>التواصل</td><td>/api/messages, /api/notifications</td><td>المحادثات والإشعارات الداخلية.</td></tr>
+            <tr><td>الفيديو</td><td>/api/videos, /api/secure-video</td><td>رفع، معالجة، بث، وحماية الفيديو.</td></tr>
+          </tbody>
+        </table>
+
+        <h3>كيانات البيانات</h3>
+        <p>
+          تشمل قاعدة البيانات كيانات المستخدمين، الأدوار، الطلاب، طلبات التسجيل، الكورسات، الصفوف، المجموعات، المواد، المحاضرات، الامتحانات، الأسئلة، النتائج، الإجابات، الحضور، الاشتراكات، المصروفات، الواردات، الموظفين، الرسائل، الاجتماعات، والفيديوهات.
+        </p>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header">
+        <span>منصة تعليمية متكاملة</span>
+        <span>خلاصة العرض</span>
+      </div>
+      <div class="content">
+        <span class="section-label">15 / خلاصة</span>
+        <h2>منصة جاهزة لتشغيل تجربة تعليمية متكاملة</h2>
+        <div class="accent-line"></div>
+        <p class="lead">
+          تجمع المنصة التعليمية بين إدارة التعليم، متابعة الطلاب، المحتوى الرقمي، الامتحانات، الدفع، الحضور، التواصل، والتقارير في منظومة واحدة مصممة للسوق العربي واحتياجات مراكز التعليم.
+        </p>
+
+        <div class="grid-2">
+          <div class="feature-card"><h4>للإدارة</h4><p>رؤية شاملة للطلاب والحضور والرسوم والمحتوى والموظفين، مع أدوات متابعة وتنظيم يومية.</p></div>
+          <div class="feature-card"><h4>للمعلم</h4><p>رفع المحاضرات، إعداد الاختبارات، تصحيح الإجابات، متابعة النتائج، وإدارة المحتوى التعليمي بسهولة.</p></div>
+          <div class="feature-card"><h4>للطالب</h4><p>تعلم منظم من لوحة واحدة: محاضرات، مواد، امتحانات، نتائج، اجتماعات، دفع، رسائل، ومساعد ذكي.</p></div>
+          <div class="feature-card"><h4>لولي الأمر</h4><p>إمكانية متابعة الحضور والمدفوعات والتواصل عبر رسائل جاهزة وتحديثات واضحة.</p></div>
+        </div>
+
+        <h3>نقاط قوة العرض</h3>
+        <ul>
+          <li>منصة عربية كاملة من حيث الاتجاه، النصوص، وتجربة الاستخدام.</li>
+          <li>تشغيل تعليمي وإداري ومالي داخل نظام واحد بدل استخدام أدوات منفصلة.</li>
+          <li>نظام امتحانات وحضور ومدفوعات متكامل مع بيانات قابلة للمتابعة.</li>
+          <li>بنية تقنية حديثة مناسبة للتطوير المستمر وإضافة وحدات مستقبلية.</li>
+          <li>اهتمام واضح بحماية المحتوى وصلاحيات المستخدمين وتجربة الفيديو.</li>
+        </ul>
+
+        <div class="quote">
+          المنصة التعليمية تقدم أساسا قويا لإدارة مركز تعليمي أو تجربة تعليم أونلاين، مع واجهة عربية مريحة، ميزات تشغيلية واضحة، وبنية تقنية قابلة للتوسع.
+        </div>
+
+        <p class="small">
+          تم إعداد هذا المستند بناء على ملفات المشروع الحالية، صفحات الواجهة، مسارات الخادم، ووثائق الميزات الموجودة داخل المستودع.
+        </p>
+      </div>
+      <div class="footer-mark"><span>توثيق ميزات المنصة</span><span>Educational Platform</span></div>
+    </section>
+  </main>
+</body>
+</html>

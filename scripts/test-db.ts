@@ -1,5 +1,14 @@
-import 'dotenv/config';
-import db from '../src/lib/db';
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Load the real backend environment (server/.env) BEFORE importing the DB module,
+// since the server's db.ts reads env vars at module load time.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, '../server/.env'), quiet: true });
+
+// Use the actual backend DB module so the test checks the same config the server uses.
+const { default: db } = await import('../server/src/db');
 
 async function testDatabaseConnection() {
     console.log('🔍 Testing MySQL connection...\n');
@@ -60,4 +69,4 @@ async function testDatabaseConnection() {
     }
 }
 
-testDatabaseConnection();
+testDatabaseConnection();

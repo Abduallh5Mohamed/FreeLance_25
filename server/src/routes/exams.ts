@@ -3,8 +3,39 @@ import { query, queryOne, execute } from '../db';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { optionalAuth, instructorScopeId, AuthRequest } from '../middleware/auth';
+import { ensureGroupInstructorColumn } from '../utils/instructor-scope';
+import { requireTeachingWrite } from '../middleware/teaching-access';
 
 const router = Router();
+router.use(async (_req: AuthRequest, _res: Response, next: any) => {
+    await ensureGroupInstructorColumn();
+    next();
+});
+router.use(optionalAuth);
+
+// Exams belong to an instructor when the exam is linked to at least one of
+// the instructor's groups
+const isExamInScope = async (examId: string, scopeId: string): Promise<boolean> => {
+    const row = await queryOne(
+        `SELECT eg.exam_id
+         FROM exam_groups eg
+         INNER JOIN \`groups\` g ON eg.group_id = g.id
+         WHERE eg.exam_id = ? AND g.instructor_id = ?
+         LIMIT 1`,
+        [examId, scopeId]
+    );
+    return !!row;
+};
+
+const areGroupsInScope = async (groupIds: any[], scopeId: string): Promise<boolean> => {
+    if (!Array.isArray(groupIds) || groupIds.length === 0) return false;
+    const rows = await query<any>(
+        `SELECT COUNT(*) AS cnt FROM \`groups\` WHERE instructor_id = ? AND id IN (${groupIds.map(() => '?').join(',')})`,
+        [scopeId, ...groupIds]
+    );
+    return rows[0]?.cnt === groupIds.length;
+};
 
 // Setup multer for question image uploads
 const storage = multer.diskStorage({
@@ -200,13 +231,14 @@ interface ExamResult {
 // ===== EXAMS =====
 
 // Get all exams
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', async (req: AuthRequest, res: Response) => {
     try {
         const { course_id, is_active, student_id, grade_id } = req.query;
+        const scopeId = instructorScopeId(req);
 
         // Return raw fields - start_time and end_time are DATETIME columns
         let sql = `SELECT e.* FROM exams e WHERE 1=1`;
-        const params: string[] = [];
+        const params: any[] = [];
 
         // Default to active exams only (soft delete)
         if (is_active === undefined) {
@@ -226,6 +258,12 @@ router.get('/', async (req: Request, res: Response) => {
         if (grade_id) {
             sql += ' AND (grade_id = ? OR grade_id IS NULL)';
             params.push(grade_id as string);
+        }
+
+        // Instructors only see exams assigned to their groups
+        if (scopeId) {
+            sql += ' AND EXISTS (SELECT 1 FROM exam_groups eg2 INNER JOIN `groups` g2 ON eg2.group_id = g2.id WHERE eg2.exam_id = e.id AND g2.instructor_id = ?)';
+            params.push(scopeId);
         }
 
         sql += ' ORDER BY created_at DESC';
@@ -264,14 +302,18 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 // Get exam by ID
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
         const exam = await queryOne<Exam>(
             'SELECT * FROM exams WHERE id = ?',
             [req.params.id]
         );
 
         if (!exam) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
+        if (scopeId && !(await isExamInScope(req.params.id, scopeId))) {
             return res.status(404).json({ error: 'Exam not found' });
         }
 
@@ -293,9 +335,10 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // Create exam
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', requireTeachingWrite('exams'), async (req: AuthRequest, res: Response) => {
     try {
         console.log('📝 Creating exam with data:', JSON.stringify(req.body, null, 2));
+        const scopeId = instructorScopeId(req);
 
         const {
             title,
@@ -312,6 +355,10 @@ router.post('/', async (req: Request, res: Response) => {
             end_date,    // ✅ Support from TeacherExams
             is_active = true
         } = req.body;
+
+        if (scopeId && !(await areGroupsInScope(group_ids, scopeId))) {
+            return res.status(403).json({ error: 'يجب ربط الامتحان بمجموعة من مجموعاتك فقط' });
+        }
 
         // ✅ Use start_date/end_date if start_time/end_time not provided (store as provided, no UTC conversion)
         const finalStartTime = start_time || start_date || null;
@@ -389,8 +436,12 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // Update exam
-router.put('/:id', async (req: Request, res: Response) => {
+router.put('/:id', requireTeachingWrite('exams'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await isExamInScope(req.params.id, scopeId))) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
         const {
             title,
             description,
@@ -408,6 +459,19 @@ router.put('/:id', async (req: Request, res: Response) => {
             group_id,
             group_ids   // ✅ Support array of group IDs for exam_groups
         } = req.body;
+
+        // Instructors can only re-assign their exam to their own groups
+        if (scopeId) {
+            if (group_ids && Array.isArray(group_ids)) {
+                if (!(await areGroupsInScope(group_ids, scopeId))) {
+                    return res.status(403).json({ error: 'يجب ربط الامتحان بمجموعة من مجموعاتك فقط' });
+                }
+            } else if (group_id && group_id !== 'all' && !(await areGroupsInScope([group_id], scopeId))) {
+                return res.status(403).json({ error: 'يجب ربط الامتحان بمجموعة من مجموعاتك فقط' });
+            } else if (group_id === null || group_id === 'all') {
+                return res.status(403).json({ error: 'لا يمكن إتاحة الامتحان لكل المجموعات' });
+            }
+        }
 
         console.log('📝 UPDATE EXAM REQUEST:', {
             id: req.params.id,
@@ -579,8 +643,12 @@ router.get('/:examId/groups', async (req: Request, res: Response) => {
 });
 
 // Delete exam (soft delete)
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', requireTeachingWrite('exams'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await isExamInScope(req.params.id, scopeId))) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
         const result = await execute(
             'UPDATE exams SET is_active = FALSE WHERE id = ?',
             [req.params.id]
@@ -598,7 +666,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 });
 
 // Upload question image
-router.post('/upload-question-image', upload.single('image'), async (req: Request, res: Response) => {
+router.post('/upload-question-image', requireTeachingWrite('exams'), upload.single('image'), async (req: Request, res: Response) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No image file provided' });
@@ -620,9 +688,13 @@ router.post('/upload-question-image', upload.single('image'), async (req: Reques
 // ===== EXAM QUESTIONS =====
 
 // Get questions for an exam
-router.get('/:examId/questions', async (req: Request, res: Response) => {
+router.get('/:examId/questions', async (req: AuthRequest, res: Response) => {
     try {
         const examId = req.params.examId;
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await isExamInScope(examId, scopeId))) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
         console.log(`📝 Fetching questions for exam: ${examId}`);
 
         const questions = await query<ExamQuestion>(
@@ -641,8 +713,12 @@ router.get('/:examId/questions', async (req: Request, res: Response) => {
 });
 
 // Add question to exam
-router.post('/:examId/questions', async (req: Request, res: Response) => {
+router.post('/:examId/questions', requireTeachingWrite('exams'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await isExamInScope(req.params.examId, scopeId))) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
         const {
             question_text,
             question_image,  // ✅ Accept image URL
@@ -702,8 +778,12 @@ router.post('/:examId/questions', async (req: Request, res: Response) => {
 // ===== EXAM RESULTS =====
 
 // Get all results for an exam
-router.get('/:examId/results', async (req: Request, res: Response) => {
+router.get('/:examId/results', async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await isExamInScope(req.params.examId, scopeId))) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
         const results = await query<ExamResult>(
             `SELECT r.*, s.name as student_name, s.email as student_email
              FROM exam_results r
@@ -720,8 +800,12 @@ router.get('/:examId/results', async (req: Request, res: Response) => {
 });
 
 // Get student's result for an exam
-router.get('/:examId/results/student/:studentId', async (req: Request, res: Response) => {
+router.get('/:examId/results/student/:studentId', async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await isExamInScope(req.params.examId, scopeId))) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
         const result = await queryOne<ExamResult>(
             'SELECT * FROM exam_results WHERE exam_id = ? AND student_id = ?',
             [req.params.examId, req.params.studentId]
@@ -1357,22 +1441,31 @@ router.post('/:examId/submit/:studentId', async (req: Request, res: Response) =>
 });
 
 // Get exam attempts with student info (for admin)
-router.get('/:examId/attempts', async (req: Request, res: Response) => {
+router.get('/:examId/attempts', async (req: AuthRequest, res: Response) => {
     try {
         const { examId } = req.params;
+        const scopeId = instructorScopeId(req);
 
-        const attempts = await query(
-            `SELECT 
+        let sql = `SELECT 
                 ea.*,
                 s.name as student_name,
                 s.phone as student_phone,
                 s.email as student_email
              FROM exam_attempts ea
              INNER JOIN students s ON ea.student_id = s.id
-             WHERE ea.exam_id = ?
-             ORDER BY ea.started_at DESC`,
-            [examId]
-        );
+             WHERE ea.exam_id = ?`;
+        const params: any[] = [examId];
+
+        if (scopeId) {
+            if (!(await isExamInScope(examId, scopeId))) {
+                return res.status(404).json({ error: 'Exam not found' });
+            }
+            sql += ` AND ea.student_id IN (SELECT id FROM students WHERE group_id IN (SELECT id FROM \`groups\` WHERE instructor_id = ?))`;
+            params.push(scopeId);
+        }
+        sql += ' ORDER BY ea.started_at DESC';
+
+        const attempts = await query(sql, params);
 
         res.json(attempts);
     } catch (error) {
@@ -1382,20 +1475,28 @@ router.get('/:examId/attempts', async (req: Request, res: Response) => {
 });
 
 // Get students who haven't attempted the exam
-router.get('/:examId/not-attempted', async (req: Request, res: Response) => {
+router.get('/:examId/not-attempted', async (req: AuthRequest, res: Response) => {
     try {
         const { examId } = req.params;
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await isExamInScope(examId, scopeId))) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
 
-        const notAttempted = await query(
-            `SELECT s.id, s.name, s.phone, s.email, s.grade_id, s.group_id
+        let sql = `SELECT s.id, s.name, s.phone, s.email, s.grade_id, s.group_id
              FROM students s
              WHERE s.is_active = TRUE
              AND s.id NOT IN (
                  SELECT student_id FROM exam_attempts WHERE exam_id = ?
-             )
-             ORDER BY s.name`,
-            [examId]
-        );
+             )`;
+        const params: any[] = [examId];
+        if (scopeId) {
+            sql += ` AND s.group_id IN (SELECT id FROM \`groups\` WHERE instructor_id = ?)`;
+            params.push(scopeId);
+        }
+        sql += ' ORDER BY s.name';
+
+        const notAttempted = await query(sql, params);
 
         res.json(notAttempted);
     } catch (error) {
@@ -1405,9 +1506,13 @@ router.get('/:examId/not-attempted', async (req: Request, res: Response) => {
 });
 
 // ✅ Update exam question with image support
-router.put('/:examId/questions/:questionId', async (req: Request, res: Response) => {
+router.put('/:examId/questions/:questionId', requireTeachingWrite('exams'), async (req: AuthRequest, res: Response) => {
     try {
         const { examId, questionId } = req.params;
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await isExamInScope(examId, scopeId))) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
         const { question_text, question_image, question_type, options, correct_answer, points, explanation } = req.body;
 
         await execute(
@@ -1443,9 +1548,13 @@ router.put('/:examId/questions/:questionId', async (req: Request, res: Response)
 });
 
 // ✅ Delete exam question
-router.delete('/:examId/questions/:questionId', async (req: Request, res: Response) => {
+router.delete('/:examId/questions/:questionId', requireTeachingWrite('exams'), async (req: AuthRequest, res: Response) => {
     try {
         const { examId, questionId } = req.params;
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await isExamInScope(examId, scopeId))) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
 
         await execute(
             'DELETE FROM exam_questions WHERE id = ? AND exam_id = ?',
@@ -1472,9 +1581,13 @@ router.delete('/:examId/questions/:questionId', async (req: Request, res: Respon
 });
 
 // ✅ Get exam attempt review details (questions + answers + grading)
-router.get('/:examId/review/:studentId', async (req: Request, res: Response) => {
+router.get('/:examId/review/:studentId', async (req: AuthRequest, res: Response) => {
     try {
         const { examId, studentId } = req.params;
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await isExamInScope(examId, scopeId))) {
+            return res.status(404).json({ error: 'Exam not found' });
+        }
 
         console.log('📖 Fetching exam review for:', { examId, studentId });
 

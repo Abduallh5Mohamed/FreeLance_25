@@ -301,7 +301,7 @@ const Fees = () => {
       `📚 الصف: ${request.grade_name || 'غير محدد'}\n` +
       `👥 المجموعة: ${request.group_name || 'غير محدد'}\n\n` +
       `شكراً لثقتكم بنا 🙏\n` +
-      `مركز القائد التعليمي`;
+      `Tabweb Academy`;
 
     // Generate WhatsApp link
     const whatsappLink = `https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`;

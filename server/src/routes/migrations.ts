@@ -1,8 +1,11 @@
 import express, { Request, Response } from 'express';
 import { getPool } from '../db';
+import { authenticateToken, requireRoles } from '../middleware/auth';
 
 const router = express.Router();
 const pool = getPool();
+
+router.use(authenticateToken, requireRoles('admin'));
 
 // Run guardian_phone migration
 router.post('/run-guardian-migration', async (req: Request, res: Response) => {

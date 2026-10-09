@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
 import { Loader2 } from 'lucide-react';
+import { ProtectedVideoSurface } from './ProtectedVideoSurface';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
@@ -15,6 +16,7 @@ export function SimpleVideoPlayer({ videoId, userId }: SimpleVideoPlayerProps) {
     const [loading, setLoading] = useState(true);
     const [buffering, setBuffering] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [drmPlayerUrl, setDrmPlayerUrl] = useState<string | null>(null);
 
     // Buffering event handlers
     useEffect(() => {
@@ -45,11 +47,19 @@ export function SimpleVideoPlayer({ videoId, userId }: SimpleVideoPlayerProps) {
                 setLoading(true);
                 setError(null);
 
-                const response = await fetch(`${API_BASE}/videos/stream/${videoId}?userId=${userId}`);
+                const response = await fetch(`${API_BASE}/videos/stream/${videoId}?userId=${userId}`, {
+                    headers: { Authorization: `Bearer ${localStorage.getItem('authToken') || ''}` },
+                });
                 const data = await response.json();
 
                 if (!response.ok) {
                     setError(data.error || 'فشل تحميل الفيديو');
+                    return;
+                }
+
+                if (data.provider === 'vdocipher' && data.playerUrl) {
+                    setDrmPlayerUrl(data.playerUrl);
+                    setLoading(false);
                     return;
                 }
 
@@ -143,7 +153,7 @@ export function SimpleVideoPlayer({ videoId, userId }: SimpleVideoPlayerProps) {
     }, [videoId, userId]);
 
     return (
-        <div className="relative w-full h-full min-h-[400px] bg-black flex items-center justify-center">
+        <ProtectedVideoSurface className="w-full h-full min-h-[400px] flex items-center justify-center">
             {loading && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
                     <Loader2 className="h-12 w-12 animate-spin text-white" />
@@ -173,15 +183,29 @@ export function SimpleVideoPlayer({ videoId, userId }: SimpleVideoPlayerProps) {
                 </div>
             )}
 
-            <video
-                ref={videoRef}
-                controls
-                preload="auto"
-                className="w-full h-full object-contain"
-                style={{ maxHeight: '70vh' }}
-                playsInline
-            />
-        </div>
+            {drmPlayerUrl ? (
+                <iframe
+                    src={drmPlayerUrl}
+                    title="DRM video"
+                    className="h-full min-h-[400px] w-full border-0"
+                    allow="encrypted-media; fullscreen"
+                    allowFullScreen
+                    referrerPolicy="strict-origin-when-cross-origin"
+                />
+            ) : (
+                <video
+                    ref={videoRef}
+                    controls
+                    preload="auto"
+                    className="w-full h-full object-contain"
+                    style={{ maxHeight: '70vh' }}
+                    playsInline
+                    disablePictureInPicture
+                    disableRemotePlayback
+                    controlsList="nodownload noremoteplayback"
+                />
+            )}
+        </ProtectedVideoSurface>
     );
 }
 

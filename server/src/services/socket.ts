@@ -3,9 +3,12 @@ import { Server as HTTPServer } from 'http';
 import { getPool } from '../db';
 import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { notifyAdminNewMessage, notifyStudentMessageResponse } from '../utils/notifications';
+import jwt from 'jsonwebtoken';
+import { getJwtSecret } from '../middleware/auth';
 
 interface UserSocket extends Socket {
     userId?: string;
+    userRole?: string;
 }
 
 // Global reference to io instance for use in REST routes
@@ -40,13 +43,38 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
         },
     });
 
+    io.use((socket: UserSocket, next) => {
+        try {
+            const authHeader = socket.handshake.headers.authorization;
+            const bearerToken = authHeader?.startsWith('Bearer ')
+                ? authHeader.slice('Bearer '.length)
+                : undefined;
+            const token = socket.handshake.auth?.token || bearerToken;
+
+            if (!token) {
+                return next(new Error('Authentication required'));
+            }
+
+            const principal = jwt.verify(token, getJwtSecret()) as { id?: string; role?: string };
+            if (!principal.id || !principal.role) {
+                return next(new Error('Invalid token'));
+            }
+
+            socket.userId = String(principal.id);
+            socket.userRole = principal.role;
+            next();
+        } catch {
+            next(new Error('Invalid or expired token'));
+        }
+    });
+
     io.on('connection', (socket: UserSocket) => {
         console.log('🔌 New socket connection:', socket.id);
 
         // User connects and sets online status
-        socket.on('user:connect', async (userId: string) => {
+        socket.on('user:connect', async (_userId: string) => {
             try {
-                socket.userId = userId;
+                const userId = socket.userId as string;
                 socket.join(`user:${userId}`);
 
                 // Update user online status
@@ -78,8 +106,9 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
             senderRole?: string;
         }) => {
             try {
-                let { senderId, receiverId, content, messageType, imageUrl } = data;
-                const senderRole = data.senderRole;
+                let { receiverId, content, messageType, imageUrl } = data;
+                let senderId = socket.userId as string;
+                const senderRole = socket.userRole;
 
                 // If staff is sending, use teacher's ID instead (staff acts as teacher)
                 console.log('🔍 Message send - senderRole:', senderRole, 'senderId:', senderId);
@@ -240,7 +269,8 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
         // Mark message as read
         socket.on('message:read', async (data: { messageId: number; userId: string }) => {
             try {
-                const { messageId, userId } = data;
+                const { messageId } = data;
+                const userId = socket.userId as string;
 
                 // Verify user is the receiver
                 const [messages] = await getPool().query<RowDataPacket[]>(`
@@ -293,7 +323,8 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
         // Edit message
         socket.on('message:edit', async (data: { messageId: number; userId: string; content: string }) => {
             try {
-                const { messageId, userId, content } = data;
+                const { messageId, content } = data;
+                const userId = socket.userId as string;
 
                 // Verify user owns the message
                 const [messages] = await getPool().query<RowDataPacket[]>(`
@@ -330,7 +361,8 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
         // Delete message (for current user only)
         socket.on('message:delete', async (data: { messageId: number; userId: string }) => {
             try {
-                const { messageId, userId } = data;
+                const { messageId } = data;
+                const userId = socket.userId as string;
 
                 // Verify message exists
                 const [messages] = await getPool().query<RowDataPacket[]>(`
@@ -358,11 +390,11 @@ export const setupSocketIO = (httpServer: HTTPServer) => {
 
         // User typing indicator
         socket.on('typing:start', (data: { senderId: number; receiverId: number }) => {
-            io.to(`user:${data.receiverId}`).emit('typing:start', { userId: data.senderId });
+            io.to(`user:${data.receiverId}`).emit('typing:start', { userId: socket.userId });
         });
 
         socket.on('typing:stop', (data: { senderId: number; receiverId: number }) => {
-            io.to(`user:${data.receiverId}`).emit('typing:stop', { userId: data.senderId });
+            io.to(`user:${data.receiverId}`).emit('typing:stop', { userId: socket.userId });
         });
 
         // User disconnects

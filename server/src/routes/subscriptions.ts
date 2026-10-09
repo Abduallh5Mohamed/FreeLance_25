@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
+import { authenticateToken, requireRoles } from '../middleware/auth';
 import { query, queryOne, execute } from '../db';
 
 const router = Router();
+router.use(authenticateToken, requireRoles('admin', 'teacher'));
 
 interface Subscription {
     id: string;

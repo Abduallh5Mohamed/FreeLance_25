@@ -96,7 +96,7 @@ export default function TeacherChat() {
                 <User className="w-6 h-6 text-primary" />
               </div>
               <p className="text-sm text-muted-foreground mt-2">
-                تواصل مباشر مع أستاذ محمد رمضان - التاريخ
+                تواصل مباشر مع فريق Tabweb Academy
               </p>
             </CardHeader>
           </GlassmorphicCard>

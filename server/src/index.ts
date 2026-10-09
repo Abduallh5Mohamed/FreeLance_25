@@ -5,6 +5,7 @@ import { testConnection } from './db';
 import { createServer } from 'http';
 import { setupSocketIO } from './services/socket';
 import path from 'path';
+import studentEnrollmentRoutes, { cleanupEnrollmentPrivacyData } from './routes/student-enrollment';
 
 // Import routes
 import authRoutes from './routes/auth';
@@ -29,14 +30,29 @@ import importsRoutes from './routes/imports';
 import migrationsRoutes from './routes/migrations';
 import messagesRoutes from './routes/messages';
 import videosRoutes from './routes/videos';
+import secureVideoRoutes from './routes/secure-video';
 import manualGradingRoutes from './routes/manual-grading';
 import staffRoutes from './routes/staff';
 import premiumLecturesRoutes from './routes/premium-lectures';
 import aiChatRoutes from './routes/ai-chat';
 import meetingsRoutes from './routes/meetings';
+import instructorsRoutes from './routes/instructors';
+import instructorWalletRoutes from './routes/instructor-wallet';
+import instructorVideoRequestsRoutes from './routes/instructor-video-requests';
+import supportTicketsRoutes from './routes/support-tickets';
+import adminWorkItemsRoutes from './routes/admin-work-items';
+import platformTenantsRoutes from './routes/platform-tenants';
+import tenantInvitationsRoutes from './routes/tenant-invitations';
+import adminMembersRoutes from './routes/admin-members';
+import tenantSelfRoutes from './routes/tenant-self';
+import adminApprovalsRoutes from './routes/admin-approvals';
+import adminDashboardRoutes from './routes/admin-dashboard';
+import adminInsightsRoutes from './routes/admin-insights';
 import { initializeBuckets } from './services/minio';
 import { query, execute } from './db';
 import { processVideo } from './services/video-processor';
+import { reconcileTenantSubscriptions } from './services/subscription-lifecycle';
+import { optionalAuth, AuthRequest } from './middleware/auth';
 
 dotenv.config();
 
@@ -61,9 +77,7 @@ app.use(cors({
         // Allow requests from localhost on any port (development)
         if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1') || allowedOrigins.includes(origin)) {
             callback(null, true);
-        } else {
-            callback(null, true); // Allow all in production (Vercel will handle it)
-        }
+        } else callback(new Error('Origin is not allowed by CORS'));
     },
     credentials: true,
 }));
@@ -114,11 +128,25 @@ app.use('/api/imports', importsRoutes);
 app.use('/api/migrations', migrationsRoutes);
 app.use('/api/messages', messagesRoutes);
 app.use('/api/videos', videosRoutes);
+app.use('/api/secure-video', secureVideoRoutes);
 app.use('/api/manual-grading', manualGradingRoutes);
 app.use('/api/staff', staffRoutes);
 app.use('/api/premium-lectures', premiumLecturesRoutes);
 app.use('/api/ai-chat', aiChatRoutes);
 app.use('/api/meetings', meetingsRoutes);
+app.use('/api/instructors', instructorsRoutes);
+app.use('/api/instructor-wallet', instructorWalletRoutes);
+app.use('/api/instructor-video-requests', instructorVideoRequestsRoutes);
+app.use('/api/support-tickets', supportTicketsRoutes);
+app.use('/api/admin/work-items', adminWorkItemsRoutes);
+app.use('/api/admin/platform', platformTenantsRoutes);
+app.use('/api/tenant-invitations', tenantInvitationsRoutes);
+app.use('/api/admin/members', adminMembersRoutes);
+app.use('/api/tenants/me', tenantSelfRoutes);
+app.use('/api/admin/approvals', adminApprovalsRoutes);
+app.use('/api/admin/dashboard', adminDashboardRoutes);
+app.use('/api/admin/insights', adminInsightsRoutes);
+app.use('/api/student-enrollment', studentEnrollmentRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {
@@ -128,7 +156,34 @@ app.use((req: Request, res: Response) => {
 // Error handler
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     console.error('Error:', err);
+    if (err.name === 'MulterError') {
+        return res.status(400).json({ error: 'ملف الإثبات غير صالح أو يتجاوز الحد الأقصى 8MB' });
+    }
     res.status(500).json({ error: 'Internal server error', message: err.message });
+});
+
+// Student requests are bound to the selected instructor enrollment. Legacy
+// endpoints may still accept ids, but a student can never substitute another
+// student, tenant, instructor, grade, or group at the HTTP boundary.
+app.use('/api', optionalAuth, (req: AuthRequest, res: Response, next: NextFunction) => {
+    const principal = req.user;
+    if (!principal || principal.role !== 'student') return next();
+    const pathName = req.path.split('?')[0];
+    const unscopedAllowed = pathName === '/auth/me' || pathName.startsWith('/student-enrollment/spaces') ||
+        pathName.startsWith('/student-enrollment/join/') || pathName.startsWith('/support-tickets');
+    if (!principal.studentEnrollmentId || !principal.tenantId) {
+        if (unscopedAllowed) return next();
+        return res.status(409).json({ error: 'Select an instructor workspace first', code: 'STUDENT_SPACE_REQUIRED' });
+    }
+    const supplied = (key: string) => (req.body && req.body[key] !== undefined ? String(req.body[key]) :
+        req.query && req.query[key] !== undefined ? String(req.query[key]) : null);
+    const allowedIdentity = new Set([principal.id, principal.studentEnrollmentId]);
+    if (supplied('student_id') && !allowedIdentity.has(supplied('student_id')!)) return res.status(403).json({ error: 'Cross-student access denied' });
+    if (supplied('tenant_id') && supplied('tenant_id') !== principal.tenantId) return res.status(403).json({ error: 'Cross-workspace access denied' });
+    if (supplied('instructor_id') && supplied('instructor_id') !== principal.instructorId) return res.status(403).json({ error: 'Cross-workspace access denied' });
+    if (supplied('group_id') && supplied('group_id') !== principal.groupId) return res.status(403).json({ error: 'Cross-group access denied' });
+    if (supplied('grade_id') && supplied('grade_id') !== principal.gradeId) return res.status(403).json({ error: 'Cross-grade access denied' });
+    next();
 });
 
 // Start server
@@ -162,7 +217,7 @@ const startServer = async () => {
             console.log(`
 ╔════════════════════════════════════════════════╗
 ║                                                ║
-║   🚀 Al-Qaed Backend API Server                ║
+║   🚀 Tabweb Academy Backend API Server          ║
 ║                                                ║
 ║   📡 Localhost: http://localhost:${PORT}       ║
 ║   📱 Network: http://0.0.0.0:${PORT}           ║
@@ -213,11 +268,41 @@ const startServer = async () => {
 ╚════════════════════════════════════════════════╝
             `);
 
+            // Enabled by default after the SaaS migrations. Set the flag to "false"
+            // only for an intentionally paused environment. A database advisory lock
+            // keeps multiple API instances from processing the same batch.
+            if (process.env.SAAS_LIFECYCLE_JOBS_ENABLED !== 'false' && !skipDb) {
+                const reconcile = async () => {
+                    try {
+                        let processed: number;
+                        do {
+                            processed = await reconcileTenantSubscriptions();
+                        } while (processed === 100);
+                    } catch (error) {
+                        console.error('[SaaS lifecycle] Reconciliation failed:', error);
+                    }
+                };
+                void reconcile();
+                const lifecycleTimer = setInterval(() => void reconcile(), 60 * 1000);
+                lifecycleTimer.unref();
+            }
+
+            if (!skipDb) {
+                const cleanupPrivacyData = async () => {
+                    try { await cleanupEnrollmentPrivacyData(); }
+                    catch (error) { console.error('[Privacy cleanup] Failed:', error); }
+                };
+                void cleanupPrivacyData();
+                const privacyTimer = setInterval(() => void cleanupPrivacyData(), 6 * 60 * 60 * 1000);
+                privacyTimer.unref();
+            }
+
             // Recover stuck video processing (from previous server crash/restart)
             setTimeout(async () => {
                 try {
                     const stuck = await query(
-                        `SELECT id FROM videos WHERE status IN ('processing') AND created_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)`,
+                        `SELECT id FROM videos WHERE status IN ('processing') AND delivery_provider='minio'
+                         AND created_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)`,
                         []
                     );
                     if (stuck && stuck.length > 0) {

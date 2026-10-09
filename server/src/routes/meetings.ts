@@ -1,23 +1,35 @@
 import { Router, Request, Response } from 'express';
 import { query, queryOne, execute } from '../db';
+import { optionalAuth, instructorScopeId, AuthRequest } from '../middleware/auth';
+import { ensureGroupInstructorColumn } from '../utils/instructor-scope';
 
 const router = Router();
+router.use(async (_req: AuthRequest, _res: Response, next: any) => {
+    await ensureGroupInstructorColumn();
+    next();
+});
+router.use(optionalAuth);
 
 // Get all meetings (for admin/teacher)
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', async (req: AuthRequest, res: Response) => {
     try {
-        const meetings = await query(`
-            SELECT 
+        const scopeId = instructorScopeId(req);
+        let sql = `SELECT 
                 m.*,
-                g.name as grade_name,
                 gr.name as group_name,
                 u.name as created_by_name
             FROM online_meetings m
-            LEFT JOIN grades g ON m.grade_id = g.id
             LEFT JOIN \`groups\` gr ON m.group_id = gr.id
             LEFT JOIN users u ON m.created_by = u.id
-            ORDER BY m.scheduled_at DESC
-        `);
+            WHERE 1=1`;
+        const params: any[] = [];
+        if (scopeId) {
+            // Instructors only see meetings they created
+            sql += ' AND m.created_by = ?';
+            params.push(scopeId);
+        }
+        sql += ' ORDER BY m.scheduled_at DESC';
+        const meetings = await query(sql, params);
         res.json(meetings);
     } catch (error) {
         console.error('Error fetching meetings:', error);
@@ -55,19 +67,16 @@ router.get('/student/:studentId', async (req: Request, res: Response) => {
         const meetings = await query(`
             SELECT 
                 m.*,
-                g.name as grade_name,
                 gr.name as group_name,
                 u.name as created_by_name
             FROM online_meetings m
-            LEFT JOIN grades g ON m.grade_id = g.id
             LEFT JOIN \`groups\` gr ON m.group_id = gr.id
             LEFT JOIN users u ON m.created_by = u.id
             WHERE m.is_active = 1
-            AND m.grade_id = ?
             AND (m.group_id IS NULL OR m.group_id = ?)
             AND m.scheduled_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
             ORDER BY m.scheduled_at ASC
-        `, [student.grade_id, student.group_id]);
+        `, [student.group_id]);
 
         res.json(meetings);
     } catch (error) {
@@ -77,23 +86,25 @@ router.get('/student/:studentId', async (req: Request, res: Response) => {
 });
 
 // Get single meeting
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', async (req: AuthRequest, res: Response) => {
     try {
         const { id } = req.params;
-        const meeting = await queryOne(`
+        const scopeId = instructorScopeId(req);
+        const meeting = await queryOne<any>(`
             SELECT 
                 m.*,
-                g.name as grade_name,
                 gr.name as group_name,
                 u.name as created_by_name
             FROM online_meetings m
-            LEFT JOIN grades g ON m.grade_id = g.id
             LEFT JOIN \`groups\` gr ON m.group_id = gr.id
             LEFT JOIN users u ON m.created_by = u.id
             WHERE m.id = ?
         `, [id]);
 
         if (!meeting) {
+            return res.status(404).json({ error: 'Meeting not found' });
+        }
+        if (scopeId && meeting.created_by !== scopeId) {
             return res.status(404).json({ error: 'Meeting not found' });
         }
 
@@ -105,9 +116,10 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // Create meeting
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', async (req: AuthRequest, res: Response) => {
     try {
         console.log('📅 Creating meeting, body:', JSON.stringify(req.body));
+        const scopeId = instructorScopeId(req);
 
         const {
             title,
@@ -122,13 +134,24 @@ router.post('/', async (req: Request, res: Response) => {
             created_by
         } = req.body;
 
+        // Instructors create meetings under their own account
+        const ownerId = scopeId || created_by;
+
         console.log('📅 Parsed fields:', { title, meeting_link, grade_id, scheduled_at, created_by });
 
-        if (!title || !meeting_link || !grade_id || !scheduled_at || !created_by) {
-            console.log('📅 Missing fields!', { title: !!title, meeting_link: !!meeting_link, grade_id: !!grade_id, scheduled_at: !!scheduled_at, created_by: !!created_by });
+        if (!title || !meeting_link || !grade_id || !scheduled_at || !ownerId) {
+            console.log('📅 Missing fields!', { title: !!title, meeting_link: !!meeting_link, grade_id: !!grade_id, scheduled_at: !!scheduled_at, created_by: !!ownerId });
             return res.status(400).json({
                 error: 'Missing required fields: title, meeting_link, grade_id, scheduled_at, created_by'
             });
+        }
+
+        // Instructors can only schedule meetings for their own groups
+        if (scopeId && group_id) {
+            const grp = await queryOne('SELECT id FROM `groups` WHERE id = ? AND instructor_id = ?', [group_id, scopeId]);
+            if (!grp) {
+                return res.status(403).json({ error: 'لا يمكن إنشاء اجتماع لمجموعة لا تتبعك' });
+            }
         }
 
         // Generate UUID
@@ -139,7 +162,7 @@ router.post('/', async (req: Request, res: Response) => {
             INSERT INTO online_meetings 
             (id, title, description, meeting_link, meeting_type, meeting_password, grade_id, group_id, scheduled_at, duration_minutes, created_by)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `, [id, title, description || null, meeting_link, meeting_type, meeting_password || null, grade_id, group_id || null, scheduled_at, duration_minutes, created_by]);
+        `, [id, title, description || null, meeting_link, meeting_type, meeting_password || null, grade_id, group_id || null, scheduled_at, duration_minutes, ownerId]);
 
         const meeting = await queryOne(`
             SELECT 
@@ -160,9 +183,16 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // Update meeting
-router.put('/:id', async (req: Request, res: Response) => {
+router.put('/:id', async (req: AuthRequest, res: Response) => {
     try {
         const { id } = req.params;
+        const scopeId = instructorScopeId(req);
+        if (scopeId) {
+            const existing = await queryOne<any>('SELECT created_by FROM online_meetings WHERE id = ?', [id]);
+            if (!existing || existing.created_by !== scopeId) {
+                return res.status(404).json({ error: 'Meeting not found' });
+            }
+        }
         const {
             title,
             description,
@@ -175,6 +205,13 @@ router.put('/:id', async (req: Request, res: Response) => {
             duration_minutes,
             is_active
         } = req.body;
+
+        if (scopeId && group_id) {
+            const grp = await queryOne('SELECT id FROM `groups` WHERE id = ? AND instructor_id = ?', [group_id, scopeId]);
+            if (!grp) {
+                return res.status(403).json({ error: 'لا يمكن نقل الاجتماع لمجموعة لا تتبعك' });
+            }
+        }
 
         await execute(`
             UPDATE online_meetings SET
@@ -210,9 +247,16 @@ router.put('/:id', async (req: Request, res: Response) => {
 });
 
 // Delete meeting
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', async (req: AuthRequest, res: Response) => {
     try {
         const { id } = req.params;
+        const scopeId = instructorScopeId(req);
+        if (scopeId) {
+            const existing = await queryOne<any>('SELECT created_by FROM online_meetings WHERE id = ?', [id]);
+            if (!existing || existing.created_by !== scopeId) {
+                return res.status(404).json({ error: 'Meeting not found' });
+            }
+        }
         await execute('DELETE FROM online_meetings WHERE id = ?', [id]);
         res.json({ message: 'Meeting deleted successfully' });
     } catch (error) {
@@ -222,12 +266,18 @@ router.delete('/:id', async (req: Request, res: Response) => {
 });
 
 // Get groups by grade (for filtering)
-router.get('/groups-by-grade/:gradeId', async (req: Request, res: Response) => {
+router.get('/groups-by-grade/:gradeId', async (req: AuthRequest, res: Response) => {
     try {
         const { gradeId } = req.params;
-        const groups = await query(`
-            SELECT id, name FROM \`groups\` WHERE grade_id = ? ORDER BY name
-        `, [gradeId]);
+        const scopeId = instructorScopeId(req);
+        let sql = 'SELECT id, name FROM `groups` WHERE grade_id = ?';
+        const params: any[] = [gradeId];
+        if (scopeId) {
+            sql += ' AND instructor_id = ?';
+            params.push(scopeId);
+        }
+        sql += ' ORDER BY name';
+        const groups = await query(sql, params);
         res.json(groups);
     } catch (error) {
         console.error('Error fetching groups:', error);

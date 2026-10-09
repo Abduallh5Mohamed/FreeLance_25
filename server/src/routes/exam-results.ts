@@ -1,7 +1,14 @@
 import { Router, Request, Response } from 'express';
-import { query } from '../db';
+import { query, queryOne } from '../db';
+import { optionalAuth, instructorScopeId, AuthRequest } from '../middleware/auth';
+import { ensureGroupInstructorColumn } from '../utils/instructor-scope';
 
 const router = Router();
+router.use(async (_req: AuthRequest, _res: Response, next: any) => {
+    await ensureGroupInstructorColumn();
+    next();
+});
+router.use(optionalAuth);
 
 interface ExamResult {
     id: string;
@@ -22,9 +29,10 @@ interface ExamResult {
 }
 
 // Get all exam results with filters
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', async (req: AuthRequest, res: Response) => {
     try {
         const { exam_id, student_id } = req.query;
+        const scopeId = instructorScopeId(req);
 
         let sql = `
             SELECT 
@@ -62,6 +70,14 @@ router.get('/', async (req: Request, res: Response) => {
         if (student_id) {
             sql += ' AND er.student_id = ?';
             params.push(student_id as string);
+        }
+
+        if (scopeId) {
+            // Instructors only see results of their students / their own exams
+            sql += ` AND (s.instructor_id = ?
+                      OR s.group_id IN (SELECT id FROM \`groups\` WHERE instructor_id = ?)
+                      OR er.exam_id IN (SELECT eg.exam_id FROM exam_groups eg INNER JOIN \`groups\` g2 ON eg.group_id = g2.id WHERE g2.instructor_id = ?))`;
+            params.push(scopeId, scopeId, scopeId);
         }
 
         sql += ' ORDER BY er.submitted_at DESC';
@@ -126,9 +142,10 @@ router.get('/student/:studentId', async (req: Request, res: Response) => {
 });
 
 // Get exam result by ID
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', async (req: AuthRequest, res: Response) => {
     try {
         const { id } = req.params;
+        const scopeId = instructorScopeId(req);
 
         const sql = `
             SELECT 
@@ -159,9 +176,28 @@ router.get('/:id', async (req: Request, res: Response) => {
             WHERE er.id = ?
         `;
 
-        const results = await query<ExamResult>(sql, [id]);
+        const results = await query<any>(sql, [id]);
         if (results.length === 0) {
             return res.status(404).json({ error: 'Exam result not found' });
+        }
+        if (scopeId) {
+            const r = results[0];
+            // Results join users by er.student_id; resolve the user's phone to
+            // check the student belongs to the instructor
+            const userRow = await queryOne('SELECT phone FROM users WHERE id = ?', [r.student_id]);
+            const own = await queryOne(
+                `SELECT s.id FROM students s LEFT JOIN \`groups\` g ON s.group_id = g.id
+                 WHERE s.phone = ? AND (s.instructor_id = ? OR g.instructor_id = ?)`,
+                [userRow?.phone ?? null, scopeId, scopeId]
+            );
+            const ownExam = await queryOne(
+                `SELECT eg.exam_id FROM exam_groups eg INNER JOIN \`groups\` g2 ON eg.group_id = g2.id
+                 WHERE eg.exam_id = ? AND g2.instructor_id = ? LIMIT 1`,
+                [r.exam_id, scopeId]
+            );
+            if (!own && !ownExam) {
+                return res.status(404).json({ error: 'Exam result not found' });
+            }
         }
 
         res.json(results[0]);

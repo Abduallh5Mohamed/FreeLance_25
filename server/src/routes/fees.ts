@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { authenticateToken, requireRoles } from '../middleware/auth';
 import { query, queryOne, execute } from '../db';
 
 const DATABASE_NAME = process.env.DB_NAME || 'freelance';
@@ -119,6 +120,7 @@ const ensureFeesSchema = async () => {
 };
 
 const router = Router();
+router.use(authenticateToken, requireRoles('admin', 'teacher'));
 
 interface Fee {
     id: string;

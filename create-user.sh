@@ -5,7 +5,7 @@
 USER_ID=$(uuidgen)
 
 # Hash password (bcrypt with 10 rounds)
-HASHED_PASSWORD=$(node -e "console.log(require('bcrypt').hashSync('MohamedRamadan12345', 10))")
+HASHED_PASSWORD=$(node -e "console.log(require('bcrypt').hashSync('TabwebAcademy12345', 10))")
 
 # Insert user
 mysql -u root -p123580 Freelance <<SQL
@@ -23,10 +23,10 @@ INSERT INTO users (
   updated_at
 ) VALUES (
   '$USER_ID',
-  'mohamed96ramadan1996@gmail.com',
+  'admin@tabwebacademy.local',
   NULL,
   '$HASHED_PASSWORD',
-  'Mohamed Ramadan',
+  'Tabweb Admin',
   'admin',
   1,
   1,

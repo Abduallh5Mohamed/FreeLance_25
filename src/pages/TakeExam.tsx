@@ -828,7 +828,7 @@ const TakeExam = () => {
 
       doc.setFontSize(10);
       doc.setTextColor(128, 128, 128);
-      doc.text("منصة القائد التعليمية - جميع الحقوق محفوظة", pageWidth / 2, pageHeight - 10, { align: 'center' });
+      doc.text("Tabweb Academy - جميع الحقوق محفوظة", pageWidth / 2, pageHeight - 10, { align: 'center' });
 
       // Save PDF
       const fileName = `نتيجة_${exam.title?.replace(/\s+/g, '_') || 'الامتحان'}_${new Date().toLocaleDateString('ar-EG').replace(/\//g, '-')}.pdf`;

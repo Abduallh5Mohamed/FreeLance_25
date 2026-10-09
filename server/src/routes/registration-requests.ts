@@ -2,41 +2,15 @@ import express, { Request, Response, NextFunction } from 'express';
 import { getPool } from '../db';
 import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
+import { AuthRequest, authenticateToken } from '../middleware/auth';
 
 const router = express.Router();
 const pool = getPool();
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
 // ====================================
 // Middleware - Authentication
 // ====================================
-
-interface AuthRequest extends Request {
-    user?: {
-        id: string;
-        role: string;
-    };
-}
-
-const authenticateToken = (req: AuthRequest, res: Response, next: NextFunction) => {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-
-    if (!token) {
-        return res.status(401).json({ error: 'Authentication required' });
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
-        if (err) {
-            return res.status(403).json({ error: 'Invalid or expired token' });
-        }
-        req.user = user;
-        next();
-    });
-};
 
 const requireAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
     if (req.user?.role !== 'admin') {
@@ -51,6 +25,8 @@ const requireAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
 // ====================================
 
 router.post('/', async (req: Request, res: Response) => {
+    return res.status(410).json({ error: 'Student registration requires an instructor invitation link' });
+    /* Legacy global registration flow retained temporarily for schema compatibility. */
     try {
         const { name, phone, password, guardian_phone, grade_id, group_id, requested_courses, is_offline } = req.body;
 

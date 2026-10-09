@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,12 +8,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox";
 import { GraduationCap, LogIn, UserPlus, Sparkles, Lock, Mail, User, Phone as PhoneIcon, BookOpen, Users } from "lucide-react";
 import { useNavigate, Link } from "react-router-dom";
-import { signIn, signUp, getStudentByPhone, getCourses, getGrades, getGroups, createRegistrationRequest, getStudents } from "@/lib/api";
+import { signIn } from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast";
-import alQaedLogo from "@/assets/Qaad_Logo.png";
+import tabwebAcademyLogo from "@/assets/Tabweb_Academy_Logo.png";
 import logBackground from "@/assets/Log_Background.jpg";
-import mohamedRamadan from "@/assets/Mohamed_Ramadan.png";
-import bcrypt from "bcryptjs";
 import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
@@ -38,41 +36,10 @@ const Auth = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  useEffect(() => {
-    fetchCourses();
-    fetchGrades();
-    fetchGroups();
-  }, []);
-
-  const fetchGroups = async () => {
-    try {
-      const data = await getGroups();
-      console.log('📦 Fetched groups:', data);
-      setGroups(data || []);
-    } catch (error) {
-      console.error('Error fetching groups:', error);
-    }
-  };
-
-  const fetchGrades = async () => {
-    try {
-      const data = await getGrades();
-      console.log('🎓 Fetched grades:', data);
-      setGrades(data || []);
-    } catch (error) {
-      console.error('Error fetching grades:', error);
-    }
-  };
-
-  const fetchCourses = async () => {
-    try {
-      const data = await getCourses();
-      console.log('📚 Fetched courses:', data);
-      setCourses(data || []);
-    } catch (error) {
-      console.error('Error fetching courses:', error);
-    }
-  };
+  const explainInviteRegistration = () => toast({
+    title: "التسجيل من رابط المدرس",
+    description: "اطلب رابط الانضمام من مدرسك. بعد موافقته ستسجل الدخول من هذه الصفحة برقمك وكلمة المرور.",
+  });
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -81,8 +48,6 @@ const Auth = () => {
 
     try {
       if (isLogin) {
-        console.log('🚀 Login attempt started with phone:', phone.trim());
-
         // Phone-based login
         const result = await signIn(phone.trim(), password);
 
@@ -98,15 +63,28 @@ const Auth = () => {
           console.log('✅ User stored in localStorage');
 
           // Redirect based on role
-          if (result.user.role === 'admin' || result.user.role === 'teacher') {
+          if (result.user.role === 'admin' || result.user.admin_member) {
+            toast({ title: "تم تسجيل الدخول بنجاح", description: `مرحباً بك ${result.user.name}` });
+            setTimeout(() => navigate("/admin"), 300);
+          } else if (result.user.role === 'teacher') {
             toast({
               title: "تم تسجيل الدخول بنجاح",
               description: `مرحباً بك ${result.user.name}`,
             });
             console.log('✅ Navigating to /teacher...');
-            // Small delay to ensure localStorage is updated before navigation
             setTimeout(() => {
               navigate("/teacher");
+            }, 300);
+          } else if (result.user.role === 'instructor') {
+            // Instructor login - unified dashboard (same teaching dashboard as
+            // the admin, but scoped to the instructor's own data)
+            toast({
+              title: "تم تسجيل الدخول بنجاح",
+              description: `مرحباً بك ${result.user.name}`,
+            });
+            console.log('✅ Navigating to /teacher...');
+            setTimeout(() => {
+              navigate(result.user?.billing_only ? "/instructor-subscription" : "/teacher");
             }, 300);
           } else if (result.user.role === 'staff') {
             // Staff login - redirect to teacher dashboard (with limited access based on permissions)
@@ -116,94 +94,21 @@ const Auth = () => {
             });
             console.log('✅ Staff user, accessible pages:', (result.user as any).accessible_pages);
             console.log('✅ Navigating to /teacher...');
-            // Small delay to ensure localStorage is updated before navigation
             setTimeout(() => {
               navigate("/teacher");
             }, 300);
           } else {
-            // Student login - check if student exists
-            const student = await getStudentByPhone(phone.trim());
-
-            if (student && student.approval_status === 'approved') {
-              localStorage.setItem('currentStudent', JSON.stringify(student));
-              console.log('✅ Student stored in localStorage');
-              toast({
-                title: "تم تسجيل الدخول بنجاح",
-                description: `مرحباً بك ${student.name}`,
-              });
-              console.log('✅ Navigating to /student...');
-              // Small delay to ensure localStorage is updated before navigation
-              setTimeout(() => {
-                navigate("/student");
-              }, 300);
-            } else {
-              throw new Error("حسابك في انتظار الموافقة من الإدارة");
-            }
+            localStorage.removeItem('currentStudent');
+            localStorage.removeItem('currentStudentSpace');
+            toast({ title: "تم تسجيل الدخول بنجاح", description: `مرحباً بك ${result.user.name}` });
+            setTimeout(() => navigate('/student-spaces'), 300);
           }
           return;
         }
 
         throw new Error("رقم الهاتف أو كلمة المرور غير صحيحة");
       } else {
-        // Sign up - Create registration request (not direct user creation)
-        if (!name.trim()) {
-          throw new Error("يجب إدخال اسم الطالب");
-        }
-        if (!phone.trim()) {
-          throw new Error("يجب إدخال رقم الهاتف");
-        }
-        if (!gradeId) {
-          throw new Error("يجب اختيار الصف الدراسي");
-        }
-        if (!guardianPhone.trim()) {
-          throw new Error("يجب إدخال رقم ولي الأمر");
-        }
-
-        // Client-side duplicate checks (students list)
-        try {
-          const allStudents = await getStudents();
-          if (allStudents.some(s => s.phone === phone.trim())) {
-            throw new Error('رقم الهاتف مسجل بالفعل');
-          }
-          if (allStudents.some(s => s.guardian_phone === guardianPhone.trim())) {
-            throw new Error('رقم ولي الأمر مستخدم مع طالب آخر');
-          }
-        } catch (dupErr) {
-          // If fetching students fails, continue; server will still validate
-          if (dupErr instanceof Error && dupErr.message.includes('رقم')) {
-            throw dupErr; // rethrow duplicate error
-          }
-        }
-
-        // Create registration request with student type
-        const result = await createRegistrationRequest({
-          name: name.trim(),
-          phone: phone.trim(),
-          password,
-          guardian_phone: guardianPhone.trim(), // رقم ولي الأمر
-          grade_id: gradeId,
-          group_id: selectedGroup || null,
-          requested_courses: selectedCourses.length > 0 ? selectedCourses : undefined,
-          is_offline: studentType === "offline",
-        });
-
-        // Clear form
-        setPhone("");
-        setPassword("");
-        setName("");
-        setEmail("");
-        setGuardianPhone(""); // Clear guardian phone
-        setGrade("");
-        setGradeId("");
-        setSelectedCourses([]);
-        setSelectedGroup("");
-
-        toast({
-          title: "تم إرسال طلب التسجيل بنجاح",
-          description: "سيتم مراجعة طلبك من قبل الإدارة وسيتم إخطارك بالقبول",
-        });
-
-        setIsLogin(true); // Switch back to login view
+        throw new Error("إنشاء حساب الطالب يتم من رابط الدعوة الذي يرسله المدرس فقط.");
       }
     } catch (error) {
       console.error('Auth error:', error);
@@ -234,10 +139,10 @@ const Auth = () => {
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           {/* Toggle button */}
           <Button
-            onClick={() => setIsLogin(!isLogin)}
+            onClick={explainInviteRegistration}
             className="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white px-8 py-2 rounded-lg font-semibold shadow-lg"
           >
-            {isLogin ? "إنشاء حساب جديد" : "تسجيل الدخول"}
+            التسجيل من رابط المدرس
           </Button>
 
           {/* Navigation links */}
@@ -251,7 +156,7 @@ const Auth = () => {
 
           {/* Logo on the right */}
           <Link to="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity cursor-pointer">
-            <img src={alQaedLogo} alt="منصة القائد" className="w-32 h-32 rounded-lg object-cover" />
+            <img src={tabwebAcademyLogo} alt="Tabweb Academy" className="w-32 h-32 rounded-lg object-contain" />
           </Link>
         </div>
       </nav>
@@ -262,7 +167,7 @@ const Auth = () => {
 
       {/* Animated Background Elements - removed for cleaner look */}
 
-      {/* Mohamed Ramadan Image - Left Side */}
+      {/* Tabweb Academy brand - Left Side */}
       <motion.div
         initial={{ opacity: 0, x: -100 }}
         animate={{ opacity: 1, x: 0 }}
@@ -277,9 +182,9 @@ const Auth = () => {
             whileHover={{ scale: 1.02 }}
           >
             <img
-              src={mohamedRamadan}
-              alt="الأستاذ محمد رمضان"
-              className="h-[95vh] w-auto object-cover"
+              src={tabwebAcademyLogo}
+              alt="Tabweb Academy"
+              className="h-[58vh] w-[58vh] object-contain drop-shadow-2xl"
             />
           </motion.div>
         </div>
@@ -615,7 +520,7 @@ const Auth = () => {
                     لا يوجد حساب بعد؟{" "}
                     <button
                       type="button"
-                      onClick={() => setIsLogin(false)}
+                      onClick={explainInviteRegistration}
                       className="text-yellow-400 hover:text-yellow-300 font-semibold"
                     >
                       حساب جديد
@@ -661,7 +566,7 @@ const Auth = () => {
                   className="absolute inset-0 bg-gradient-to-r from-yellow-400 to-orange-500 rounded-2xl blur-xl opacity-50"
                 />
                 <div className="relative w-24 h-24 rounded-2xl overflow-hidden shadow-2xl border-4 border-white/20">
-                  <img src={alQaedLogo} alt="منصة القائد" className="w-full h-full object-cover" />
+                  <img src={tabwebAcademyLogo} alt="Tabweb Academy" className="w-full h-full object-contain" />
                 </div>
               </div>
             </motion.div>
@@ -673,9 +578,9 @@ const Auth = () => {
               >
                 <CardTitle className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent mb-2 flex items-center justify-center gap-2">
                   <Sparkles className="w-6 h-6 text-yellow-500" />
-                  منصة القائد
+                  Tabweb Academy
                 </CardTitle>
-                <p className="text-muted-foreground font-medium">أ/ محمد رمضان - التاريخ والجغرافيا</p>
+                <p className="text-muted-foreground font-medium" dir="ltr">Build • Code • Launch</p>
               </motion.div>
             </div>
 
@@ -693,7 +598,7 @@ const Auth = () => {
               <Button
                 type="button"
                 variant={!isLogin ? "default" : "ghost"}
-                onClick={() => setIsLogin(false)}
+                onClick={explainInviteRegistration}
                 className={`flex-1 transition-all duration-300 ${!isLogin ? 'bg-gradient-to-r from-primary to-accent shadow-lg' : ''}`}
               >
                 <UserPlus className="w-4 h-4 ml-2" />

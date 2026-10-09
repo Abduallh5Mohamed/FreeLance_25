@@ -538,7 +538,7 @@ const ExamReview = () => {
                         ${questionsHTML}
                         
                         <div class="footer">
-                            <p>منصة القائد التعليمية - جميع الحقوق محفوظة © ${new Date().getFullYear()}</p>
+                            <p>Tabweb Academy - جميع الحقوق محفوظة © ${new Date().getFullYear()}</p>
                         </div>
                     </div>
                 </body>

@@ -1,9 +1,45 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import { query, queryOne, execute } from '../db';
+import { getPool, query, queryOne, execute } from '../db';
+import { optionalAuth, instructorScopeId, AuthRequest, authenticateToken } from '../middleware/auth';
+import { ensureGroupInstructorColumn } from '../utils/instructor-scope';
+import { requireTeachingWrite } from '../middleware/teaching-access';
+import { normalizeEgyptianPhone, phoneLookupCandidates } from '../security/phone';
 
 const router = Router();
+router.use(async (_req: AuthRequest, _res: Response, next: any) => {
+    await ensureGroupInstructorColumn();
+    next();
+});
+router.use(optionalAuth);
+
+// Does this student belong to the instructor? Either directly assigned
+// (instructor_id) or a member of one of the instructor's groups.
+const isStudentInScope = async (studentId: string, scopeId: string): Promise<boolean> => {
+    const row = await queryOne(
+        `SELECT s.id
+         FROM students s
+         LEFT JOIN \`groups\` g ON s.group_id = g.id
+         WHERE s.id = ? AND (s.instructor_id = ? OR g.instructor_id = ?)`,
+        [studentId, scopeId, scopeId]
+    );
+    return !!row;
+};
+
+// Check that a group belongs to the instructor (used when assigning groups)
+const isGroupInScope = async (groupId: string | null | undefined, scopeId: string): Promise<boolean> => {
+    if (!groupId) return true;
+    const row = await queryOne('SELECT id FROM `groups` WHERE id = ? AND instructor_id = ?', [groupId, scopeId]);
+    return !!row;
+};
+
+const canReadStudent = async (req: AuthRequest, studentId: string): Promise<boolean> => {
+    if (!req.user) return false;
+    if (['admin', 'teacher', 'staff'].includes(req.user.role)) return true;
+    if (req.user.role === 'instructor') return isStudentInScope(studentId, req.user.id);
+    return req.user.role === 'student' && req.user.studentEnrollmentId === studentId;
+};
 
 const BARCODE_CHARSET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const BARCODE_LENGTH = 25;
@@ -28,10 +64,11 @@ const sanitizeBarcode = (value: string): string => {
 };
 
 // Get all students
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
-        const students = await query(
-            `SELECT 
+        if (req.user?.role === 'student') return res.status(403).json({ error: 'Use /students/me' });
+        const scopeId = instructorScopeId(req);
+        let sql = `SELECT
                 s.*, 
                 g.name AS grade_name, 
                 grp.name AS group_name,
@@ -45,9 +82,14 @@ router.get('/', async (req: Request, res: Response) => {
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
-             WHERE s.is_active = TRUE
-             ORDER BY s.name`
-        );
+             WHERE s.is_active = TRUE`;
+        const params: any[] = [];
+        if (scopeId) {
+            sql += ' AND (s.instructor_id = ? OR grp.instructor_id = ?)';
+            params.push(scopeId, scopeId);
+        }
+        sql += ' ORDER BY s.name';
+        const students = await query(sql, params);
         res.json(students);
     } catch (error) {
         console.error('Get students error:', error);
@@ -55,8 +97,26 @@ router.get('/', async (req: Request, res: Response) => {
     }
 });
 
+// The authenticated principal is the only source of student identity. A scoped
+// token is issued after the student chooses an instructor workspace.
+router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => {
+    if (req.user?.role !== 'student' || !req.user.studentEnrollmentId || !req.user.tenantId) {
+        return res.status(409).json({ error: 'Select an instructor workspace first', code: 'STUDENT_SPACE_REQUIRED' });
+    }
+    const student = await queryOne(
+        `SELECT s.id,s.user_id,s.tenant_id,s.name,s.phone,s.guardian_name,s.guardian_phone,s.grade_id,s.group_id,
+                s.barcode,s.approval_status,s.is_active,g.name grade_name,grp.name group_name,t.business_name
+         FROM students s INNER JOIN tenants t ON t.id=s.tenant_id
+         LEFT JOIN grades g ON g.id=s.grade_id LEFT JOIN \`groups\` grp ON grp.id=s.group_id
+         WHERE s.id=? AND s.user_id=? AND s.tenant_id=? AND s.is_active=1`,
+        [req.user.studentEnrollmentId, req.user.id, req.user.tenantId]
+    );
+    if (!student) return res.status(404).json({ error: 'Student enrollment not found' });
+    res.json(student);
+});
+
 // Get student by ID
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const student = await queryOne(
             `SELECT 
@@ -81,6 +141,7 @@ router.get('/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Student not found' });
         }
 
+        if (!(await canReadStudent(req, student.id))) return res.status(404).json({ error: 'Student not found' });
         res.json(student);
     } catch (error) {
         console.error('Get student by ID error:', error);
@@ -89,7 +150,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // Get student by email
-router.get('/email/:email', async (req: Request, res: Response) => {
+router.get('/email/:email', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const student = await queryOne(
             `SELECT 
@@ -114,6 +175,7 @@ router.get('/email/:email', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Student not found' });
         }
 
+        if (!(await canReadStudent(req, student.id))) return res.status(404).json({ error: 'Student not found' });
         res.json(student);
     } catch (error) {
         console.error('Get student by email error:', error);
@@ -122,8 +184,9 @@ router.get('/email/:email', async (req: Request, res: Response) => {
 });
 
 // Get student by phone
-router.get('/phone/:phone', async (req: Request, res: Response) => {
+router.get('/phone/:phone', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
+        if (req.user?.role === 'student') return res.status(403).json({ error: 'Use /students/me' });
         const student = await queryOne(
             `SELECT 
                 s.*, 
@@ -147,6 +210,7 @@ router.get('/phone/:phone', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Student not found' });
         }
 
+        if (!(await canReadStudent(req, student.id))) return res.status(404).json({ error: 'Student not found' });
         res.json(student);
     } catch (error) {
         console.error('Get student by phone error:', error);
@@ -155,7 +219,7 @@ router.get('/phone/:phone', async (req: Request, res: Response) => {
 });
 
 // Get student by ID
-router.get('/barcode/:barcode', async (req: Request, res: Response) => {
+router.get('/barcode/:barcode', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const student = await queryOne(
             `SELECT 
@@ -180,6 +244,7 @@ router.get('/barcode/:barcode', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Student not found' });
         }
 
+        if (!(await canReadStudent(req, student.id))) return res.status(404).json({ error: 'Student not found' });
         res.json(student);
     } catch (error) {
         console.error('Get student error:', error);
@@ -190,24 +255,35 @@ router.get('/barcode/:barcode', async (req: Request, res: Response) => {
 // (moved email & phone handlers above to avoid route conflicts)
 
 // Create new student
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', requireTeachingWrite('students'), async (req: AuthRequest, res: Response) => {
     try {
-        console.log('📝 Creating student with body:', JSON.stringify(req.body, null, 2));
+        const scopeId = instructorScopeId(req);
         const { name, email, phone, guardian_phone, grade, grade_id, group_id, password, barcode: incomingBarcode, is_offline = false, approval_status = 'approved' } = req.body;
+        const offline = is_offline === true || is_offline === 1 || is_offline === 'true';
 
-        if (!name) {
-            return res.status(400).json({ error: 'Student name is required' });
+        if (!String(name || '').trim()) {
+            return res.status(400).json({ error: 'اسم الطالب مطلوب' });
+        }
+        if (!offline && (!String(phone || '').trim() || String(password || '').length < 10)) {
+            return res.status(400).json({ error: 'طالب الأونلاين يحتاج رقم هاتف وكلمة مرور من 10 أحرف على الأقل' });
+        }
+
+        // Instructors always own the students they create, and can only place
+        // them in their own groups
+        let finalGroupId = group_id || null;
+        if (scopeId) {
+            if (finalGroupId && !(await isGroupInScope(finalGroupId, scopeId))) {
+                return res.status(403).json({ error: 'لا يمكن إضافة الطالب لمجموعة لا تخصك' });
+            }
         }
 
         // Generate UUID for new student
         const studentId = crypto.randomUUID();
-        console.log('📝 Generated student ID:', studentId);
 
         // Insert into students table
         let barcodeToStore: string;
         try {
             barcodeToStore = incomingBarcode ? sanitizeBarcode(incomingBarcode) : generateBarcode();
-            console.log('📝 Barcode to store:', barcodeToStore);
         } catch (validationError) {
             if ((validationError as Error).name === 'INVALID_BARCODE_LENGTH') {
                 return res.status(400).json({ error: 'Barcode must be exactly 25 alphanumeric characters.' });
@@ -215,53 +291,49 @@ router.post('/', async (req: Request, res: Response) => {
             throw validationError;
         }
 
-        console.log('📝 Inserting into students table...');
-        await execute(
-            `INSERT INTO students (id, name, email, phone, guardian_phone, grade, grade_id, group_id, barcode, is_offline, approval_status) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                studentId,
-                name,
-                email || null,
-                phone || null,
-                guardian_phone || null,
-                grade || null,
-                grade_id || null,
-                group_id || null,
-                barcodeToStore,
-                is_offline,
-                approval_status,
-            ]
-        );
-        console.log('✅ Student inserted successfully');
-
-        // Also insert into users table if it's an offline student
-        if (is_offline && email) {
-            try {
-                // Hash the password before storing
-                const passwordToHash = password || 'default123';
-                const passwordHash = await bcrypt.hash(passwordToHash, 10);
-
-                await execute(
-                    `INSERT INTO users (email, password_hash, role, phone, name) 
-                     VALUES (?, ?, 'student', ?, ?)`,
-                    [email, passwordHash, phone || null, name]
+        const connection = await getPool().getConnection();
+        try {
+            await connection.beginTransaction();
+            const [tenantRows] = scopeId ? await connection.execute<any[]>(
+                "SELECT id FROM tenants WHERE owner_user_id=? AND status='active' LIMIT 1", [scopeId]
+            ) : [[] as any];
+            const tenantId = tenantRows?.[0]?.id || null;
+            let linkedUserId: string | null = null;
+            let normalizedPhone = phone ? normalizeEgyptianPhone(phone) : null;
+            if (!offline) {
+                if (!normalizedPhone) { await connection.rollback(); return res.status(400).json({ error: 'Invalid Egyptian mobile number' }); }
+                const candidates = phoneLookupCandidates(normalizedPhone);
+                const [existingUsers] = await connection.execute<any[]>(
+                    `SELECT id FROM users WHERE role='student' AND phone IN (${candidates.map(() => '?').join(',')}) LIMIT 1`, candidates
                 );
-
-                console.log(`User created successfully for student ${name} with email ${email}`);
-            } catch (userError: unknown) {
-                if (typeof userError === 'object' && userError !== null && 'code' in userError && (userError as any).code === 'ER_DUP_ENTRY') {
-                    await execute(
-                        `UPDATE users SET phone = ?, name = ? WHERE email = ?`,
-                        [phone || null, name, email]
+                linkedUserId = existingUsers?.[0]?.id || crypto.randomUUID();
+                if (tenantId) {
+                    const [membership] = await connection.execute<any[]>('SELECT id FROM students WHERE tenant_id=? AND user_id=? LIMIT 1', [tenantId, linkedUserId]);
+                    if (membership?.[0]) { await connection.rollback(); return res.status(409).json({ error: 'Student already belongs to this instructor' }); }
+                }
+                if (!existingUsers?.[0]) {
+                    const passwordHash = await bcrypt.hash(String(password), 12);
+                    await connection.execute(
+                        `INSERT INTO users (id,email,password_hash,role,phone,name,student_id,is_active)
+                         VALUES (?,?,?,'student',?,?,?,1)`,
+                        [linkedUserId, email || null, passwordHash, normalizedPhone, String(name).trim(), studentId]
                     );
-                    console.log(`User updated for existing email ${email}`);
-                } else {
-                    console.error('Error creating user:', userError);
-                    throw userError;
                 }
             }
-        }
+            await connection.execute(
+                `INSERT INTO students (id,user_id,tenant_id,name,email,phone,guardian_phone,grade,grade_id,group_id,instructor_id,barcode,is_offline,approval_status)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                [studentId, linkedUserId, tenantId, String(name).trim(), email || null, normalizedPhone || phone || null,
+                    guardian_phone || null, grade || null, grade_id || null, finalGroupId, scopeId, barcodeToStore, offline ? 1 : 0, approval_status]
+            );
+            await connection.commit();
+        } catch (transactionError: any) {
+            await connection.rollback();
+            if (transactionError?.code === 'ER_DUP_ENTRY') {
+                return res.status(409).json({ error: 'رقم الهاتف أو البريد مستخدم بالفعل' });
+            }
+            throw transactionError;
+        } finally { connection.release(); }
 
         const newStudent = await queryOne(
             `SELECT 
@@ -298,8 +370,12 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // Get student admin notes
-router.get('/:id/notes', async (req: Request, res: Response) => {
+router.get('/:id/notes', async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await isStudentInScope(req.params.id, scopeId))) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
         const student = await queryOne<{ id: string; notes: string | null }>(
             'SELECT id, notes FROM students WHERE id = ?',
             [req.params.id]
@@ -315,8 +391,12 @@ router.get('/:id/notes', async (req: Request, res: Response) => {
 });
 
 // Update student admin notes
-router.put('/:id/notes', async (req: Request, res: Response) => {
+router.put('/:id/notes', requireTeachingWrite('students'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await isStudentInScope(req.params.id, scopeId))) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
         const { notes } = req.body;
         const result = await execute(
             'UPDATE students SET notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
@@ -333,9 +413,16 @@ router.put('/:id/notes', async (req: Request, res: Response) => {
 });
 
 // Update student
-router.put('/:id', async (req: Request, res: Response) => {
+router.put('/:id', requireTeachingWrite('students'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await isStudentInScope(req.params.id, scopeId))) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
         const { name, email, phone, guardian_phone, grade, grade_id, group_id, barcode, password, notes } = req.body;
+        if (scopeId && group_id !== undefined && group_id !== null && !(await isGroupInScope(group_id, scopeId))) {
+            return res.status(403).json({ error: 'لا يمكن نقل الطالب لمجموعة لا تخصك' });
+        }
 
         const fields: string[] = [];
         const params: any[] = [];
@@ -451,8 +538,12 @@ router.put('/:id', async (req: Request, res: Response) => {
 });
 
 // Delete student (hard delete - removes from database)
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', requireTeachingWrite('students'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId && !(await isStudentInScope(req.params.id, scopeId))) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
         // First delete related records (student_courses)
         await execute(
             'DELETE FROM student_courses WHERE student_id = ?',

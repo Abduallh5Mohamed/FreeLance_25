@@ -211,7 +211,7 @@ const StudentExamResults = () => {
 
       // Footer
       doc.setFontSize(10);
-      doc.text('Al-Qaed Educational Platform', 105, 280, { align: 'center' });
+      doc.text('Tabweb Academy', 105, 280, { align: 'center' });
 
       // Save
       doc.save(`exam-result-${result.exam_title.replace(/\s+/g, '-')}.pdf`);

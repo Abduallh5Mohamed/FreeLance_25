@@ -9,6 +9,15 @@ import {
     BUCKETS
 } from '../services/minio';
 import { processVideo, deleteVideoFiles } from '../services/video-processor';
+import { AuthRequest, authenticateToken } from '../middleware/auth';
+import {
+    createManagedPlayback,
+    createManagedUpload,
+    deleteManagedVideo,
+    getManagedVideoStatus,
+    isManagedDrmEnabled,
+    managedPlayerUrl,
+} from '../services/vdocipher';
 
 const router = Router();
 
@@ -20,9 +29,10 @@ const router = Router();
  * Log security violation attempts
  * Called by frontend when suspicious activity is detected
  */
-router.post('/security/log', async (req: Request, res: Response) => {
+router.post('/security/log', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
-        const { userId, videoId, activityType, details } = req.body;
+        const { videoId, activityType, details } = req.body;
+        const userId = req.user!.id;
 
         if (!userId || !videoId || !activityType) {
             return res.status(400).json({ error: 'Missing required fields' });
@@ -54,14 +64,12 @@ router.post('/security/log', async (req: Request, res: Response) => {
  * This endpoint is called by the video player when playing encrypted HLS
  * Security: Only authenticated users with access can get the key
  */
-router.get('/key/:videoId', async (req: Request, res: Response) => {
+router.get('/key/:videoId', authenticateToken, async (req: AuthRequest, res: Response) => {
+    return res.status(410).json({ error: 'A live video session is required. Use /api/secure-video/key.' });
+    /* legacy implementation intentionally unreachable */
     try {
         const { videoId } = req.params;
-        const userId = req.query.userId as string;
-
-        if (!userId) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
+        const userId = req.user!.id;
 
         // Get video with encryption key
         const video = await queryOne(
@@ -77,9 +85,10 @@ router.get('/key/:videoId', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Video is not encrypted' });
         }
 
-        // TODO: Add access verification - check if user has permission to watch this video
-        // For now, we trust the userId parameter
-        // In production, verify against video_access_logs or course enrollment
+        const hasAccess = await checkVideoAccess(userId, video);
+        if (!hasAccess) {
+            return res.status(403).json({ error: 'No access to this video' });
+        }
 
         // Convert hex key to binary
         const keyBuffer = Buffer.from(video.encryption_key, 'hex');
@@ -109,11 +118,21 @@ router.get('/key/:videoId', async (req: Request, res: Response) => {
 // UPLOAD ENDPOINTS (Teacher)
 // ============================================
 
+router.get('/drm/status', authenticateToken, (_req: AuthRequest, res: Response) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({
+        required: true,
+        provider: 'encrypted-hls',
+        configured: true,
+        paid: false,
+    });
+});
+
 /**
  * Initialize a new video upload
  * Returns presigned URL for direct browser-to-MinIO upload
  */
-router.post('/upload/init', async (req: Request, res: Response) => {
+router.post('/upload/init', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const {
             course_id,
@@ -122,9 +141,9 @@ router.post('/upload/init', async (req: Request, res: Response) => {
             title,
             description,
             file_name,
-            file_size,
-            uploaded_by
+            file_size
         } = req.body;
+        const uploaded_by = req.user!.id;
 
         // Validation
         if (!course_id || !title || !file_name || !uploaded_by) {
@@ -142,7 +161,8 @@ router.post('/upload/init', async (req: Request, res: Response) => {
             });
         }
 
-        // Generate unique video ID
+        // Keep the platform UUID separate from the provider asset id so the
+        // existing ownership and entitlement model remains unchanged.
         const videoId = uuidv4();
 
         // Get presigned upload URL
@@ -173,6 +193,7 @@ router.post('/upload/init', async (req: Request, res: Response) => {
         console.log(`[Videos] Initialized upload for video ${videoId}`);
 
         res.json({
+            provider: 'minio',
             videoId,
             uploadUrl,
             objectKey,
@@ -190,7 +211,7 @@ router.post('/upload/init', async (req: Request, res: Response) => {
  * Complete upload and start processing
  * Called by frontend after successful upload to MinIO
  */
-router.post('/upload/complete', async (req: Request, res: Response) => {
+router.post('/upload/complete', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const { videoId } = req.body;
 
@@ -199,13 +220,17 @@ router.post('/upload/complete', async (req: Request, res: Response) => {
         }
 
         // Verify video exists and is in uploading state
-        const video = await queryOne(
-            'SELECT * FROM videos WHERE id = ? AND status = ?',
-            [videoId, 'uploading']
+        const video = await queryOne<any>(
+            'SELECT * FROM videos WHERE id = ? AND status = ? AND uploaded_by = ?',
+            [videoId, 'uploading', req.user!.id]
         );
 
         if (!video) {
             return res.status(404).json({ error: 'Video not found or already processed' });
+        }
+
+        if (video.delivery_provider === 'vdocipher') {
+            return res.status(409).json({ error: 'Legacy managed videos must be uploaded again to encrypted HLS.' });
         }
 
         // Add to processing queue
@@ -248,15 +273,17 @@ async function processVideoAsync(videoId: string): Promise<void> {
 /**
  * Get upload progress/status
  */
-router.get('/upload/status/:videoId', async (req: Request, res: Response) => {
+router.get('/upload/status/:videoId', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const { videoId } = req.params;
 
-        const video = await queryOne(
+        const video = await queryOne<any>(
             `SELECT id, title, status, processing_progress, processing_error, 
-                    qualities_available, created_at, processed_at
-             FROM videos WHERE id = ?`,
-            [videoId]
+                    qualities_available, created_at, processed_at, delivery_provider,
+                    drm_asset_id, drm_preview_asset_id, drm_status, drm_last_synced_at,
+                    preview_status, duration_seconds
+             FROM videos WHERE id = ? AND uploaded_by = ?`,
+            [videoId, req.user!.id]
         );
 
         if (!video) {
@@ -274,27 +301,25 @@ router.get('/upload/status/:videoId', async (req: Request, res: Response) => {
 /**
  * Cancel upload and delete associated files
  */
-router.delete('/upload/cancel/:videoId', async (req: Request, res: Response) => {
+router.delete('/upload/cancel/:videoId', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const { videoId } = req.params;
 
         // Get video info
-        const video = await queryOne(
-            'SELECT * FROM videos WHERE id = ?',
-            [videoId]
+        const video = await queryOne<any>(
+            'SELECT * FROM videos WHERE id = ? AND uploaded_by = ?',
+            [videoId, req.user!.id]
         );
 
         if (!video) {
             return res.status(404).json({ error: 'Video not found' });
         }
 
-        // Delete all associated files from MinIO
         try {
             await deleteVideoFiles(videoId);
             console.log(`[Videos] Deleted files for cancelled upload ${videoId}`);
         } catch (error) {
             console.error(`[Videos] Error deleting files for ${videoId}:`, error);
-            // Continue even if file deletion fails
         }
 
         // Delete from processing queue
@@ -327,7 +352,7 @@ router.post('/upload/recover-stuck', async (req: Request, res: Response) => {
     try {
         const stuckVideos = await query(
             `SELECT id FROM videos 
-             WHERE status = 'uploading' 
+             WHERE status = 'uploading' AND delivery_provider = 'minio'
              AND created_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`,
             []
         );
@@ -369,14 +394,12 @@ router.post('/upload/recover-stuck', async (req: Request, res: Response) => {
  * Get secure streaming URL for a video
  * Verifies student has access before providing URL
  */
-router.get('/stream/:videoId', async (req: Request, res: Response) => {
+router.get('/stream/:videoId', authenticateToken, async (req: AuthRequest, res: Response) => {
+    return res.status(410).json({ error: 'Direct stream URLs are disabled. Create a secure video session.' });
+    /* legacy implementation intentionally unreachable */
     try {
         const { videoId } = req.params;
-        const userId = req.query.userId as string;
-
-        if (!userId) {
-            return res.status(401).json({ error: 'Authentication required' });
-        }
+        const userId = req.user!.id;
 
         // Get video info
         const video = await queryOne(
@@ -392,9 +415,43 @@ router.get('/stream/:videoId', async (req: Request, res: Response) => {
         }
 
         // Check if user has access (subscription check)
-        const hasAccess = await checkVideoAccess(userId, video.course_id);
+        const hasAccess = await checkVideoAccess(userId, video);
         if (!hasAccess) {
             return res.status(403).json({ error: 'No access to this video' });
+        }
+
+        if (process.env.VIDEO_DRM_REQUIRED === 'true' && video.delivery_provider !== 'vdocipher') {
+            return res.status(409).json({
+                error: 'This legacy video must be migrated to DRM before it can be played',
+                code: 'DRM_MIGRATION_REQUIRED',
+            });
+        }
+
+        if (video.delivery_provider === 'vdocipher') {
+            if (!isManagedDrmEnabled() || !video.drm_asset_id) {
+                return res.status(503).json({ error: 'DRM playback is temporarily unavailable', code: 'DRM_NOT_CONFIGURED' });
+            }
+            const viewer = await queryOne<any>('SELECT id,name,phone,email FROM users WHERE id=?', [userId]);
+            const playback = await createManagedPlayback(video.drm_asset_id, {
+                id: userId,
+                name: viewer?.name || 'Platform viewer',
+                phone: viewer?.phone,
+                email: viewer?.email,
+            });
+            await execute(
+                `INSERT INTO video_access_logs (video_id, user_id, ip_address, user_agent)
+                 VALUES (?, ?, ?, ?)`,
+                [videoId, userId, req.ip || 'unknown', req.get('User-Agent') || 'unknown']
+            );
+            res.set('Cache-Control', 'no-store, private');
+            return res.json({
+                provider: 'vdocipher',
+                videoId,
+                title: video.title,
+                duration: video.duration_seconds,
+                playerUrl: managedPlayerUrl(playback),
+                expiresIn: 300,
+            });
         }
 
         // Generate signed streaming URL
@@ -451,9 +508,9 @@ router.get('/stream/:videoId', async (req: Request, res: Response) => {
 });
 
 /**
- * Check if user has access to a course's videos
+ * Check if user has access to a video
  */
-async function checkVideoAccess(userId: string, courseId: string): Promise<boolean> {
+async function checkVideoAccess(userId: string, video: any): Promise<boolean> {
     // Get user info
     const user = await queryOne(
         'SELECT id, role, phone FROM users WHERE id = ?',
@@ -462,35 +519,70 @@ async function checkVideoAccess(userId: string, courseId: string): Promise<boole
 
     if (!user) return false;
 
-    // Admins and teachers have full access
-    if (user.role === 'admin' || user.role === 'teacher') {
+    // Admins, teachers and staff have full access
+    if (user.role === 'admin' || user.role === 'teacher' || user.role === 'staff') {
         return true;
+    }
+
+    // Instructors: can play videos they own (uploaded to their lecture)
+    // or videos that were explicitly shared with them (approved video requests)
+    if (user.role === 'instructor') {
+        const lecture = await queryOne(
+            `SELECT id, instructor_id FROM lectures
+             WHERE video_url = CONCAT('video://', ?)
+             LIMIT 1`,
+            [video.id]
+        );
+
+        if (!lecture) return false;
+
+        // Owner of the lecture containing this video
+        if (String(lecture.instructor_id) === String(userId)) {
+            return true;
+        }
+
+        // Approved share via instructor video requests
+        const shared = await queryOne(
+            `SELECT id FROM instructor_shared_lectures
+             WHERE instructor_id = ? AND lecture_id = ?`,
+            [userId, lecture.id]
+        );
+
+        return !!shared;
     }
 
     // For students, check if they belong to the same course
     const student = await queryOne(
-        'SELECT id, group_id, grade_id FROM students WHERE phone = ? AND is_active = TRUE',
+        'SELECT id, group_id, grade_id, instructor_id FROM students WHERE phone = ? AND is_active = TRUE',
         [user.phone]
     );
 
     if (!student) return false;
-
-    // Allow access - we already filter lectures by grade and group in the lectures API
-    // If student can see the lecture in their list, they have access to it
-    return true;
+    const permitted = await queryOne(
+        `SELECT l.id FROM lectures l
+         WHERE l.video_url=CONCAT('video://',?) AND (
+           (l.is_published=1 AND (l.instructor_id IS NULL OR l.instructor_id=?)
+             AND (l.grade_id=? OR l.group_id=?))
+           OR EXISTS (
+             SELECT 1 FROM instructor_shared_lectures sl
+             JOIN instructor_shared_lecture_publications pub ON pub.shared_lecture_id=sl.id
+             WHERE sl.lecture_id=l.id AND sl.instructor_id=? AND sl.is_published=1 AND pub.group_id=?
+           )
+         ) LIMIT 1`,
+        [video.id, student.instructor_id, student.grade_id, student.group_id, student.instructor_id, student.group_id]
+    );
+    return !!permitted;
 }
 
 /**
  * Refresh streaming URL (for long videos)
  */
-router.post('/stream/:videoId/refresh', async (req: Request, res: Response) => {
+router.post('/stream/:videoId/refresh', authenticateToken, async (req: AuthRequest, res: Response) => {
+    return res.status(410).json({ error: 'Direct stream URLs are disabled. Refresh the secure video session.' });
+    /* legacy implementation intentionally unreachable */
     try {
         const { videoId } = req.params;
-        const { userId } = req.body;
-
-        if (!userId) {
-            return res.status(401).json({ error: 'Authentication required' });
-        }
+        const userId = req.user!.id;
 
         // Get video info
         const video = await queryOne(
@@ -503,7 +595,7 @@ router.post('/stream/:videoId/refresh', async (req: Request, res: Response) => {
         }
 
         // Verify access
-        const hasAccess = await checkVideoAccess(userId, video.course_id);
+        const hasAccess = await checkVideoAccess(userId, video);
         if (!hasAccess) {
             return res.status(403).json({ error: 'No access to this video' });
         }
@@ -561,12 +653,14 @@ router.get('/course/:courseId', async (req: Request, res: Response) => {
 /**
  * Get single video details
  */
-router.get('/:videoId', async (req: Request, res: Response) => {
+router.get('/:videoId', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const { videoId } = req.params;
 
         const video = await queryOne(
-            `SELECT v.*, c.name as course_name
+            `SELECT v.id,v.course_id,v.lecture_id,v.material_id,v.title,v.description,v.duration_seconds,
+                    v.status,v.processing_progress,v.qualities_available,v.preview_status,v.created_at,v.processed_at,
+                    c.name as course_name
              FROM videos v
              LEFT JOIN courses c ON v.course_id = c.id
              WHERE v.id = ?`,
@@ -592,18 +686,27 @@ router.get('/:videoId', async (req: Request, res: Response) => {
 /**
  * Delete a video
  */
-router.delete('/:videoId', async (req: Request, res: Response) => {
+router.delete('/:videoId', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const { videoId } = req.params;
 
         // Get video to check it exists
-        const video = await queryOne('SELECT * FROM videos WHERE id = ?', [videoId]);
+        const video = await queryOne('SELECT * FROM videos WHERE id = ? AND uploaded_by=?', [videoId, req.user!.id]);
 
         if (!video) {
             return res.status(404).json({ error: 'Video not found' });
         }
 
-        // Delete files from MinIO
+        const referenced = await queryOne(`SELECT 1 referenced FROM lectures l
+          WHERE l.video_url=CONCAT('video://',?) AND (
+            EXISTS (SELECT 1 FROM instructor_shared_lectures sl WHERE sl.lecture_id=l.id)
+            OR EXISTS (SELECT 1 FROM instructor_video_offers o WHERE o.lecture_id=l.id)
+          ) LIMIT 1`, [videoId]);
+        if (referenced) {
+            await execute("UPDATE lectures SET archived_at=UTC_TIMESTAMP(),is_published=0 WHERE video_url=CONCAT('video://',?) AND instructor_id=?", [videoId, req.user!.id]);
+            return res.json({ success: true, archived: true, message: 'Video archived; purchased access remains active' });
+        }
+
         await deleteVideoFiles(videoId);
 
         // Delete from database (cascades to related tables)
@@ -622,14 +725,14 @@ router.delete('/:videoId', async (req: Request, res: Response) => {
 /**
  * Update video metadata
  */
-router.put('/:videoId', async (req: Request, res: Response) => {
+router.put('/:videoId', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const { videoId } = req.params;
         const { title, description } = req.body;
 
         await execute(
-            'UPDATE videos SET title = ?, description = ? WHERE id = ?',
-            [title, description || null, videoId]
+            'UPDATE videos SET title = ?, description = ? WHERE id = ? AND uploaded_by=?',
+            [title, description || null, videoId, req.user!.id]
         );
 
         const video = await queryOne('SELECT * FROM videos WHERE id = ?', [videoId]);
@@ -645,13 +748,13 @@ router.put('/:videoId', async (req: Request, res: Response) => {
 /**
  * Retry failed processing
  */
-router.post('/:videoId/retry', async (req: Request, res: Response) => {
+router.post('/:videoId/retry', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const { videoId } = req.params;
 
         const video = await queryOne(
-            'SELECT * FROM videos WHERE id = ? AND status = ?',
-            [videoId, 'failed']
+            'SELECT * FROM videos WHERE id = ? AND status = ? AND uploaded_by=?',
+            [videoId, 'failed', req.user!.id]
         );
 
         if (!video) {
@@ -682,17 +785,21 @@ router.post('/:videoId/retry', async (req: Request, res: Response) => {
 /**
  * Re-process a video (force)
  */
-router.post('/:videoId/reprocess', async (req: Request, res: Response) => {
+router.post('/:videoId/reprocess', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const { videoId } = req.params;
 
         const video = await queryOne(
-            'SELECT * FROM videos WHERE id = ?',
-            [videoId]
+            'SELECT * FROM videos WHERE id = ? AND uploaded_by=?',
+            [videoId, req.user!.id]
         );
 
         if (!video) {
             return res.status(404).json({ error: 'Video not found' });
+        }
+
+        if (video.delivery_provider === 'vdocipher') {
+            return res.status(409).json({ error: 'Managed DRM videos are re-encoded by the provider and cannot be locally reprocessed' });
         }
 
         console.log(`[Videos] Force reprocessing video ${videoId}`);

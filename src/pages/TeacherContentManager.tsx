@@ -68,7 +68,7 @@ const TeacherContentManager = () => {
     type: '',
     youtubeUrl: '',
     duration: '',
-    instructor: 'الأستاذ محمد رمضان',
+    instructor: 'فريق Tabweb Academy',
     questionsCount: '',
     totalMarks: '',
     fileUrl: ''
@@ -85,7 +85,7 @@ const TeacherContentManager = () => {
       uploadDate: '2025-10-28',
       youtubeUrl: 'https://youtube.com/watch?v=xyz',
       duration: '45 دقيقة',
-      instructor: 'الأستاذ محمد رمضان',
+      instructor: 'فريق Tabweb Academy',
       thumbnail: 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=400'
     },
     {
@@ -157,7 +157,7 @@ const TeacherContentManager = () => {
       type: '',
       youtubeUrl: '',
       duration: '',
-      instructor: 'الأستاذ محمد رمضان',
+      instructor: 'فريق Tabweb Academy',
       questionsCount: '',
       totalMarks: '',
       fileUrl: ''

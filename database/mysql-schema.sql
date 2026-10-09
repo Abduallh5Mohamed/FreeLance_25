@@ -1,6 +1,6 @@
 -- ====================================
 -- MySQL Database Schema
--- Educational Platform - Al-Qaed
+-- Educational Platform - Tabweb Academy
 -- Converted from Supabase PostgreSQL
 -- ====================================
 
@@ -526,7 +526,7 @@ CREATE TABLE imports (
 
 -- Insert default admin user
 INSERT INTO users (id, email, password_hash, name, role, email_verified) VALUES
-(UUID(), 'hodabdh3@gmail.com', '$2a$10$YourHashedPasswordHere', 'الأستاذ محمد رمضان', 'admin', TRUE);
+(UUID(), 'admin@tabwebacademy.local', '$2a$10$YourHashedPasswordHere', 'Tabweb Admin', 'admin', TRUE);
 
 -- Insert default grades
 INSERT INTO grades (name, display_order, is_active) VALUES

@@ -1,8 +1,25 @@
 import { Router, Request, Response } from 'express';
 import { query, queryOne, execute } from '../db';
 import { sendWhatsAppMessage, formatEgyptianPhone } from '../services/whatsapp-free';
+import { optionalAuth, instructorScopeId, AuthRequest } from '../middleware/auth';
+import { ensureGroupInstructorColumn } from '../utils/instructor-scope';
 
 const router = Router();
+router.use(async (_req: AuthRequest, _res: Response, next: any) => {
+    await ensureGroupInstructorColumn();
+    next();
+});
+router.use(optionalAuth);
+
+// Students that belong to an instructor (assigned directly or via their group)
+const studentInScope = async (studentId: string, scopeId: string): Promise<boolean> => {
+    const row = await queryOne(
+        `SELECT id FROM students
+         WHERE id = ? AND (instructor_id = ? OR group_id IN (SELECT id FROM \`groups\` WHERE instructor_id = ?))`,
+        [studentId, scopeId, scopeId]
+    );
+    return !!row;
+};
 
 interface Attendance {
     id: string;
@@ -16,9 +33,10 @@ interface Attendance {
 }
 
 // Get all attendance records
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', async (req: AuthRequest, res: Response) => {
     try {
         const { date, start_date, end_date, student_id, group_id, course_id, limit, order } = req.query as any;
+        const scopeId = instructorScopeId(req);
 
         let sql = `
             SELECT 
@@ -68,6 +86,12 @@ router.get('/', async (req: Request, res: Response) => {
             params.push(course_id);
         }
 
+        if (scopeId) {
+            sql += ` AND a.student_id IN (SELECT id FROM students WHERE instructor_id = ?
+                      OR group_id IN (SELECT id FROM \`groups\` WHERE instructor_id = ?))`;
+            params.push(scopeId, scopeId);
+        }
+
         sql += ` ORDER BY a.attendance_date ${order === 'asc' ? 'ASC' : 'DESC'}, a.created_at DESC`;
 
         if (limit) {
@@ -87,14 +111,18 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 // Get attendance by ID
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', async (req: AuthRequest, res: Response) => {
     try {
-        const attendance = await queryOne<Attendance>(
+        const scopeId = instructorScopeId(req);
+        const attendance = await queryOne<any>(
             'SELECT * FROM attendance WHERE id = ?',
             [req.params.id]
         );
 
         if (!attendance) {
+            return res.status(404).json({ error: 'Attendance record not found' });
+        }
+        if (scopeId && !(await studentInScope(attendance.student_id, scopeId))) {
             return res.status(404).json({ error: 'Attendance record not found' });
         }
 
@@ -106,9 +134,10 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // Mark attendance
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', async (req: AuthRequest, res: Response) => {
     try {
         const { barcode, student_id, attendance_date, status = 'present', course_id, group_id, notes } = req.body;
+        const scopeId = instructorScopeId(req);
 
         const normalizedDate = attendance_date ? new Date(attendance_date) : new Date();
         if (Number.isNaN(normalizedDate.getTime())) {
@@ -138,6 +167,11 @@ router.post('/', async (req: Request, res: Response) => {
 
         if (!studentId) {
             return res.status(400).json({ error: 'Student not resolved' });
+        }
+
+        // Instructors can only mark attendance for their own students
+        if (scopeId && !(await studentInScope(studentId, scopeId))) {
+            return res.status(403).json({ error: 'لا يمكن تسجيل حضور لطالب لا يتبعك' });
         }
 
         const dateStr = normalizedDate.toISOString().split('T')[0];
@@ -175,8 +209,15 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // Update attendance
-router.put('/:id', async (req: Request, res: Response) => {
+router.put('/:id', async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId) {
+            const att = await queryOne<any>('SELECT student_id FROM attendance WHERE id = ?', [req.params.id]);
+            if (!att || !(await studentInScope(att.student_id, scopeId))) {
+                return res.status(404).json({ error: 'Attendance record not found' });
+            }
+        }
         const { status, notes, attendance_date } = req.body;
 
         const result = await execute(
@@ -205,8 +246,15 @@ router.put('/:id', async (req: Request, res: Response) => {
 });
 
 // Delete attendance
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId) {
+            const att = await queryOne<any>('SELECT student_id FROM attendance WHERE id = ?', [req.params.id]);
+            if (!att || !(await studentInScope(att.student_id, scopeId))) {
+                return res.status(404).json({ error: 'Attendance record not found' });
+            }
+        }
         const result = await execute(
             'DELETE FROM attendance WHERE id = ?',
             [req.params.id]
@@ -224,12 +272,20 @@ router.delete('/:id', async (req: Request, res: Response) => {
 });
 
 // Send WhatsApp notification for absent students in a group
-router.post('/notify-absent', async (req: Request, res: Response) => {
+router.post('/notify-absent', async (req: AuthRequest, res: Response) => {
     try {
         const { group_id, date } = req.body;
+        const scopeId = instructorScopeId(req);
 
         if (!group_id || !date) {
             return res.status(400).json({ error: 'group_id and date are required' });
+        }
+
+        if (scopeId) {
+            const grp = await queryOne('SELECT id FROM `groups` WHERE id = ? AND instructor_id = ?', [group_id, scopeId]);
+            if (!grp) {
+                return res.status(403).json({ error: 'لا يمكن إرسال تنبيهات لمجموعة لا تتبعك' });
+            }
         }
 
         // Get all students in the group
@@ -295,7 +351,7 @@ router.post('/notify-absent', async (req: Request, res: Response) => {
                 `نفيدكم بأن الطالب/ة لم يحضر/تحضر اليوم:\n` +
                 `📅 *${new Date(date).toLocaleDateString('ar-EG')}*\n\n` +
                 `يرجى التواصل معنا لمعرفة السبب.\n\n` +
-                `مركز القائد التعليمي 📚`;
+                `Tabweb Academy 📚`;
 
             try {
                 const result = await sendWhatsAppMessage(phone, message);

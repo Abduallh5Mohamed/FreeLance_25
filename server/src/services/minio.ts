@@ -66,7 +66,9 @@ const minioClient = new Minio.Client({
 export const BUCKETS = {
     ORIGINALS: process.env.MINIO_BUCKET_ORIGINALS || 'videos-original',
     HLS: process.env.MINIO_BUCKET_HLS || 'videos-hls',
-    THUMBNAILS: process.env.MINIO_BUCKET_THUMBNAILS || 'videos-thumbnails'
+    THUMBNAILS: process.env.MINIO_BUCKET_THUMBNAILS || 'videos-thumbnails',
+    PREVIEWS: process.env.MINIO_BUCKET_PREVIEWS || 'video-previews',
+    PAYMENT_PROOFS: process.env.MINIO_BUCKET_PAYMENT_PROOFS || 'payment-proofs'
 };
 
 // Signed URL expiry (10 minutes default)
@@ -201,8 +203,8 @@ export async function getSignedStreamUrl(
         console.log('[MinIO] Original video URL:', directUrl);
         return directUrl;
     } else {
-        // For HLS, use videoId/quality/playlist.m3u8 structure
-        const directUrl = `/storage/${bucket}/${videoId}/360p/playlist.m3u8`;
+        // For HLS, point to master playlist which references all available qualities
+        const directUrl = `/storage/${bucket}/${videoId}/playlist.m3u8`;
         return directUrl;
     }
 }
@@ -256,6 +258,10 @@ export async function uploadBuffer(
     console.log(`[MinIO] Uploaded buffer to ${bucket}/${objectKey}`);
 }
 
+export async function getPrivateObjectUrl(bucket: string, objectKey: string, expiresInSeconds = 300): Promise<string> {
+    return minioClient.presignedGetObject(bucket, objectKey, expiresInSeconds);
+}
+
 /**
  * Download file from MinIO to local path
  */
@@ -266,6 +272,18 @@ export async function downloadFile(
 ): Promise<void> {
     await minioClient.fGetObject(bucket, objectKey, localPath);
     console.log(`[MinIO] Downloaded ${objectKey} to ${localPath}`);
+}
+
+/** Read private media through the API without exposing a storage URL. */
+export async function getObjectStream(bucket: string, objectKey: string): Promise<NodeJS.ReadableStream> {
+    return minioClient.getObject(bucket, objectKey);
+}
+
+export async function getObjectBuffer(bucket: string, objectKey: string): Promise<Buffer> {
+    const stream = await minioClient.getObject(bucket, objectKey);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    return Buffer.concat(chunks);
 }
 
 /**

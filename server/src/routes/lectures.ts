@@ -1,8 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { query, queryOne, execute } from '../db';
 import { v4 as uuidv4 } from 'uuid';
+import { optionalAuth, instructorScopeId, AuthRequest } from '../middleware/auth';
+import { requireTeachingWrite } from '../middleware/teaching-access';
 
 const router = Router();
+router.use(optionalAuth);
 
 interface Lecture {
     id: string;
@@ -13,6 +16,7 @@ interface Lecture {
     description?: string;
     video_url: string;
     duration_minutes?: number;
+    price?: number;
     display_order?: number;
     is_free: boolean;
     is_published: boolean;
@@ -25,9 +29,10 @@ interface Lecture {
 }
 
 // Get all lectures (published by default)
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', async (req: AuthRequest, res: Response) => {
     try {
         const { course_id, group_id, grade_id } = req.query;
+        const scopeId = instructorScopeId(req);
 
         let sql = `
             SELECT 
@@ -42,7 +47,13 @@ router.get('/', async (req: Request, res: Response) => {
             LEFT JOIN \`groups\` g ON l.group_id = g.id
             WHERE l.is_published = TRUE
         `;
-        const params: string[] = [];
+        const params: any[] = [];
+
+        // Instructors only see lectures they uploaded
+        if (scopeId) {
+            sql += ' AND l.instructor_id = ?';
+            params.push(scopeId);
+        }
 
         if (course_id && typeof course_id === 'string') {
             sql += ' AND l.course_id = ?';
@@ -92,7 +103,7 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
 
         // Find student by phone (students table has phone directly)
         const student = await queryOne(
-            'SELECT id, name, phone, group_id, grade_id FROM students WHERE phone = ? AND is_active = TRUE',
+            'SELECT id, name, phone, group_id, grade_id, instructor_id FROM students WHERE phone = ? AND is_active = TRUE',
             [userRecord.phone]
         );
 
@@ -115,7 +126,7 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
             LEFT JOIN courses c ON l.course_id = c.id
             LEFT JOIN grades gr ON l.grade_id = gr.id
             LEFT JOIN \`groups\` g ON l.group_id = g.id
-            WHERE l.is_published = TRUE
+            WHERE 1=1
         `;
 
         const params: any[] = [];
@@ -133,9 +144,18 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
             params.push(student.group_id);
         }
 
-        if (conditions.length > 0) {
-            sql += ' AND (' + conditions.join(' OR ') + ')';
-        }
+        const audienceSql = conditions.length > 0 ? '(' + conditions.join(' OR ') + ')' : 'TRUE';
+        const audienceParams = [...params];
+        params.length = 0;
+        sql += ` AND (
+          (l.is_published=TRUE AND (l.instructor_id IS NULL OR l.instructor_id=?) AND ${audienceSql})
+          OR EXISTS (
+            SELECT 1 FROM instructor_shared_lectures sl
+            INNER JOIN instructor_shared_lecture_publications pub ON pub.shared_lecture_id=sl.id
+            WHERE sl.lecture_id=l.id AND sl.instructor_id=? AND sl.is_published=1 AND pub.group_id=?
+          )
+        )`;
+        params.push(student.instructor_id || null, ...audienceParams, student.instructor_id || null, student.group_id || '');
 
         sql += ' ORDER BY l.display_order ASC, l.created_at DESC';
 
@@ -150,8 +170,9 @@ router.get('/student/:userId', async (req: Request, res: Response) => {
 });
 
 // Get lecture by ID
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
         const lecture = await queryOne(
             `SELECT 
                 l.*,
@@ -170,6 +191,9 @@ router.get('/:id', async (req: Request, res: Response) => {
         if (!lecture) {
             return res.status(404).json({ error: 'Lecture not found' });
         }
+        if (scopeId && lecture.instructor_id !== scopeId) {
+            return res.status(404).json({ error: 'Lecture not found' });
+        }
 
         res.json(lecture);
     } catch (error) {
@@ -179,43 +203,88 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // Create new lecture
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', requireTeachingWrite('lectures'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
         const {
             course_id,
             grade_id,
             group_id,
+            instructor_id,
             title,
             description,
             video_url,
             duration_minutes,
+            price,
             display_order = 0,
             is_free = false,
             is_published = true
         } = req.body;
 
-        if (!course_id || !title || !video_url) {
+        // Instructors can only create lectures under their own name
+        const ownerId = scopeId || instructor_id || null;
+
+        if (!title || !video_url) {
             return res.status(400).json({
-                error: 'Course ID, title, and video_url are required'
+                error: 'Title and video_url are required'
             });
         }
 
-        console.log('[Lectures] Creating lecture:', { course_id, grade_id, group_id, title, video_url });
+        if (!String(video_url).startsWith('video://')) {
+            return res.status(400).json({ error: 'External video links are not allowed. Upload the video to the platform.' });
+        }
+        if (scopeId && (!Number.isFinite(Number(price)) || Number(price) <= 0)) {
+            return res.status(400).json({ error: 'Instructor videos must have a positive price' });
+        }
+
+        // If no course_id provided, create a default course for the instructor
+        let actualCourseId = course_id;
+        if (!actualCourseId && ownerId) {
+            const ownerTenant = scopeId ? await queryOne<{ id: string }>(
+                "SELECT id FROM tenants WHERE owner_user_id=? AND status='active' LIMIT 1", [scopeId]
+            ) : null;
+            // Find or create a default course for this instructor
+            let defaultCourse = await queryOne(
+                `SELECT id FROM courses WHERE name=? AND ${scopeId ? 'instructor_id=?' : 'instructor_id IS NULL'} LIMIT 1`,
+                scopeId ? ['فيديوهاتي', scopeId] : ['فيديوهاتي']
+            );
+            if (!defaultCourse) {
+                const courseId = uuidv4();
+                await execute(
+                    `INSERT INTO courses (id,tenant_id,instructor_id,name,subject,description,is_active)
+                     VALUES (?,?,?,?,?,?,TRUE)`,
+                    [courseId, ownerTenant?.id || null, scopeId || null, 'فيديوهاتي', 'عام', 'فيديوهات خاصة بالمحاضر']
+                );
+                actualCourseId = courseId;
+            } else {
+                actualCourseId = defaultCourse.id;
+            }
+        }
+
+        if (!actualCourseId) {
+            return res.status(400).json({
+                error: 'Course ID is required'
+            });
+        }
+
+        console.log('[Lectures] Creating lecture:', { course_id: actualCourseId, grade_id, group_id, instructor_id: ownerId, title, video_url });
 
         const lectureId = uuidv4();
         const result = await execute(
             `INSERT INTO lectures 
-            (id, course_id, grade_id, group_id, title, description, video_url, duration_minutes, display_order, is_free, is_published) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (id, course_id, grade_id, group_id, instructor_id, title, description, video_url, duration_minutes, price, display_order, is_free, is_published)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 lectureId,
-                course_id,
+                actualCourseId,
                 grade_id || null,
                 group_id || null,
+                ownerId,
                 title,
                 description || null,
                 video_url,
                 duration_minutes || null,
+                scopeId ? Number(price) : (price ?? null),
                 display_order,
                 is_free,
                 is_published
@@ -236,17 +305,39 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // Update lecture
-router.put('/:id', async (req: Request, res: Response) => {
+router.put('/:id', requireTeachingWrite('lectures'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId) {
+            const existing = await queryOne<any>('SELECT id, instructor_id FROM lectures WHERE id = ?', [req.params.id]);
+            if (!existing || existing.instructor_id !== scopeId) {
+                return res.status(404).json({ error: 'Lecture not found' });
+            }
+        }
         const {
             title,
             description,
             video_url,
             duration_minutes,
+            price,
             display_order,
             is_free,
             is_published
         } = req.body;
+
+        if (scopeId && price !== undefined && (!Number.isFinite(Number(price)) || Number(price) <= 0)) {
+            return res.status(400).json({ error: 'Video price must be greater than zero' });
+        }
+        if (video_url !== undefined && !String(video_url).startsWith('video://')) {
+            return res.status(400).json({ error: 'External video links are not allowed. Upload the video to the platform.' });
+        }
+        if (scopeId && video_url !== undefined) {
+            const licensed = await queryOne('SELECT id FROM instructor_shared_lectures WHERE lecture_id=? LIMIT 1', [req.params.id]);
+            const current = await queryOne<any>('SELECT video_url FROM lectures WHERE id=?', [req.params.id]);
+            if (licensed && current && current.video_url !== video_url) {
+                return res.status(409).json({ error: 'The video file cannot be replaced after access has been sold' });
+            }
+        }
 
         const result = await execute(
             `UPDATE lectures 
@@ -254,6 +345,7 @@ router.put('/:id', async (req: Request, res: Response) => {
                  description = COALESCE(?, description),
                  video_url = COALESCE(?, video_url),
                  duration_minutes = COALESCE(?, duration_minutes),
+                 price = COALESCE(?, price),
                  display_order = COALESCE(?, display_order),
                  is_free = COALESCE(?, is_free),
                  is_published = COALESCE(?, is_published),
@@ -264,6 +356,7 @@ router.put('/:id', async (req: Request, res: Response) => {
                 description ?? null,
                 video_url ?? null,
                 duration_minutes ?? null,
+                price ?? null,
                 display_order ?? null,
                 is_free ?? null,
                 is_published ?? null,
@@ -288,10 +381,17 @@ router.put('/:id', async (req: Request, res: Response) => {
 });
 
 // Delete lecture (soft delete by unpublishing)
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', requireTeachingWrite('lectures'), async (req: AuthRequest, res: Response) => {
     try {
+        const scopeId = instructorScopeId(req);
+        if (scopeId) {
+            const existing = await queryOne<any>('SELECT id, instructor_id FROM lectures WHERE id = ?', [req.params.id]);
+            if (!existing || existing.instructor_id !== scopeId) {
+                return res.status(404).json({ error: 'Lecture not found' });
+            }
+        }
         const result = await execute(
-            'UPDATE lectures SET is_published = FALSE WHERE id = ?',
+            'UPDATE lectures SET is_published = FALSE, archived_at = CURRENT_TIMESTAMP WHERE id = ?',
             [req.params.id]
         );
 

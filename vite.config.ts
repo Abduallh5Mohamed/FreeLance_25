@@ -7,6 +7,26 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "0.0.0.0", // Listen on all network interfaces (IPv4 and IPv6)
     port: 8080,
+    proxy: {
+      "/api": {
+        target: "http://localhost:3001",
+        changeOrigin: true,
+      },
+      "/socket.io": {
+        target: "http://localhost:3001",
+        changeOrigin: true,
+        ws: true,
+      },
+      // MinIO is exposed in production through nginx at /storage/<bucket>/<object>
+      // (see getPresignedUploadUrl / getSignedStreamUrl in server/src/services/minio.ts).
+      // Mirror that mapping in dev so video uploads (PUT) and playback (GET) work
+      // without a separate MinIO endpoint/CORS setup.
+      "/storage": {
+        target: "http://localhost:9000",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/storage/, ""),
+      },
+    },
   },
   plugins: [react()],
   resolve: {

@@ -1,7 +1,8 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt, { Secret } from 'jsonwebtoken';
-import { query, queryOne } from '../db';
+import { getJwtSecret } from '../middleware/auth';
+import { query, queryOne, execute } from '../db';
 
 const router = Router();
 
@@ -108,7 +109,7 @@ router.post('/', async (req: Request, res: Response) => {
         const passwordHash = await bcrypt.hash(password, 10);
 
         // Insert new staff
-        const result = await query(
+        const result = await execute(
             `INSERT INTO staff (name, phone, password_hash, role, accessible_pages, is_active) 
              VALUES (?, ?, ?, 'staff', ?, 1)`,
             [
@@ -119,7 +120,7 @@ router.post('/', async (req: Request, res: Response) => {
             ]
         );
 
-        const staffId = (result as unknown as QueryResult).insertId;
+        const staffId = result.insertId;
 
         res.status(201).json({
             id: staffId.toString(),
@@ -202,7 +203,7 @@ router.put('/:id', async (req: Request, res: Response) => {
         updateFields.push('updated_at = NOW()');
         updateValues.push(id);
 
-        await query(
+        await execute(
             `UPDATE staff SET ${updateFields.join(', ')} WHERE id = ?`,
             updateValues
         );
@@ -245,7 +246,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Staff not found' });
         }
 
-        await query(
+        await execute(
             'UPDATE staff SET is_active = 0, updated_at = NOW() WHERE id = ?',
             [id]
         );
@@ -292,7 +293,7 @@ router.post('/login', async (req: Request, res: Response) => {
             : (staff.accessible_pages || []);
 
         // Generate JWT token
-        const jwtSecret: Secret = process.env.JWT_SECRET || 'secret';
+        const jwtSecret: Secret = getJwtSecret();
         const jwtExpiry = process.env.JWT_EXPIRES_IN || '7d';
         const token = jwt.sign(
             {

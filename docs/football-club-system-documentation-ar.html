@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>توثيق مميزات نظام إدارة نادي كرة قدم</title>
+  <style>
+    @page { size: A4; margin: 0; }
+    * { box-sizing: border-box; }
+    html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body {
+      margin: 0;
+      background: #eef3f6;
+      color: #162235;
+      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      line-height: 1.72;
+      direction: rtl;
+      text-align: right;
+    }
+    .document { width: 210mm; margin: 0 auto; background: #fff; }
+    .page {
+      width: 210mm;
+      min-height: 297mm;
+      position: relative;
+      page-break-after: always;
+      overflow: hidden;
+      background: #fff;
+    }
+    .page:last-child { page-break-after: auto; }
+    .cover {
+      padding: 25mm 18mm 18mm;
+      color: #fff;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(248,181,39,.28), transparent 28%),
+        linear-gradient(135deg, rgba(9,32,52,.98), rgba(5,108,73,.94)),
+        repeating-linear-gradient(90deg, rgba(255,255,255,.055) 0 1px, transparent 1px 70px);
+    }
+    .pitch-lines { position: absolute; inset: 34mm 16mm 24mm; border: 1px solid rgba(255,255,255,.18); border-radius: 18px; opacity: .64; }
+    .pitch-lines:before { content: ""; position: absolute; top: 0; bottom: 0; right: 50%; border-right: 1px solid rgba(255,255,255,.18); }
+    .pitch-lines:after { content: ""; position: absolute; width: 96px; height: 96px; border: 1px solid rgba(255,255,255,.18); border-radius: 50%; right: calc(50% - 48px); top: calc(50% - 48px); }
+    .cover-content { position: relative; z-index: 2; }
+    .cover-top, .cover-footer { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .brand-mark { width: 68px; height: 68px; border-radius: 18px; background: linear-gradient(135deg,#fff,#e0f7ec); color: #087245; display: flex; align-items: center; justify-content: center; font-weight: 950; font-size: 22px; box-shadow: 0 18px 42px rgba(0,0,0,.22); }
+    .brand-title { font-size: 21px; font-weight: 950; }
+    .brand-subtitle { font-size: 11px; opacity: .82; margin-top: 2px; }
+    .badge { border: 1px solid rgba(255,255,255,.28); background: rgba(255,255,255,.12); padding: 8px 14px; border-radius: 999px; font-size: 11px; font-weight: 800; }
+    .cover-main { margin-top: 49mm; max-width: 660px; }
+    .kicker { color: #fbbf24; font-size: 13px; font-weight: 950; margin-bottom: 10px; }
+    h1 { margin: 0; font-size: 42px; line-height: 1.25; font-weight: 950; letter-spacing: 0; }
+    .cover-lead { margin: 18px 0 0; font-size: 16px; line-height: 1.9; color: rgba(255,255,255,.91); max-width: 620px; }
+    .cover-strip { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; margin-top: 28px; }
+    .strip-item { min-height: 82px; padding: 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,.24); background: rgba(255,255,255,.12); }
+    .strip-item strong { display: block; font-size: 17px; line-height: 1.2; margin-bottom: 7px; }
+    .strip-item span { display: block; font-size: 10.2px; color: rgba(255,255,255,.82); line-height: 1.55; }
+    .cover-footer { position: absolute; right: 18mm; left: 18mm; bottom: 17mm; z-index: 2; align-items: end; border-top: 1px solid rgba(255,255,255,.26); padding-top: 12px; font-size: 11px; color: rgba(255,255,255,.83); }
+    .running-header { height: 14mm; display: flex; align-items: center; justify-content: space-between; padding: 0 16mm; color: #728096; font-size: 10px; border-bottom: 1px solid #e1e8f0; }
+    .content { padding: 16mm 16mm 15mm; }
+    .section-label { display: inline-flex; color: #087245; font-weight: 950; font-size: 12px; margin-bottom: 6px; }
+    h2 { margin: 0 0 12px; color: #10233f; font-size: 24px; line-height: 1.36; font-weight: 950; letter-spacing: 0; }
+    h3 { margin: 18px 0 9px; color: #087245; font-size: 16px; font-weight: 950; line-height: 1.45; }
+    h4 { margin: 0 0 6px; color: #10233f; font-size: 13px; line-height: 1.55; font-weight: 950; }
+    p { margin: 0 0 10px; color: #344054; font-size: 11.45px; }
+    .lead { color: #344054; font-size: 12.7px; line-height: 1.9; margin-bottom: 13px; }
+    .accent-line { width: 78px; height: 5px; border-radius: 999px; background: linear-gradient(90deg,#087245,#f59e0b); margin-bottom: 14px; }
+    .note, .quote, .band { margin: 13px 0 15px; padding: 13px 15px; border-radius: 11px; border: 1px solid #cdebd8; background: #edfdf4; color: #174c34; font-size: 11.45px; line-height: 1.75; }
+    .quote { background: #f7fbff; border-color: #d8e5f1; color: #13233c; font-size: 14px; font-weight: 850; text-align: center; }
+    .band { background: linear-gradient(90deg,#ecfdf4,#fff8e8); border-color: #bfe8cd; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2,1fr); gap: 12px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; }
+    .feature-card, .metric-card, .ai-card { border: 1px solid #d9e4ef; background: #fff; border-radius: 10px; padding: 12px 13px; box-shadow: 0 8px 22px rgba(16,35,63,.06); break-inside: avoid; }
+    .feature-card p, .metric-card p, .ai-card p { margin: 0; color: #4b5b70; font-size: 10.55px; line-height: 1.72; }
+    .metric-card { min-height: 113px; background: linear-gradient(180deg,#fff,#f7fbf8); border-top: 4px solid #087245; }
+    .metric-card .num { display: block; color: #087245; font-size: 20px; font-weight: 950; line-height: 1.15; margin-bottom: 7px; }
+    .ai-card { background: linear-gradient(180deg,#fff,#fff9ed); border-top: 4px solid #f59e0b; }
+    .pill-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0 14px; }
+    .pill { display: inline-block; padding: 5px 10px; border-radius: 999px; background: #eaf8ef; color: #087245; border: 1px solid #c6ead3; font-size: 10px; font-weight: 850; }
+    .toc { display: grid; gap: 8px; margin-top: 10px; }
+    .toc-row { display: grid; grid-template-columns: 1fr 22mm; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid #dce6f1; border-radius: 10px; background: #fff; }
+    .toc-row strong { display: block; color: #10233f; font-size: 12.6px; margin-bottom: 2px; }
+    .toc-row span { display: block; color: #56657a; font-size: 10.3px; line-height: 1.55; }
+    .toc-row em { justify-self: end; min-width: 34px; height: 34px; border-radius: 50%; background: #087245; color: #fff; display: inline-flex; align-items: center; justify-content: center; font-style: normal; font-weight: 900; font-size: 11px; }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; margin: 12px 0 15px; border: 1px solid #d6e1ec; border-radius: 10px; overflow: hidden; font-size: 10.2px; }
+    th { background: #087245; color: #fff; font-weight: 900; padding: 9px 10px; text-align: right; }
+    td { padding: 9px 10px; color: #344054; border-top: 1px solid #e4ebf3; vertical-align: top; line-height: 1.65; }
+    tr:nth-child(even) td { background: #f8fbfc; }
+    ul { margin: 8px 0 13px; padding: 0 20px 0 0; color: #344054; }
+    li { margin: 5px 0; font-size: 11.1px; line-height: 1.65; }
+    .steps { counter-reset: item; display: grid; gap: 9px; margin-top: 12px; }
+    .step { counter-increment: item; display: grid; grid-template-columns: 36px 1fr; gap: 10px; align-items: start; border: 1px solid #dbe6ef; border-radius: 10px; padding: 10px 12px; background: #fff; }
+    .step:before { content: counter(item); width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: #10233f; color: #fff; font-weight: 950; font-size: 13px; }
+    .step strong { color: #10233f; display: block; font-size: 12.5px; margin-bottom: 2px; }
+    .step span { color: #55657a; font-size: 10.55px; line-height: 1.65; }
+    .footer-mark { position: absolute; right: 16mm; left: 16mm; bottom: 9mm; border-top: 1px solid #e0e8f1; display: flex; justify-content: space-between; padding-top: 5px; color: #8b97a8; font-size: 9px; }
+    .small { font-size: 10px; color: #667085; }
+  </style>
+</head>
+<body>
+  <main class="document">
+    <section class="page cover">
+      <div class="pitch-lines"></div>
+      <div class="cover-content">
+        <div class="cover-top">
+          <div class="brand">
+            <div class="brand-mark">نادي</div>
+            <div>
+              <div class="brand-title">نظام إدارة نادي كرة قدم</div>
+              <div class="brand-subtitle">منصة تشغيل رياضي وإداري ومالي متكاملة</div>
+            </div>
+          </div>
+          <div class="badge">وثيقة عرض رسمية</div>
+        </div>
+        <div class="cover-main">
+          <div class="kicker">توثيق شامل لمميزات النظام</div>
+          <h1>منصة مدمجة بذكاء اصطناعي لإدارة النادي واللاعبين</h1>
+          <p class="cover-lead">نظام متكامل يوضح كل فيوتشرز النادي في مكان واحد: تسجيل اللاعبين، الفرق، التدريبات، الحضور، الاشتراكات، التقييمات، التقارير، الرسائل، مع ذكاء اصطناعي يساعد في تقييم اللاعبين وتحليل الأداء والمتابعة.</p>
+          <div class="cover-strip">
+            <div class="strip-item"><strong>إدارة سهلة</strong><span>كل الملفات والعمليات اليومية في لوحة واحدة واضحة.</span></div>
+            <div class="strip-item"><strong>AI للتقييم</strong><span>تقييم وتحليل ذكي لمستوى اللاعب والحضور والأداء.</span></div>
+            <div class="strip-item"><strong>مالية منظمة</strong><span>اشتراكات، مدفوعات، متأخرات، مصروفات، وأرباح.</span></div>
+            <div class="strip-item"><strong>تجربة احترافية</strong><span>واجهة عربية منظمة مناسبة للإدارة والمدربين وأولياء الأمور.</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="cover-footer"><span>إصدار العرض: أغسطس 2026</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>لماذا هذه المنصة؟</span></div>
+      <div class="content">
+        <span class="section-label">01 / فكرة المنتج</span>
+        <h2>منصة تجعل إدارة النادي أسهل وأوضح وأكثر احترافية</h2>
+        <div class="accent-line"></div>
+        <p class="lead">الفكرة ببساطة أن النادي لا يحتاج إلى أكثر من مكان لتسجيل اللاعبين، متابعة الحضور، معرفة الاشتراكات، تنظيم الفرق، وإرسال الرسائل. النظام يجمع كل ذلك في تجربة واحدة مرتبة، بحيث يفهمها المدير والموظف والمدرب وولي الأمر بدون تعقيد.</p>
+        <div class="note">هذا المستند مكتوب كعرض مفهوم للمشتري وصاحب القرار، لذلك يركز على القيمة العملية والمميزات التي تظهر في الاستخدام الحقيقي للنادي، وليس على تفاصيل برمجية معقدة.</div>
+        <div class="grid-3">
+          <div class="metric-card"><span class="num">تنظيم كامل</span><h4>بدلا من الدفاتر والملفات المتفرقة</h4><p>كل لاعب له ملف واضح، وكل فريق له جدول، وكل اشتراك له حالة، وكل عملية يمكن الرجوع لها بسهولة.</p></div>
+          <div class="metric-card"><span class="num">متابعة يومية</span><h4>صورة لحظية عن تشغيل النادي</h4><p>الإدارة تعرف الحضور، الغياب، المتأخرات، مواعيد التدريب، والمدفوعات من لوحة واحدة.</p></div>
+          <div class="metric-card"><span class="num">تجربة أرقى</span><h4>ثقة أكبر مع اللاعبين وأولياء الأمور</h4><p>المواعيد والرسائل والتقارير تصبح منظمة، مما يعطي انطباعا احترافيا ويقلل سوء الفهم.</p></div>
+        </div>
+        <h3>ما الذي يشتريه العميل فعليا؟</h3>
+        <ul>
+          <li>طريقة منظمة لإدارة النادي اليومي بدون تشتيت.</li>
+          <li>ملفات لاعبين كاملة تساعد في المتابعة الرياضية والإدارية والمالية.</li>
+          <li>لوحة واضحة للإدارة تعرض أهم الأرقام والقرارات المطلوبة.</li>
+          <li>تواصل أسرع مع أولياء الأمور واللاعبين والمدربين.</li>
+          <li>مظهر احترافي للنادي أمام العملاء الحاليين والجدد.</li>
+        </ul>
+        <div class="quote">النظام يحول إدارة النادي من متابعة يدوية متفرقة إلى تجربة منظمة قابلة للقياس والمتابعة.</div>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>القيمة التجارية</span></div>
+      <div class="content">
+        <span class="section-label">02 / قيمة الشراء</span>
+        <h2>مميزات يفهمها صاحب النادي قبل الفريق التقني</h2>
+        <div class="accent-line"></div>
+        <p class="lead">قيمة النظام تظهر في تقليل الفوضى، رفع جودة الخدمة، زيادة وضوح الإيرادات، وتحسين صورة النادي أمام اللاعبين وأولياء الأمور. كل ميزة داخل المنصة مصممة لتخدم هدفا عمليا: وقت أقل في المتابعة، معلومات أدق، وقرار أسرع.</p>
+        <div class="grid-2">
+          <div class="feature-card"><h4>سهولة البيع والتقديم</h4><p>النظام يمكن عرضه بسهولة لأي نادي لأنه يخاطب احتياجات يومية واضحة: التسجيل، الاشتراكات، الحضور، الفرق، المدربين، والتواصل.</p></div>
+          <div class="feature-card"><h4>قيمة مباشرة للإدارة</h4><p>الإدارة تحصل على صورة كاملة عن النادي، مما يساعدها على معرفة الأداء المالي والتشغيلي بدون انتظار تجميع بيانات يدوي.</p></div>
+          <div class="feature-card"><h4>تجربة أفضل للعميل</h4><p>ولي الأمر يشعر أن النادي منظم ومحترف عندما يجد مواعيد واضحة، رسائل مرتبة، ومتابعة منتظمة لمستوى اللاعب.</p></div>
+          <div class="feature-card"><h4>قابلية تقديمه لأكثر من نادي</h4><p>المنصة مناسبة للأندية والأكاديميات ومراكز التدريب، ويمكن عرضها بأسماء وهوية مختلفة حسب الجهة المستخدمة.</p></div>
+        </div>
+        <h3>النتائج المتوقعة من الاستخدام</h3>
+        <table><thead><tr><th>المجال</th><th>ما يقدمه النظام</th><th>القيمة للمشتري</th></tr></thead><tbody>
+          <tr><td>الإدارة</td><td>لوحات متابعة، تنظيم المستخدمين، ملفات اللاعبين، ومؤشرات تشغيل.</td><td>تحكم أوضح في النادي بالكامل.</td></tr>
+          <tr><td>المالية</td><td>اشتراكات، مدفوعات، متأخرات، مصروفات، وإيرادات.</td><td>رؤية مالية تساعد على التحصيل والتخطيط.</td></tr>
+          <tr><td>الملعب</td><td>فرق، تدريبات، حضور، تقييمات، وملاحظات مدربين.</td><td>متابعة رياضية منظمة لكل لاعب وفريق.</td></tr>
+          <tr><td>العلاقة مع العملاء</td><td>إشعارات ورسائل وتقارير مبسطة لأولياء الأمور.</td><td>احترافية أعلى وثقة أقوى في النادي.</td></tr>
+        </tbody></table>
+        <div class="band"><strong>رسالة البيع الأساسية:</strong> المنصة ليست مجرد برنامج تسجيل، بل نظام تشغيل كامل يساعد النادي على الإدارة والمتابعة والتحصيل والتواصل من مكان واحد.</div>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>الفيوتشرز الأساسية</span></div>
+      <div class="content">
+        <span class="section-label">03 / الفيوتشرز الأساسية</span>
+        <h2>الفيوتشرز الموجودة في النظام بشكل واضح</h2>
+        <div class="accent-line"></div>
+        <p class="lead">هذه هي المميزات الأساسية التي يحصل عليها النادي داخل المنصة. كل فيتشر له استخدام واضح في التشغيل اليومي، وكل جزء يخدم الإدارة أو الموظف أو المدرب أو ولي الأمر بطريقة مباشرة وسهلة الفهم.</p>
+        <div class="toc">
+          <div class="toc-row"><div><strong>فيتشر لوحة التحكم</strong><span>تعرض أرقام النادي المهمة: عدد اللاعبين، الاشتراكات، الحضور، الغياب، المدفوعات، المتأخرات، والفرق النشطة.</span></div><em>01</em></div>
+          <div class="toc-row"><div><strong>فيتشر إدارة اللاعبين</strong><span>ملف كامل لكل لاعب فيه بياناته، ولي الأمر، الفريق، المركز، الاشتراك، الحضور، الحالة الطبية، والملاحظات.</span></div><em>02</em></div>
+          <div class="toc-row"><div><strong>فيتشر الفرق والفئات</strong><span>إنشاء فرق وفئات عمرية، توزيع اللاعبين، ربط المدربين، وتنظيم كل فريق حسب السن والمستوى.</span></div><em>03</em></div>
+          <div class="toc-row"><div><strong>فيتشر التدريبات والحضور</strong><span>جدولة الحصص، تسجيل حضور اللاعبين، معرفة الغياب، وقياس نسبة الالتزام لكل لاعب وفريق.</span></div><em>04</em></div>
+          <div class="toc-row"><div><strong>فيتشر تقييم اللاعبين</strong><span>تقييم فني وبدني وسلوكي، مع ملاحظات المدرب وتاريخ تطور اللاعب خلال الموسم.</span></div><em>05</em></div>
+          <div class="toc-row"><div><strong>فيتشر الاشتراكات والمالية</strong><span>خطط اشتراك، مدفوعات، متأخرات، مصروفات، إيرادات، وأرباح بتقارير واضحة للإدارة.</span></div><em>06</em></div>
+          <div class="toc-row"><div><strong>فيتشر الذكاء الاصطناعي</strong><span>النظام مدمج بذكاء اصطناعي في تقييم اللاعبين، تحليل الحضور، اقتراح المتابعة، تلخيص التقارير، وصياغة الرسائل.</span></div><em>07</em></div>
+          <div class="toc-row"><div><strong>فيتشر التواصل والإشعارات</strong><span>إرسال رسائل وتنبيهات لأولياء الأمور واللاعبين والمدربين، مع قوالب جاهزة وسجل تواصل.</span></div><em>08</em></div>
+        </div>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>رحلة اللاعب</span></div>
+      <div class="content">
+        <span class="section-label">04 / رحلة الاستخدام</span>
+        <h2>من أول تسجيل اللاعب حتى متابعة مستواه</h2>
+        <div class="accent-line"></div>
+        <p class="lead">أفضل طريقة لفهم النظام هي متابعة رحلة لاعب داخل النادي. كل خطوة في الرحلة لها مكان واضح داخل المنصة، مما يجعل التجربة سهلة للموظف والمدرب وولي الأمر.</p>
+        <div class="steps">
+          <div class="step"><div><strong>تسجيل اللاعب</strong><span>إضافة بيانات اللاعب وولي الأمر، السن، المركز، مستوى الخبرة، الملاحظات الطبية، والفرع أو الملعب المناسب.</span></div></div>
+          <div class="step"><div><strong>تحديد الفريق أو الفئة</strong><span>توزيع اللاعب على فريق مناسب حسب السن والمستوى، وربطه بالمدرب وجدول التدريب.</span></div></div>
+          <div class="step"><div><strong>اختيار الاشتراك</strong><span>تحديد الخطة المناسبة، قيمة الاشتراك، موعد الدفع، وطريقة السداد، مع متابعة الحالة تلقائيا.</span></div></div>
+          <div class="step"><div><strong>متابعة الحضور</strong><span>تسجيل حضور اللاعب في كل تدريب ومعرفة التزامه ونسبة غيابه خلال الفترة.</span></div></div>
+          <div class="step"><div><strong>تقييم الأداء</strong><span>إضافة تقييمات المدرب والملاحظات الفنية والبدنية، ثم عرض تطور اللاعب بوضوح.</span></div></div>
+          <div class="step"><div><strong>التواصل والتقارير</strong><span>إرسال مواعيد وتنبيهات وتقارير مختصرة لولي الأمر، مع حفظ سجل التواصل داخل ملف اللاعب.</span></div></div>
+        </div>
+        <div class="quote">كل لاعب يصبح له ملف حي يجمع بياناته واشتراكه وحضوره وأدائه وتواصله في مكان واحد.</div>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>اللاعبون</span></div>
+      <div class="content">
+        <span class="section-label">05 / إدارة اللاعبين</span>
+        <h2>ملف شامل لكل لاعب داخل النادي</h2>
+        <div class="accent-line"></div>
+        <p class="lead">إدارة اللاعبين هي قلب النظام. كل لاعب له صفحة واضحة تجمع كل ما يحتاجه النادي عنه، بحيث لا تضيع البيانات بين موظف ومدرب وإدارة.</p>
+        <div class="grid-3">
+          <div class="feature-card"><h4>بيانات أساسية</h4><p>اسم اللاعب، تاريخ الميلاد، السن، رقم الهاتف، العنوان، الفرع، تاريخ الانضمام، وحالة اللاعب داخل النادي.</p></div>
+          <div class="feature-card"><h4>بيانات رياضية</h4><p>المركز داخل الملعب، القدم المفضلة، المستوى الحالي، الفريق، الفئة العمرية، والمدرب المسؤول.</p></div>
+          <div class="feature-card"><h4>ولي الأمر</h4><p>بيانات ولي الأمر، وسائل التواصل، صلة القرابة، وسجل الرسائل والتنبيهات المرتبطة باللاعب.</p></div>
+          <div class="feature-card"><h4>الاشتراك</h4><p>الخطة الحالية، قيمة الاشتراك، تاريخ البداية والنهاية، المدفوعات، والمتأخرات إن وجدت.</p></div>
+          <div class="feature-card"><h4>الحضور</h4><p>عدد الحصص، أيام الحضور والغياب، نسبة الالتزام، وملاحظات الانتظام في التدريب.</p></div>
+          <div class="feature-card"><h4>ملاحظات طبية</h4><p>أي ملاحظات صحية مهمة تساعد المدرب والإدارة على التعامل السليم مع اللاعب أثناء النشاط.</p></div>
+        </div>
+        <h3>مميزات عملية في ملف اللاعب</h3>
+        <ul>
+          <li>بحث سريع عن اللاعب بالاسم أو رقم الهاتف أو الفريق.</li>
+          <li>عرض حالة اللاعب: نشط، متوقف، جديد، أو يحتاج متابعة.</li>
+          <li>حفظ تاريخ اللاعب داخل النادي من أول يوم.</li>
+          <li>إظهار كل المعلومات المهمة بدون الحاجة لسؤال أكثر من شخص.</li>
+          <li>ربط الملف بالتقارير المالية والرياضية والتواصلية.</li>
+        </ul>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>الفرق والتدريبات</span></div>
+      <div class="content">
+        <span class="section-label">06 / الملعب والتشغيل</span>
+        <h2>تنظيم الفرق والفئات وجدولة التدريبات</h2>
+        <div class="accent-line"></div>
+        <p class="lead">النظام يساعد النادي على بناء هيكل رياضي واضح: فرق، فئات عمرية، مدربين، مواعيد تدريب، ملاعب، وقوائم حضور. كل فريق يمكن متابعته ككيان مستقل داخل المنصة.</p>
+        <div class="grid-2">
+          <div class="feature-card"><h4>إنشاء الفرق والفئات</h4><p>تقسيم اللاعبين إلى فرق حسب السن أو المستوى أو المرحلة الرياضية، مع تحديد عدد اللاعبين المناسب لكل فريق.</p></div>
+          <div class="feature-card"><h4>ربط المدربين</h4><p>تحديد مدرب أو أكثر لكل فريق، مع إتاحة متابعة الحضور والملاحظات الخاصة بالفريق.</p></div>
+          <div class="feature-card"><h4>جدولة التدريبات</h4><p>إضافة أيام التدريب، الوقت، الملعب، مدة الحصة، والفريق المستهدف، بشكل يسهل الرجوع إليه.</p></div>
+          <div class="feature-card"><h4>إدارة الملاعب</h4><p>ربط الحصص والمباريات بملاعب محددة لتقليل التضارب وتحسين التخطيط اليومي.</p></div>
+        </div>
+        <table><thead><tr><th>العنصر</th><th>ما يمكن إدارته</th><th>الفائدة للنادي</th></tr></thead><tbody>
+          <tr><td>الفريق</td><td>الاسم، الفئة، اللاعبين، المدرب، الجدول.</td><td>صورة منظمة لكل مجموعة تدريبية.</td></tr>
+          <tr><td>التدريب</td><td>اليوم، الوقت، الملعب، الحضور، الملاحظات.</td><td>تشغيل يومي واضح وسهل المتابعة.</td></tr>
+          <tr><td>المدرب</td><td>الفرق المسؤولة، الحضور، التقييمات، الرسائل.</td><td>قياس أداء العمل الفني والتنظيمي.</td></tr>
+          <tr><td>الملعب</td><td>المواعيد، الحجوزات، الفرق المرتبطة.</td><td>تنسيق أفضل للموارد والمساحات.</td></tr>
+        </tbody></table>
+        <div class="band"><strong>قيمة مهمة:</strong> تنظيم التدريب يظهر في قدرة الإدارة على معرفة من حضر، من غاب، من يحتاج متابعة، وما هو وضع كل فريق.</div>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>الأداء والتقييم</span></div>
+      <div class="content">
+        <span class="section-label">07 / تطوير اللاعبين</span>
+        <h2>تقييم اللاعبين ومتابعة مستواهم بذكاء</h2>
+        <div class="accent-line"></div>
+        <p class="lead">المنصة توفر فيتشر تقييم اللاعبين بشكل واضح، ويمكن دمج الذكاء الاصطناعي داخل التقييم لمساعدة المدرب والإدارة على قراءة مستوى اللاعب، فهم نقاط القوة، معرفة نقاط التطوير، ومتابعة التحسن بمرور الوقت.</p>
+        <div class="grid-3">
+          <div class="feature-card"><h4>تقييم فني مدعوم بالذكاء الاصطناعي</h4><p>متابعة مهارات اللاعب مثل التمرير، التسديد، الاستلام، التحرك، التمركز، والوعي داخل الملعب، مع تلخيص ذكي لمستواه.</p></div>
+          <div class="feature-card"><h4>تقييم بدني مدعوم بالذكاء الاصطناعي</h4><p>متابعة اللياقة، السرعة، القوة، المرونة، القدرة على التحمل، والاستجابة للتدريب، مع إبراز اللاعب الذي يحتاج متابعة.</p></div>
+          <div class="feature-card"><h4>تقييم سلوكي مدعوم بالذكاء الاصطناعي</h4><p>متابعة الالتزام، الانضباط، التعاون، احترام التعليمات، والروح الرياضية، مع تنبيه الإدارة عند تكرار ملاحظة معينة.</p></div>
+          <div class="feature-card"><h4>ملاحظات المدرب</h4><p>إضافة ملاحظات مختصرة بعد التدريب أو المباراة تساعد في رسم خطة تطوير اللاعب.</p></div>
+          <div class="feature-card"><h4>تطور زمني</h4><p>مقارنة مستوى اللاعب بين فترات مختلفة لمعرفة التحسن والنقاط التي تحتاج إلى تركيز.</p></div>
+          <div class="feature-card"><h4>تقارير لأولياء الأمور</h4><p>عرض ملخص واضح عن التزام اللاعب وتطوره بطريقة سهلة وغير معقدة.</p></div>
+        </div>
+        <h3>ماذا يستفيد النادي؟</h3>
+        <ul>
+          <li>المدرب يتابع اللاعب بناء على سجل واضح وليس ذاكرة شخصية فقط.</li>
+          <li>الإدارة تستطيع معرفة الفرق الأكثر التزاما وتطورا.</li>
+          <li>ولي الأمر يشعر أن هناك متابعة حقيقية وليست مجرد حضور تدريب.</li>
+          <li>سهولة اكتشاف اللاعبين المميزين وترشيحهم للتصعيد أو المشاركة.</li>
+        </ul>
+        <div class="quote">النظام مدمج بذكاء اصطناعي يساعد في تقييم اللاعب وتحويل ملاحظات المدرب إلى ملخص واضح وخطة متابعة مفهومة.</div>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>الذكاء الاصطناعي</span></div>
+      <div class="content">
+        <span class="section-label">08 / فيوتشرز الذكاء الاصطناعي</span>
+        <h2>النظام مدمج بذكاء اصطناعي في التقييم والتحليل والمتابعة</h2>
+        <div class="accent-line"></div>
+        <p class="lead">الذكاء الاصطناعي داخل النظام ليس كلمة تسويقية فقط، بل فيوتشرز واضحة تساعد المستخدم في الشغل اليومي: يقيم، يحلل، يلخص، يقترح، ينبه، ويجهز رسائل وتقارير مفهومة للإدارة والمدربين وأولياء الأمور.</p>
+        <div class="grid-2">
+          <div class="ai-card"><h4>AI لتقييم اللاعبين</h4><p>يقيم مستوى اللاعب من خلال الحضور، ملاحظات المدرب، التقييم الفني والبدني والسلوكي، ثم يطلع ملخص واضح عن مستواه.</p></div>
+          <div class="ai-card"><h4>AI لتحليل الأداء</h4><p>يحلل تطور اللاعب أو الفريق بمرور الوقت، ويظهر نقاط القوة والنقاط التي تحتاج تدريب أو متابعة.</p></div>
+          <div class="ai-card"><h4>AI لتحليل الحضور والالتزام</h4><p>يكتشف اللاعبين كثيري الغياب، اللاعبين المنتظمين، والفرق التي تحتاج متابعة في الالتزام.</p></div>
+          <div class="ai-card"><h4>AI لاقتراح المتابعة</h4><p>يقترح على الإدارة أو المدرب من يحتاج متابعة بسبب غياب، انخفاض تقييم، انتهاء اشتراك، أو ملاحظة متكررة.</p></div>
+          <div class="ai-card"><h4>AI لتلخيص التقارير</h4><p>يلخص تقارير اللاعبين والفرق والاشتراكات في نقاط سهلة تساعد صاحب القرار على الفهم السريع.</p></div>
+          <div class="ai-card"><h4>AI لصياغة الرسائل</h4><p>يجهز رسائل احترافية لأولياء الأمور مثل تذكير الاشتراك، تغيير موعد التدريب، أو ملخص أداء اللاعب.</p></div>
+        </div>
+        <h3>أمثلة سهلة للفهم</h3>
+        <ul>
+          <li>AI يقيم لاعب بناء على حضوره وتقييمه الفني والبدني وملاحظات المدرب.</li>
+          <li>AI يقول للإدارة إن اللاعب مستواه بيتحسن أو محتاج متابعة في نقطة معينة.</li>
+          <li>AI ينبه أن لاعب غيابه زاد أو اشتراكه قرب ينتهي.</li>
+          <li>AI يكتب ملخص أداء قصير ومنظم يمكن إرساله لولي الأمر.</li>
+        </ul>
+        <div class="band"><strong>قيمة الذكاء الاصطناعي:</strong> النظام مدمج بذكاء اصطناعي في تقييم اللاعبين، تحليل الأداء، متابعة الحضور، تلخيص التقارير، اقتراح القرارات، وصياغة الرسائل.</div>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>الاشتراكات والمالية</span></div>
+      <div class="content">
+        <span class="section-label">09 / الإدارة المالية</span>
+        <h2>تحصيل واضح ومتابعة مالية منظمة</h2>
+        <div class="accent-line"></div>
+        <p class="lead">المنصة تساعد النادي على تنظيم الجانب المالي اليومي، بداية من خطط الاشتراك وحتى المدفوعات والمتأخرات والمصروفات. كل عملية مالية تصبح مسجلة ويمكن الرجوع لها عند الحاجة.</p>
+        <div class="grid-3">
+          <div class="feature-card"><h4>خطط الاشتراك</h4><p>إضافة خطط شهرية أو ربع سنوية أو موسمية حسب طريقة عمل النادي، مع تحديد القيمة والمدة.</p></div>
+          <div class="feature-card"><h4>تسجيل المدفوعات</h4><p>تسجيل كل دفعة باسم اللاعب، تاريخها، قيمتها، وطريقة السداد، مع حفظ سجل كامل للمدفوعات.</p></div>
+          <div class="feature-card"><h4>متابعة المتأخرات</h4><p>إظهار الاشتراكات المتأخرة أو القريبة من الانتهاء حتى يستطيع الموظف التواصل في الوقت المناسب.</p></div>
+          <div class="feature-card"><h4>إدارة المصروفات</h4><p>تسجيل مصروفات النادي مثل إيجار ملعب، أدوات تدريب، رواتب، انتقالات، أو أي مصروف تشغيلي.</p></div>
+          <div class="feature-card"><h4>إيرادات وأرباح</h4><p>عرض الإيرادات والمصروفات وصافي الربح بصورة مبسطة تساعد الإدارة على فهم وضع النادي.</p></div>
+          <div class="feature-card"><h4>إيصالات وسجلات</h4><p>حفظ سجل واضح لكل حركة مالية لتسهيل المراجعة والتسليم بين الموظفين.</p></div>
+        </div>
+        <table><thead><tr><th>الميزة</th><th>شرح بسيط</th><th>أثرها على النادي</th></tr></thead><tbody>
+          <tr><td>حالة الاشتراك</td><td>نشط، قريب من الانتهاء، منتهي، أو متأخر.</td><td>متابعة أسرع للتحصيل.</td></tr>
+          <tr><td>سجل المدفوعات</td><td>كل دفعة مرتبطة باللاعب وتاريخها.</td><td>وضوح ومراجعة سهلة.</td></tr>
+          <tr><td>المصروفات</td><td>تصنيف المصروفات اليومية والشهرية.</td><td>رؤية أوضح للربحية.</td></tr>
+          <tr><td>تقارير مالية</td><td>إيرادات، متأخرات، مصروفات، وصافي نتيجة.</td><td>قرار إداري أفضل.</td></tr>
+        </tbody></table>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>التواصل والإشعارات</span></div>
+      <div class="content">
+        <span class="section-label">10 / التواصل</span>
+        <h2>تواصل منظم مع اللاعبين وأولياء الأمور والمدربين</h2>
+        <div class="accent-line"></div>
+        <p class="lead">من أكثر الأشياء التي تظهر احترافية النادي طريقة التواصل. النظام يجعل الرسائل والتنبيهات جزءا من العمل اليومي، بدل الاعتماد على محادثات متفرقة يصعب الرجوع إليها.</p>
+        <div class="grid-2">
+          <div class="feature-card"><h4>رسائل لأولياء الأمور</h4><p>إرسال مواعيد التدريب، تغييرات الجدول، تذكيرات الاشتراك، وملاحظات مختصرة عن اللاعب.</p></div>
+          <div class="feature-card"><h4>تنبيهات داخلية</h4><p>تنبيه الموظف أو الإدارة بوجود اشتراك منتهي، غياب متكرر، موعد مهم، أو طلب يحتاج متابعة.</p></div>
+          <div class="feature-card"><h4>قوالب جاهزة</h4><p>نماذج رسائل رسمية يمكن استخدامها بسرعة مع إمكانية تعديل النص حسب الموقف.</p></div>
+          <div class="feature-card"><h4>سجل تواصل</h4><p>حفظ الرسائل والملاحظات داخل ملف اللاعب أو الفريق حتى تكون المتابعة واضحة للجميع.</p></div>
+        </div>
+        <h3>أمثلة على الرسائل</h3>
+        <ul>
+          <li>تذكير بموعد التدريب القادم.</li>
+          <li>تذكير لطيف بقرب انتهاء الاشتراك.</li>
+          <li>إبلاغ بتغيير الملعب أو توقيت الحصة.</li>
+          <li>إرسال ملخص أداء مبسط بعد فترة تدريبية.</li>
+          <li>دعوة لحضور مباراة أو فعالية أو اختبار مستوى.</li>
+        </ul>
+        <div class="quote">التواصل المنظم يجعل النادي أقرب إلى العميل، ويقلل الأسئلة المتكررة، ويحسن صورة الخدمة.</div>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>المباريات والفعاليات</span></div>
+      <div class="content">
+        <span class="section-label">11 / الفعاليات الرياضية</span>
+        <h2>تنظيم المباريات والاختبارات والمعسكرات</h2>
+        <div class="accent-line"></div>
+        <p class="lead">إلى جانب التدريبات اليومية، يمكن للنادي تنظيم المباريات الودية والرسمية واختبارات المستوى والمعسكرات من داخل نفس النظام، مع ربط كل حدث باللاعبين والمدربين والملعب.</p>
+        <div class="grid-3">
+          <div class="feature-card"><h4>جدول المباريات</h4><p>تسجيل تاريخ المباراة، الخصم، الملعب، الفريق، الحالة، والنتيجة بعد انتهائها.</p></div>
+          <div class="feature-card"><h4>قائمة المشاركين</h4><p>تحديد اللاعبين المشاركين والغياب والبدلاء، مما يحفظ سجل مشاركة واضح لكل لاعب.</p></div>
+          <div class="feature-card"><h4>نتائج وملاحظات</h4><p>إضافة الأهداف، النتيجة، أبرز اللاعبين، وملاحظات المدرب بعد المباراة.</p></div>
+          <div class="feature-card"><h4>اختبارات مستوى</h4><p>تنظيم أيام التقييم للاعبين الجدد أو اللاعبين المرشحين للتصعيد بين الفرق.</p></div>
+          <div class="feature-card"><h4>المعسكرات</h4><p>إدارة بيانات المعسكر، الرسوم، المشاركين، الفترة، والملاحظات الخاصة بالحدث.</p></div>
+          <div class="feature-card"><h4>فعاليات النادي</h4><p>متابعة أيام مفتوحة، احتفالات، لقاءات أولياء الأمور، أو فعاليات تسويقية ورياضية.</p></div>
+        </div>
+        <div class="band"><strong>قيمة إضافية:</strong> كل حدث رياضي يصبح جزءا من سجل النادي، ويمكن استخدامه لاحقا في تقييم اللاعبين والتواصل مع أولياء الأمور والتقارير.</div>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>التقارير</span></div>
+      <div class="content">
+        <span class="section-label">12 / التقارير والتحليلات</span>
+        <h2>تقارير تساعد الإدارة على رؤية الصورة الكاملة</h2>
+        <div class="accent-line"></div>
+        <p class="lead">التقارير تجعل البيانات اليومية قابلة للفهم. بدلا من سؤال الموظفين وتجميع الأرقام يدويا، يستطيع المدير فتح لوحة التقارير ومعرفة حالة النادي بسرعة.</p>
+        <table><thead><tr><th>التقرير</th><th>ماذا يعرض؟</th><th>كيف يخدم القرار؟</th></tr></thead><tbody>
+          <tr><td>تقرير اللاعبين</td><td>عدد اللاعبين، الحالات، الفرق، الفئات، وتطور كل لاعب.</td><td>معرفة حجم النشاط وتوزيع اللاعبين.</td></tr>
+          <tr><td>تقرير الحضور</td><td>نسب الحضور والغياب حسب اللاعب أو الفريق أو الفترة.</td><td>تحسين الالتزام والتواصل مع غير المنتظمين.</td></tr>
+          <tr><td>تقرير الاشتراكات</td><td>اشتراكات نشطة، قريبة الانتهاء، منتهية، ومتأخرة.</td><td>تحسين التحصيل وتقليل المتأخرات.</td></tr>
+          <tr><td>تقرير الأداء</td><td>تقييمات وملاحظات وتطورات اللاعبين والفرق.</td><td>دعم قرارات التصعيد والمتابعة الفنية.</td></tr>
+          <tr><td>التقرير المالي</td><td>مدفوعات، مصروفات، إيرادات، وصافي ربح.</td><td>فهم الأداء المالي للنادي بصورة مباشرة.</td></tr>
+        </tbody></table>
+        <div class="grid-2">
+          <div class="feature-card"><h4>فلاتر سهلة</h4><p>إمكانية عرض التقرير حسب التاريخ، الفريق، الفئة، المدرب، حالة الاشتراك، أو نسبة الحضور.</p></div>
+          <div class="feature-card"><h4>ملخصات للإدارة</h4><p>أرقام مختصرة تساعد صاحب القرار على فهم الوضع بدون قراءة تفاصيل طويلة.</p></div>
+          <div class="feature-card"><h4>تصدير ومشاركة</h4><p>إمكانية تجهيز تقارير قابلة للمشاركة مع الإدارة أو المدربين أو أولياء الأمور حسب الحاجة.</p></div>
+          <div class="feature-card"><h4>مؤشرات نمو</h4><p>متابعة الزيادة في عدد اللاعبين، تحسن الحضور، تطور الإيرادات، وأداء الفرق.</p></div>
+        </div>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>تجربة المستخدم</span></div>
+      <div class="content">
+        <span class="section-label">13 / واجهة الاستخدام</span>
+        <h2>واجهة عربية مريحة وسهلة لأي مستخدم</h2>
+        <div class="accent-line"></div>
+        <p class="lead">تم تصور المنصة لتكون مفهومة للمستخدم العادي: موظف استقبال، مدير، مدرب، أو ولي أمر. كل شاشة لها هدف واضح، وكل عملية يومية يمكن تنفيذها بخطوات بسيطة.</p>
+        <div class="grid-3">
+          <div class="feature-card"><h4>تصميم عربي كامل</h4><p>اتجاه عربي، كلمات واضحة، وأقسام مرتبة تناسب طبيعة العمل في الأندية العربية.</p></div>
+          <div class="feature-card"><h4>لوحات مختصرة</h4><p>عرض المعلومات المهمة في بطاقات ومؤشرات حتى يفهم المستخدم الوضع بسرعة.</p></div>
+          <div class="feature-card"><h4>بحث وفلاتر</h4><p>الوصول السريع للاعب أو الفريق أو الاشتراك أو التقرير بدون تضييع وقت.</p></div>
+          <div class="feature-card"><h4>مناسبة للموبايل</h4><p>تجربة مرنة تساعد الموظف أو المدرب على المتابعة من الهاتف عند الحاجة.</p></div>
+          <div class="feature-card"><h4>تنظيم مرئي</h4><p>ألوان هادئة، مساحات واضحة، عناوين مفهومة، وترتيب يجعل الاستخدام مريحا للعين.</p></div>
+          <div class="feature-card"><h4>اختصار للمهام</h4><p>عمليات متكررة مثل تسجيل حضور أو دفعة أو رسالة يمكن الوصول لها بسهولة.</p></div>
+        </div>
+        <h3>الأدوار داخل المنصة</h3>
+        <table><thead><tr><th>المستخدم</th><th>ما يراه</th><th>الفائدة</th></tr></thead><tbody>
+          <tr><td>الإدارة</td><td>كل المؤشرات والملفات والتقارير.</td><td>تحكم شامل في النادي.</td></tr>
+          <tr><td>الموظف</td><td>التسجيل، المدفوعات، ملفات اللاعبين، الرسائل.</td><td>إنجاز أسرع للمهام اليومية.</td></tr>
+          <tr><td>المدرب</td><td>فرقه، الحضور، التقييمات، الملاحظات.</td><td>متابعة فنية منظمة.</td></tr>
+          <tr><td>ولي الأمر</td><td>المواعيد، الاشتراك، التنبيهات، ملخص الأداء.</td><td>ثقة ووضوح في متابعة اللاعب.</td></tr>
+        </tbody></table>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>الصلاحيات والأمان</span></div>
+      <div class="content">
+        <span class="section-label">14 / الإدارة والصلاحيات</span>
+        <h2>صلاحيات منظمة تحافظ على وضوح العمل</h2>
+        <div class="accent-line"></div>
+        <p class="lead">وجود أكثر من مستخدم داخل النادي يحتاج إلى تنظيم. المنصة تدعم فكرة الأدوار، بحيث يرى كل شخص ما يناسب عمله فقط، وتظل الإدارة قادرة على متابعة كل شيء من مستوى أعلى.</p>
+        <div class="grid-2">
+          <div class="feature-card"><h4>مدير النظام</h4><p>إدارة كاملة للمنصة، المستخدمين، الإعدادات، التقارير، والبيانات الأساسية.</p></div>
+          <div class="feature-card"><h4>مسؤول مالي</h4><p>متابعة الاشتراكات والمدفوعات والمتأخرات والمصروفات والتقارير المالية.</p></div>
+          <div class="feature-card"><h4>مشرف رياضي</h4><p>إدارة الفرق والتدريبات والحضور والتقييمات وملاحظات المدربين.</p></div>
+          <div class="feature-card"><h4>موظف استقبال</h4><p>تسجيل اللاعبين، تحديث البيانات، إدخال المدفوعات، والتعامل مع الاستفسارات اليومية.</p></div>
+        </div>
+        <h3>مميزات الصلاحيات</h3>
+        <ul>
+          <li>كل مستخدم يدخل على الأدوات المناسبة لدوره.</li>
+          <li>الإدارة تقدر تضيف مستخدمين وتحدد صلاحياتهم بسهولة.</li>
+          <li>البيانات الحساسة مثل المالية يمكن حصرها على أشخاص محددين.</li>
+          <li>توزيع المسؤوليات يجعل التشغيل أوضح وأسرع.</li>
+          <li>إمكانية مراجعة النشاطات والملفات المهمة داخل النظام.</li>
+        </ul>
+        <div class="band"><strong>ميزة إدارية:</strong> الصلاحيات المنظمة تجعل المنصة مناسبة لناد صغير أو أكاديمية كبيرة لديها أكثر من فرع وأكثر من موظف ومدرب.</div>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>مميزات إضافية</span></div>
+      <div class="content">
+        <span class="section-label">15 / قابلية التوسع</span>
+        <h2>منصة قابلة للتقديم والتطوير حسب احتياج النادي</h2>
+        <div class="accent-line"></div>
+        <p class="lead">النظام مصمم كمنتج يمكن استخدامه كنقطة بداية قوية لإدارة نادي كرة قدم، ومع الوقت يمكن توسيعه بإضافات تناسب طبيعة كل نادي أو أكاديمية.</p>
+        <div class="grid-3">
+          <div class="feature-card"><h4>فروع متعددة</h4><p>إمكانية تنظيم العمل حسب الفرع أو الملعب، مما يجعل المنصة مناسبة للأندية التي تعمل في أكثر من مكان.</p></div>
+          <div class="feature-card"><h4>إعدادات مرنة</h4><p>إضافة فئات عمرية، فرق، مدربين، ملاعب، خطط اشتراك، وأنواع مصروفات حسب طريقة النادي.</p></div>
+          <div class="feature-card"><h4>هوية بصرية قابلة للتخصيص</h4><p>يمكن تقديم المنصة بهوية النادي وألوانه وشعاره لتظهر كحل خاص بالجهة المستخدمة.</p></div>
+          <div class="feature-card"><h4>بوابة لأولياء الأمور</h4><p>إمكانية توفير تجربة خاصة لولي الأمر لمتابعة المواعيد والاشتراك وملخص أداء اللاعب.</p></div>
+          <div class="feature-card"><h4>تطبيق موبايل مستقبلي</h4><p>يمكن توسيع التجربة إلى تطبيق للهاتف للمدربين أو أولياء الأمور أو الإدارة.</p></div>
+          <div class="feature-card"><h4>تكاملات دفع وإشعارات</h4><p>إمكانية دعم طرق دفع وتنبيهات إضافية حسب السوق واحتياجات النادي.</p></div>
+        </div>
+        <h3>مميزات تزيد قيمة المنتج</h3>
+        <ul>
+          <li>مناسب للأندية والأكاديميات ومراكز التدريب.</li>
+          <li>يمكن عرضه كحل إداري ومالي ورياضي في نفس الوقت.</li>
+          <li>يدعم التشغيل اليومي والمتابعة الشهرية والتقارير الإدارية.</li>
+          <li>يعطي صورة احترافية للنادي أمام العملاء والشركاء.</li>
+          <li>وجود الذكاء الاصطناعي يضيف قيمة حديثة وسهلة التسويق.</li>
+        </ul>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+
+    <section class="page">
+      <div class="running-header"><span>نظام إدارة نادي كرة قدم</span><span>خلاصة العرض</span></div>
+      <div class="content">
+        <span class="section-label">16 / الخلاصة</span>
+        <h2>منصة جاهزة لتقديم تجربة إدارة نادي أكثر احترافية</h2>
+        <div class="accent-line"></div>
+        <p class="lead">تقدم المنصة حلا واضحا لأي نادي كرة قدم يريد إدارة لاعبيه وفرقه واشتراكاته وتواصله بطريقة منظمة. قوتها في أنها تجمع الجوانب الرياضية والإدارية والمالية في تجربة واحدة، مع إضافات ذكية تجعل المتابعة أسرع والقرارات أوضح.</p>
+        <div class="grid-2">
+          <div class="feature-card"><h4>للإدارة</h4><p>رؤية شاملة للتشغيل والماليات والتقارير، مع قدرة أكبر على المتابعة واتخاذ القرار.</p></div>
+          <div class="feature-card"><h4>للموظفين</h4><p>تسجيل أسرع، ملفات منظمة، متابعة اشتراكات واضحة، وتقليل كبير في التشتت اليومي.</p></div>
+          <div class="feature-card"><h4>للمدربين</h4><p>فرق وجداول وحضور وتقييمات وملاحظات في مكان واحد يسهل الرجوع إليه.</p></div>
+          <div class="feature-card"><h4>للاعبين وأولياء الأمور</h4><p>مواعيد أوضح، متابعة أفضل، تواصل منظم، وإحساس أقوى بالاحترافية.</p></div>
+        </div>
+        <h3>أبرز نقاط القوة</h3>
+        <ul>
+          <li>نظام شامل لإدارة نادي كرة قدم أو أكاديمية رياضية.</li>
+          <li>واجهة عربية واضحة ومناسبة للمستخدم غير التقني.</li>
+          <li>إدارة لاعبين وفرق ومدربين وتدريبات واشتراكات من مكان واحد.</li>
+          <li>تقارير تساعد الإدارة على رؤية الوضع الرياضي والمالي بسرعة.</li>
+          <li>مميزات ذكاء اصطناعي للتلخيص، التنبيهات، الرسائل، وتحليل الأداء.</li>
+          <li>قابل للتخصيص والتوسع حسب حجم النادي وطبيعة تشغيله.</li>
+        </ul>
+        <div class="quote">هذه المنصة تمنح النادي طريقة أذكى وأكثر تنظيما لإدارة كل ما يحدث داخل الملعب وخارجه.</div>
+        <p class="small">تم إعداد هذا المستند كملف عرض رسمي ومحايد لنظام إدارة نادي كرة قدم، دون تضمين أي أسماء تجارية أو إشارات مرتبطة بعلامة محددة.</p>
+      </div>
+      <div class="footer-mark"><span>توثيق مميزات النظام</span><span>نظام إدارة نادي كرة قدم</span></div>
+    </section>
+  </main>
+</body>
+</html>

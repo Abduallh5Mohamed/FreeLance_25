@@ -18,7 +18,7 @@ const initializeDefaultData = () => {
         const defaultUser = {
             id: '1',
             email: 'hodabdh3@gmail.com',
-            name: 'الأستاذ محمد رمضان',
+            name: 'فريق Tabweb Academy',
             role: 'admin',
             is_active: true,
             password_hash: '$2a$10$YourHashedPasswordHere', // This is a placeholder

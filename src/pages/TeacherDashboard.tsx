@@ -90,7 +90,7 @@ const TeacherDashboard = () => {
         }
 
         const user = JSON.parse(userStr) as User;
-        if (user.role !== 'admin' && user.role !== 'teacher' && user.role !== 'staff') {
+        if (user.role !== 'teacher' && user.role !== 'staff' && user.role !== 'instructor') {
           navigate('/auth');
           toast({
             variant: "destructive",
@@ -187,10 +187,10 @@ const TeacherDashboard = () => {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-4xl font-bold bg-gradient-to-r from-cyan-600 to-teal-600 bg-clip-text text-transparent mb-2">
-                {currentUser?.role === 'admin' ? 'مرحباً أيها القائد 👋' : `مرحباً، ${currentUser?.name} 👋`}
+                {`مرحباً، ${currentUser?.name} 👋`}
               </h1>
               <p className="text-slate-600 dark:text-slate-400">
-                إليك ملخص سريع عن أنشطتك اليوم - منصة القائد
+                إليك ملخص سريع عن أنشطتك اليوم - Tabweb Academy
               </p>
             </div>
             {/* Removed buttons: إدارة المحتوى التعليمي and إضافة مصروف */}
@@ -262,6 +262,26 @@ const TeacherDashboard = () => {
                 <TrendingUp className="w-4 h-4 ml-2" />
                 نتائج الامتحانات
               </Button>
+              {currentUser?.role === 'instructor' && (
+                <>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start border-emerald-600 text-emerald-600 hover:bg-emerald-50"
+                    onClick={() => navigate('/instructor-wallet')}
+                  >
+                    <DollarSign className="w-4 h-4 ml-2" />
+                    محفظتي ورصيدي
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start border-purple-600 text-purple-600 hover:bg-purple-50"
+                    onClick={() => navigate('/instructor-video-requests')}
+                  >
+                    <FileText className="w-4 h-4 ml-2" />
+                    طلبات الفيديو
+                  </Button>
+                </>
+              )}
             </CardContent>
           </Card>
 

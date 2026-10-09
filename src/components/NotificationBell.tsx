@@ -133,6 +133,10 @@ export const NotificationBell = ({ userType }: NotificationBellProps) => {
     userIdRef.current = userId;
 
     const socket = io(SOCKET_URL(), {
+      auth: { token: localStorage.getItem("authToken") },
+      // Prefer a single WebSocket connection. Polling remains a compatibility
+      // fallback, but is no longer forced in development (which produced stale
+      // polling session ids after Vite/backend reloads).
       transports: ["websocket", "polling"],
       reconnection: true,
       reconnectionDelay: 2000,
