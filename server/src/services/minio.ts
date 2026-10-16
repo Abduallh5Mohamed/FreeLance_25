@@ -2,6 +2,7 @@ import * as Minio from 'minio';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import { networkInterfaces } from 'os';
+import { Readable, Transform } from 'stream';
 
 // Detect local IP for MinIO configuration
 const getLocalIp = () => {
@@ -44,7 +45,6 @@ const getLocalIp = () => {
 
 const localIp = getLocalIp();
 const configuredEndpoint = process.env.MINIO_ENDPOINT || 'localhost';
-const publicEndpoint = process.env.MINIO_PUBLIC_ENDPOINT || configuredEndpoint;
 // If endpoint is strictly localhost, use localhost for browser access (same machine)
 // This ensures the browser can reach MinIO on the same machine
 const usePublicIp = configuredEndpoint === 'localhost';
@@ -99,45 +99,6 @@ export async function initializeBuckets(): Promise<void> {
             console.error(`[MinIO] Error with bucket ${bucket}:`, error);
             throw error;
         }
-    }
-}
-
-/**
- * Generate a presigned URL for uploading a video chunk
- * For HTTPS environments, use nginx reverse proxy instead of direct MinIO access
- */
-export async function getPresignedUploadUrl(
-    videoId: string,
-    fileName: string,
-    contentType: string = 'video/mp4'
-): Promise<{ uploadUrl: string; objectKey: string }> {
-    const ext = path.extname(fileName) || '.mp4';
-    const objectKey = `originals/${videoId}${ext}`;
-
-    // Check if we're in production (HTTPS) environment
-    const isProduction = process.env.NODE_ENV === 'production' || process.env.USE_NGINX_PROXY === 'true';
-
-    if (isProduction) {
-        // Use nginx reverse proxy path for HTTPS compatibility
-        // Frontend will use PUT request to /storage/bucket/object
-        const uploadUrl = `/storage/${BUCKETS.ORIGINALS}/${objectKey}`;
-        console.log('[MinIO] Upload URL (via nginx):', uploadUrl);
-        return { uploadUrl, objectKey };
-    } else {
-        // Development: Generate presigned PUT URL (valid for 1 hour)
-        let uploadUrl = await minioClient.presignedPutObject(
-            BUCKETS.ORIGINALS,
-            objectKey,
-            3600 // 1 hour expiry
-        );
-
-        // Replace localhost with public endpoint for browser access
-        if (publicEndpoint !== 'localhost' && uploadUrl.includes('localhost')) {
-            uploadUrl = uploadUrl.replace('localhost', publicEndpoint);
-        }
-
-        console.log('[MinIO] Upload URL generated:', uploadUrl);
-        return { uploadUrl, objectKey };
     }
 }
 
@@ -263,6 +224,134 @@ export async function uploadBuffer(
     await minioClient.putObject(bucket, objectKey, buffer, buffer.length, metaData);
     console.log(`[MinIO] Uploaded buffer to ${bucket}/${objectKey}`);
 }
+
+/**
+ * Exact-length stream guard failure. The transfer is aborted with this
+ * error — a short, overlong, or aborted stream never reaches storage as a
+ * silently wrong-sized object.
+ */
+export class UploadStreamSizeError extends Error {
+    readonly kind: 'overrun' | 'truncated' | 'aborted';
+    readonly received: number;
+    readonly expected: number;
+
+    constructor(kind: 'overrun' | 'truncated' | 'aborted', received: number, expected: number) {
+        super(`Upload stream ${kind}: received ${received} of ${expected} expected bytes`);
+        this.name = 'UploadStreamSizeError';
+        this.kind = kind;
+        this.received = received;
+        this.expected = expected;
+    }
+}
+
+/**
+ * Wraps an incoming request stream in a bounded, exactly-`expectedSize`
+ * counting guard.
+ *
+ * Audited against the installed MinIO SDK (8.0.6, server/node_modules):
+ * putObject's single-part path drains the stream with readAsBuffer and uses
+ * the buffered length as Content-Length, so a SHORT stream stores truncated
+ * bytes and an OVERLONG one buffers and stores beyond the declared size —
+ * neither fails at the SDK boundary. The guard closes both holes: it counts
+ * bytes as they flow, aborts the transfer with UploadStreamSizeError on
+ * overrun, truncation, or a mid-stream abort, and stops consuming the socket
+ * the moment the declared size is exceeded (no unbounded buffering).
+ */
+export const guardUploadStream = (source: Readable, expectedSize: number): Readable => {
+    let received = 0;
+    let failed = false;
+    let guarded: Transform;
+
+    const fail = (error: Error): void => {
+        if (failed) return;
+        failed = true;
+        guarded.destroy(error);
+        source.destroy();
+    };
+
+    guarded = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+            if (failed) return;
+            received += chunk.length;
+            if (received > expectedSize) {
+                const error = new UploadStreamSizeError('overrun', received, expectedSize);
+                failed = true;
+                guarded.destroy();
+                source.destroy();
+                return callback(error);
+            }
+            callback(null, chunk);
+        },
+        flush(callback) {
+            if (received < expectedSize) {
+                return callback(new UploadStreamSizeError('truncated', received, expectedSize));
+            }
+            callback();
+        },
+    });
+
+    source.on('error', (error: Error) => fail(error));
+    source.on('aborted', () => fail(new UploadStreamSizeError('aborted', received, expectedSize)));
+    source.pipe(guarded);
+    return guarded;
+};
+
+/** The subset of the MinIO client the authenticated uploader depends on. */
+export interface PutObjectClient {
+    putObject: (
+        bucket: string,
+        objectKey: string,
+        stream: Readable,
+        size: number,
+        metaData: Record<string, string>,
+    ) => Promise<unknown>;
+    removeObject: (bucket: string, objectKey: string) => Promise<unknown>;
+}
+
+/**
+ * Builds the authenticated object-stream uploader over an injectable client.
+ * The stream is guarded to exactly `size` bytes, and any failed or aborted
+ * transfer is followed by a best-effort removal of the partial object: a
+ * later completion must never be able to stat leftover truncated bytes from
+ * a previously failed attempt.
+ */
+export const createObjectStreamUploader = (client: PutObjectClient) => async (
+    bucket: string,
+    objectKey: string,
+    stream: Readable,
+    size: number,
+    contentType?: string,
+): Promise<void> => {
+    const metaData: Record<string, string> = contentType ? { 'Content-Type': contentType } : {};
+    const guarded = guardUploadStream(stream, size);
+    try {
+        await client.putObject(bucket, objectKey, guarded, size, metaData);
+    } catch (error) {
+        try {
+            await client.removeObject(bucket, objectKey);
+        } catch (cleanupError) {
+            console.error(`[MinIO] Failed to remove partial object ${objectKey}:`, cleanupError);
+        }
+        throw error;
+    }
+    console.log(`[MinIO] Streamed ${objectKey} to ${bucket} (${size} bytes)`);
+};
+
+const defaultPutObjectClient: PutObjectClient = {
+    putObject: (bucket, objectKey, stream, size, metaData) =>
+        minioClient.putObject(bucket, objectKey, stream, size, metaData),
+    removeObject: (bucket, objectKey) => minioClient.removeObject(bucket, objectKey),
+};
+
+/**
+ * Stream bytes into MinIO without ever handing the browser a storage URL.
+ * Used by the authenticated upload endpoint: the request body is guarded to
+ * the exact verified byte count and piped to the exact server-derived object
+ * key — a stream that ends early or overruns it aborts the transfer, and a
+ * partial object is removed, so a truncated upload can never masquerade as
+ * complete.
+ */
+export const putObjectStream = createObjectStreamUploader(defaultPutObjectClient);
 
 export async function getPrivateObjectUrl(bucket: string, objectKey: string, expiresInSeconds = 300): Promise<string> {
     return minioClient.presignedGetObject(bucket, objectKey, expiresInSeconds);

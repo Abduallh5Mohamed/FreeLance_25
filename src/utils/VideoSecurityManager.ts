@@ -5,7 +5,44 @@
  * Version 4.0 - Maximum Security
  */
 
-const API_BASE = import.meta.env.VITE_API_URL || '/api';
+// Vite replaces `import.meta.env.VITE_API_URL` at build/dev time; other hosts
+// (isolated unit tests) do not provide import.meta.env, so fall back to /api.
+const readApiBase = (): string => {
+    try {
+        return import.meta.env.VITE_API_URL || '/api';
+    } catch {
+        return '/api';
+    }
+};
+
+const API_BASE = readApiBase();
+
+export interface SecurityEventRequest {
+    url: string;
+    init: RequestInit;
+}
+
+/**
+ * Builds an authenticated request for a security-event endpoint.
+ * Uses the central auth contract of the app: the bearer token is stored under
+ * the `authToken` key in localStorage and sent as `Authorization: Bearer <token>`
+ * (same contract as the shared API client).
+ */
+export function buildSecurityEventRequest(path: string, payload: Record<string, unknown>): SecurityEventRequest {
+    const authToken = typeof localStorage === 'undefined' ? null : localStorage.getItem('authToken');
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    return {
+        url: `${API_BASE}${path}`,
+        init: {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+        },
+    };
+}
 
 export interface SecurityViolation {
     type: 'screenshot' | 'screenrecord' | 'alttab' | 'blur' | 'focus_loss' | 'devtools' | 'resize' | 'keyboard' | 'pip' | 'unknown';
@@ -122,8 +159,8 @@ export class VideoSecurityManager {
         console.log('⚠️ Security Violation:', violation);
         this.config.onViolation(violation);
 
-        // Log to server
-        this.logSecurityEvent(violation);
+        // Log to server (fire-and-forget; failures are reported inside logSecurityEvent)
+        void this.logSecurityEvent(violation);
 
         // For hosted videos, force logout immediately
         if (this.config.isHostedVideo) {
@@ -131,20 +168,24 @@ export class VideoSecurityManager {
         }
     }
 
-    private async logSecurityEvent(violation: SecurityViolation) {
+    public async logSecurityEvent(violation: SecurityViolation): Promise<boolean> {
         try {
-            await fetch(`${API_BASE}/videos/security/log`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    userId: this.config.userId,
-                    videoId: this.config.videoId,
-                    activityType: violation.type,
-                    details: `${violation.details} | Platform: ${violation.platform}`
-                })
+            const { url, init } = buildSecurityEventRequest('/videos/security/log', {
+                userId: this.config.userId,
+                videoId: this.config.videoId,
+                activityType: violation.type,
+                details: `${violation.details} | Platform: ${violation.platform}`
             });
+            const response = await fetch(url, init);
+            if (!response.ok) {
+                // Report failures honestly: a rejected event must not look logged.
+                console.error('Failed to log security event: HTTP', response.status);
+                return false;
+            }
+            return true;
         } catch (error) {
             console.error('Failed to log security event:', error);
+            return false;
         }
     }
 

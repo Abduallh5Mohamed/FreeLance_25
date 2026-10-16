@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -7,11 +7,101 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { getExamById, User, getCourses, getGrades, getGroups, Course, Grade, Group } from '@/lib/api-http';
+import { getExamById, User, getCourses, getGrades, getGroups, Course, Grade, Group, Exam } from '@/lib/api-http';
 import { ClipboardCheck, Plus, Trash2, Edit2, Save, ArrowLeft, Image as ImageIcon } from 'lucide-react';
 import Header from '@/components/Header';
 
-const API_URL = import.meta.env.VITE_API_URL || '/api';
+// Vite injects `import.meta.env` at build time; it is absent when this module
+// is imported outside Vite (isolated Node tests), so guard the read.
+const readApiBase = (): string => {
+  try {
+    return import.meta.env.VITE_API_URL || '/api';
+  } catch {
+    return '/api';
+  }
+};
+
+const API_URL = readApiBase();
+
+// The `Exam` type from api-http models the list endpoint only; the detail
+// endpoint (GET /exams/:id) returns the full row including scheduling fields.
+interface ExamDetail extends Exam {
+  description?: string | null;
+  grade_id?: string | null;
+  group_id?: string | null;
+  passing_marks?: number | null;
+  passing_percentage?: number | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  exam_date?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Pure helpers — exported so the isolated test suite exercises the real
+// production behavior instead of a re-implementation.
+// ---------------------------------------------------------------------------
+
+/** Parse the server `options` column (JSON string | object | array) into the
+ *  a/b/c/d shape the authoring form uses. Never throws. */
+export function normalizeQuestionOptions(
+  options: unknown,
+): { a: string; b: string; c: string; d: string } {
+  const empty = { a: '', b: '', c: '', d: '' };
+  let parsed: unknown = options;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return empty;
+    }
+  }
+  if (Array.isArray(parsed)) {
+    const arr = parsed as unknown[];
+    return {
+      a: String(arr[0] ?? ''),
+      b: String(arr[1] ?? ''),
+      c: String(arr[2] ?? ''),
+      d: String(arr[3] ?? ''),
+    };
+  }
+  if (parsed && typeof parsed === 'object') {
+    const rec = parsed as Record<string, unknown>;
+    return {
+      a: String(rec.a ?? ''),
+      b: String(rec.b ?? ''),
+      c: String(rec.c ?? ''),
+      d: String(rec.d ?? ''),
+    };
+  }
+  return empty;
+}
+
+/** Coerce a points/degree input to a whole number >= 1 so an emptied number
+ *  field can never send NaN to the API. */
+export function normalizePositiveInt(value: unknown, fallback = 1): number {
+  const n = typeof value === 'number' ? value : parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.floor(n);
+}
+
+/** Single-flight guard used to prevent duplicate save submits. */
+export function createSingleFlightGuard() {
+  let inFlight = false;
+  return {
+    isBusy: () => inFlight,
+    async run<T>(
+      task: () => Promise<T>,
+    ): Promise<{ status: 'ran'; value: T } | { status: 'blocked' }> {
+      if (inFlight) return { status: 'blocked' };
+      inFlight = true;
+      try {
+        return { status: 'ran', value: await task() };
+      } finally {
+        inFlight = false;
+      }
+    },
+  };
+}
 
 interface Question {
   id?: string;
@@ -46,6 +136,22 @@ export default function EditExam() {
     correct_answer: 'a',
     points: 1
   });
+
+  const [saving, setSaving] = useState(false);
+  const saveGuardRef = useRef(createSingleFlightGuard());
+  const loadSeqRef = useRef(0);
+
+  // Single-flight wrapper: blocks concurrent save submits and mirrors the
+  // in-flight state into `saving` so the submit buttons can be disabled.
+  const runGuardedSave = async (task: () => Promise<void>) => {
+    if (saveGuardRef.current.isBusy()) return;
+    setSaving(true);
+    try {
+      await saveGuardRef.current.run(task);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   // Lists for dropdowns
   const [courses, setCourses] = useState<Course[]>([]);
@@ -105,14 +211,16 @@ export default function EditExam() {
   };
 
   const loadExamData = async () => {
+    const seq = ++loadSeqRef.current;
     try {
       setLoading(true);
 
       // Load exam details
-      const examData = await getExamById(examId!);
+      const examData = (await getExamById(examId!)) as ExamDetail | null;
+      if (seq !== loadSeqRef.current) return; // a newer load superseded this one
 
       // Convert ISO dates to local datetime-local format (YYYY-MM-DDTHH:mm)
-      if (examData.start_time) {
+      if (examData?.start_time) {
         const startDate = new Date(examData.start_time);
         examData.start_time = startDate.getFullYear() + '-' +
           String(startDate.getMonth() + 1).padStart(2, '0') + '-' +
@@ -121,7 +229,7 @@ export default function EditExam() {
           String(startDate.getMinutes()).padStart(2, '0');
       }
 
-      if (examData.end_time) {
+      if (examData?.end_time) {
         const endDate = new Date(examData.end_time);
         examData.end_time = endDate.getFullYear() + '-' +
           String(endDate.getMonth() + 1).padStart(2, '0') + '-' +
@@ -134,31 +242,19 @@ export default function EditExam() {
 
       // Load questions
       const response = await fetch(`${API_URL}/exams/${examId}/questions`);
+      if (!response.ok) throw new Error('Failed to load questions');
       const questionsData = await response.json();
+      if (seq !== loadSeqRef.current) return; // stale response, drop it
 
       // Parse options for multiple choice questions
-      const parsedQuestions = questionsData.map((q: any) => {
-        // Check if options is already an object or needs parsing
-        let options = q.options;
-        if (typeof options === 'string') {
-          try {
-            options = JSON.parse(options);
-          } catch (e) {
-            options = {};
-          }
-        }
-
-        return {
-          ...q,
-          option_a: options?.a || '',
-          option_b: options?.b || '',
-          option_c: options?.c || '',
-          option_d: options?.d || '',
-        };
-      });
+      const parsedQuestions = (Array.isArray(questionsData) ? questionsData : []).map((q: any) => ({
+        ...q,
+        ...normalizeQuestionOptions(q.options),
+      }));
 
       setQuestions(parsedQuestions);
     } catch (error) {
+      if (seq !== loadSeqRef.current) return; // stale failure, keep current view
       console.error('Error loading exam:', error);
       toast({
         title: 'خطأ',
@@ -166,112 +262,116 @@ export default function EditExam() {
         variant: 'destructive'
       });
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   };
 
   const handleUpdateExamDetails = async () => {
-    try {
-      // Format dates properly for MySQL - keep local time
-      const formatDateTime = (dateStr: string) => {
-        if (!dateStr) return null;
-        // dateStr is already in format YYYY-MM-DDTHH:mm from datetime-local input
-        // Just replace T with space for MySQL format: YYYY-MM-DD HH:mm:ss
-        return dateStr.replace('T', ' ') + ':00';
-      };
+    await runGuardedSave(async () => {
+      try {
+        // Format dates properly for MySQL - keep local time
+        const formatDateTime = (dateStr: string) => {
+          if (!dateStr) return null;
+          // dateStr is already in format YYYY-MM-DDTHH:mm from datetime-local input
+          // Just replace T with space for MySQL format: YYYY-MM-DD HH:mm:ss
+          return dateStr.replace('T', ' ') + ':00';
+        };
 
-      const updateData = {
-        title: exam.title,
-        course_id: exam.course_id,
-        grade_id: exam.grade_id === 'all' ? null : exam.grade_id,
-        group_id: exam.group_id === 'all' ? null : exam.group_id,
-        start_time: formatDateTime(exam.start_time),
-        end_time: formatDateTime(exam.end_time),
-        duration_minutes: exam.duration_minutes,
-        total_marks: totalMarks  // ✅ Auto-update total marks from questions
-      };
+        const updateData = {
+          title: exam.title,
+          course_id: exam.course_id,
+          grade_id: exam.grade_id === 'all' ? null : exam.grade_id,
+          group_id: exam.group_id === 'all' ? null : exam.group_id,
+          start_time: formatDateTime(exam.start_time),
+          end_time: formatDateTime(exam.end_time),
+          duration_minutes: exam.duration_minutes,
+          total_marks: totalMarks  // ✅ Auto-update total marks from questions
+        };
 
-      console.log('🔄 Updating exam with data:', updateData);
+        console.log('🔄 Updating exam with data:', updateData);
 
-      const response = await fetch(`${API_URL}/exams/${examId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
-        },
-        body: JSON.stringify(updateData)
-      });
+        const response = await fetch(`${API_URL}/exams/${examId}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
+          },
+          body: JSON.stringify(updateData)
+        });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('❌ Update failed:', errorData);
-        throw new Error('Failed to update exam');
+        if (!response.ok) {
+          const errorData = await response.json();
+          console.error('❌ Update failed:', errorData);
+          throw new Error('Failed to update exam');
+        }
+
+        const result = await response.json();
+        console.log('✅ Update successful:', result);
+
+        toast({
+          title: 'تم التحديث',
+          description: 'تم تحديث بيانات الامتحان بنجاح'
+        });
+
+        setEditingExamDetails(false);
+        loadExamData();
+      } catch (error) {
+        console.error('❌ Error updating exam:', error);
+        toast({
+          title: 'خطأ',
+          description: 'فشل تحديث بيانات الامتحان',
+          variant: 'destructive'
+        });
       }
-
-      const result = await response.json();
-      console.log('✅ Update successful:', result);
-
-      toast({
-        title: 'تم التحديث',
-        description: 'تم تحديث بيانات الامتحان بنجاح'
-      });
-
-      setEditingExamDetails(false);
-      loadExamData();
-    } catch (error) {
-      console.error('❌ Error updating exam:', error);
-      toast({
-        title: 'خطأ',
-        description: 'فشل تحديث بيانات الامتحان',
-        variant: 'destructive'
-      });
-    }
+    });
   };
 
   const handleUpdateQuestion = async (question: Question) => {
-    try {
-      const options = question.question_type === 'multiple_choice'
-        ? JSON.stringify({
-          a: question.option_a,
-          b: question.option_b,
-          c: question.option_c,
-          d: question.option_d
-        })
-        : null;
+    await runGuardedSave(async () => {
+      try {
+        const options = question.question_type === 'multiple_choice'
+          ? JSON.stringify({
+            a: question.option_a,
+            b: question.option_b,
+            c: question.option_c,
+            d: question.option_d
+          })
+          : null;
 
-      const response = await fetch(`${API_URL}/exams/${examId}/questions/${question.id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
-        },
-        body: JSON.stringify({
-          question_text: question.question_text,
-          question_image: question.question_image || null,
-          question_type: question.question_type,
-          options: options,
-          correct_answer: question.correct_answer || null,
-          points: question.points,
-          explanation: null
-        })
-      });
+        const response = await fetch(`${API_URL}/exams/${examId}/questions/${question.id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
+          },
+          body: JSON.stringify({
+            question_text: question.question_text,
+            question_image: question.question_image || null,
+            question_type: question.question_type,
+            options: options,
+            correct_answer: question.correct_answer || null,
+            points: normalizePositiveInt(question.points, 1),
+            explanation: null
+          })
+        });
 
-      if (!response.ok) throw new Error('Failed to update question');
+        if (!response.ok) throw new Error('Failed to update question');
 
-      toast({
-        title: 'تم التحديث',
-        description: 'تم تحديث السؤال بنجاح'
-      });
+        toast({
+          title: 'تم التحديث',
+          description: 'تم تحديث السؤال بنجاح'
+        });
 
-      setEditingQuestion(null);
-      loadExamData();
-    } catch (error) {
-      toast({
-        title: 'خطأ',
-        description: 'فشل تحديث السؤال',
-        variant: 'destructive'
-      });
-    }
+        setEditingQuestion(null);
+        loadExamData();
+      } catch (error) {
+        toast({
+          title: 'خطأ',
+          description: 'فشل تحديث السؤال',
+          variant: 'destructive'
+        });
+      }
+    });
   };
 
   const handleDeleteQuestion = async (questionId: string) => {
@@ -303,60 +403,62 @@ export default function EditExam() {
   };
 
   const handleAddNewQuestion = async () => {
-    try {
-      const options = newQuestion.question_type === 'multiple_choice'
-        ? JSON.stringify({
-          a: newQuestion.option_a,
-          b: newQuestion.option_b,
-          c: newQuestion.option_c,
-          d: newQuestion.option_d
-        })
-        : null;
+    await runGuardedSave(async () => {
+      try {
+        const options = newQuestion.question_type === 'multiple_choice'
+          ? JSON.stringify({
+            a: newQuestion.option_a,
+            b: newQuestion.option_b,
+            c: newQuestion.option_c,
+            d: newQuestion.option_d
+          })
+          : null;
 
-      const response = await fetch(`${API_URL}/exams/${examId}/questions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
-        },
-        body: JSON.stringify({
-          question_text: newQuestion.question_text,
-          question_image: newQuestion.question_image || null,
-          question_type: newQuestion.question_type,
-          options: options,
-          correct_answer: newQuestion.correct_answer || null,
-          points: newQuestion.points,
-          explanation: null
-        })
-      });
+        const response = await fetch(`${API_URL}/exams/${examId}/questions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
+          },
+          body: JSON.stringify({
+            question_text: newQuestion.question_text,
+            question_image: newQuestion.question_image || null,
+            question_type: newQuestion.question_type,
+            options: options,
+            correct_answer: newQuestion.correct_answer || null,
+            points: normalizePositiveInt(newQuestion.points, 1),
+            explanation: null
+          })
+        });
 
-      if (!response.ok) throw new Error('Failed to add question');
+        if (!response.ok) throw new Error('Failed to add question');
 
-      toast({
-        title: 'تم الإضافة',
-        description: 'تم إضافة السؤال بنجاح'
-      });
+        toast({
+          title: 'تم الإضافة',
+          description: 'تم إضافة السؤال بنجاح'
+        });
 
-      // Reset form
-      setNewQuestion({
-        question_text: '',
-        question_type: 'multiple_choice',
-        option_a: '',
-        option_b: '',
-        option_c: '',
-        option_d: '',
-        correct_answer: 'a',
-        points: 1
-      });
-      setAddingNewQuestion(false);
-      loadExamData();
-    } catch (error) {
-      toast({
-        title: 'خطأ',
-        description: 'فشل إضافة السؤال',
-        variant: 'destructive'
-      });
-    }
+        // Reset form
+        setNewQuestion({
+          question_text: '',
+          question_type: 'multiple_choice',
+          option_a: '',
+          option_b: '',
+          option_c: '',
+          option_d: '',
+          correct_answer: 'a',
+          points: 1
+        });
+        setAddingNewQuestion(false);
+        loadExamData();
+      } catch (error) {
+        toast({
+          title: 'خطأ',
+          description: 'فشل إضافة السؤال',
+          variant: 'destructive'
+        });
+      }
+    });
   };
 
   if (loading) {
@@ -501,7 +603,7 @@ export default function EditExam() {
                     <Input
                       type="number"
                       value={exam?.duration_minutes || ''}
-                      onChange={(e) => setExam({ ...exam, duration_minutes: parseInt(e.target.value) || 0 })}
+                      onChange={(e) => setExam({ ...exam, duration_minutes: normalizePositiveInt(e.target.value, 0) })}
                     />
                   </div>
                 </div>
@@ -530,9 +632,10 @@ export default function EditExam() {
                   <Button
                     onClick={handleUpdateExamDetails}
                     className="bg-green-600 hover:bg-green-700"
+                    disabled={saving}
                   >
                     <Save className="h-4 w-4 ml-2" />
-                    حفظ التعديلات
+                    {saving ? 'جاري الحفظ...' : 'حفظ التعديلات'}
                   </Button>
                   <Button
                     variant="outline"
@@ -650,13 +753,19 @@ export default function EditExam() {
                                   body: formData
                                 });
 
-                                const result = await response.json();
+                                const result = await response.json().catch(() => null);
 
-                                if (result.success) {
+                                if (response.ok && result?.success) {
                                   setNewQuestion({ ...newQuestion, question_image: result.imageUrl });
                                   toast({
                                     title: 'تم الرفع',
                                     description: 'تم رفع الصورة بنجاح'
+                                  });
+                                } else {
+                                  toast({
+                                    title: 'خطأ',
+                                    description: 'فشل رفع الصورة',
+                                    variant: 'destructive'
                                   });
                                 }
                               } catch (error) {
@@ -766,7 +875,7 @@ export default function EditExam() {
                         type="number"
                         value={newQuestion.points}
                         onChange={(e) =>
-                          setNewQuestion({ ...newQuestion, points: parseInt(e.target.value) || 1 })
+                          setNewQuestion({ ...newQuestion, points: normalizePositiveInt(e.target.value, 1) })
                         }
                         placeholder="الدرجة المخصصة للسؤال"
                         min="1"
@@ -777,10 +886,10 @@ export default function EditExam() {
                       <Button
                         onClick={handleAddNewQuestion}
                         className="bg-green-600 hover:bg-green-700"
-                        disabled={!newQuestion.question_text.trim()}
+                        disabled={saving || !newQuestion.question_text.trim()}
                       >
                         <Plus className="h-4 w-4 ml-2" />
-                        إضافة السؤال
+                        {saving ? 'جاري الإضافة...' : 'إضافة السؤال'}
                       </Button>
                       <Button
                         variant="outline"
@@ -857,13 +966,19 @@ export default function EditExam() {
                                     body: formData
                                   });
 
-                                  const result = await response.json();
+                                  const result = await response.json().catch(() => null);
 
-                                  if (result.success) {
+                                  if (response.ok && result?.success) {
                                     setEditingQuestion({ ...editingQuestion, question_image: result.imageUrl });
                                     toast({
                                       title: 'تم الرفع',
                                       description: 'تم رفع الصورة بنجاح'
+                                    });
+                                  } else {
+                                    toast({
+                                      title: 'خطأ',
+                                      description: 'فشل رفع الصورة',
+                                      variant: 'destructive'
                                     });
                                   }
                                 } catch (error) {
@@ -969,7 +1084,7 @@ export default function EditExam() {
                           type="number"
                           value={editingQuestion.points}
                           onChange={(e) =>
-                            setEditingQuestion({ ...editingQuestion, points: parseInt(e.target.value) })
+                            setEditingQuestion({ ...editingQuestion, points: normalizePositiveInt(e.target.value, 1) })
                           }
                         />
                       </div>
@@ -978,9 +1093,10 @@ export default function EditExam() {
                         <Button
                           onClick={() => handleUpdateQuestion(editingQuestion)}
                           className="bg-green-600 hover:bg-green-700"
+                          disabled={saving}
                         >
                           <Save className="h-4 w-4 ml-2" />
-                          حفظ
+                          {saving ? 'جاري الحفظ...' : 'حفظ'}
                         </Button>
                         <Button
                           variant="outline"
@@ -1045,6 +1161,8 @@ export default function EditExam() {
                             size="sm"
                             onClick={() => setEditingQuestion(question)}
                             className="text-blue-600"
+                            aria-label={`تعديل السؤال ${index + 1}`}
+                            title="تعديل السؤال"
                           >
                             <Edit2 className="h-4 w-4" />
                           </Button>
@@ -1053,6 +1171,8 @@ export default function EditExam() {
                             size="sm"
                             onClick={() => handleDeleteQuestion(question.id!)}
                             className="text-red-600"
+                            aria-label={`حذف السؤال ${index + 1}`}
+                            title="حذف السؤال"
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>

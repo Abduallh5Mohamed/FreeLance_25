@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -9,6 +9,13 @@ import { Calendar, Check, X, Users, Search } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
 import { getStudents, getCourses, getAttendance, markAttendance } from "@/lib/api";
+import { classifyAttendanceError, createResponseSequence, formatLocalDate } from "@/pages/QRAttendance";
+
+type AttendanceLoadErrors = {
+  students?: string;
+  courses?: string;
+  attendance?: string;
+};
 
 const Attendance = () => {
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
@@ -17,6 +24,9 @@ const Attendance = () => {
   const [students, setStudents] = useState([]);
   const [attendance, setAttendance] = useState([]);
   const [courses, setCourses] = useState([]);
+  const [loadErrors, setLoadErrors] = useState<AttendanceLoadErrors>({});
+  const [pendingStudentIds, setPendingStudentIds] = useState<string[]>([]);
+  const attendanceSequence = useRef(createResponseSequence());
   const { toast } = useToast();
 
   useEffect(() => {
@@ -30,8 +40,10 @@ const Attendance = () => {
     try {
       const data = await getStudents();
       setStudents(data || []);
+      setLoadErrors((prev) => ({ ...prev, students: undefined }));
     } catch (error) {
       console.error('Error fetching students:', error);
+      setLoadErrors((prev) => ({ ...prev, students: classifyAttendanceError(error).message }));
     }
   };
 
@@ -39,21 +51,33 @@ const Attendance = () => {
     try {
       const data = await getCourses();
       setCourses(data || []);
+      setLoadErrors((prev) => ({ ...prev, courses: undefined }));
     } catch (error) {
       console.error('Error fetching courses:', error);
+      setLoadErrors((prev) => ({ ...prev, courses: classifyAttendanceError(error).message }));
     }
   };
 
   const fetchAttendance = async () => {
+    const token = attendanceSequence.current.next();
     try {
       const data = await getAttendance({ date: selectedDate });
+      // Ignore a stale response belonging to a superseded date selection.
+      if (!attendanceSequence.current.isCurrent(token)) return;
       setAttendance(data || []);
+      setLoadErrors((prev) => ({ ...prev, attendance: undefined }));
     } catch (error) {
+      if (!attendanceSequence.current.isCurrent(token)) return;
       console.error('Error fetching attendance:', error);
+      setLoadErrors((prev) => ({ ...prev, attendance: classifyAttendanceError(error).message }));
     }
   };
 
   const handleMarkAttendance = async (studentId: string, status: 'present' | 'absent') => {
+    // Duplicate submission suppression: ignore repeated clicks while a mark
+    // for this student is in flight.
+    if (pendingStudentIds.includes(studentId)) return;
+    setPendingStudentIds((prev) => [...prev, studentId]);
     try {
       await markAttendance({
         student_id: studentId,
@@ -61,24 +85,32 @@ const Attendance = () => {
         status
       });
 
-      fetchAttendance();
+      await fetchAttendance();
       toast({
         title: `تم تسجيل ${status === 'present' ? 'الحضور' : 'الغياب'}`,
-        description: `تم تسجيل الحضور للطالب`,
+        description: `تم تسجيل ${status === 'present' ? 'الحضور' : 'الغياب'} للطالب`,
       });
     } catch (error) {
+      const classified = classifyAttendanceError(error);
       toast({
-        title: "خطأ",
-        description: "حدث خطأ في تسجيل الحضور",
-        variant: "destructive",
+        title: classified.kind === 'duplicate' ? 'تنبيه' : 'خطأ',
+        description: classified.kind === 'duplicate'
+          ? 'تم تسجيل الحضور مسبقاً لهذا التاريخ'
+          : classified.message,
+        variant: classified.kind === 'duplicate' ? 'default' : 'destructive',
       });
+      // Reflect whatever the server actually holds (fail closed, no false success).
+      await fetchAttendance();
+    } finally {
+      setPendingStudentIds((prev) => prev.filter((id) => id !== studentId));
     }
   };
 
   const getStudentAttendance = (studentId: string) => {
     return attendance.find(a =>
       a.student_id === studentId &&
-      a.attendance_date === selectedDate
+      // attendance_date arrives as a datetime; compare normalized local date keys.
+      formatLocalDate(a.attendance_date) === selectedDate
     );
   };
 
@@ -159,11 +191,19 @@ const Attendance = () => {
                   value={selectedDate}
                   onChange={(e) => setSelectedDate(e.target.value)}
                   className="max-w-[200px]"
+                  aria-label="تاريخ الحضور"
                 />
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              {students.length > 0 ? (
+              {loadErrors.students ? (
+                <div className="text-center py-8 space-y-3">
+                  <p className="text-destructive font-medium">{loadErrors.students}</p>
+                  <Button variant="outline" size="sm" onClick={() => fetchStudents()}>
+                    إعادة المحاولة
+                  </Button>
+                </div>
+              ) : students.length > 0 ? (
                 students.map((student) => {
                   const studentAttendance = getStudentAttendance(student.id);
                   return (
@@ -180,6 +220,8 @@ const Attendance = () => {
                           variant={studentAttendance?.status === 'present' ? "default" : "outline"}
                           onClick={() => handleMarkAttendance(student.id, 'present')}
                           className="text-xs"
+                          disabled={pendingStudentIds.includes(student.id)}
+                          aria-label={`تسجيل حضور ${student.name}`}
                         >
                           <Check className="w-3 h-3 ml-1" />
                           حاضر
@@ -189,6 +231,8 @@ const Attendance = () => {
                           variant={studentAttendance?.status === 'absent' ? "destructive" : "outline"}
                           onClick={() => handleMarkAttendance(student.id, 'absent')}
                           className="text-xs"
+                          disabled={pendingStudentIds.includes(student.id)}
+                          aria-label={`تسجيل غياب ${student.name}`}
                         >
                           <X className="w-3 h-3 ml-1" />
                           غائب
@@ -218,6 +262,7 @@ const Attendance = () => {
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     className="max-w-[200px]"
+                    aria-label="البحث عن طالب"
                   />
                 </div>
                 <Select value={selectedCourse} onValueChange={setSelectedCourse}>
@@ -231,10 +276,20 @@ const Attendance = () => {
                     ))}
                   </SelectContent>
                 </Select>
+                {loadErrors.courses && (
+                  <p className="text-xs text-destructive mt-1">{loadErrors.courses}</p>
+                )}
               </div>
             </CardHeader>
             <CardContent className="p-4">
-              {attendance.length === 0 ? (
+              {loadErrors.attendance ? (
+                <div className="text-center py-12 space-y-3">
+                  <p className="text-destructive font-medium">{loadErrors.attendance}</p>
+                  <Button variant="outline" size="sm" onClick={() => fetchAttendance()}>
+                    إعادة المحاولة
+                  </Button>
+                </div>
+              ) : attendance.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">لا توجد سجلات حضور لهذا التاريخ</div>
               ) : (
                 <div className="space-y-4">

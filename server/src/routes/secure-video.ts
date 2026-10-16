@@ -30,9 +30,28 @@ import {
 } from '../services/video-security';
 import { getThumbnailUrl, getObjectBuffer, getObjectStream, BUCKETS } from '../services/minio';
 import { createNotification } from '../utils/notifications';
+import { isSuperAdmin, getAdminPermissions } from '../security/admin-permissions';
+import { createSqlVideoAccessRepository, evaluateVideoAccess, type VideoAccessScope } from '../security/video-access-policy';
 
 const router = Router();
 const VIDEO_TERMS_VERSION = 'video-security-v1';
+
+/**
+ * Platform capability key for cross-tenant video security administration.
+ * Migrations seed no security.* key beyond the verified super_admin role, so
+ * the verified capability check is the effective policy; a bare admin role
+ * claim never satisfies it.
+ */
+const PLATFORM_SECURITY_PERMISSION = 'security.manage';
+
+/**
+ * Verified platform capability, resolved server-side (active super_admin or a
+ * seeded permission key). Never consults a JWT role claim.
+ */
+const hasVerifiedPlatformCapability = async (userId: string): Promise<boolean> => {
+    if (await isSuperAdmin(userId)) return true;
+    return (await getAdminPermissions(userId)).includes(PLATFORM_SECURITY_PERMISSION);
+};
 
 router.get('/consent', authenticateToken, async (req: AuthRequest, res: Response) => {
     const consent = await queryOne(
@@ -66,7 +85,8 @@ router.post('/consent', authenticateToken, async (req: AuthRequest, res: Respons
 router.post('/session', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user!.id;
-        const { videoId, fingerprint, screenRes, offerId } = req.body;
+        const { videoId, fingerprint, screenRes } = req.body;
+        const offerId: string | undefined = req.body?.offerId ? String(req.body.offerId) : undefined;
 
         if (!videoId || !fingerprint || !screenRes) {
             return res.status(400).json({ error: 'videoId, fingerprint, screenRes required' });
@@ -95,35 +115,47 @@ router.post('/session', authenticateToken, async (req: AuthRequest, res: Respons
         const ip = getClientIp(req);
         const userAgent = req.headers['user-agent'] || '';
 
-        // Verify video exists and user has access
-        const video = await queryOne(
+        // Verify the video exists and is playable. There is deliberately NO
+        // early tenant-only filter: the requesting tenant and the asset owner
+        // are separate facts, and an exact verified license (a purchased
+        // lecture or an approved exchange) is the only grant allowed to cross
+        // that boundary. Access itself is decided below from server-side rows.
+        const video = await queryOne<{
+            id: string;
+            is_encrypted: boolean | number;
+            hls_key: string | null;
+            original_key: string | null;
+        }>(
             `SELECT v.*, c.name as course_name
              FROM videos v
              LEFT JOIN courses c ON v.course_id = c.id
-             WHERE v.id = ? AND v.status = 'ready' AND (v.tenant_id=? OR ?=1)`,
-            [videoId, req.user!.tenantId || null, req.user!.role === 'admin' ? 1 : 0]
+             WHERE v.id = ? AND v.status = 'ready'`,
+            [videoId]
         );
 
-        if (!video) {
+        // Authorize the session with the SAME production access policy, using
+        // the authenticated, server-derived scope. A pending preview offer
+        // grants only the physically truncated preview — never full content.
+        const access = await evaluateSessionAccess(video, {
+            userId,
+            offerId,
+            scope: {
+                tenantId: req.user?.tenantId,
+                studentEnrollmentId: req.user?.studentEnrollmentId,
+            },
+        }, sessionAccessDeps);
+        if (!video || access === 'video_not_found') {
             return res.status(404).json({ error: 'Video not found or not ready' });
         }
-
-        let previewOnly = false;
-        if (offerId) {
-            const offer = await queryOne<any>(
-                `SELECT o.id FROM instructor_video_offers o INNER JOIN instructor_video_requests r ON r.id=o.request_id
-                 WHERE o.id=? AND o.video_id=? AND (r.requester_id=? OR r.owner_id=?) AND o.status='proposed' LIMIT 1`,
-                [offerId, video.id, userId, userId]
-            );
-            previewOnly = Boolean(offer);
-            if (!previewOnly) return res.status(403).json({ error: 'Preview offer is not available' });
+        if (access === 'preview_unavailable') {
+            return res.status(403).json({ error: 'Preview offer is not available' });
         }
-
-        // Check access. A pending offer grants only the physically truncated preview.
-        const hasAccess = previewOnly || await checkVideoAccess(userId, video.id, req.user?.studentEnrollmentId, req.user?.tenantId);
-        if (!hasAccess) {
+        if (access === 'no_access') {
             return res.status(403).json({ error: 'No access to this video' });
         }
+        // A pending offer grants the truncated preview only; every other
+        // playback grant came from the verified policy above.
+        const previewOnly = access === 'preview';
 
         // Create session
         const { sessionId, watermarkSeed } = await createVideoSession({
@@ -134,7 +166,7 @@ router.post('/session', authenticateToken, async (req: AuthRequest, res: Respons
             fingerprint,
             screenRes,
             previewOnly,
-            offerId: previewOnly ? String(offerId) : undefined,
+            offerId: previewOnly ? offerId : undefined,
             studentEnrollmentId: req.user?.studentEnrollmentId,
             tenantId: req.user?.tenantId,
         });
@@ -257,13 +289,15 @@ router.post('/refresh-token', authenticateToken, async (req: AuthRequest, res: R
             });
         }
 
+        // The SAME authorization is rechecked on every refresh: a preview
+        // lives only while its offer stays proposed, and every other grant
+        // is re-verified by the production policy.
         const stillAllowed = session.previewOnly
-            ? Boolean(await queryOne(
-                `SELECT o.id FROM instructor_video_offers o INNER JOIN instructor_video_requests r ON r.id=o.request_id
-                 WHERE o.id=? AND o.video_id=? AND (r.requester_id=? OR r.owner_id=?) AND o.status='proposed' LIMIT 1`,
-                [session.offerId, session.videoId, userId, userId]
-            ))
-            : await checkVideoAccess(userId, session.videoId, req.user?.studentEnrollmentId, req.user?.tenantId);
+            ? await evaluatePreviewOffer(session.offerId, session.videoId, userId, queryOne)
+            : await checkVideoAccess(userId, session.videoId, {
+                tenantId: req.user?.tenantId,
+                studentEnrollmentId: req.user?.studentEnrollmentId,
+            });
         if (!stillAllowed) {
             await killSession(sessionId, 'access_revoked');
             return res.status(403).json({ error: 'Video access was revoked' });
@@ -358,13 +392,14 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
             return res.status(401).json({ error: 'session_dead', message: 'Session binding mismatch' });
         }
 
+        // The SAME authorization is rechecked on every heartbeat, with the
+        // scope captured when the session was created (server-derived).
         const stillAllowed = session.previewOnly
-            ? Boolean(await queryOne(
-                `SELECT o.id FROM instructor_video_offers o INNER JOIN instructor_video_requests r ON r.id=o.request_id
-                 WHERE o.id=? AND o.video_id=? AND (r.requester_id=? OR r.owner_id=?) AND o.status='proposed' LIMIT 1`,
-                [session.offerId, session.videoId, session.userId, session.userId]
-            ))
-            : await checkVideoAccess(session.userId, session.videoId, session.studentEnrollmentId, session.tenantId);
+            ? await evaluatePreviewOffer(session.offerId, session.videoId, session.userId, queryOne)
+            : await checkVideoAccess(session.userId, session.videoId, {
+                tenantId: session.tenantId,
+                studentEnrollmentId: session.studentEnrollmentId,
+            });
         if (!stillAllowed) {
             await killSession(sessionId, 'access_revoked');
             return res.status(403).json({ error: 'Video access was revoked' });
@@ -466,7 +501,10 @@ router.post('/kill-session', authenticateToken, async (req: AuthRequest, res: Re
             return res.json({ ok: true });
         }
 
-        if (session.userId !== req.user!.id && req.user!.role !== 'admin') {
+        // Only the session owner or a verified platform admin may force-kill;
+        // a bare admin role claim is not a capability.
+        const isPlatformAdmin = await hasVerifiedPlatformCapability(req.user!.id);
+        if (session.userId !== req.user!.id && !isPlatformAdmin) {
             return res.status(403).json({ error: 'Forbidden' });
         }
 
@@ -482,14 +520,30 @@ router.post('/kill-session', authenticateToken, async (req: AuthRequest, res: Re
 // SECURE KEY DELIVERY
 // ═══════════════════════════════════════
 
+/**
+ * Session binding for media delivery: the verified token, the ACTIVE
+ * session, and the requested asset must all name the same session, user,
+ * and video — a token minted for one asset never serves another. Exported
+ * so the binding rule itself is testable without a database.
+ */
+export const isMediaSessionBound = (
+    decoded: { sid?: string; sub?: string; vid?: string } | undefined,
+    session: { sessionId: string; userId: string; videoId: string } | null,
+    videoId: string,
+): boolean => Boolean(
+    decoded && session
+    && session.videoId === videoId
+    && decoded.sid === session.sessionId
+    && decoded.sub === session.userId
+    && decoded.vid === videoId
+);
+
 function validateMediaSession(req: Request, videoId: string) {
     const token = String(req.query.token || '');
     const sessionId = String(req.query.sid || '');
     const verified = verifyVideoSessionToken(token, req);
     const session = sessionId ? getActiveSession(sessionId) : null;
-    const valid = Boolean(verified.valid && session && session.videoId === videoId &&
-        verified.decoded?.sid === sessionId && verified.decoded?.sub === session.userId &&
-        verified.decoded?.vid === videoId);
+    const valid = isMediaSessionBound(verified.decoded, session, videoId);
     return { valid, token, sessionId, previewOnly: Boolean(verified.decoded?.po), session };
 }
 
@@ -507,11 +561,59 @@ async function rejectSuspiciousDelivery(req: Request, res: Response, videoId: st
     return null;
 }
 
+/** Session facts a delivery recheck needs (all bound at session creation). */
+export interface DeliverySession {
+    userId: string;
+    videoId: string;
+    previewOnly: boolean;
+    offerId?: string;
+    tenantId?: string;
+    studentEnrollmentId?: string;
+}
+
+/** Reads the delivery recheck needs; production wires the pool + policy. */
+export interface DeliveryAccessDeps {
+    hasVideoAccess: (userId: string, videoId: string, scope: VideoAccessScope) => Promise<boolean>;
+    hasPreviewOffer: (offerId: string | undefined, videoId: string, userId: string) => Promise<boolean>;
+}
+
+/**
+ * Delivery recheck: the SAME production authorization that issued the
+ * session must still hold when a manifest, a segment, or a key is served —
+ * a purchased grant revoked mid-session denies here instead of riding a
+ * still-valid token. Preview sessions recheck their own pending offer, so
+ * previewOnly is never an authorization bypass. The scope is the one
+ * captured at session creation (server-derived), never a request value.
+ */
+export const evaluateDeliveryAccess = async (
+    session: DeliverySession,
+    deps: DeliveryAccessDeps,
+): Promise<boolean> => {
+    if (session.previewOnly) {
+        return deps.hasPreviewOffer(session.offerId, session.videoId, session.userId);
+    }
+    return deps.hasVideoAccess(session.userId, session.videoId, {
+        tenantId: session.tenantId,
+        studentEnrollmentId: session.studentEnrollmentId,
+    });
+};
+
+const deliveryAccessDeps: DeliveryAccessDeps = {
+    hasVideoAccess: (userId, videoId, scope) => checkVideoAccess(userId, videoId, scope),
+    hasPreviewOffer: (offerId, videoId, userId) => evaluatePreviewOffer(offerId, videoId, userId, queryOne),
+};
+
 router.get('/manifest/:videoId/*', async (req: Request, res: Response) => {
     const videoId = req.params.videoId;
     const relativePath = String(req.params[0] || 'playlist.m3u8').replace(/\\/g, '/');
     const auth = validateMediaSession(req, videoId);
     if (!auth.valid) return res.status(401).json({ error: 'Video session expired' });
+    // Recheck the SAME production authorization that issued the session
+    // before any URL/token is minted or content is read.
+    if (!(await evaluateDeliveryAccess(auth.session!, deliveryAccessDeps))) {
+        await killSession(auth.sessionId, 'access_revoked');
+        return res.status(403).json({ error: 'Video access was revoked' });
+    }
     const delivery = await rejectSuspiciousDelivery(req, res, videoId, auth, 'manifest');
     if (!delivery) return;
     if (auth.previewOnly && !relativePath.startsWith('preview/')) return res.status(403).json({ error: 'Preview session cannot access full media' });
@@ -566,6 +668,12 @@ router.get('/media/:videoId', async (req: Request, res: Response) => {
     const relativePath = String(req.query.path || '').replace(/\\/g, '/');
     const auth = validateMediaSession(req, videoId);
     if (!auth.valid) return res.status(401).json({ error: 'Video session expired' });
+    // Recheck the SAME production authorization that issued the session
+    // before any segment content is read.
+    if (!(await evaluateDeliveryAccess(auth.session!, deliveryAccessDeps))) {
+        await killSession(auth.sessionId, 'access_revoked');
+        return res.status(403).json({ error: 'Video access was revoked' });
+    }
     const delivery = await rejectSuspiciousDelivery(req, res, videoId, auth, 'segment');
     if (!delivery) return;
     if (auth.previewOnly && !relativePath.startsWith('preview/')) return res.status(403).json({ error: 'Preview session cannot access full media' });
@@ -605,16 +713,16 @@ router.get('/key/:videoId', async (req: Request, res: Response) => {
             return res.status(401).json({ error: 'Invalid session token' });
         }
 
-        // Verify session is active
+        // Verify session is active and bound to exactly this asset
         const session = getActiveSession(sessionId);
-        if (
-            !session ||
-            tokenResult.decoded?.sid !== sessionId ||
-            tokenResult.decoded?.sub !== session.userId ||
-            tokenResult.decoded?.vid !== videoId ||
-            session.videoId !== videoId
-        ) {
+        if (!session || !isMediaSessionBound(tokenResult.decoded, session, videoId)) {
             return res.status(401).json({ error: 'Session expired' });
+        }
+        // Recheck the SAME production authorization that issued the session
+        // before the encryption key leaves the server.
+        if (!(await evaluateDeliveryAccess(session, deliveryAccessDeps))) {
+            await killSession(sessionId, 'access_revoked');
+            return res.status(403).json({ error: 'Video access was revoked' });
         }
         const delivery = await rejectSuspiciousDelivery(req, res, videoId, validateMediaSession(req, videoId), 'key');
         if (!delivery) return;
@@ -682,9 +790,13 @@ router.post('/security/log', authenticateToken, async (req: AuthRequest, res: Re
 });
 
 router.get('/instructor/violations', authenticateToken, async (req: AuthRequest, res: Response) => {
-    if (!['instructor', 'admin'].includes(req.user!.role)) return res.status(403).json({ error: 'Forbidden' });
-    const instructorFilter = req.user!.role === 'instructor' ? 'AND s.instructor_id=?' : '';
-    const params = req.user!.role === 'instructor' ? [req.user!.id] : [];
+    // Instructor scope is verified per student row below; platform-wide
+    // visibility requires the verified platform capability, not a role claim.
+    const isPlatformAdmin = await hasVerifiedPlatformCapability(req.user!.id);
+    const isInstructor = req.user!.role === 'instructor';
+    if (!isPlatformAdmin && !isInstructor) return res.status(403).json({ error: 'Forbidden' });
+    const instructorFilter = isInstructor ? 'AND s.instructor_id=?' : '';
+    const params = isInstructor ? [req.user!.id] : [];
     const rows = await query<any>(
         `SELECT l.id,l.activity_type,l.details,l.violation_score,l.violation_weight,l.confidence,l.created_at,
                 RIGHT(l.ip_address,7) masked_ip,l.user_agent,s.user_id student_user_id,s.name student_name,
@@ -699,13 +811,17 @@ router.get('/instructor/violations', authenticateToken, async (req: AuthRequest,
 });
 
 router.post('/instructor/students/:studentUserId/suspend', authenticateToken, async (req: AuthRequest, res: Response) => {
-    if (!['instructor', 'admin'].includes(req.user!.role)) return res.status(403).json({ error: 'Forbidden' });
+    // Instructor scope is verified through student ownership; platform-wide
+    // suspension requires the verified platform capability, not a role claim.
+    const isPlatformAdmin = await hasVerifiedPlatformCapability(req.user!.id);
+    const isInstructor = req.user!.role === 'instructor';
+    if (!isPlatformAdmin && !isInstructor) return res.status(403).json({ error: 'Forbidden' });
     const studentUserId = String(req.params.studentUserId || '');
     const minutes = Math.max(5, Math.min(1440, Number(req.body?.minutes) || 30));
     const reason = String(req.body?.reason || 'Video security review').slice(0, 500);
     const owned = await queryOne<any>(
-        `SELECT id,name FROM students WHERE user_id=? AND is_active=1 ${req.user!.role === 'instructor' ? 'AND instructor_id=?' : ''} LIMIT 1`,
-        req.user!.role === 'instructor' ? [studentUserId, req.user!.id] : [studentUserId]
+        `SELECT id,name FROM students WHERE user_id=? AND is_active=1 ${isInstructor ? 'AND instructor_id=?' : ''} LIMIT 1`,
+        isInstructor ? [studentUserId, req.user!.id] : [studentUserId]
     );
     if (!owned) return res.status(404).json({ error: 'Student not found in your space' });
     await execute(
@@ -720,11 +836,15 @@ router.post('/instructor/students/:studentUserId/suspend', authenticateToken, as
 });
 
 router.post('/instructor/students/:studentUserId/unsuspend', authenticateToken, async (req: AuthRequest, res: Response) => {
-    if (!['instructor', 'admin'].includes(req.user!.role)) return res.status(403).json({ error: 'Forbidden' });
+    // Instructor scope is verified through student ownership; platform-wide
+    // unsuspension requires the verified platform capability, not a role claim.
+    const isPlatformAdmin = await hasVerifiedPlatformCapability(req.user!.id);
+    const isInstructor = req.user!.role === 'instructor';
+    if (!isPlatformAdmin && !isInstructor) return res.status(403).json({ error: 'Forbidden' });
     const studentUserId = String(req.params.studentUserId || '');
     const owned = await queryOne<any>(
-        `SELECT id FROM students WHERE user_id=? AND is_active=1 ${req.user!.role === 'instructor' ? 'AND instructor_id=?' : ''} LIMIT 1`,
-        req.user!.role === 'instructor' ? [studentUserId, req.user!.id] : [studentUserId]
+        `SELECT id FROM students WHERE user_id=? AND is_active=1 ${isInstructor ? 'AND instructor_id=?' : ''} LIMIT 1`,
+        isInstructor ? [studentUserId, req.user!.id] : [studentUserId]
     );
     if (!owned) return res.status(404).json({ error: 'Student not found in your space' });
     await execute('UPDATE users SET suspended_until=NULL,suspension_reason=NULL WHERE id=? AND role=\'student\'', [studentUserId]);
@@ -736,39 +856,95 @@ router.post('/instructor/students/:studentUserId/unsuspend', authenticateToken, 
 // ACCESS CHECK (reused from videos.ts)
 // ═══════════════════════════════════════
 
-async function checkVideoAccess(userId: string, videoId: string, studentEnrollmentId?: string, tenantId?: string): Promise<boolean> {
-    const user = await queryOne(
-        'SELECT id, role, phone FROM users WHERE id = ?',
-        [userId]
-    );
+/**
+ * Production SQL repository for the pure access policy, built over the
+ * pool-backed helpers this router already uses (the policy module itself
+ * carries no eager service import).
+ */
+const videoAccessRepository = createSqlVideoAccessRepository({
+    queryOne,
+    hasPlatformCapability: (userId) => hasVerifiedPlatformCapability(userId),
+});
 
-    if (!user) return false;
-    if (user.role === 'admin') return true;
-    if (!tenantId) return false;
-    const tenantVideo = await queryOne('SELECT id FROM videos WHERE id=? AND tenant_id=?', [videoId, tenantId]);
-    if (!tenantVideo) return false;
-    if (user.role === 'teacher' || user.role === 'staff') return true;
-
-    const lecture = await queryOne<any>("SELECT id,instructor_id,grade_id,group_id,is_published FROM lectures WHERE video_url=CONCAT('video://',?) LIMIT 1", [videoId]);
-    if (!lecture) return false;
-    if (user.role === 'instructor') {
-        if (String(lecture.instructor_id) === String(userId)) return true;
-        return !!(await queryOne('SELECT id FROM instructor_shared_lectures WHERE instructor_id=? AND lecture_id=?', [userId, lecture.id]));
-    }
-
-    if (!studentEnrollmentId || !tenantId) return false;
-    const student = await queryOne(
-        `SELECT id,group_id,grade_id,instructor_id FROM students
-         WHERE id=? AND user_id=? AND tenant_id=? AND is_active=TRUE AND approval_status='approved'`,
-        [studentEnrollmentId, userId, tenantId]
-    );
-    if (!student) return false;
-    if (lecture.is_published && (lecture.instructor_id == null || String(lecture.instructor_id) === String(student.instructor_id))
-        && (String(lecture.grade_id) === String(student.grade_id) || String(lecture.group_id) === String(student.group_id))) return true;
-    return !!(await queryOne(`SELECT pub.id FROM instructor_shared_lectures sl
-      JOIN instructor_shared_lecture_publications pub ON pub.shared_lecture_id=sl.id
-      WHERE sl.lecture_id=? AND sl.instructor_id=? AND sl.is_published=1 AND pub.group_id=? LIMIT 1`,
-      [lecture.id, student.instructor_id, student.group_id]));
+/**
+ * Verified video access (deny-by-default). Delegates to the pure production
+ * policy: ACTIVE per-resource teacher authority (uploader / own or assigned
+ * lesson in a live tenant), an explicit verified instructor license, or the
+ * server-selected student enrollment via an in-scope lecture, a verified
+ * publication, or an exact purchased license. A teaching membership in the
+ * video's tenant is NOT an entitlement.
+ *
+ * The scope is the authenticated, server-derived selection (auth middleware),
+ * never a request body value.
+ */
+async function checkVideoAccess(userId: string, videoId: string, scope: VideoAccessScope): Promise<boolean> {
+    return evaluateVideoAccess(userId, videoId, scope, videoAccessRepository);
 }
+
+// ═══════════════════════════════════════
+// SESSION & PREVIEW AUTHORIZATION (injectable decisions; production wiring)
+// ═══════════════════════════════════════
+
+/**
+ * A pending preview offer for exactly this video, held by the caller
+ * (requester or owner) and still merely 'proposed'. The reader is injected
+ * so the predicate is testable without a database; production wires the
+ * pool-backed queryOne. A missing offer id fails closed.
+ */
+export const evaluatePreviewOffer = async (
+    offerId: string | undefined,
+    videoId: string,
+    userId: string,
+    reader: (sql: string, params: unknown[]) => Promise<unknown>,
+): Promise<boolean> => {
+    if (!offerId) return false;
+    const offer = await reader(
+        `SELECT o.id FROM instructor_video_offers o INNER JOIN instructor_video_requests r ON r.id=o.request_id
+         WHERE o.id=? AND o.video_id=? AND (r.requester_id=? OR r.owner_id=?) AND o.status='proposed' LIMIT 1`,
+        [offerId, videoId, userId, userId]
+    );
+    return Boolean(offer);
+};
+
+/** Outcome of the session-creation authorization decision. */
+export type SessionAccessDecision =
+    | 'video_not_found'
+    | 'preview_unavailable'
+    | 'no_access'
+    | 'preview'
+    | 'allowed';
+
+/** Reads the session-creation decision needs; production wires the pool. */
+export interface SessionAccessDeps {
+    hasPreviewOffer: (offerId: string | undefined, videoId: string, userId: string) => Promise<boolean>;
+    hasVideoAccess: (userId: string, videoId: string, scope: VideoAccessScope) => Promise<boolean>;
+}
+
+/**
+ * Session-creation authorization (deny-by-default). The video must exist
+ * and be ready; a requested preview is granted ONLY by the caller's own
+ * still-pending offer and yields the truncated preview alone; every other
+ * playback grant comes from the verified resource policy with the
+ * authenticated, server-derived scope — the requesting tenant stays a
+ * scope input, never the asset owner's authority.
+ */
+export const evaluateSessionAccess = async (
+    video: { id: string } | null,
+    request: { userId: string; offerId?: string; scope: VideoAccessScope },
+    deps: SessionAccessDeps,
+): Promise<SessionAccessDecision> => {
+    if (!video) return 'video_not_found';
+    if (request.offerId) {
+        return (await deps.hasPreviewOffer(request.offerId, video.id, request.userId))
+            ? 'preview'
+            : 'preview_unavailable';
+    }
+    return (await deps.hasVideoAccess(request.userId, video.id, request.scope)) ? 'allowed' : 'no_access';
+};
+
+const sessionAccessDeps: SessionAccessDeps = {
+    hasPreviewOffer: (offerId, videoId, userId) => evaluatePreviewOffer(offerId, videoId, userId, queryOne),
+    hasVideoAccess: (userId, videoId, scope) => checkVideoAccess(userId, videoId, scope),
+};
 
 export default router;

@@ -13,7 +13,184 @@ import { ClipboardCheck, Plus, Trash2, BookOpen, Clock, Edit, GraduationCap, Ima
 import Header from '@/components/Header';
 import { motion } from 'framer-motion';
 
-const API_URL = import.meta.env.VITE_API_URL || '/api';
+// Vite injects `import.meta.env` at build time; it is absent when this module
+// is imported outside Vite (isolated Node tests), so guard the read.
+const readApiBase = (): string => {
+  try {
+    return import.meta.env.VITE_API_URL || '/api';
+  } catch {
+    return '/api';
+  }
+};
+
+const API_URL = readApiBase();
+
+// ---------------------------------------------------------------------------
+// Pure helpers — exported so the isolated test suite exercises the real
+// production behavior instead of a re-implementation.
+// ---------------------------------------------------------------------------
+
+/** Coerce a marks/degree input to a whole number >= 1 so an emptied number
+ *  input can never send NaN to the API. */
+export function normalizePositiveInt(value: unknown, fallback = 1): number {
+  const n = typeof value === 'number' ? value : parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.floor(n);
+}
+
+/** Total marks and the derived passing marks (percentage clamped to 0..100). */
+export function computeExamTotals(
+  questions: { marks?: number }[],
+  passingScoreRaw: string | number,
+): { totalMarks: number; passingPercent: number; passingMarks: number } {
+  const totalMarks = (questions || []).reduce((sum, q) => sum + (q?.marks || 0), 0);
+  const rawPercent = typeof passingScoreRaw === 'number'
+    ? passingScoreRaw
+    : parseInt(String(passingScoreRaw ?? ''), 10);
+  const passingPercent = Math.max(0, Math.min(100, Number.isFinite(rawPercent) ? rawPercent : 0));
+  const passingMarks = Math.ceil((passingPercent / 100) * totalMarks);
+  return { totalMarks, passingPercent, passingMarks };
+}
+
+/** Normalize a datetime-local / ISO value to `YYYY-MM-DD HH:mm:ss`. */
+export function formatExamDateTime(value: string | null | undefined): string | null {
+  if (!value) return null;
+  // value from <input type="datetime-local"> like 2025-11-24T13:30
+  if (/T/.test(value) && !/Z$/.test(value)) {
+    const [d, t] = value.split('T');
+    return `${d} ${t}:00`; // ensure seconds component
+  }
+  try {
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return null;
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+  } catch {
+    return null;
+  }
+}
+
+export interface TeacherExamPayloadInput {
+  course_id: string;
+  grade_id: string | null;
+  group_ids: string[] | null;
+  title: string;
+  description: string | null;
+  duration_minutes: string | number;
+  total_marks: number;
+  passing_marks: number;
+  passing_percentage: number;
+  start_time: string;
+  end_time: string;
+}
+
+/** Build the POST /exams payload for the teacher authoring form. */
+export function buildTeacherExamPayload(input: TeacherExamPayloadInput) {
+  return {
+    course_id: input.course_id,
+    grade_id: input.grade_id || null,
+    group_ids: input.group_ids && input.group_ids.length > 0 ? input.group_ids : null,
+    title: input.title,
+    description: input.description || null,
+    duration_minutes: normalizePositiveInt(input.duration_minutes, 60),
+    total_marks: input.total_marks,
+    passing_marks: input.passing_marks,
+    passing_percentage: input.passing_percentage,
+    is_active: true,
+    // Provide both unified ISO strings; backend will extract DATE() and TIME()
+    start_date: input.start_time,
+    end_date: input.end_time,
+    start_time: input.start_time,
+    end_time: input.end_time,
+  };
+}
+
+export interface ExamAuthoringDeps {
+  createExam: (payload: unknown) => Promise<{ id: string }>;
+  addQuestion: (examId: string, payload: unknown) => Promise<unknown>;
+  deleteExam: (examId: string) => Promise<unknown>;
+}
+
+export type ExamAuthoringOutcome =
+  | { status: 'blocked' }
+  | { status: 'created'; examId: string; questionsAdded: number }
+  | { status: 'rolled-back'; examId: string; questionsAdded: number; error: Error };
+
+/** Single-flight controller for "create exam + insert its questions".
+ *  - blocks duplicate concurrent submits (deny);
+ *  - reports success only after the server accepted every question;
+ *  - on a mid-way question failure it compensates by deleting the exam it
+ *    just created, so a failed save never leaves an orphan exam behind. */
+export function createExamAuthoringController(deps: ExamAuthoringDeps) {
+  let inFlight = false;
+  return {
+    isBusy: () => inFlight,
+    async submit(examPayload: unknown, questionPayloads: unknown[]): Promise<ExamAuthoringOutcome> {
+      if (inFlight) return { status: 'blocked' };
+      inFlight = true;
+      try {
+        const created = await deps.createExam(examPayload);
+        const examId = created?.id;
+        if (!examId) throw new Error('createExam returned no id');
+
+        let questionsAdded = 0;
+        try {
+          for (const payload of questionPayloads) {
+            await deps.addQuestion(examId, payload);
+            questionsAdded += 1;
+          }
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          try {
+            await deps.deleteExam(examId);
+          } catch {
+            // rollback is best-effort; the original failure is what we report
+          }
+          return { status: 'rolled-back', examId, questionsAdded, error };
+        }
+
+        return { status: 'created', examId, questionsAdded };
+      } finally {
+        inFlight = false;
+      }
+    },
+  };
+}
+
+const examAuthoringController = createExamAuthoringController({
+  createExam: async (payload) => {
+    const response = await fetch(`${API_URL}/exams`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error('Failed to create exam');
+    return response.json();
+  },
+  addQuestion: async (examId, payload) => {
+    const response = await fetch(`${API_URL}/exams/${examId}/questions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error('Failed to add question');
+    return response.json();
+  },
+  deleteExam: async (examId) => {
+    await fetch(`${API_URL}/exams/${examId}`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
+      }
+    });
+  },
+});
 
 interface Question {
   question_text: string;
@@ -143,6 +320,15 @@ export default function TeacherExams() {
       }
     }
 
+    if (!Number.isFinite(currentQuestion.marks) || currentQuestion.marks < 1) {
+      toast({
+        title: 'خطأ',
+        description: 'يرجى إدخال درجة صحيحة للسؤال (1 على الأقل)',
+        variant: 'destructive'
+      });
+      return;
+    }
+
     setQuestions([...questions, currentQuestion]);
     setCurrentQuestion({
       question_text: '',
@@ -199,65 +385,27 @@ export default function TeacherExams() {
     setLoading(true);
     try {
       // Calculate totals and passing from percentage
-      const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
-      const rawPercent = parseInt(examData.passing_score || '0');
-      const passingPercent = Math.max(0, Math.min(100, isNaN(rawPercent) ? 0 : rawPercent));
-      const passingMarksCalc = Math.ceil((passingPercent / 100) * totalMarks);
+      const { totalMarks, passingPercent, passingMarks } = computeExamTotals(questions, examData.passing_score);
 
-      // Create exam via Backend API
       // Normalize date/time for backend (expects exam_date + start_time/end_time derived)
-      const formatDateTime = (value: string | undefined) => {
-        if (!value) return null;
-        // value from <input type="datetime-local"> like 2025-11-24T13:30
-        if (/T/.test(value) && !/Z$/.test(value)) {
-          const [d, t] = value.split('T');
-          return `${d} ${t}:00`; // ensure seconds component
-        }
-        try {
-          const d = new Date(value);
-          if (isNaN(d.getTime())) return null;
-          const pad = (n: number) => String(n).padStart(2, '0');
-          return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
-        } catch {
-          return null;
-        }
-      };
+      const startDateTime = formatExamDateTime(examData.start_date) || new Date().toISOString().replace('T', ' ').substring(0, 19);
+      const endDateTime = formatExamDateTime(examData.end_date) || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
 
-      const startDateTime = formatDateTime(examData.start_date) || new Date().toISOString().replace('T', ' ').substring(0, 19);
-      const endDateTime = formatDateTime(examData.end_date) || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
-
-      const response = await fetch(`${API_URL}/exams`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
-        },
-        body: JSON.stringify({
-          course_id: selectedCourse,
-          grade_id: examData.grade_id || null,  // ✅ Include grade_id
-          group_ids: selectedGroupIds.length > 0 ? selectedGroupIds : null, // ✅ Include group_ids
-          title: examData.title,
-          description: examData.description || null,
-          duration_minutes: parseInt(examData.duration_minutes),
-          total_marks: totalMarks,
-          passing_marks: passingMarksCalc, // computed from percentage
-          passing_percentage: passingPercent,
-          is_active: true,
-          // Provide both unified ISO strings; backend will extract DATE() and TIME()
-          start_date: startDateTime,
-          end_date: endDateTime,
-          start_time: startDateTime,
-          end_time: endDateTime
-        })
+      const examPayload = buildTeacherExamPayload({
+        course_id: selectedCourse,
+        grade_id: examData.grade_id || null,  // ✅ Include grade_id
+        group_ids: selectedGroupIds.length > 0 ? selectedGroupIds : null, // ✅ Include group_ids
+        title: examData.title,
+        description: examData.description || null,
+        duration_minutes: examData.duration_minutes,
+        total_marks: totalMarks,
+        passing_marks: passingMarks, // computed from percentage
+        passing_percentage: passingPercent,
+        start_time: startDateTime,
+        end_time: endDateTime,
       });
 
-      if (!response.ok) throw new Error('Failed to create exam');
-      const examResult = await response.json();
-
-      // Insert questions via Backend API
-      for (let i = 0; i < questions.length; i++) {
-        const question = questions[i];
-
+      const questionPayloads = questions.map((question, i) => {
         // ✅ Prepare options based on question type
         let options = null;
         let correctAnswer = null;
@@ -272,31 +420,34 @@ export default function TeacherExams() {
           correctAnswer = question.correct_answer;
         }
 
-        const response = await fetch(`${API_URL}/exams/${examResult.id}/questions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
-          },
-          body: JSON.stringify({
-            question_text: question.question_text,
-            question_image: question.question_image || null,  // ✅ Include image
-            question_type: question.question_type,  // ✅ Include type
-            options: options,
-            correct_answer: correctAnswer,
-            points: question.marks,
-            display_order: i + 1
-          })
-        });
+        return {
+          question_text: question.question_text,
+          question_image: question.question_image || null,  // ✅ Include image
+          question_type: question.question_type,  // ✅ Include type
+          options: options,
+          correct_answer: correctAnswer,
+          points: normalizePositiveInt(question.marks, 1),
+          display_order: i + 1
+        };
+      });
 
-        if (!response.ok) {
-          throw new Error(`Failed to add question ${i + 1}`);
-        }
+      const outcome = await examAuthoringController.submit(examPayload, questionPayloads);
+
+      if (outcome.status === 'blocked') return; // duplicate submit ignored
+
+      if (outcome.status === 'rolled-back') {
+        console.error('Error creating exam:', outcome.error);
+        toast({
+          title: 'خطأ',
+          description: `فشل إنشاء الامتحان وتم التراجع (تعذر إضافة السؤال ${outcome.questionsAdded + 1})`,
+          variant: 'destructive'
+        });
+        return;
       }
 
       toast({
         title: 'نجح',
-        description: `تم إنشاء الامتحان بنجاح مع ${questions.length} سؤال`
+        description: `تم إنشاء الامتحان بنجاح مع ${outcome.questionsAdded} سؤال`
       });
 
       // Reset form
@@ -333,7 +484,7 @@ export default function TeacherExams() {
       const response = await fetch(`${API_URL}/exams/${id}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+          'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
         }
       });
 
@@ -506,6 +657,7 @@ export default function TeacherExams() {
                       <Label>مدة الامتحان (بالدقائق) *</Label>
                       <Input
                         type="number"
+                        min={1}
                         value={examData.duration_minutes}
                         onChange={(e) => setExamData({ ...examData, duration_minutes: e.target.value })}
                       />
@@ -697,7 +849,7 @@ export default function TeacherExams() {
                               <Input
                                 type="number"
                                 value={currentQuestion.marks}
-                                onChange={(e) => setCurrentQuestion({ ...currentQuestion, marks: parseInt(e.target.value) })}
+                                onChange={(e) => setCurrentQuestion({ ...currentQuestion, marks: normalizePositiveInt(e.target.value, 1) })}
                                 min="1"
                               />
                             </div>
@@ -765,6 +917,8 @@ export default function TeacherExams() {
                               size="sm"
                               onClick={() => removeQuestion(index)}
                               className="text-red-600 hover:text-red-700"
+                              aria-label={`حذف السؤال ${index + 1}`}
+                              title="حذف السؤال"
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>
@@ -821,6 +975,8 @@ export default function TeacherExams() {
                               size="sm"
                               onClick={() => navigate(`/teacher/exams/${exam.id}/edit`)}
                               className="text-blue-600 hover:text-blue-700"
+                              aria-label={`تعديل امتحان ${exam.title}`}
+                              title="تعديل الامتحان"
                             >
                               <Edit className="h-4 w-4" />
                             </Button>
@@ -829,6 +985,8 @@ export default function TeacherExams() {
                               size="sm"
                               onClick={() => handleDeleteExam(exam.id)}
                               className="text-red-600 hover:text-red-700"
+                              aria-label={`حذف امتحان ${exam.title}`}
+                              title="حذف الامتحان"
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>

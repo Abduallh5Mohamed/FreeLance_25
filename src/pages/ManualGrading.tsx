@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,7 +9,17 @@ import { Badge } from "@/components/ui/badge";
 import { CheckCircle2, Clock, Save, User, Image as ImageIcon } from "lucide-react";
 import Header from "@/components/Header";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+// Vite injects `import.meta.env` at build time; it is absent when this module
+// is imported outside Vite (isolated Node tests), so guard the read.
+const readApiBase = (): string => {
+    try {
+        return import.meta.env.VITE_API_URL || '/api';
+    } catch {
+        return '/api';
+    }
+};
+
+const API_BASE_URL = readApiBase();
 
 interface Grade {
     id: string;
@@ -43,6 +53,40 @@ interface StudentAttempt {
     submitted_at: string;
 }
 
+export interface AssignedScoreResult {
+    valid: boolean;
+    value?: number;
+}
+
+/**
+ * Validates a raw score input against the question's max points.
+ * - an empty string is a valid "clear" (value undefined) so a grader can undo a
+ *   score they typed — previously clearing was silently ignored;
+ * - a number outside [0, maxScore] is rejected so the input reverts instead of
+ *   persisting an out-of-range score.
+ */
+export const resolveAssignedScore = (raw: string, maxScore: number): AssignedScoreResult => {
+    if (raw.trim() === '') return { valid: true, value: undefined };
+    const num = Number(raw);
+    if (!Number.isFinite(num) || num < 0 || num > maxScore) return { valid: false };
+    return { valid: true, value: num };
+};
+
+export const isAttemptFullyGraded = (student: StudentAttempt): boolean =>
+    student.essay_questions.every(q => q.assigned_score !== undefined);
+
+export const calculateTotalScore = (student: StudentAttempt): number => {
+    const essayTotal = student.essay_questions.reduce(
+        (sum, q) => sum + (q.assigned_score || 0),
+        0
+    );
+    // تأكد من تحويل auto_score لـ number
+    const autoScore = typeof student.auto_score === 'string'
+        ? parseFloat(student.auto_score)
+        : student.auto_score;
+    return autoScore + essayTotal;
+};
+
 const ManualGrading = () => {
     const { toast } = useToast();
     const [grades, setGrades] = useState<Grade[]>([]);
@@ -51,7 +95,11 @@ const ManualGrading = () => {
     const [selectedGroup, setSelectedGroup] = useState<string>("");
     const [students, setStudents] = useState<StudentAttempt[]>([]);
     const [loading, setLoading] = useState(false);
+    const [loadError, setLoadError] = useState<string | null>(null);
     const [savingId, setSavingId] = useState<string | null>(null); // Track which student is being saved
+    // In-flight attempt keys, so a duplicate submit for the same student/exam
+    // cannot fire a second POST before React re-renders.
+    const inFlightRef = useRef<Set<string>>(new Set());
 
     useEffect(() => {
         fetchGrades();
@@ -82,6 +130,7 @@ const ManualGrading = () => {
         if (!selectedGrade) return;
 
         setLoading(true);
+        setLoadError(null);
         try {
             const params = new URLSearchParams({ grade_id: selectedGrade });
             if (selectedGroup && selectedGroup !== 'all') {
@@ -91,6 +140,11 @@ const ManualGrading = () => {
             const response = await fetch(
                 `${API_BASE_URL}/manual-grading/pending?${params.toString()}`
             );
+
+            if (!response.ok) {
+                throw new Error(`Failed to fetch pending attempts (${response.status})`);
+            }
+
             const data = await response.json();
 
             // تأكد إن الـ response array
@@ -102,6 +156,7 @@ const ManualGrading = () => {
             }
         } catch (error) {
             console.error('Error fetching pending attempts:', error);
+            setLoadError('فشل تحميل محاولات الطلاب');
             toast({
                 title: "خطأ",
                 description: "فشل تحميل محاولات الطلاب",
@@ -121,33 +176,23 @@ const ManualGrading = () => {
     const filteredGroups = groups.filter(g => g.grade_id === selectedGrade);
 
     const handleScoreChange = (studentIndex: number, questionIndex: number, score: string) => {
-        const newStudents = [...students];
-        const numScore = parseFloat(score);
-        const maxScore = newStudents[studentIndex].essay_questions[questionIndex].points;
+        const question = students[studentIndex]?.essay_questions[questionIndex];
+        if (!question) return;
+        const resolved = resolveAssignedScore(score, question.points);
+        if (!resolved.valid) return; // out-of-range input reverts (controlled value unchanged)
 
-        if (numScore >= 0 && numScore <= maxScore) {
-            newStudents[studentIndex].essay_questions[questionIndex].assigned_score = numScore;
-            setStudents(newStudents);
-        }
-    };
-
-    const calculateTotalScore = (student: StudentAttempt): number => {
-        const essayTotal = student.essay_questions.reduce(
-            (sum, q) => sum + (q.assigned_score || 0),
-            0
-        );
-        // تأكد من تحويل auto_score لـ number
-        const autoScore = typeof student.auto_score === 'string'
-            ? parseFloat(student.auto_score)
-            : student.auto_score;
-        return autoScore + essayTotal;
+        setStudents(prev => prev.map((student, sIdx) => {
+            if (sIdx !== studentIndex) return student;
+            const essay_questions = student.essay_questions.map((q, qIdx) =>
+                qIdx === questionIndex ? { ...q, assigned_score: resolved.value } : q
+            );
+            return { ...student, essay_questions };
+        }));
     };
 
     const handleSubmitGrades = async (student: StudentAttempt) => {
         // Check if all essay questions are graded
-        const allGraded = student.essay_questions.every(q => q.assigned_score !== undefined);
-
-        if (!allGraded) {
+        if (!isAttemptFullyGraded(student)) {
             toast({
                 title: "تنبيه",
                 description: "يجب تصحيح جميع الأسئلة المقالية",
@@ -157,6 +202,8 @@ const ManualGrading = () => {
         }
 
         const attemptKey = `${student.student_id}-${student.exam_id}`;
+        if (inFlightRef.current.has(attemptKey)) return; // duplicate submit guard
+        inFlightRef.current.add(attemptKey);
         setSavingId(attemptKey);
         try {
             const totalScore = calculateTotalScore(student);
@@ -188,7 +235,21 @@ const ManualGrading = () => {
                 setStudents(prev => prev.filter(s =>
                     !(s.student_id === student.student_id && s.exam_id === student.exam_id)
                 ));
+                return;
             }
+
+            // A rejected submit must be surfaced; the row is kept so the grader
+            // can retry. 401/403 are reported distinctly from other failures.
+            const description = response.status === 401
+                ? 'انتهت الجلسة، يرجى تسجيل الدخول مرة أخرى'
+                : response.status === 403
+                    ? 'ليست لديك صلاحية تسليم الدرجات'
+                    : 'فشل تسليم الدرجات، حاول مرة أخرى';
+            toast({
+                title: "خطأ",
+                description,
+                variant: "destructive"
+            });
         } catch (error) {
             console.error('Error submitting grades:', error);
             toast({
@@ -197,7 +258,10 @@ const ManualGrading = () => {
                 variant: "destructive"
             });
         } finally {
-            setSavingId(null);
+            inFlightRef.current.delete(attemptKey);
+            // Only clear this attempt's marker; a concurrent save for a
+            // different student must keep its own in-flight state.
+            setSavingId(prev => (prev === attemptKey ? null : prev));
         }
     };
 
@@ -259,6 +323,13 @@ const ManualGrading = () => {
                         <Clock className="w-16 h-16 mx-auto mb-4 text-primary animate-spin" />
                         <p>جاري تحميل البيانات...</p>
                     </div>
+                ) : loadError ? (
+                    <Card>
+                        <CardContent className="py-12 text-center">
+                            <p className="text-muted-foreground mb-4">{loadError}</p>
+                            <Button onClick={() => fetchPendingAttempts()}>إعادة المحاولة</Button>
+                        </CardContent>
+                    </Card>
                 ) : students.length === 0 ? (
                     <Card>
                         <CardContent className="py-12 text-center text-muted-foreground">

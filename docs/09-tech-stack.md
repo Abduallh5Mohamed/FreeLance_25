@@ -1,5 +1,7 @@
 # المكدس التقني المستهدف
 
+**القرار الحاكم المحدث:** التسعير تدريجي للمدرس والسنتر؛ فوترة المؤسسة كل 30 يومًا مع حساب مدة فعلية بالثواني وتسوية، لا عمولة على الطلاب؛ محفظة السنتر وحده أو المدرس المستقل؛ خصم الاشتراك من المتاح ومهلة 4 أيام. المرجع [19 — القرارات المعتمدة](19-commercial-registration-wallet-agreement-ar.md)، والموافقة قبل التنفيذ في 18. الوثائق ليست دليل تشغيل.
+
 التطبيق القائم يستخدم React/Vite، React Router، TypeScript، Express/TypeScript، MySQL/mysql2، MinIO، FFmpeg/HLS، Socket.IO، وNginx/PM2/Docker في ترتيبات نشر متعددة. لا يستبدل مكدس مستقر لمجرد التقليد؛ ثبّتوا build/deploy source of truth أولًا، وارفعوا الاعتماديات/الأسرار بما يتوافق مع بيئة الإنتاج.
 
 | الطبقة | المسار | حالة/سبب |
@@ -23,3 +25,6 @@
 - لا migration إنتاج مباشرة قبل snapshot/restore/plan/apply/verify/revert.
 - security gates mandatory على كل CI release؛ لا release إذا فشلت اختبارات M1.
 - RTL/English strings مفاتيح translation، locale من تفضيل موثق وdate/number formatting محلي.
+
+## الدفع
+Provider adapter typed لعقود checkout/webhook/settlement/refund/payout؛ vendor لم يعتمد. MySQL transactions/DECIMAL/idempotency/outbox؛ لا بناء gateway أو خزنة بطاقات. كل capability تحتاج contract وسلوك sandbox موثق قبل F1.

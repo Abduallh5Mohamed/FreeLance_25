@@ -10,10 +10,11 @@ import { motion } from 'framer-motion';
 import { format } from 'date-fns';
 import { ar } from 'date-fns/locale';
 
-const BARCODE_LENGTH = 25;
+export const BARCODE_LENGTH = 25;
 
-const sanitizeBarcode = (value: string) => value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-const formatLocalDate = (date: Date | string) => {
+export const sanitizeBarcode = (value: string) => value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+
+export const formatLocalDate = (date: Date | string) => {
   const d = typeof date === 'string' ? new Date(date) : date;
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -21,15 +22,224 @@ const formatLocalDate = (date: Date | string) => {
   return `${year}-${month}-${day}`;
 };
 
+// ---------------------------------------------------------------------------
+// Shared attendance scan/error helpers.
+// Used by the attendance pages (this file, BarcodeAttendance, Attendance,
+// AttendanceLog) and by the isolated M1 tests
+// (src/tests/m1-sprint-attendance-ui.test.ts). No env, no network, no DOM.
+// ---------------------------------------------------------------------------
+
+/**
+ * In-flight guard that suppresses duplicate scan/submission attempts:
+ * a second submission while one is still running is dropped, a later one
+ * after release is allowed.
+ */
+export interface SubmissionGuard {
+  tryAcquire(): boolean;
+  release(): void;
+  readonly busy: boolean;
+}
+
+export function createSubmissionGuard(): SubmissionGuard {
+  let busy = false;
+  return {
+    tryAcquire(): boolean {
+      if (busy) return false;
+      busy = true;
+      return true;
+    },
+    release(): void {
+      busy = false;
+    },
+    get busy(): boolean {
+      return busy;
+    },
+  };
+}
+
+/**
+ * Monotonic token sequence so an older async response (e.g. after the user
+ * changed the selected date mid-flight) cannot overwrite newer state.
+ */
+export interface ResponseSequence {
+  next(): number;
+  isCurrent(token: number): boolean;
+}
+
+export function createResponseSequence(): ResponseSequence {
+  let latest = 0;
+  return {
+    next(): number {
+      latest += 1;
+      return latest;
+    },
+    isCurrent(token: number): boolean {
+      return token === latest;
+    },
+  };
+}
+
+export type AttendanceErrorKind =
+  | 'duplicate'
+  | 'auth'
+  | 'validation'
+  | 'not_found'
+  | 'server'
+  | 'network';
+
+export interface ClassifiedAttendanceError {
+  kind: AttendanceErrorKind;
+  status?: number;
+  serverMessage?: string;
+  /** User-facing Arabic message, always safe to display. */
+  message: string;
+}
+
+const HTTP_STATUS_MESSAGE = /^HTTP \d{3}$/;
+
+const ERROR_FALLBACKS: Record<AttendanceErrorKind, string> = {
+  duplicate: 'تم تسجيل الحضور مسبقاً',
+  auth: 'انتهت الجلسة أو لا تملك الصلاحية، سجّل الدخول من جديد',
+  validation: 'بيانات غير صحيحة',
+  not_found: 'العنصر المطلوب غير موجود',
+  server: 'خطأ في الخادم، حاول مرة أخرى',
+  network: 'تعذر الاتصال بالخادم، تحقق من الشبكة',
+};
+
+function extractErrorStatus(error: unknown): number | undefined {
+  const response = (error as { response?: { status?: unknown } } | null | undefined)?.response;
+  if (response && typeof response.status === 'number') {
+    return response.status;
+  }
+  // The shared HTTP client throws Error(`HTTP ${status}`) when the server
+  // sends no error text.
+  if (error instanceof Error) {
+    const match = /^HTTP (\d{3})$/.exec(error.message);
+    if (match) return Number(match[1]);
+  }
+  return undefined;
+}
+
+function extractServerMessage(error: unknown): string | undefined {
+  const data = (error as { response?: { data?: { error?: unknown; message?: unknown } } } | null | undefined)
+    ?.response?.data;
+  if (data && typeof data === 'object') {
+    if (typeof data.error === 'string' && data.error.trim() !== '') return data.error;
+    if (typeof data.message === 'string' && data.message.trim() !== '') return data.message;
+  }
+  if (error instanceof Error && !HTTP_STATUS_MESSAGE.test(error.message) && error.message.trim() !== '') {
+    return error.message;
+  }
+  return undefined;
+}
+
+/**
+ * Classifies an API failure so the UI can tell a server rejection (duplicate,
+ * validation, forbidden) apart from a session/auth problem and from a network
+ * outage. Covers both error shapes used by the attendance pages: axios errors
+ * (`error.response.status`) and the shared HTTP client (Error with the server
+ * message text or `HTTP <status>`).
+ */
+export function classifyAttendanceError(error: unknown): ClassifiedAttendanceError {
+  const status = extractErrorStatus(error);
+  const serverMessage = extractServerMessage(error);
+
+  let kind: AttendanceErrorKind;
+  if (status === 409 || (serverMessage !== undefined && serverMessage.includes('already recorded'))) {
+    kind = 'duplicate';
+  } else if (status === 401 || status === 403) {
+    kind = 'auth';
+  } else if (status === 400) {
+    kind = 'validation';
+  } else if (status === 404) {
+    kind = 'not_found';
+  } else if (status !== undefined) {
+    kind = 'server';
+  } else {
+    kind = 'network';
+  }
+
+  return { kind, status, serverMessage, message: ERROR_FALLBACKS[kind] };
+}
+
+export interface BarcodeScanStudent {
+  id: string;
+  name: string;
+  barcode?: string | null;
+}
+
+export interface BarcodeScanRecord {
+  student_id: string;
+  attendance_date: string | Date;
+}
+
+export interface BarcodeScanDeps {
+  loadStudents: () => Promise<BarcodeScanStudent[]>;
+  loadAttendanceForDate: (date: Date) => Promise<BarcodeScanRecord[]>;
+  markAttendance: (barcode: string, date: Date) => Promise<unknown>;
+}
+
+export type BarcodeScanOutcome =
+  | { kind: 'recorded'; studentName: string }
+  | { kind: 'duplicate'; studentName: string }
+  | { kind: 'unknown_barcode' }
+  | { kind: 'invalid_length'; expected: number; actual: number }
+  | { kind: 'error'; classified: ClassifiedAttendanceError };
+
+/**
+ * Real barcode-scan pipeline with injected production dependencies:
+ * validates the barcode, resolves the student, checks for an existing
+ * record on the selected date (comparing normalized local date keys, since
+ * attendance_date arrives as a datetime), and marks attendance.
+ * Every failure is classified instead of surfacing a generic error.
+ */
+export async function processBarcodeScan(
+  input: { barcode: string; date: Date },
+  deps: BarcodeScanDeps,
+): Promise<BarcodeScanOutcome> {
+  const normalizedBarcode = sanitizeBarcode(input.barcode);
+
+  if (normalizedBarcode.length !== BARCODE_LENGTH) {
+    return { kind: 'invalid_length', expected: BARCODE_LENGTH, actual: normalizedBarcode.length };
+  }
+
+  try {
+    const students = await deps.loadStudents();
+    const student = students.find((s) => sanitizeBarcode(s.barcode ?? '') === normalizedBarcode);
+    if (!student) {
+      return { kind: 'unknown_barcode' };
+    }
+
+    const records = await deps.loadAttendanceForDate(input.date);
+    const dateKey = formatLocalDate(input.date);
+    const existingRecord = records.find(
+      (r) => r.student_id === student.id && formatLocalDate(r.attendance_date) === dateKey,
+    );
+    if (existingRecord) {
+      return { kind: 'duplicate', studentName: student.name };
+    }
+
+    await deps.markAttendance(normalizedBarcode, input.date);
+    return { kind: 'recorded', studentName: student.name };
+  } catch (error) {
+    return { kind: 'error', classified: classifyAttendanceError(error) };
+  }
+}
+
+type ScanMessage = { type: 'success' | 'error'; text: string };
+
 export default function BarcodeAttendance() {
   const [barcodeInput, setBarcodeInput] = useState('');
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [selectedGroup, setSelectedGroup] = useState('all');
   const [groups, setGroups] = useState([]);
   const [attendanceRecords, setAttendanceRecords] = useState([]);
-  const [message, setMessage] = useState(null);
+  const [message, setMessage] = useState<ScanMessage | null>(null);
   const [loading, setLoading] = useState(false);
   const barcodeInputRef = useRef(null);
+  const scanGuard = useRef(createSubmissionGuard());
+  const attendanceSequence = useRef(createResponseSequence());
+  const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     barcodeInputRef.current?.focus();
@@ -40,25 +250,50 @@ export default function BarcodeAttendance() {
     loadAttendanceByDate(selectedDate);
   }, [selectedDate]);
 
+  // Never leave a pending success-clear timer behind (leak / stale wipe).
+  useEffect(() => () => {
+    if (messageTimerRef.current !== null) clearTimeout(messageTimerRef.current);
+  }, []);
+
+  const showMessage = (next: ScanMessage) => {
+    if (messageTimerRef.current !== null) {
+      clearTimeout(messageTimerRef.current);
+      messageTimerRef.current = null;
+    }
+    setMessage(next);
+    if (next.type === 'success') {
+      messageTimerRef.current = setTimeout(() => {
+        setMessage(null);
+        messageTimerRef.current = null;
+      }, 3000);
+    }
+  };
+
   const loadGroups = async () => {
     try {
       const groupsData = await getGroups();
       setGroups(groupsData || []);
     } catch (error) {
       console.error('Error loading groups:', error);
+      showMessage({ type: 'error', text: classifyAttendanceError(error).message });
     }
   };
 
-  const loadAttendanceByDate = async (date) => {
+  const loadAttendanceByDate = async (date: Date) => {
+    const token = attendanceSequence.current.next();
     try {
       const records = await getAttendanceByDate(date);
+      // Ignore a stale response that belongs to a superseded date selection.
+      if (!attendanceSequence.current.isCurrent(token)) return;
       const normalized = (records || []).map((record) => ({
         ...record,
         attendance_date: new Date(record.attendance_date),
       }));
       setAttendanceRecords(normalized);
     } catch (error) {
+      if (!attendanceSequence.current.isCurrent(token)) return;
       console.error('Error loading attendance:', error);
+      showMessage({ type: 'error', text: classifyAttendanceError(error).message });
     }
   };
 
@@ -73,67 +308,47 @@ export default function BarcodeAttendance() {
   const filteredRecords = getFilteredRecords();
 
   const processBarcode = async (barcode: string) => {
-    const normalizedBarcode = sanitizeBarcode(barcode);
-
-    if (!normalizedBarcode) {
-      setMessage({ type: 'error', text: 'أدخل الباركود' });
+    // Duplicate scan/submission suppression: drop input while a scan is running.
+    if (!scanGuard.current.tryAcquire()) {
       return;
     }
-    if (normalizedBarcode.length !== BARCODE_LENGTH) {
-      setMessage({ type: 'error', text: `الباركود يجب أن يكون ${BARCODE_LENGTH} رمزًا` });
-      setBarcodeInput('');
-      return;
-    }
-
     setLoading(true);
     try {
-      const students = await getStudents();
-      const student = students.find(s => sanitizeBarcode(s.barcode || '') === normalizedBarcode);
-      
-      if (!student) {
-        setMessage({ type: 'error', text: 'باركود غير صحيح' });
-        setBarcodeInput('');
-        setLoading(false);
-        return;
-      }
-
-      const selectedDateStr = formatLocalDate(selectedDate);
-      // Ensure local state is up to date before checking duplicates
-      await loadAttendanceByDate(selectedDate);
-      const updatedRecords = await getAttendanceByDate(selectedDate);
-      const normalizedRecords = (updatedRecords || []).map((record) => ({
-        ...record,
-        attendance_date: new Date(record.attendance_date),
-      }));
-      setAttendanceRecords(normalizedRecords);
-      const existingRecord = normalizedRecords.find(r => 
-        r.student_id === student.id && 
-        formatLocalDate(r.attendance_date) === selectedDateStr
+      const outcome = await processBarcodeScan(
+        { barcode, date: selectedDate },
+        {
+          loadStudents: () => getStudents(),
+          loadAttendanceForDate: (date) => getAttendanceByDate(date),
+          markAttendance: (normalizedBarcode, date) =>
+            markAttendance({ barcode: normalizedBarcode, attendance_date: date, status: 'present' }),
+        },
       );
-      
-      if (existingRecord) {
-        setMessage({ type: 'error', text: `${student.name} مسجل بالفعل في هذا اليوم` });
-        setBarcodeInput('');
-        setLoading(false);
-        return;
-      }
 
-      const attendanceDateStr = selectedDateStr;
-      
-      await markAttendance({ 
-        barcode: normalizedBarcode,
-        attendance_date: new Date(attendanceDateStr),
-        status: 'present',
-      });
-      
-      setMessage({ type: 'success', text: `✓ تم تسجيل حضور ${student.name}` });
-      setBarcodeInput('');
-      await loadAttendanceByDate(new Date(attendanceDateStr));
-      setTimeout(() => setMessage(null), 3000);
-    } catch (error) {
-      console.error('Error:', error);
-      setMessage({ type: 'error', text: 'خطأ في التسجيل' });
+      switch (outcome.kind) {
+        case 'recorded':
+          showMessage({ type: 'success', text: `✓ تم تسجيل حضور ${outcome.studentName}` });
+          await loadAttendanceByDate(selectedDate);
+          break;
+        case 'duplicate':
+          showMessage({ type: 'error', text: `${outcome.studentName} مسجل بالفعل في هذا اليوم` });
+          break;
+        case 'unknown_barcode':
+          showMessage({ type: 'error', text: 'باركود غير صحيح' });
+          break;
+        case 'invalid_length':
+          showMessage({
+            type: 'error',
+            text: outcome.actual === 0
+              ? 'أدخل الباركود'
+              : `الباركود يجب أن يكون ${outcome.expected} رمزًا`,
+          });
+          break;
+        case 'error':
+          showMessage({ type: 'error', text: outcome.classified.message });
+          break;
+      }
     } finally {
+      scanGuard.current.release();
       setLoading(false);
       barcodeInputRef.current?.focus();
     }
@@ -190,6 +405,7 @@ export default function BarcodeAttendance() {
                     onChange={(e) => { void handleBarcodeInput(e.target.value); }}
                     onPaste={handlePaste}
                     placeholder="ضع الماسح هنا..."
+                    aria-label="حقل مسح الباركود"
                     disabled={loading}
                     className="bg-white dark:bg-slate-700 border-primary/30 dark:border-primary/50 text-foreground text-xl py-6 placeholder-muted-foreground focus:border-primary"
                     autoFocus

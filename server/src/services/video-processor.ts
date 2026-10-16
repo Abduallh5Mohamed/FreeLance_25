@@ -349,8 +349,8 @@ export async function processVideo(videoId: string, tenantId: string): Promise<v
 
         // Update duration in database
         await execute(
-            'UPDATE videos SET duration_seconds = ?, processing_progress = ? WHERE id = ?',
-            [metadata.duration, 10, videoId]
+            'UPDATE videos SET duration_seconds = ?, processing_progress = ? WHERE id = ? AND tenant_id = ?',
+            [metadata.duration, 10, videoId, tenantId]
         );
 
         // Generate thumbnail
@@ -362,8 +362,8 @@ export async function processVideo(videoId: string, tenantId: string): Promise<v
         const thumbnailKey = `${videoId}.jpg`;
         await uploadFile(BUCKETS.THUMBNAILS, thumbnailKey, thumbnailPath, 'image/jpeg');
         await execute(
-            'UPDATE videos SET thumbnail_key = ?, processing_progress = ? WHERE id = ?',
-            [thumbnailKey, 20, videoId]
+            'UPDATE videos SET thumbnail_key = ?, processing_progress = ? WHERE id = ? AND tenant_id = ?',
+            [thumbnailKey, 20, videoId, tenantId]
         );
 
         // Generate a real standalone preview. It never contains media beyond
@@ -373,11 +373,11 @@ export async function processVideo(videoId: string, tenantId: string): Promise<v
         try {
             await generatePreview(originalPath, previewPath, previewDuration);
             await execute(
-                `UPDATE videos SET preview_duration_seconds=?,preview_status='pending' WHERE id=?`,
-                [previewDuration, videoId]
+                `UPDATE videos SET preview_duration_seconds=?,preview_status='pending' WHERE id=? AND tenant_id=?`,
+                [previewDuration, videoId, tenantId]
             );
         } catch (previewError) {
-            await execute("UPDATE videos SET preview_status='failed' WHERE id=?", [videoId]);
+            await execute("UPDATE videos SET preview_status='failed' WHERE id=? AND tenant_id=?", [videoId, tenantId]);
             throw new Error(`Secure preview generation failed: ${previewError instanceof Error ? previewError.message : String(previewError)}`);
         }
 
@@ -401,8 +401,8 @@ export async function processVideo(videoId: string, tenantId: string): Promise<v
             // Progress from 20% to 90% during conversion
             const adjustedProgress = 20 + (progress * 0.7);
             await execute(
-                'UPDATE videos SET processing_progress = ? WHERE id = ?',
-                [Math.floor(adjustedProgress), videoId]
+                'UPDATE videos SET processing_progress = ? WHERE id = ? AND tenant_id = ?',
+                [Math.floor(adjustedProgress), videoId, tenantId]
             );
         }, encryptionKeyInfo, video.watermark_owner);
 
@@ -416,8 +416,8 @@ export async function processVideo(videoId: string, tenantId: string): Promise<v
         await convertToHLS(videoId, previewPath, previewHlsDir, undefined, encryptionKeyInfo, video.watermark_owner);
         await uploadHLSFiles(videoId, previewHlsDir, 'preview');
         await execute(
-            `UPDATE videos SET preview_key=?,preview_status='ready' WHERE id=?`,
-            [`${videoId}/preview/playlist.m3u8`, videoId]
+            `UPDATE videos SET preview_key=?,preview_status='ready' WHERE id=? AND tenant_id=?`,
+            [`${videoId}/preview/playlist.m3u8`, videoId, tenantId]
         );
 
         // Update database with final info (including encryption key if encrypted)
@@ -431,25 +431,25 @@ export async function processVideo(videoId: string, tenantId: string): Promise<v
                 encryption_iv = ?,
                 is_encrypted = 1,
                 processed_at = NOW()
-            WHERE id = ?`
+            WHERE id = ? AND tenant_id = ?`
             : `UPDATE videos SET
                 status = ?,
                 processing_progress = 100,
                 hls_key = ?,
                 qualities_available = ?,
                 processed_at = NOW()
-            WHERE id = ?`;
+            WHERE id = ? AND tenant_id = ?`;
 
         const updateParams = encryptionData
-            ? ['ready', `${videoId}/playlist.m3u8`, JSON.stringify(qualities), encryptionData.keyHex, encryptionData.ivHex, videoId]
-            : ['ready', `${videoId}/playlist.m3u8`, JSON.stringify(qualities), videoId];
+            ? ['ready', `${videoId}/playlist.m3u8`, JSON.stringify(qualities), encryptionData.keyHex, encryptionData.ivHex, videoId, tenantId]
+            : ['ready', `${videoId}/playlist.m3u8`, JSON.stringify(qualities), videoId, tenantId];
 
         await execute(updateQuery, updateParams);
 
         // Playback is only through encrypted HLS. The uploaded source is removed
         // after the encrypted rendition and preview have been stored.
         await deleteFile(BUCKETS.ORIGINALS, video.original_key);
-        await execute("UPDATE videos SET original_key=NULL,delivery_provider='minio' WHERE id=?", [videoId]);
+        await execute("UPDATE videos SET original_key=NULL,delivery_provider='minio' WHERE id=? AND tenant_id=?", [videoId, tenantId]);
 
         console.log(`[VideoProcessor] Completed processing for video ${videoId}${ENABLE_ENCRYPTION ? ' (encrypted)' : ''}`);
 
@@ -516,10 +516,29 @@ async function getAllFiles(dir: string): Promise<string[]> {
 /**
  * Delete all processed files for a video
  */
-export async function deleteVideoFiles(videoId: string): Promise<void> {
-    const video = await queryOne('SELECT * FROM videos WHERE id = ?', [videoId]);
+/**
+ * Pure tenant-scope predicate for video rows: a caller tenant is in scope
+ * only when it is present and equals the row's tenant.
+ */
+export const isVideoInTenantScope = (
+    videoTenantId: string | null | undefined,
+    callerTenantId: string | null | undefined,
+): boolean => Boolean(callerTenantId) && String(videoTenantId) === String(callerTenantId);
 
-    if (video) {
+/**
+ * Delete a video's storage objects. Tenant context is REQUIRED and verified:
+ * the row must belong to the caller's tenant before any storage object is
+ * removed, so a bare video id can never delete another tenant's media.
+ */
+export async function deleteVideoFiles(videoId: string, tenantId?: string): Promise<void> {
+    const video = tenantId
+        ? await queryOne<any>('SELECT * FROM videos WHERE id = ? AND tenant_id = ?', [videoId, tenantId])
+        : null;
+
+    if (!video) {
+        console.warn(`[VideoProcessor] Refusing to delete files for ${videoId}: no row within the caller's tenant scope`);
+        return;
+    }
         // Delete original
         if (video.original_key) {
             try {
@@ -550,7 +569,6 @@ export async function deleteVideoFiles(videoId: string): Promise<void> {
         } catch (e) {
             console.warn(`[VideoProcessor] Could not delete HLS files:`, e);
         }
-    }
 }
 
 /**

@@ -4,16 +4,33 @@ import jwt from 'jsonwebtoken';
 import type { NextFunction, Response } from 'express';
 import {
     AuthRequest,
-    authenticateToken,
+    createAuthenticateToken,
     generateVideoSessionToken,
     getJwtSecret,
     requireRoles,
     requireSelfOrRoles,
     verifyVideoSessionToken,
 } from '../src/middleware/auth';
+import type { PrincipalRepository } from '../src/security/principal-repository';
 import { resolvePublicRegistrationRole } from '../src/security/registration-policy';
 
 const TEST_SECRET = 'test-only-secret-with-sufficient-length';
+
+/**
+ * Hermetic injection (no database). The production default `authenticateToken`
+ * wired a SQL-backed repository, so this suite builds the middleware over an
+ * injected fixture repository through `createAuthenticateToken`. Every
+ * original assertion is preserved; no admin bypass is reintroduced to make a
+ * fixture pass.
+ */
+const fixtureRepository: PrincipalRepository = {
+    findUsersIdentity: async (id) => (id === 'user-1' ? { is_active: 1, token_version: 0, suspension_active: 0 } : null),
+    findStaffIdentity: async () => null,
+    findInstructorAccount: async () => null,
+    findStudentEnrollments: async () => [],
+    findActiveTenantMemberships: async () => [],
+};
+const authenticateToken = createAuthenticateToken(fixtureRepository);
 
 type CapturedResponse = Response & {
     capturedStatus?: number;
@@ -73,7 +90,9 @@ test('authenticateToken attaches a verified principal', async () => {
 
     try {
         // Generic JWT attachment is independent of the instructor subscription gate,
-        // which is integration-tested against tenant/subscription fixtures.
+        // which is integration-tested against tenant/subscription fixtures. The
+        // principal only attaches after the injected identity row passes the
+        // per-request liveness validation.
         const token = jwt.sign({ id: 'user-1', role: 'admin' }, TEST_SECRET);
         const request = { headers: { authorization: `Bearer ${token}` } } as AuthRequest;
         const response = createResponse();
@@ -84,6 +103,37 @@ test('authenticateToken attaches a verified principal', async () => {
         assert.equal(nextCalled, true);
         assert.equal(request.user?.id, 'user-1');
         assert.equal(request.user?.role, 'admin');
+    } finally {
+        if (originalSecret === undefined) {
+            delete process.env.JWT_SECRET;
+        } else {
+            process.env.JWT_SECRET = originalSecret;
+        }
+    }
+});
+
+test('authenticateToken rejects a revoked principal per request (no admin bypass)', async () => {
+    const originalSecret = process.env.JWT_SECRET;
+    process.env.JWT_SECRET = TEST_SECRET;
+
+    try {
+        // Stale token version against the server-side row: the admin role no
+        // longer skips identity/liveness/token-version validation.
+        const revokedRepository: PrincipalRepository = {
+            ...fixtureRepository,
+            findUsersIdentity: async () => ({ is_active: 1, token_version: 5, suspension_active: 0 }),
+        };
+        const token = jwt.sign({ id: 'user-1', role: 'admin', tv: 0 }, TEST_SECRET);
+        const request = { headers: { authorization: `Bearer ${token}` } } as AuthRequest;
+        const response = createResponse();
+        let nextCalled = false;
+
+        await createAuthenticateToken(revokedRepository)(request, response, (() => { nextCalled = true; }) as NextFunction);
+
+        assert.equal(nextCalled, false);
+        assert.equal(response.capturedStatus, 401);
+        assert.equal((response.capturedBody as { code?: string }).code, 'SESSION_REVOKED');
+        assert.equal(request.user, undefined);
     } finally {
         if (originalSecret === undefined) {
             delete process.env.JWT_SECRET;

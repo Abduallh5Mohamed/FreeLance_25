@@ -2,7 +2,7 @@ import { randomUUID, randomBytes } from 'crypto';
 import { Router, Response } from 'express';
 import { execute, query, queryOne } from '../db';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
-import { getAdminPermissions, requireAdminPermission } from '../security/admin-permissions';
+import { requireAdminPermission, hasVerifiedPlatformPermission } from '../security/admin-permissions';
 
 const router = Router();
 
@@ -21,8 +21,24 @@ const ticketNumber = () => {
   return `SUP-${month}-${randomBytes(3).toString('hex').toUpperCase()}`;
 };
 
+// Administrative actions on any ticket require the same verified platform
+// capability the queue guard enforces (active super_admin or holder of the
+// permission key); a JWT role claim alone never satisfies it.
 const isAdmin = async (req: AuthRequest) =>
-  !!req.user && (await getAdminPermissions(req.user.id)).includes('support.read');
+  !!req.user && (await hasVerifiedPlatformPermission('support.read', req.user.id));
+
+// Bounded page size for ticket listings. MySQL refuses bound LIMIT
+// placeholders, so the bound is validated here and interpolated only as a
+// number — never raw request input.
+const DEFAULT_LIST_LIMIT = 50;
+const MAX_LIST_LIMIT = 100;
+
+const parseListLimit = (raw: unknown): number | null => {
+  if (raw === undefined) return DEFAULT_LIST_LIMIT;
+  const value = Array.isArray(raw) ? NaN : Number(raw);
+  if (!Number.isInteger(value) || value < 1) return null;
+  return Math.min(value, MAX_LIST_LIMIT);
+};
 
 async function getVisibleTicket(req: AuthRequest, id: string): Promise<TicketRecord | null> {
   const ticket = await queryOne<TicketRecord>(
@@ -67,11 +83,17 @@ router.post('/', async (req: AuthRequest, res: Response) => {
 
 router.get('/mine', async (req: AuthRequest, res: Response) => {
   try {
+    const limit = parseListLimit(req.query.limit);
+    if (limit === null) {
+      return res.status(400).json({ error: 'limit must be a positive integer' });
+    }
+
     const tickets = await query(
       `SELECT id, ticket_number, category, subject, status, priority, created_at, updated_at
        FROM support_tickets
        WHERE user_id = ?
-       ORDER BY updated_at DESC`,
+       ORDER BY updated_at DESC
+       LIMIT ${limit}`,
       [req.user?.id]
     );
     return res.json(tickets);

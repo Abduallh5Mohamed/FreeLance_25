@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import bcrypt from 'bcryptjs';
-import { Router, Response } from 'express';
+import type { PoolConnection } from 'mysql2/promise';
+import { Router, RequestHandler, Response } from 'express';
 import { execute, getPool, query, queryOne } from '../db';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { getAdminPermissions, isSuperAdmin, requireAdminPermission } from '../security/admin-permissions';
@@ -8,8 +9,51 @@ import { postServiceCreditEntry } from '../services/service-credit';
 import { executeRenewalIntent } from '../services/subscription-renewal';
 import { BUCKETS, getPrivateObjectUrl } from '../services/minio';
 
-const router = Router();
-router.use(authenticateToken);
+/**
+ * Minimal transactional connection seam. Production binds a real mysql2
+ * PoolConnection (getPool().getConnection()); hermetic tests bind a
+ * fixture-backed connection so the real handler/authorization logic runs
+ * without a database, network or live app startup.
+ */
+export interface PlatformTenantsConnection {
+  beginTransaction(): Promise<void>;
+  execute(sql: string, params?: any[]): Promise<[any, any]>;
+  commit(): Promise<void>;
+  rollback(): Promise<void>;
+  release(): void;
+}
+
+/** Data-access seam for the platform tenants router. Production binds ../db. */
+export interface PlatformTenantsDataAccess {
+  query: typeof query;
+  queryOne: typeof queryOne;
+  execute: typeof execute;
+  getConnection: () => Promise<PlatformTenantsConnection>;
+}
+
+/**
+ * Injectable seams for the platform tenants router. The default export binds
+ * the production SQL adapters, the real authentication middleware, the real
+ * platform-capability guard, and the real service functions. Tests inject
+ * isolated fixtures through this boundary instead of bypassing production
+ * authorization.
+ */
+export interface PlatformTenantsDeps {
+  db: PlatformTenantsDataAccess;
+  authenticate: RequestHandler;
+  requireAdminPermission: (permission: string) => RequestHandler;
+  getAdminPermissions: (userId: string) => Promise<string[]>;
+  isSuperAdmin: (userId: string) => Promise<boolean>;
+  postServiceCreditEntry: typeof postServiceCreditEntry;
+  executeRenewalIntent: typeof executeRenewalIntent;
+  getPrivateObjectUrl: typeof getPrivateObjectUrl;
+}
+
+export const createPlatformTenantsRouter = (deps: PlatformTenantsDeps): Router => {
+  const router = Router();
+  const { query, queryOne, execute, getConnection } = deps.db;
+  const { requireAdminPermission, getAdminPermissions, isSuperAdmin, postServiceCreditEntry, executeRenewalIntent, getPrivateObjectUrl } = deps;
+  router.use(deps.authenticate);
 
 const money = (value: unknown): string | null => {
   const text = String(value ?? '').trim();
@@ -39,7 +83,7 @@ router.post('/plans', requireAdminPermission('subscription.create'), async (req:
       return res.status(400).json({ error: 'Invalid platform plan' });
     }
     const id = randomUUID();
-    const connection = await getPool().getConnection();
+    const connection = await getConnection();
     try {
       await connection.beginTransaction();
       await connection.execute(
@@ -386,7 +430,7 @@ router.post('/tenants', requireAdminPermission('instructor.create'), async (req:
     const tenantId = randomUUID();
     const subscriptionId = randomUUID();
     const passwordHash = await bcrypt.hash(password, 10);
-    const connection = await getPool().getConnection();
+    const connection = await getConnection();
     try {
       await connection.beginTransaction();
       await connection.execute(
@@ -427,7 +471,7 @@ router.post('/tenants', requireAdminPermission('instructor.create'), async (req:
 
 router.post('/tenants/:id/renewals', requireAdminPermission('subscription.create'), async (req: AuthRequest, res: Response) => {
   const planId = String(req.body.plan_id ?? '');
-  const connection = await getPool().getConnection();
+  const connection = await getConnection();
   try {
     await connection.beginTransaction();
     const [tenantRows] = await connection.execute(
@@ -480,7 +524,7 @@ router.post('/subscriptions/:id/payments', requireAdminPermission('platform_paym
       return res.status(400).json({ error: 'Valid amount, method, reference and Idempotency-Key are required' });
     }
     const id = randomUUID();
-    const connection = await getPool().getConnection();
+    const connection = await getConnection();
     try {
       await connection.beginTransaction();
       const [subscriptionRows] = await connection.execute(
@@ -519,7 +563,7 @@ router.post('/subscriptions/:id/payments', requireAdminPermission('platform_paym
 });
 
 router.post('/payments/:id/verify', requireAdminPermission('platform_payment.verify'), async (req: AuthRequest, res: Response) => {
-  const connection = await getPool().getConnection();
+  const connection = await getConnection();
   try {
     await connection.beginTransaction();
     const [paymentRows] = await connection.execute(
@@ -633,7 +677,7 @@ router.get('/topups/:id/proof-url', requireAdminPermission('platform_payment.rea
 });
 
 router.post('/topups/:id/verify', requireAdminPermission('platform_payment.verify'), async (req: AuthRequest, res: Response) => {
-  const connection = await getPool().getConnection();
+  const connection = await getConnection();
   try {
     await connection.beginTransaction();
     const [rows] = await connection.execute(
@@ -643,7 +687,7 @@ router.post('/topups/:id/verify', requireAdminPermission('platform_payment.verif
     const topup = (rows as any[])[0];
     if (!topup) { await connection.rollback(); return res.status(404).json({ error: 'Top-up request not found' }); }
     if (topup.status !== 'submitted') { await connection.rollback(); return res.status(409).json({ error: 'Top-up request already processed' }); }
-    const credit = await postServiceCreditEntry(connection, {
+    const credit = await postServiceCreditEntry(connection as unknown as PoolConnection, {
       instructorId: topup.instructor_id, actorId: req.user!.id, type: 'credit', amount: topup.amount,
       reason: `شحن رصيد خدمات: ${topup.purpose_code === 'subscription_renewal' ? 'تجديد اشتراك شهري' : 'أخرى'}`,
       referenceType: 'instructor_topup', referenceUuid: topup.id,
@@ -673,7 +717,7 @@ router.post('/topups/:id/verify', requireAdminPermission('platform_payment.verif
           [intentId, topup.tenant_id, topup.instructor_id, subscription.id, topup.id, subscription.plan_id, String(charge), topup.paid_at]
         );
       }
-      renewal = await executeRenewalIntent(connection, intentId);
+      renewal = await executeRenewalIntent(connection as unknown as PoolConnection, intentId);
     }
     await connection.execute(
       `INSERT INTO audit_events (id,actor_user_id,tenant_id,action,resource_type,resource_id,new_value)
@@ -698,7 +742,7 @@ router.post('/topups/:id/verify', requireAdminPermission('platform_payment.verif
 router.post('/topups/:id/reject', requireAdminPermission('platform_payment.verify'), async (req: AuthRequest, res: Response) => {
   const reason = String(req.body.reason ?? '').trim();
   if (reason.length < 3 || reason.length > 500) return res.status(400).json({ error: 'Rejection reason is required' });
-  const connection = await getPool().getConnection();
+  const connection = await getConnection();
   try {
     await connection.beginTransaction();
     const [topupRows] = await connection.execute(
@@ -726,4 +770,26 @@ router.post('/topups/:id/reject', requireAdminPermission('platform_payment.verif
   finally { connection.release(); }
 });
 
-export default router;
+  return router;
+};
+
+/**
+ * Production binding: the real SQL adapters, the real authentication
+ * middleware, the real platform-capability guard, and the real service
+ * functions. index.ts imports this default export unchanged.
+ */
+export default createPlatformTenantsRouter({
+  db: {
+    query,
+    queryOne,
+    execute,
+    getConnection: () => getPool().getConnection() as unknown as Promise<PlatformTenantsConnection>,
+  },
+  authenticate: authenticateToken,
+  requireAdminPermission,
+  getAdminPermissions,
+  isSuperAdmin,
+  postServiceCreditEntry,
+  executeRenewalIntent,
+  getPrivateObjectUrl,
+});

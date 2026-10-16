@@ -7,20 +7,68 @@ import { useToast } from "@/hooks/use-toast";
 import StudentHeader from "@/components/StudentHeader";
 import axios from "axios";
 
-// Helper to get API URL - same pattern as other pages
+// Helper to get API URL - same pattern as other pages.
+// Vite injects `import.meta.env` at build time; it is absent when this module
+// is imported outside Vite (isolated Node tests), hence the guards below.
 const getApiUrl = () => {
-    const envApiUrl = import.meta.env.VITE_API_URL;
+    const viteEnv: ImportMetaEnv | undefined = import.meta.env;
+    const envApiUrl = viteEnv?.VITE_API_URL;
     if (envApiUrl) return envApiUrl;
 
     // In production, use relative path (nginx proxies /api to backend)
-    const currentHost = window.location.hostname;
-    if (currentHost !== 'localhost' && currentHost !== '127.0.0.1') {
+    const currentHost = typeof window !== "undefined" ? window.location.hostname : "";
+    if (currentHost !== "localhost" && currentHost !== "127.0.0.1" && currentHost !== "") {
         return '/api';
     }
     return 'http://localhost:3001/api';
 };
 
 const API_URL = getApiUrl();
+
+/**
+ * A meeting link may only be opened when it is an absolute http(s) URL with a
+ * host. Every other scheme (javascript:, data:, blob:, file:, ...) is rejected
+ * so a server-provided link can never execute script or navigate the student
+ * away from the app.
+ *
+ * Mirrored in OnlineMeeting.tsx; both copies are pinned by
+ * src/tests/m1-sprint-meeting-support-ui.test.ts.
+ */
+export const isSafeMeetingUrl = (value: string): boolean => {
+    const trimmed = value.trim();
+    if (!trimmed) return false;
+    let parsed: URL;
+    try {
+        parsed = new URL(trimmed);
+    } catch {
+        return false;
+    }
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.hostname.length > 0;
+};
+
+const extractHttpStatus = (error: unknown): number | undefined => {
+    if (typeof error === "object" && error !== null && "response" in error) {
+        const response = (error as { response?: { status?: unknown } }).response;
+        if (typeof response?.status === "number") return response.status;
+    }
+    return undefined;
+};
+
+/**
+ * Maps a failed meetings fetch to an honest Arabic message. A 401/403 must not
+ * be presented as "no meetings": the student needs to know the list failed to
+ * load (session expired / no permission) so they can retry or re-authenticate.
+ *
+ * Mirrored in OnlineMeeting.tsx; both copies are pinned by
+ * src/tests/m1-sprint-meeting-support-ui.test.ts.
+ */
+export const describeMeetingsLoadError = (error: unknown): string => {
+    const status = extractHttpStatus(error);
+    if (status === 401) return "انتهت صلاحية الجلسة. سجّل الدخول مرة أخرى.";
+    if (status === 403) return "لا تملك صلاحية عرض الاجتماعات.";
+    if (typeof status === "number") return "تعذر تحميل الاجتماعات من الخادم. حاول مرة أخرى.";
+    return "تعذر الاتصال بالخادم. تحقق من الشبكة وحاول مرة أخرى.";
+};
 
 interface Meeting {
     id: string;
@@ -40,6 +88,7 @@ interface Meeting {
 
 const StudentMeetings = () => {
     const [meetings, setMeetings] = useState<Meeting[]>([]);
+    const [meetingsError, setMeetingsError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const { toast } = useToast();
     const navigate = useNavigate();
@@ -90,6 +139,10 @@ const StudentMeetings = () => {
     };
 
     const fetchMeetings = async () => {
+        setLoading(true);
+        setMeetingsError(null);
+        // Never show links from a previous student or scope: clear before loading.
+        setMeetings([]);
         try {
             const user = getUser();
             if (!user) {
@@ -103,9 +156,25 @@ const StudentMeetings = () => {
             setMeetings(res.data);
         } catch (error) {
             console.error('Error fetching meetings:', error);
+            setMeetings([]);
+            setMeetingsError(describeMeetingsLoadError(error));
         } finally {
             setLoading(false);
         }
+    };
+
+    const joinMeeting = (link: string) => {
+        if (!isSafeMeetingUrl(link)) {
+            toast({
+                title: "خطأ",
+                description: "رابط الاجتماع غير صالح أو غير متاح",
+                variant: "destructive"
+            });
+            return;
+        }
+        // noopener/noreferrer prevents the opened meeting tab from reaching
+        // back into this window (reverse tabnabbing).
+        window.open(link.trim(), "_blank", "noopener,noreferrer");
     };
 
     useEffect(() => {
@@ -185,6 +254,15 @@ const StudentMeetings = () => {
                     <div className="flex justify-center items-center py-12">
                         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
                     </div>
+                ) : meetingsError ? (
+                    <Card className="shadow-soft">
+                        <CardContent className="py-12">
+                            <div className="text-center">
+                                <p role="alert" className="text-destructive mb-4">{meetingsError}</p>
+                                <Button variant="outline" onClick={fetchMeetings}>إعادة المحاولة</Button>
+                            </div>
+                        </CardContent>
+                    </Card>
                 ) : sortedMeetings.length === 0 ? (
                     <Card className="shadow-soft">
                         <CardContent className="py-12">
@@ -256,7 +334,7 @@ const StudentMeetings = () => {
                                                 <Button
                                                     size="lg"
                                                     className={live ? 'bg-green-600 hover:bg-green-700' : ''}
-                                                    onClick={() => window.open(meeting.meeting_link, '_blank')}
+                                                    onClick={() => joinMeeting(meeting.meeting_link)}
                                                 >
                                                     <ExternalLink className="w-5 h-5 ml-2" />
                                                     {live ? 'انضم الآن' : 'انضم للاجتماع'}

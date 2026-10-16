@@ -86,6 +86,13 @@ export async function createVideoSession(params: {
     const { userId, videoId, ip, userAgent, fingerprint, screenRes, previewOnly = false,
         offerId, studentEnrollmentId, tenantId } = params;
 
+    // Device binding is mandatory: a session without the full binding set
+    // cannot be watermarked or revoked per-device, so it fails closed here
+    // even if a caller skipped the route-level validation.
+    if (!ip || !userAgent || !fingerprint || !screenRes) {
+        throw new Error('device_binding_required');
+    }
+
     // Kill existing session for this user
     const existingSessionId = userSessionMap.get(userId);
     if (existingSessionId) {
@@ -199,7 +206,9 @@ export function cleanupDeadSessions(): void {
 }
 
 // Run cleanup every 10 seconds
-setInterval(cleanupDeadSessions, 10000);
+// Unref'd so importing this module never keeps a test process alive.
+const deadSessionCleanupTimer = setInterval(cleanupDeadSessions, 10000);
+deadSessionCleanupTimer.unref();
 
 // ═══════════════════════════════════════
 // VIOLATION SCORING
@@ -330,36 +339,69 @@ export async function recordViolation(params: {
 }
 
 /**
- * Check if user is suspended
+ * Check if user is suspended.
+ *
+ * Fails closed: when the suspension row cannot be read (storage/security
+ * lookup failure) the account is treated as suspended rather than letting an
+ * unverified viewer through. The reader is injectable so hermetic tests can
+ * exercise the failure path without a database.
  */
-export async function isUserSuspended(userId: string): Promise<{ suspended: boolean; until?: Date; reason?: string }> {
+export interface SuspensionRow {
+    suspended_until: Date | string | null;
+    suspension_reason?: string | null;
+}
+
+const readSuspensionRow = async (userId: string): Promise<SuspensionRow | null> =>
+    queryOne<SuspensionRow>(
+        'SELECT suspended_until, suspension_reason FROM users WHERE id = ?',
+        [userId]
+    );
+
+export const evaluateSuspensionWindow = (
+    suspendedUntil: Date | string | null | undefined,
+    now: Date,
+): { suspended: boolean; until?: Date } => {
+    // Mirrors ACTIVE_SUSPENSION_PREDICATE_SQL exactly: NULL/past/equal are not
+    // suspended; only a strictly future timestamp suspends. An unparseable
+    // value fails closed (treated as suspended) rather than granting access.
+    if (suspendedUntil === null || suspendedUntil === undefined) return { suspended: false };
+    const until = suspendedUntil instanceof Date ? suspendedUntil : new Date(suspendedUntil);
+    if (Number.isNaN(until.getTime())) return { suspended: true };
+    return until.getTime() > now.getTime() ? { suspended: true, until } : { suspended: false };
+};
+
+export async function isUserSuspended(
+    userId: string,
+    reader: (userId: string) => Promise<SuspensionRow | null> = readSuspensionRow,
+): Promise<{ suspended: boolean; until?: Date; reason?: string }> {
+    let user: SuspensionRow | null;
     try {
-        const user = await queryOne(
-            'SELECT suspended_until, suspension_reason FROM users WHERE id = ?',
-            [userId]
-        );
+        user = await reader(userId);
+    } catch (e) {
+        console.error('[Security] Failed to check suspension:', e);
+        // Fail closed: an unverifiable suspension state never grants playback.
+        return { suspended: true, reason: 'suspension_check_unavailable' };
+    }
 
-        if (!user || !user.suspended_until) {
-            return { suspended: false };
-        }
+    if (!user) {
+        return { suspended: false };
+    }
 
-        const now = new Date();
-        const until = new Date(user.suspended_until);
+    const window = evaluateSuspensionWindow(user.suspended_until, new Date());
+    if (window.suspended) {
+        return { suspended: true, until: window.until, reason: user.suspension_reason || undefined };
+    }
 
-        if (until > now) {
-            return { suspended: true, until, reason: user.suspension_reason };
-        }
-
-        // Suspension expired, clear it
+    // Suspension expired, clear it
+    try {
         await execute(
             'UPDATE users SET suspended_until = NULL, suspension_reason = NULL WHERE id = ?',
             [userId]
         );
-        return { suspended: false };
     } catch (e) {
-        console.error('[Security] Failed to check suspension:', e);
-        return { suspended: false };
+        console.error('[Security] Failed to clear expired suspension:', e);
     }
+    return { suspended: false };
 }
 
 /**

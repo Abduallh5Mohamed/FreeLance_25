@@ -5,7 +5,17 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt, { Secret } from 'jsonwebtoken';
 import crypto from 'crypto';
-import { query, queryOne, execute } from '../db';
+import {
+    defaultPrincipalRepository,
+    PrincipalRepository,
+} from '../security/principal-repository';
+import {
+    StudentWorkspaceScope,
+    isStaffIdentityLive,
+    isUsersIdentityLive,
+    selectActiveTenantScope,
+    selectStudentWorkspaceScope,
+} from '../security/identity-scope';
 
 export const getJwtSecret = (): Secret => {
     const secret = process.env.JWT_SECRET;
@@ -31,6 +41,7 @@ export interface AuthRequest extends Request {
         groupId?: string;
         gradeId?: string;
         tokenVersion?: number;
+        identitySource?: 'users' | 'staff';
     };
     sessionId?: string;
     authResolved?: boolean;
@@ -63,171 +74,197 @@ const isInstructorBillingPath = (req: Request, userId: string) => {
         (req.method === 'GET' && path.startsWith(`/api/instructor-wallet/${userId}`));
 };
 
-async function instructorAccountAccess(userId: string) {
-    return queryOne<{ tenant_status: string; legacy_compat: number; allowed: number }>(
-        `SELECT t.status AS tenant_status, t.legacy_compat,
-                EXISTS(
-                  SELECT 1 FROM tenant_subscriptions s
-                  WHERE s.tenant_id=t.id AND (
-                    (s.status IN ('active','past_due') AND (
-                      s.period_ends_at>UTC_TIMESTAMP() OR DATE_ADD(s.period_ends_at,INTERVAL 4 DAY)>UTC_TIMESTAMP()
-                    )) OR
-                    (s.status='grace_period' AND s.grace_until>UTC_TIMESTAMP())
-                  )
-                ) AS allowed
-         FROM users u
-         INNER JOIN tenants t ON t.owner_user_id=u.id
-         INNER JOIN tenant_memberships m ON m.tenant_id=t.id AND m.user_id=u.id AND m.status='active'
-         WHERE u.id=? AND u.is_active=1
-         ORDER BY t.created_at DESC LIMIT 1`,
-        [userId]
-    );
+interface TokenClaims {
+    id: string;
+    role: string;
+    email?: string | null;
+    phone?: string | null;
+    tv?: number | null;
+    tenant_id?: string | null;
+    student_enrollment_id?: string | null;
+    instructor_id?: string | null;
+    group_id?: string | null;
+    grade_id?: string | null;
 }
 
-/** Resolve tenant scope from persisted membership/enrollment, never from an
- * untrusted request field. A JWT tenant claim is only a selector and must
- * still match an active server-side membership. */
-async function resolveTenantContext(userId: string, role: string, claimedTenantId?: string): Promise<string | undefined> {
-    if (role === 'admin') return undefined;
-
-    if (role === 'student') {
-        const enrollments = await query<{ tenant_id: string }>(
-            `SELECT DISTINCT s.tenant_id
-             FROM students s INNER JOIN tenants t ON t.id=s.tenant_id
-             WHERE s.user_id=? AND s.is_active=1 AND t.status='active'
-               AND (? IS NULL OR s.tenant_id=?)
-             ORDER BY s.tenant_id`,
-            [userId, claimedTenantId || null, claimedTenantId || null]
-        );
-        if (enrollments.length !== 1) throw new Error('Exactly one active student tenant enrollment is required');
-        return enrollments[0].tenant_id;
-    }
-
-    const memberships = await query<{ tenant_id: string }>(
-        `SELECT m.tenant_id FROM tenant_memberships m
-         INNER JOIN tenants t ON t.id=m.tenant_id
-         WHERE m.user_id=? AND m.status='active' AND t.status='active'
-           AND (? IS NULL OR m.tenant_id=?)
-         ORDER BY m.created_at DESC`,
-        [userId, claimedTenantId || null, claimedTenantId || null]
-    );
-    if (memberships.length !== 1) throw new Error('Exactly one active tenant membership is required');
-    return memberships[0].tenant_id;
+interface PrincipalFailure {
+    status: number;
+    body: { error: string; code?: string };
 }
+
+type PrincipalOutcome =
+    | { ok: true; user: NonNullable<AuthRequest['user']> }
+    | { ok: false; failure: PrincipalFailure };
+
+const revoked = (error: string, code = 'SESSION_REVOKED'): PrincipalFailure => ({ status: 401, body: { error, code } });
 
 /**
- * Basic JWT authentication - verifies token and attaches user
+ * Authenticate the identity independently of any tenant/workspace selection
+ * and derive every scope from server-side rows:
+ * - users-table identities (every role, including admins) are live only while
+ *   active, not under an active time-bound suspension, and their token
+ *   version still matches, so revocation applies uniformly;
+ * - staff-table identities have no token_version/suspension columns, so their
+ *   row's is_active flag is the revocation signal (no schema invention);
+ * - a missing, stale, or forged workspace selection yields no scope, and a
+ *   selection that no longer resolves fails the request. Authentication never
+ *   depends on having exactly one membership.
+ *
+ * No role bypasses per-request liveness; surface-level admin authorization
+ * (platform permissions) layers on top of this authenticated principal.
  */
-export const authenticateToken = async (req: AuthRequest, res: Response, next: NextFunction) => {
-    try {
-        if (req.user && req.authResolved) return next();
-        const token = readBearerToken(req);
+async function resolvePrincipal(claims: TokenClaims, req: Request, repository: PrincipalRepository): Promise<PrincipalOutcome> {
+    let identitySource: 'users' | 'staff' = 'users';
 
-        if (!token) {
-            return res.status(401).json({ error: 'No token provided' });
+    const identity = await repository.findUsersIdentity(claims.id);
+    if (identity) {
+        if (!isUsersIdentityLive(identity, Number(claims.tv || 0))) {
+            return { ok: false, failure: revoked('Session revoked') };
         }
+    } else if (claims.role === 'staff') {
+        const staffIdentity = await repository.findStaffIdentity(claims.id);
+        if (!isStaffIdentityLive(staffIdentity)) {
+            return { ok: false, failure: revoked('Session revoked') };
+        }
+        identitySource = 'staff';
+    } else {
+        return { ok: false, failure: revoked('Session revoked') };
+    }
 
-        const decoded = validateClaims(jwt.verify(token, getJwtSecret()));
-        const tenantId = await resolveTenantContext(decoded.id, decoded.role, decoded.tenant_id);
-        if (decoded.role === 'student') {
-            const tokenState = await queryOne<any>('SELECT token_version,is_active FROM users WHERE id=? AND role=\'student\' LIMIT 1', [decoded.id]);
-            if (!tokenState?.is_active || Number(decoded.tv || 0) !== Number(tokenState.token_version || 0)) {
-                return res.status(401).json({ error: 'Session revoked', code: 'SESSION_REVOKED' });
-            }
+    let billingOnly = false;
+    if (claims.role === 'instructor') {
+        const account = await repository.findInstructorAccount(claims.id);
+        if (!account || account.tenant_status !== 'active') {
+            return { ok: false, failure: { status: 403, body: { error: 'Instructor account is administratively suspended', code: 'TENANT_SUSPENDED' } } };
         }
-        let billingOnly = false;
-        if (decoded.role === 'instructor') {
-            const account = await instructorAccountAccess(decoded.id);
-            if (!account || account.tenant_status !== 'active') {
-                return res.status(403).json({ error: 'Instructor account is administratively suspended', code: 'TENANT_SUSPENDED' });
-            }
-            billingOnly = !Boolean(account.legacy_compat || account.allowed);
-            if (billingOnly) {
-                if (!isInstructorBillingPath(req, decoded.id)) {
-                    return res.status(403).json({
-                        error: 'Subscription grace period ended. Billing and support are still available.',
-                        code: 'BILLING_ONLY',
-                    });
-                }
-            }
+        billingOnly = !Boolean(account.legacy_compat || account.allowed);
+        if (billingOnly && !isInstructorBillingPath(req, claims.id)) {
+            return { ok: false, failure: { status: 403, body: { error: 'Subscription grace period ended. Billing and support are still available.', code: 'BILLING_ONLY' } } };
         }
-        req.user = {
-            id: decoded.id,
-            email: decoded.email || null,
-            phone: decoded.phone || null,
-            role: decoded.role,
+    }
+
+    // Membership-derived scope is only ever populated from server-side rows;
+    // JWT membership claims are selectors, never authority.
+    let tenantId: string | undefined;
+    let studentEnrollmentId: string | undefined;
+    let instructorId: string | undefined;
+    let groupId: string | undefined;
+    let gradeId: string | undefined;
+
+    if (claims.role === 'student') {
+        const enrollments = await repository.findStudentEnrollments(claims.id);
+        const scope: StudentWorkspaceScope | null = selectStudentWorkspaceScope(enrollments, claims);
+        if (!scope && typeof claims.student_enrollment_id === 'string' && claims.student_enrollment_id) {
+            // A previously issued selection stopped resolving: fail closed
+            // instead of serving the request without the selected workspace.
+            return { ok: false, failure: revoked('Selected workspace is no longer active', 'WORKSPACE_REVOKED') };
+        }
+        tenantId = scope?.tenantId;
+        studentEnrollmentId = scope?.studentEnrollmentId;
+        instructorId = scope?.instructorId ?? undefined;
+        groupId = scope?.groupId ?? undefined;
+        gradeId = scope?.gradeId ?? undefined;
+    } else if (claims.role !== 'admin') {
+        const memberships = await repository.findActiveTenantMemberships(claims.id);
+        tenantId = selectActiveTenantScope(memberships, claims.tenant_id) ?? undefined;
+    }
+    // Roles without an active scope carry no membership-derived fields at all.
+
+    return {
+        ok: true,
+        user: {
+            id: claims.id,
+            email: claims.email || null,
+            phone: claims.phone || null,
+            role: claims.role,
             billingOnly,
             tenantId,
-            studentEnrollmentId: decoded.student_enrollment_id,
-            instructorId: decoded.instructor_id,
-            groupId: decoded.group_id,
-            gradeId: decoded.grade_id,
-            tokenVersion: Number(decoded.tv || 0),
-        };
-        req.authResolved = true;
-
-        next();
-    } catch (error: any) {
-        if (error.name === 'TokenExpiredError') {
-            return res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
-        }
-        return res.status(401).json({ error: 'Invalid token' });
-    }
-};
+            studentEnrollmentId,
+            instructorId,
+            groupId,
+            gradeId,
+            tokenVersion: Number(claims.tv || 0),
+            identitySource,
+        },
+    };
+}
 
 /**
- * Optional JWT authentication - attaches req.user when a valid token is
- * present, otherwise lets the request through unauthenticated.
- * Used to scope data per-role without breaking public/student endpoints.
+ * Build the strict authentication middleware over an injected repository.
+ * Production uses the default SQL repository; hermetic tests inject isolated
+ * fixtures through this boundary instead of bypassing production auth.
  */
-export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFunction) => {
-    if (req.authResolved) return next();
-    try {
-        const token = readBearerToken(req);
+export const createAuthenticateToken = (repository: PrincipalRepository = defaultPrincipalRepository) =>
+    async (req: AuthRequest, res: Response, next: NextFunction) => {
+        try {
+            if (req.user && req.authResolved) return next();
+            const token = readBearerToken(req);
 
-        if (token) {
-            const decoded = validateClaims(jwt.verify(token, getJwtSecret()));
-            const tenantId = await resolveTenantContext(decoded.id, decoded.role, decoded.tenant_id);
-            if (decoded.role === 'student') {
-                const tokenState = await queryOne<any>('SELECT token_version,is_active FROM users WHERE id=? AND role=\'student\' LIMIT 1', [decoded.id]);
-                if (!tokenState?.is_active || Number(decoded.tv || 0) !== Number(tokenState.token_version || 0)) {
-                    return res.status(401).json({ error: 'Session revoked', code: 'SESSION_REVOKED' });
-                }
+            if (!token) {
+                return res.status(401).json({ error: 'No token provided' });
             }
-            let billingOnly = false;
-            if (decoded.role === 'instructor') {
-                const account = await instructorAccountAccess(decoded.id);
-                if (!account || account.tenant_status !== 'active') {
-                    return res.status(403).json({ error: 'Instructor account is administratively suspended', code: 'TENANT_SUSPENDED' });
-                }
-                billingOnly = !Boolean(account.legacy_compat || account.allowed);
-                if (billingOnly && !isInstructorBillingPath(req, decoded.id)) {
-                    return res.status(403).json({ error: 'Subscription grace period ended. Billing and support are still available.', code: 'BILLING_ONLY' });
-                }
+
+            const decoded = validateClaims(jwt.verify(token, getJwtSecret())) as TokenClaims;
+            const outcome = await resolvePrincipal(decoded, req, repository);
+            if (!outcome.ok) {
+                return res.status(outcome.failure.status).json(outcome.failure.body);
             }
-            req.user = {
-                id: decoded.id,
-                email: decoded.email || null,
-                phone: decoded.phone || null,
-                role: decoded.role,
-                billingOnly,
-                tenantId,
-                studentEnrollmentId: decoded.student_enrollment_id,
-                instructorId: decoded.instructor_id,
-                groupId: decoded.group_id,
-                gradeId: decoded.grade_id,
-                tokenVersion: Number(decoded.tv || 0),
-            };
+            req.user = outcome.user;
+            req.authResolved = true;
+
+            next();
+        } catch (error: any) {
+            if (error.name === 'TokenExpiredError') {
+                return res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
+            }
+            return res.status(401).json({ error: 'Invalid token' });
         }
-        req.authResolved = true;
-    } catch (error: any) {
-        if (error.name === 'TokenExpiredError') {
-            return res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
+    };
+
+/**
+ * Basic JWT authentication - verifies the token, the identity's liveness, and
+ * attaches the principal with server-derived scopes. A principal with zero or
+ * ambiguous memberships is authenticated but carries no tenant scope, so
+ * protected routes deny data access instead of the request failing at
+ * authentication.
+ */
+export const authenticateToken = createAuthenticateToken();
+
+/**
+ * Build the optional-authentication middleware over an injected repository
+ * (same principal rules as createAuthenticateToken).
+ */
+export const createOptionalAuth = (repository: PrincipalRepository = defaultPrincipalRepository) =>
+    async (req: AuthRequest, res: Response, next: NextFunction) => {
+        if (req.authResolved) return next();
+        try {
+            const token = readBearerToken(req);
+
+            if (token) {
+                const decoded = validateClaims(jwt.verify(token, getJwtSecret())) as TokenClaims;
+                const outcome = await resolvePrincipal(decoded, req, repository);
+                if (!outcome.ok) {
+                    return res.status(outcome.failure.status).json(outcome.failure.body);
+                }
+                req.user = outcome.user;
+            }
+            req.authResolved = true;
+        } catch (error: any) {
+            if (error.name === 'TokenExpiredError') {
+                return res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
+            }
+            return res.status(401).json({ error: 'Invalid token' });
         }
-        return res.status(401).json({ error: 'Invalid token' });
-    }
-    next();
-};
+        next();
+    };
+
+/**
+ * Optional JWT authentication - attaches req.user when a valid, live token is
+ * present, otherwise lets the request through unauthenticated. Discovery,
+ * join, and selection flows rely on this to recognize a member-independent
+ * identity without granting data access.
+ */
+export const optionalAuth = createOptionalAuth();
 
 /**
  * Return the user id when the caller is an 'instructor' role, else null.

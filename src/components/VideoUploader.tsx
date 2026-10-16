@@ -162,7 +162,10 @@ export function VideoUploader({
                 await uploadToMinIO(shadowUploadUrl, file, progress => updateProgress(50 + Math.round(progress / 2)), abortControllerRef.current.signal);
             } else {
                 if (!uploadUrl) throw new Error('Upload URL is missing');
-                await uploadToMinIO(uploadUrl, file, updateProgress, abortControllerRef.current.signal);
+                // Private upload contract: bytes stream through the authenticated
+                // API, which derives the object key server-side. The browser never
+                // receives a storage URL and never sees a signing secret.
+                await uploadBytesThroughApi(`${API_BASE}${uploadUrl}`, file, updateProgress, abortControllerRef.current.signal, authToken);
             }
 
             // Step 3: Complete upload and start processing (with retry)
@@ -182,6 +185,16 @@ export function VideoUploader({
 
                     if (completeResponse.ok) {
                         completeSuccess = true;
+                        break;
+                    }
+                    // Terminal outcomes are not retryable: a revoked upload
+                    // permission (403) or an expired session (410) fails
+                    // identically on every retry, so the server's own message
+                    // is surfaced immediately. Everything else — a contended
+                    // 409 or a rolled-back enqueue 500 — stays retryable: the
+                    // session remains claimable server-side.
+                    if (completeResponse.status === 403 || completeResponse.status === 410) {
+                        lastError = new Error(await readCompleteErrorMessage(completeResponse));
                         break;
                     }
                     lastError = new Error(`Complete failed with status ${completeResponse.status}`);
@@ -231,6 +244,84 @@ export function VideoUploader({
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [file, courseId, lectureId, materialId, title, description, uploadedBy, toast, addUpload, updateUpload]);
+
+    /** Reads the server's own error message from a failed completion response. */
+    async function readCompleteErrorMessage(response: Response): Promise<string> {
+        try {
+            const parsed: unknown = await response.json();
+            if (parsed && typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
+                const message = (parsed as { error: unknown }).error;
+                if (typeof message === 'string' && message.length > 0) return message;
+            }
+        } catch {
+            // Not a JSON error body; the caller falls back to the status code.
+        }
+        return `Complete failed with status ${response.status}`;
+    }
+
+    /**
+     * Stream the file to the authenticated byte-transfer endpoint of the
+     * server's upload contract. The API derives the object key server-side, so
+     * no storage URL, presigned URL, or token is ever handled by the browser.
+     */
+    async function uploadBytesThroughApi(
+        url: string,
+        file: File,
+        onProgress: (progress: number) => void,
+        signal: AbortSignal,
+        authToken: string | null
+    ): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const progress = Math.round((e.loaded / e.total) * 100);
+                    onProgress(progress);
+                }
+            });
+
+            xhr.addEventListener('load', () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    resolve();
+                } else {
+                    reject(new Error(readServerErrorMessage(xhr) || `Upload failed with status ${xhr.status}`));
+                }
+            });
+
+            xhr.addEventListener('error', () => {
+                reject(new Error('Network error during upload'));
+            });
+
+            xhr.addEventListener('abort', () => {
+                reject(new Error('Upload cancelled'));
+            });
+
+            // Handle abort signal
+            signal.addEventListener('abort', () => {
+                xhr.abort();
+            });
+
+            xhr.open('PUT', url);
+            if (file.type) xhr.setRequestHeader('Content-Type', file.type);
+            if (authToken) xhr.setRequestHeader('Authorization', `Bearer ${authToken}`);
+            xhr.send(file);
+        });
+    }
+
+    /** Reads the server's own error message from a failed transfer response. */
+    function readServerErrorMessage(xhr: XMLHttpRequest): string | null {
+        try {
+            const parsed: unknown = JSON.parse(xhr.responseText);
+            if (parsed && typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
+                const message = (parsed as { error: unknown }).error;
+                if (typeof message === 'string' && message.length > 0) return message;
+            }
+        } catch {
+            // Not a JSON error body; the caller falls back to the status code.
+        }
+        return null;
+    }
 
     /**
      * Upload file directly to MinIO via presigned URL

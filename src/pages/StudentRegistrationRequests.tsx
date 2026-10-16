@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -53,12 +53,132 @@ interface Course {
   name: string;
 }
 
+export interface RegistrationDecisionDeps {
+  approveRegistrationRequest: (id: string) => Promise<{ message?: string }>;
+  rejectRegistrationRequest: (id: string, reason: string) => Promise<{ message?: string }>;
+  /** Server-authoritative refresh: only invoked after the server confirms success. */
+  refresh: () => void | Promise<void>;
+  notify: (kind: "success" | "error", title: string, description: string) => void;
+}
+
+export interface RegistrationDecisionOutcome {
+  ok: boolean;
+}
+
+/**
+ * Decision controller for registration requests. Every decision is
+ * single-flight (a repeat click while a request for the same target is in
+ * flight reuses it instead of issuing a duplicate request — the server
+ * rejects an already-processed request with 404), the list is refreshed only
+ * after the server confirms success, and failures keep the caller's state
+ * untouched so no false success is shown.
+ */
+export const createRegistrationDecisionController = (deps: RegistrationDecisionDeps) => {
+  const inFlight = new Map<string, Promise<RegistrationDecisionOutcome>>();
+
+  const run = (key: string, op: () => Promise<RegistrationDecisionOutcome>): Promise<RegistrationDecisionOutcome> => {
+    const existing = inFlight.get(key);
+    if (existing) return existing;
+    const promise = op().finally(() => {
+      inFlight.delete(key);
+    });
+    inFlight.set(key, promise);
+    return promise;
+  };
+
+  return {
+    approve: (request: RegistrationRequest) =>
+      run(`approve:${request.id}`, async () => {
+        try {
+          const result = await deps.approveRegistrationRequest(request.id);
+          try {
+            await deps.refresh();
+          } catch (refreshError) {
+            // The decision was accepted by the server; the list refresh failure
+            // is reported by the page's own fetch error handling.
+            console.error('Error refreshing after approval:', refreshError);
+          }
+          deps.notify("success", "تم قبول الطلب", result.message || `تم قبول طلب الطالب ${request.name} بنجاح`);
+          return { ok: true };
+        } catch (error: unknown) {
+          deps.notify(
+            "error",
+            "خطأ",
+            error instanceof Error ? error.message : "حدث خطأ أثناء قبول الطلب"
+          );
+          return { ok: false };
+        }
+      }),
+    reject: (request: RegistrationRequest, reason: string) =>
+      run(`reject:${request.id}`, async () => {
+        try {
+          const result = await deps.rejectRegistrationRequest(request.id, reason);
+          try {
+            await deps.refresh();
+          } catch (refreshError) {
+            console.error('Error refreshing after rejection:', refreshError);
+          }
+          deps.notify("success", "تم رفض الطلب", result.message || `تم رفض طلب الطالب ${request.name}`);
+          return { ok: true };
+        } catch (error: unknown) {
+          deps.notify(
+            "error",
+            "خطأ",
+            error instanceof Error ? error.message : "حدث خطأ أثناء رفض الطلب"
+          );
+          return { ok: false };
+        }
+      }),
+  };
+};
+
+export interface RegistrationPageData {
+  requests: RegistrationRequest[];
+  grades: Grade[];
+  groups: Group[];
+  courses: Course[];
+}
+
+export interface RegistrationPageDataDeps {
+  getRegistrationRequests: (status?: 'pending' | 'approved' | 'rejected') => Promise<RegistrationRequest[]>;
+  getGrades: () => Promise<Grade[]>;
+  getGroups: () => Promise<Group[]>;
+  getCourses: () => Promise<Course[]>;
+}
+
+/**
+ * Load every registration status — not just pending. The page renders
+ * pending/approved/rejected tabs and filters client-side; requesting only
+ * pending would leave the approved/rejected tabs permanently empty.
+ */
+export const loadRegistrationPageData = async (deps: RegistrationPageDataDeps): Promise<RegistrationPageData> => {
+  const [requests, grades, groups, courses] = await Promise.all([
+    deps.getRegistrationRequests(),
+    deps.getGrades(),
+    deps.getGroups(),
+    deps.getCourses(),
+  ]);
+  return { requests, grades, groups, courses };
+};
+
+/** Split the loaded requests into the three tab lists. */
+export const splitRequestsByStatus = (requests: RegistrationRequest[]): {
+  pending: RegistrationRequest[];
+  approved: RegistrationRequest[];
+  rejected: RegistrationRequest[];
+} => ({
+  pending: requests.filter(r => r.status === 'pending'),
+  approved: requests.filter(r => r.status === 'approved'),
+  rejected: requests.filter(r => r.status === 'rejected'),
+});
+
 export default function StudentRegistrationRequests() {
   const [requests, setRequests] = useState<RegistrationRequest[]>([]);
   const [grades, setGrades] = useState<Grade[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
+  const [processingId, setProcessingId] = useState<string | null>(null);
   const [selectedRequest, setSelectedRequest] = useState<RegistrationRequest | null>(null);
   const [rejectionReason, setRejectionReason] = useState("");
   const [showRejectionDialog, setShowRejectionDialog] = useState(false);
@@ -101,18 +221,13 @@ export default function StudentRegistrationRequests() {
 
   const fetchData = async () => {
     try {
-      const [requestsData, gradesData, groupsData, coursesData] = await Promise.all([
-        getRegistrationRequests('pending'), // Fetch all pending requests (online and offline)
-        getGrades(),
-        getGroups(),
-        getCourses()
-      ]);
+      const data = await loadRegistrationPageData({ getRegistrationRequests, getGrades, getGroups, getCourses });
 
       // Show both online and offline requests
-      setRequests(requestsData);
-      setGrades(gradesData);
-      setGroups(groupsData);
-      setCourses(coursesData);
+      setRequests(data.requests);
+      setGrades(data.grades);
+      setGroups(data.groups);
+      setCourses(data.courses);
     } catch (error) {
       console.error('Error fetching data:', error);
       toast({
@@ -125,25 +240,25 @@ export default function StudentRegistrationRequests() {
     }
   };
 
+  const decisions = useMemo(() => createRegistrationDecisionController({
+    approveRegistrationRequest,
+    rejectRegistrationRequest,
+    refresh: fetchData,
+    notify: (kind, title, description) => toast({
+      title,
+      description,
+      ...(kind === "error" ? { variant: "destructive" as const } : {}),
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), []);
+
   const handleApprove = async (request: RegistrationRequest) => {
+    if (processingId) return; // a decision is already in flight
+    setProcessingId(request.id);
     try {
-      // Call the approve endpoint
-      const result = await approveRegistrationRequest(request.id);
-
-      toast({
-        title: "تم قبول الطلب",
-        description: result.message || `تم قبول طلب الطالب ${request.name} بنجاح`,
-      });
-
-      // Refresh data
-      fetchData();
-    } catch (error) {
-      console.error('Error approving request:', error);
-      toast({
-        title: "خطأ",
-        description: error instanceof Error ? error.message : "حدث خطأ أثناء قبول الطلب",
-        variant: "destructive"
-      });
+      await decisions.approve(request);
+    } finally {
+      setProcessingId(null);
     }
   };
 
@@ -157,26 +272,16 @@ export default function StudentRegistrationRequests() {
       return;
     }
 
+    if (processingId) return; // a decision is already in flight
+    setProcessingId(selectedRequest.id);
     try {
-      // Call the reject endpoint
-      const result = await rejectRegistrationRequest(selectedRequest.id, rejectionReason);
-
-      toast({
-        title: "تم رفض الطلب",
-        description: result.message || `تم رفض طلب الطالب ${selectedRequest.name}`,
-      });
-
+      const outcome = await decisions.reject(selectedRequest, rejectionReason);
+      if (!outcome.ok) return; // keep the reason and dialog open for retry
       setShowRejectionDialog(false);
       setRejectionReason("");
       setSelectedRequest(null);
-      fetchData();
-    } catch (error) {
-      console.error('Error rejecting request:', error);
-      toast({
-        title: "خطأ",
-        description: error instanceof Error ? error.message : "حدث خطأ أثناء رفض الطلب",
-        variant: "destructive"
-      });
+    } finally {
+      setProcessingId(null);
     }
   };
 
@@ -262,6 +367,7 @@ export default function StudentRegistrationRequests() {
               onClick={() => handleApprove(request)}
               className="flex-1"
               variant="default"
+              disabled={processingId !== null}
             >
               <Check className="mr-2 h-4 w-4" />
               قبول
@@ -273,6 +379,7 @@ export default function StudentRegistrationRequests() {
               }}
               className="flex-1"
               variant="destructive"
+              disabled={processingId !== null}
             >
               <X className="mr-2 h-4 w-4" />
               رفض
@@ -283,9 +390,7 @@ export default function StudentRegistrationRequests() {
     </Card>
   );
 
-  const pendingRequests = requests.filter(r => r.status === 'pending');
-  const approvedRequests = requests.filter(r => r.status === 'approved');
-  const rejectedRequests = requests.filter(r => r.status === 'rejected');
+  const { pending: pendingRequests, approved: approvedRequests, rejected: rejectedRequests } = splitRequestsByStatus(requests);
 
   if (loading) {
     return (
@@ -420,6 +525,7 @@ export default function StudentRegistrationRequests() {
                 variant="destructive"
                 onClick={handleReject}
                 className="bg-gradient-to-r from-red-500 to-red-600 hover:shadow-lg"
+                disabled={processingId !== null}
               >
                 تأكيد الرفض
               </Button>

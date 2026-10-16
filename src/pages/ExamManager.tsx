@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -17,7 +17,17 @@ import { cn } from "@/lib/utils";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
 
-const API_URL = import.meta.env.VITE_API_URL || '/api';
+// Vite injects `import.meta.env` at build time; it is absent when this module
+// is imported outside Vite (isolated Node tests), so guard the read.
+const readApiBase = (): string => {
+  try {
+    return import.meta.env.VITE_API_URL || '/api';
+  } catch {
+    return '/api';
+  }
+};
+
+const API_URL = readApiBase();
 
 import {
   getCourses,
@@ -29,6 +39,68 @@ import {
   getExamQuestions,
   Exam
 } from "@/lib/api-http";
+
+// ---------------------------------------------------------------------------
+// Pure helpers — exported so the isolated test suite exercises the real
+// production behavior instead of a re-implementation.
+// ---------------------------------------------------------------------------
+
+/** Parse the server `options` column (JSON string | object | array) into an
+ *  ordered option list for display. Never throws. */
+export function normalizeOptionList(options: unknown): string[] {
+  let parsed: unknown = options;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return [];
+    }
+  }
+  if (Array.isArray(parsed)) return (parsed as unknown[]).map((v) => String(v ?? ''));
+  if (parsed && typeof parsed === 'object') {
+    const rec = parsed as Record<string, unknown>;
+    return ['a', 'b', 'c', 'd'].map((k) => String(rec[k] ?? ''));
+  }
+  return [];
+}
+
+/** Coerce a numeric field to a whole number >= 1 so an emptied number input
+ *  can never send NaN to the API. */
+export function normalizePositiveInt(value: unknown, fallback = 1): number {
+  const n = typeof value === 'number' ? value : parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.floor(n);
+}
+
+/** Build the POST /exams payload. Group scope is part of the exam contract
+ *  (the server validates `group_ids`), so the selected groups must be
+ *  forwarded instead of being discarded after client-side validation. */
+export function buildExamCreatePayload(
+  form: {
+    title: string;
+    description: string;
+    course_id: string;
+    duration_minutes: number;
+    total_marks: number;
+    passing_marks: number;
+    start_time: string | null;
+    end_time: string | null;
+  },
+  groupIds: string[],
+) {
+  return {
+    title: form.title,
+    description: form.description || null,
+    course_id: form.course_id,
+    duration_minutes: normalizePositiveInt(form.duration_minutes, 60),
+    total_marks: normalizePositiveInt(form.total_marks, 1),
+    passing_marks: normalizePositiveInt(form.passing_marks, 50),
+    start_time: form.start_time,
+    end_time: form.end_time,
+    is_active: true,
+    group_ids: Array.isArray(groupIds) && groupIds.length > 0 ? groupIds : null,
+  };
+}
 
 interface Group {
   id: string;
@@ -48,6 +120,7 @@ const ExamManager = () => {
   const [selectedGroups, setSelectedGroups] = useState([]);
   const [editingExam, setEditingExam] = useState(null);
   const [editingQuestion, setEditingQuestion] = useState(null);
+  const questionsSeqRef = useRef(0);
 
   const [examForm, setExamForm] = useState({
     title: "",
@@ -109,8 +182,10 @@ const ExamManager = () => {
   };
 
   const fetchQuestions = async (examId) => {
+    const seq = ++questionsSeqRef.current;
     try {
       const data = await getExamQuestions(examId);
+      if (seq !== questionsSeqRef.current) return; // a newer exam was opened
       setQuestions((data as any[]) || []);
     } catch (error) {
       console.error('Error fetching questions:', error);
@@ -163,17 +238,19 @@ const ExamManager = () => {
       }
 
       // ✅ Send to MySQL API ONLY (no Supabase)
-      const examData = {
-        title: examForm.title,
-        description: examForm.description || null,
-        course_id: examForm.course_id,
-        duration_minutes: examForm.duration_minutes,
-        total_marks: examForm.total_marks,
-        passing_marks: examForm.passing_marks || 50,
-        start_time: startTime,
-        end_time: endTime,
-        is_active: true
-      };
+      const examData = buildExamCreatePayload(
+        {
+          title: examForm.title,
+          description: examForm.description,
+          course_id: examForm.course_id,
+          duration_minutes: examForm.duration_minutes,
+          total_marks: examForm.total_marks,
+          passing_marks: examForm.passing_marks,
+          start_time: startTime,
+          end_time: endTime,
+        },
+        selectedGroups,
+      );
 
       console.log('📝 Creating exam with MySQL API:', examData);
 
@@ -181,7 +258,7 @@ const ExamManager = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
+          'Authorization': `Bearer ${localStorage.getItem('authToken')}`
         },
         body: JSON.stringify(examData)
       });
@@ -268,7 +345,7 @@ const handleQuestionSubmit = async (e) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('token')}`
+        'Authorization': `Bearer ${localStorage.getItem('authToken')}`
       },
       body: JSON.stringify({
         question_text: questionForm.question_text || null,
@@ -339,7 +416,7 @@ const handleDeleteQuestion = async (id) => {
     const response = await fetch(`${API_URL}/exams/${selectedExam.id}/questions/${id}`, {
       method: 'DELETE',
       headers: {
-        'Authorization': `Bearer ${localStorage.getItem('token')}`
+        'Authorization': `Bearer ${localStorage.getItem('authToken')}`
       }
     });
 
@@ -493,7 +570,7 @@ const handleUpdateQuestion = async (e) => {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('token')}`
+        'Authorization': `Bearer ${localStorage.getItem('authToken')}`
       },
       body: JSON.stringify({
         question_text: questionForm.question_text || null,
@@ -850,15 +927,25 @@ return (
                       <p className="font-medium mb-2">
                         س{index + 1}: {question.question_text}
                       </p>
-                      {question.options && (
-                        <div className="space-y-1 text-sm text-muted-foreground">
-                          {question.options.map((option, optIndex) => (
-                            <p key={optIndex} className={option === question.correct_answer ? "text-green-600 font-medium" : ""}>
-                              {String.fromCharCode(65 + optIndex)}) {option}
-                            </p>
-                          ))}
-                        </div>
-                      )}
+                      {(() => {
+                        const optionList = normalizeOptionList(question.options);
+                        if (optionList.length === 0) return null;
+                        const correctKey = typeof question.correct_answer === 'string'
+                          ? question.correct_answer.trim().toLowerCase()
+                          : '';
+                        return (
+                          <div className="space-y-1 text-sm text-muted-foreground">
+                            {optionList.map((option, optIndex) => {
+                              const optionKey = String.fromCharCode(97 + optIndex);
+                              return (
+                                <p key={optIndex} className={optionKey === correctKey ? "text-green-600 font-medium" : ""}>
+                                  {String.fromCharCode(65 + optIndex)}) {option}
+                                </p>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
                       <p className="text-sm text-primary mt-2">
                         الإجابة الصحيحة: {question.correct_answer} | النقاط: {question.points}
                       </p>
@@ -873,6 +960,8 @@ return (
                         variant="ghost"
                         size="sm"
                         onClick={() => handleEditQuestion(question)}
+                        aria-label={`تعديل السؤال ${index + 1}`}
+                        title="تعديل السؤال"
                       >
                         <Edit2 className="w-4 h-4" />
                       </Button>
@@ -881,6 +970,8 @@ return (
                         size="sm"
                         onClick={() => handleDeleteQuestion(question.id)}
                         className="text-destructive hover:text-destructive"
+                        aria-label={`حذف السؤال ${index + 1}`}
+                        title="حذف السؤال"
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>

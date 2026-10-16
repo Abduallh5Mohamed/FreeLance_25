@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Headphones, Loader2, MessageSquare, Plus, RefreshCw, Send } from "lucide-react";
 import Header from "@/components/Header";
 import StudentHeader from "@/components/StudentHeader";
@@ -23,6 +23,37 @@ import {
   type SupportStatus,
   type SupportTicket,
 } from "@/lib/api";
+
+/**
+ * Synchronous in-flight latch for async UI actions.
+ *
+ * The `submitting` state only blocks a second click after React re-renders;
+ * two events in the same tick both still see `submitting === false`. The latch
+ * is acquired synchronously inside each handler so a same-tick duplicate
+ * submit (double click, Enter + click) is rejected before any request is sent.
+ * `release` must run in a `finally` so a failed attempt stays retryable.
+ *
+ * Mirrored in OnlineMeeting.tsx; both copies are pinned by
+ * src/tests/m1-sprint-meeting-support-ui.test.ts.
+ */
+export interface SubmitGuard {
+  tryAcquire(): boolean;
+  release(): void;
+}
+
+export function createSubmitGuard(): SubmitGuard {
+  let inFlight = false;
+  return {
+    tryAcquire: () => {
+      if (inFlight) return false;
+      inFlight = true;
+      return true;
+    },
+    release: () => {
+      inFlight = false;
+    },
+  };
+}
 
 const categoryLabels: Record<SupportCategory, string> = {
   technical: "مشكلة تقنية",
@@ -71,6 +102,11 @@ export default function Support() {
   const [description, setDescription] = useState("");
   const [reply, setReply] = useState("");
 
+  // One shared latch for every ticket mutation, matching the single
+  // `submitting` flag: while any mutation is in flight the others are blocked.
+  const submitGuardRef = useRef<SubmitGuard | null>(null);
+  submitGuardRef.current ??= createSubmitGuard();
+
   const loadTickets = useCallback(async () => {
     setLoading(true);
     try {
@@ -100,6 +136,8 @@ export default function Support() {
 
   const submitTicket = async (event: FormEvent) => {
     event.preventDefault();
+    // Synchronous latch: a same-tick duplicate submit must not create two tickets.
+    if (!submitGuardRef.current?.tryAcquire()) return;
     setSubmitting(true);
     try {
       const created = await createSupportTicket({ category, subject, description });
@@ -112,12 +150,15 @@ export default function Support() {
     } catch (error) {
       toast({ variant: "destructive", title: "لم يتم إرسال الطلب", description: error instanceof Error ? error.message : "راجع البيانات وحاول مرة أخرى" });
     } finally {
+      submitGuardRef.current?.release();
       setSubmitting(false);
     }
   };
 
   const sendReply = async () => {
     if (!selected || !reply.trim()) return;
+    // Synchronous latch: a same-tick duplicate send must not post two replies.
+    if (!submitGuardRef.current?.tryAcquire()) return;
     setSubmitting(true);
     try {
       const created = await replyToSupportTicket(selected.id, reply.trim());
@@ -129,12 +170,15 @@ export default function Support() {
     } catch (error) {
       toast({ variant: "destructive", title: "تعذر إرسال الرد", description: error instanceof Error ? error.message : "حاول مرة أخرى" });
     } finally {
+      submitGuardRef.current?.release();
       setSubmitting(false);
     }
   };
 
   const changeStatus = async (status: SupportStatus) => {
     if (!selected) return;
+    // Synchronous latch: a same-tick duplicate click must not PATCH twice.
+    if (!submitGuardRef.current?.tryAcquire()) return;
     setSubmitting(true);
     try {
       await updateSupportTicketStatus(selected.id, status);
@@ -144,6 +188,7 @@ export default function Support() {
     } catch (error) {
       toast({ variant: "destructive", title: "تعذر تحديث الحالة", description: error instanceof Error ? error.message : "حاول مرة أخرى" });
     } finally {
+      submitGuardRef.current?.release();
       setSubmitting(false);
     }
   };
@@ -204,7 +249,7 @@ export default function Support() {
                     })}
                   </div>
                   <div className="border-t bg-white p-4">
-                    {selected.status !== "closed" && <div className="flex items-end gap-2"><Textarea value={reply} onChange={(event) => setReply(event.target.value)} placeholder="اكتب ردك هنا..." className="min-h-20" /><Button size="icon" onClick={sendReply} disabled={submitting || !reply.trim()} aria-label="إرسال الرد"><Send className="h-4 w-4" /></Button></div>}
+                    {selected.status !== "closed" && <div className="flex items-end gap-2"><Textarea value={reply} onChange={(event) => setReply(event.target.value)} aria-label="اكتب ردك هنا" placeholder="اكتب ردك هنا..." className="min-h-20" /><Button size="icon" onClick={sendReply} disabled={submitting || !reply.trim()} aria-label="إرسال الرد"><Send className="h-4 w-4" /></Button></div>}
                     <div className="mt-3 flex flex-wrap gap-2">
                       {isAdmin && selected.status !== "resolved" && selected.status !== "closed" && <Button size="sm" variant="outline" onClick={() => changeStatus("resolved")} disabled={submitting}>تم الحل</Button>}
                       {selected.status !== "closed" && <Button size="sm" variant="ghost" onClick={() => changeStatus("closed")} disabled={submitting}>إغلاق التذكرة</Button>}
@@ -221,7 +266,7 @@ export default function Support() {
         <DialogContent dir="rtl" className="sm:max-w-xl">
           <DialogHeader><DialogTitle>طلب دعم جديد</DialogTitle></DialogHeader>
           <form onSubmit={submitTicket} className="space-y-4">
-            <div className="space-y-2"><Label>نوع المشكلة</Label><Select value={category} onValueChange={(value) => setCategory(value as SupportCategory)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{Object.entries(categoryLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
+            <div className="space-y-2"><Label htmlFor="support-category">نوع المشكلة</Label><Select value={category} onValueChange={(value) => setCategory(value as SupportCategory)}><SelectTrigger id="support-category"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(categoryLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
             <div className="space-y-2"><Label htmlFor="support-subject">عنوان مختصر</Label><Input id="support-subject" value={subject} onChange={(event) => setSubject(event.target.value)} minLength={3} maxLength={200} required /></div>
             <div className="space-y-2"><Label htmlFor="support-description">اشرح المشكلة وما الذي كنت تحاول فعله</Label><Textarea id="support-description" value={description} onChange={(event) => setDescription(event.target.value)} minLength={10} maxLength={10000} className="min-h-32" required /></div>
             <Button type="submit" className="w-full" disabled={submitting}>{submitting && <Loader2 className="ml-2 h-4 w-4 animate-spin" />}إرسال الطلب</Button>

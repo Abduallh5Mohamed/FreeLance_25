@@ -1,5 +1,9 @@
 # خطة تنفيذ المستودع
 
+**القرار الحاكم المحدث:** التسعير تدريجي للمدرس والسنتر؛ فوترة المؤسسة كل 30 يومًا مع حساب مدة فعلية بالثواني وتسوية، لا عمولة على الطلاب؛ محفظة السنتر وحده أو المدرس المستقل؛ خصم الاشتراك من المتاح ومهلة 4 أيام. المرجع [19 — القرارات المعتمدة](19-commercial-registration-wallet-agreement-ar.md)، والموافقة قبل التنفيذ في 18. الوثائق ليست دليل تشغيل.
+
+**شرط التنفيذ الحاكم:** قبل كل دفعة تنفيذ يعرض المنفذ المهام والأثر والاختبارات والاستفسارات في المحادثة، وينتظر قرار المستخدم «نفّذ» أو «متنفّذش» أو تعديلات. لا تكفي موافقة سابقة على مرحلة كاملة. تفاصيل الموافقة ورحلات المستخدم في [18 — الرحلات والموافقة قبل التنفيذ](18-workflows-and-execution-approval-ar.md). لا يبدأ التنفيذ إذا بقي استفسار مؤثر دون حسم.
+
 ## هيكل target داخل الموجود
 
 ```text
@@ -45,3 +49,13 @@ Current scripts: root `npm run build`, `npm run lint`, `npm run test:access`; ba
 ## Commit policy
 
 One commit per completed milestone with clear message (`feat(m1): ...`). Do not bundle failing tests; do not start the dependent milestone while gates fail. Earlier commits remain individually revertible. Do not claim production deployment unless it was actually demonstrated.
+
+## وحدات إضافية مطلوبة
+
+بعد M1 وبموافقة دفعات مستقلة: identity/onboarding → organization center/teacher roles → student_teacher_registration → pricing/offer/subscription/invoice → provider sandbox/verified webhooks → balanced payment ledger/settlement → offline payment settings/enrollment → institution wallet → payout بعد إثبات المزود → financial reconciliation/admin. معايير B1–B9 في 17؛ القرارات غير المحسومة في 19 تمنع تنفيذ الأجزاء التابعة لها.
+## وحدات التنفيذ المعتمدة للمال
+domains/{platform-subscription,pricing,offers,billing,student-payments,ledger,wallet,settlement,withdrawal,refund,reconciliation}. لا split module لسنتر. 19 المرجع، B10–B12/N1/S10/F1 القبول. 19 يحدد UTC/[start,end)/الثواني والتقريب النهائي HALF_UP؛ العقد والضرائب تحقق قبل schema/API. fixtures معزولة فقط؛ كل دفعة بموافقة18 وكل اختبار فاشل حاجز.
+
+## ضبط الحساب والمحفظة والحماية
+
+19 يحدد فترات الأحداث UTC والثواني بدل تقريب يوم كامل، وفصل receivable وmerchant_wallet وsubscription_credit، وأول فاتورة الأساسي دون عدد متوقع. الحجز القائم لا يستخدم ثانية؛ دائن الاشتراك يخصم فواتيره وليس سحبًا نقديًا. الفترات المستقبلية المؤكدة المدفوعة محمية عند تقييد المؤسسة؛ المهلة الدراسية لها نهاية إلزامية، والمحتوى والنطاق داخل السنتر لا ينقلان بمجرد خروج المدرس. تحقق هذه الحدود في F1 قبل تشغيل المال، ولا تعتبرها منفذة من تحديث الوثيقة.

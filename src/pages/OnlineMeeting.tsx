@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -10,20 +10,96 @@ import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
 import axios from "axios";
 
-// Helper to get API URL - same pattern as other pages
+// Helper to get API URL - same pattern as other pages.
+// Vite injects `import.meta.env` at build time; it is absent when this module
+// is imported outside Vite (isolated Node tests), hence the guards below.
 const getApiUrl = () => {
-  const envApiUrl = import.meta.env.VITE_API_URL;
+  const viteEnv: ImportMetaEnv | undefined = import.meta.env;
+  const envApiUrl = viteEnv?.VITE_API_URL;
   if (envApiUrl) return envApiUrl;
 
   // In production, use relative path (nginx proxies /api to backend)
-  const currentHost = window.location.hostname;
-  if (currentHost !== 'localhost' && currentHost !== '127.0.0.1') {
+  const currentHost = typeof window !== "undefined" ? window.location.hostname : "";
+  if (currentHost !== "localhost" && currentHost !== "127.0.0.1" && currentHost !== "") {
     return '/api';
   }
   return 'http://localhost:3001/api';
 };
 
 const API_URL = getApiUrl();
+
+/**
+ * Synchronous in-flight latch for async UI actions.
+ *
+ * A disabled button bound to a `loading` state only blocks a second click
+ * after React re-renders; two clicks in the same tick both still see
+ * `loading === false`. The latch is acquired synchronously inside the handler
+ * so a same-tick duplicate submit is rejected before any request is sent.
+ * `release` must run in a `finally` so a failed attempt stays retryable.
+ */
+export interface SubmitGuard {
+  tryAcquire(): boolean;
+  release(): void;
+}
+
+export function createSubmitGuard(): SubmitGuard {
+  let inFlight = false;
+  return {
+    tryAcquire: () => {
+      if (inFlight) return false;
+      inFlight = true;
+      return true;
+    },
+    release: () => {
+      inFlight = false;
+    },
+  };
+}
+
+/**
+ * A meeting link may only be stored or opened when it is an absolute http(s)
+ * URL with a host. Every other scheme (javascript:, data:, blob:, file:, ...)
+ * is rejected so a stored or server-provided link can never execute script or
+ * navigate the teacher or student away from the app.
+ *
+ * Mirrored in StudentMeetings.tsx; both copies are pinned by
+ * src/tests/m1-sprint-meeting-support-ui.test.ts.
+ */
+export const isSafeMeetingUrl = (value: string): boolean => {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return false;
+  }
+  return (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.hostname.length > 0;
+};
+
+const extractHttpStatus = (error: unknown): number | undefined => {
+  if (typeof error === "object" && error !== null && "response" in error) {
+    const response = (error as { response?: { status?: unknown } }).response;
+    if (typeof response?.status === "number") return response.status;
+  }
+  return undefined;
+};
+
+/**
+ * Maps a failed meetings fetch to an honest Arabic message. A 401/403 must not
+ * be presented as "no meetings": the user needs to know the list failed to
+ * load (session expired / no permission) so they can retry or re-authenticate.
+ *
+ * Mirrored in StudentMeetings.tsx; both copies are pinned by
+ * src/tests/m1-sprint-meeting-support-ui.test.ts.
+ */
+export const describeMeetingsLoadError = (error: unknown): string => {
+  const status = extractHttpStatus(error);
+  if (status === 401) return "انتهت صلاحية الجلسة. سجّل الدخول مرة أخرى.";
+  if (status === 403) return "لا تملك صلاحية عرض الاجتماعات.";
+  if (typeof status === "number") return "تعذر تحميل الاجتماعات من الخادم. حاول مرة أخرى.";
+  return "تعذر الاتصال بالخادم. تحقق من الشبكة وحاول مرة أخرى.";
+};
 
 interface Grade {
   id: string;
@@ -58,8 +134,13 @@ const OnlineMeeting = () => {
   const [groups, setGroups] = useState<Group[]>([]);
   const [filteredGroups, setFilteredGroups] = useState<Group[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [meetingsError, setMeetingsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
+
+  // Synchronous latch so a same-tick double click cannot create two meetings.
+  const submitGuardRef = useRef<SubmitGuard | null>(null);
+  submitGuardRef.current ??= createSubmitGuard();
 
   // Copy to clipboard with fallback for non-HTTPS
   const copyToClipboard = async (text: string) => {
@@ -166,9 +247,25 @@ const OnlineMeeting = () => {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
       setMeetings(res.data);
+      setMeetingsError(null);
     } catch (error) {
       console.error('Error fetching meetings:', error);
+      setMeetingsError(describeMeetingsLoadError(error));
     }
+  };
+
+  const joinMeeting = (link: string) => {
+    if (!isSafeMeetingUrl(link)) {
+      toast({
+        title: "خطأ",
+        description: "رابط الاجتماع غير صالح أو غير متاح",
+        variant: "destructive"
+      });
+      return;
+    }
+    // noopener/noreferrer prevents the opened meeting tab from reaching back
+    // into this window (reverse tabnabbing).
+    window.open(link.trim(), "_blank", "noopener,noreferrer");
   };
 
   const resetForm = () => {
@@ -201,6 +298,18 @@ const OnlineMeeting = () => {
       toast({ title: "خطأ", description: "يجب تحديد موعد الاجتماع", variant: "destructive" });
       return;
     }
+    if (!isSafeMeetingUrl(meetingLink)) {
+      toast({
+        title: "خطأ",
+        description: "رابط الاجتماع غير صالح. يجب أن يبدأ بـ https:// أو http://",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    // Synchronous latch: a same-tick duplicate click is rejected here, before
+    // any request is sent, so two meetings can never be created.
+    if (!submitGuardRef.current?.tryAcquire()) return;
 
     const user = getUser();
     setLoading(true);
@@ -209,7 +318,7 @@ const OnlineMeeting = () => {
       const payload = {
         title,
         description,
-        meeting_link: meetingLink,
+        meeting_link: meetingLink.trim(),
         meeting_type: meetingType,
         meeting_password: meetingPassword || null,
         grade_id: selectedGrade,
@@ -237,6 +346,7 @@ const OnlineMeeting = () => {
       console.error('Error saving meeting:', error);
       toast({ title: "خطأ", description: "فشل حفظ الاجتماع", variant: "destructive" });
     } finally {
+      submitGuardRef.current?.release();
       setLoading(false);
     }
   };
@@ -319,8 +429,9 @@ const OnlineMeeting = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Title */}
               <div className="space-y-2">
-                <Label>عنوان الاجتماع *</Label>
+                <Label htmlFor="meeting-title">عنوان الاجتماع *</Label>
                 <Input
+                  id="meeting-title"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                   placeholder="مثال: مراجعة الفصل الأول"
@@ -329,9 +440,9 @@ const OnlineMeeting = () => {
 
               {/* Meeting Type */}
               <div className="space-y-2">
-                <Label>نوع الاجتماع</Label>
+                <Label htmlFor="meeting-type">نوع الاجتماع</Label>
                 <Select value={meetingType} onValueChange={setMeetingType}>
-                  <SelectTrigger>
+                  <SelectTrigger id="meeting-type">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -344,8 +455,9 @@ const OnlineMeeting = () => {
 
               {/* Meeting Link */}
               <div className="space-y-2">
-                <Label>رابط الاجتماع *</Label>
+                <Label htmlFor="meeting-link">رابط الاجتماع *</Label>
                 <Input
+                  id="meeting-link"
                   value={meetingLink}
                   onChange={(e) => setMeetingLink(e.target.value)}
                   placeholder="https://zoom.us/j/... أو https://meet.google.com/..."
@@ -354,8 +466,9 @@ const OnlineMeeting = () => {
 
               {/* Meeting Password */}
               <div className="space-y-2">
-                <Label>كلمة مرور الاجتماع (اختياري)</Label>
+                <Label htmlFor="meeting-password">كلمة مرور الاجتماع (اختياري)</Label>
                 <Input
+                  id="meeting-password"
                   value={meetingPassword}
                   onChange={(e) => setMeetingPassword(e.target.value)}
                   placeholder="كلمة المرور إن وجدت"
@@ -364,9 +477,9 @@ const OnlineMeeting = () => {
 
               {/* Grade Selection - Required */}
               <div className="space-y-2">
-                <Label>الصف الدراسي * (إجباري)</Label>
+                <Label htmlFor="meeting-grade">الصف الدراسي * (إجباري)</Label>
                 <Select value={selectedGrade} onValueChange={setSelectedGrade}>
-                  <SelectTrigger>
+                  <SelectTrigger id="meeting-grade">
                     <SelectValue placeholder="اختر الصف" />
                   </SelectTrigger>
                   <SelectContent>
@@ -381,9 +494,9 @@ const OnlineMeeting = () => {
 
               {/* Group Selection - Optional */}
               <div className="space-y-2">
-                <Label>المجموعة (اختياري - اتركه فارغ لكل الصف)</Label>
+                <Label htmlFor="meeting-group">المجموعة (اختياري - اتركه فارغ لكل الصف)</Label>
                 <Select value={selectedGroup} onValueChange={setSelectedGroup} disabled={!selectedGrade}>
-                  <SelectTrigger>
+                  <SelectTrigger id="meeting-group">
                     <SelectValue placeholder={selectedGrade ? "كل المجموعات" : "اختر الصف أولاً"} />
                   </SelectTrigger>
                   <SelectContent>
@@ -402,8 +515,9 @@ const OnlineMeeting = () => {
 
               {/* Scheduled At */}
               <div className="space-y-2">
-                <Label>موعد الاجتماع *</Label>
+                <Label htmlFor="meeting-scheduled-at">موعد الاجتماع *</Label>
                 <Input
+                  id="meeting-scheduled-at"
                   type="datetime-local"
                   value={scheduledAt}
                   onChange={(e) => setScheduledAt(e.target.value)}
@@ -412,9 +526,9 @@ const OnlineMeeting = () => {
 
               {/* Duration */}
               <div className="space-y-2">
-                <Label>مدة الاجتماع (بالدقائق)</Label>
+                <Label htmlFor="meeting-duration">مدة الاجتماع (بالدقائق)</Label>
                 <Select value={durationMinutes} onValueChange={setDurationMinutes}>
-                  <SelectTrigger>
+                  <SelectTrigger id="meeting-duration">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -430,8 +544,9 @@ const OnlineMeeting = () => {
 
             {/* Description */}
             <div className="space-y-2">
-              <Label>وصف الاجتماع (اختياري)</Label>
+              <Label htmlFor="meeting-description">وصف الاجتماع (اختياري)</Label>
               <Textarea
+                id="meeting-description"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder="وصف موجز للاجتماع..."
@@ -461,9 +576,17 @@ const OnlineMeeting = () => {
             </CardTitle>
           </CardHeader>
           <CardContent>
+            {meetingsError && (
+              <div role="alert" className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+                <p>{meetingsError}</p>
+                <Button size="sm" variant="outline" className="mt-2" onClick={fetchMeetings}>
+                  إعادة المحاولة
+                </Button>
+              </div>
+            )}
             {meetings.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">
-                لا توجد اجتماعات مجدولة حالياً
+                {meetingsError ? "تعذر عرض الاجتماعات الآن." : "لا توجد اجتماعات مجدولة حالياً"}
               </div>
             ) : (
               <div className="space-y-4">
@@ -512,7 +635,7 @@ const OnlineMeeting = () => {
                       <div className="flex flex-col gap-2 mr-4">
                         <Button
                           size="sm"
-                          onClick={() => window.open(meeting.meeting_link, '_blank')}
+                          onClick={() => joinMeeting(meeting.meeting_link)}
                         >
                           <ExternalLink className="w-4 h-4 ml-1" />
                           انضم
@@ -528,6 +651,7 @@ const OnlineMeeting = () => {
                           <Button
                             size="icon"
                             variant="ghost"
+                            aria-label="تعديل الاجتماع"
                             onClick={() => editMeeting(meeting)}
                           >
                             <Edit2 className="w-4 h-4" />
@@ -536,6 +660,7 @@ const OnlineMeeting = () => {
                             size="icon"
                             variant="ghost"
                             className="text-destructive"
+                            aria-label="حذف الاجتماع"
                             onClick={() => deleteMeeting(meeting.id)}
                           >
                             <Trash2 className="w-4 h-4" />

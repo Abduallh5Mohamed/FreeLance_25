@@ -1,5 +1,9 @@
 # 17 — قائمة بناء المنتج الكامل ومعايير القبول
 
+**القرار الحاكم المحدث:** التسعير تدريجي للمدرس والسنتر؛ فوترة المؤسسة كل 30 يومًا مع حساب مدة فعلية بالثواني وتسوية، لا عمولة على الطلاب؛ محفظة السنتر وحده أو المدرس المستقل؛ خصم الاشتراك من المتاح ومهلة 4 أيام. المرجع [19 — القرارات المعتمدة](19-commercial-registration-wallet-agreement-ar.md)، والموافقة قبل التنفيذ في 18. الوثائق ليست دليل تشغيل.
+
+**شرط التنفيذ الحاكم:** قبل كل دفعة تنفيذ يعرض المنفذ المهام والأثر والاختبارات والاستفسارات في المحادثة، وينتظر قرار المستخدم «نفّذ» أو «متنفّذش» أو تعديلات. لا تكفي موافقة سابقة على مرحلة كاملة. تفاصيل الموافقة ورحلات المستخدم في [18 — الرحلات والموافقة قبل التنفيذ](18-workflows-and-execution-approval-ar.md). لا يبدأ التنفيذ إذا بقي استفسار مؤثر دون حسم.
+
 هذا المصدر الحاكم للنطاق. المراحل M1–M8 ترتيب اعتماد؛ **كل صف وظيفة مطلوبة**. “Needs verification” لا يعني إسقاطها؛ يعني أن التنفيذ ينتظر إثبات vendor/device/contract محدد. لا تعتبر أي وظيفة Done بدون test/run evidence.
 
 ## M1 — Security + tenant core
@@ -89,7 +93,7 @@
 |---|---|---|---|
 | O1 | tenant create/suspend/restore with reason | S1/S3 | allowed transition/dual authorization as needed; reason/actor/time/status immutable audit |
 | O2 | plans and feature-flag editor | S3/O1 | validation, preview, scoped targeting, version, audit, rollback, server-side enforcement |
-| O3 | teacher usage metering | V8/enrollment/store events | active students/watch minutes/storage definitions, filters/range, reconciliation and export; does not calculate charges |
+| O3 | قياس الاستخدام والتسجيلات والفوترة | S1/B2/B10 | فترات تفعيل student–teacher، نسخة سعر، تسوية ودين لا يتكرر، مصالحة watch/storage منفصلة |
 | O4 | content moderation/reports | P6/C4 | queue, evidence, decision/reason, appeals, tenant notification, reviewer permissions |
 | O5 | support tickets | S3/O1 | tenant and request identity, assignment/status/priority/private note, audit and export |
 | O6 | impersonation | S2/O5/explicit permission | reason and approval, time bound, visible banner, read/write scope, every action audit, protected actions blocked |
@@ -116,4 +120,39 @@
 - Do not promote cross-milestone provider stubs to Done. Mark provider/API/contract/device gaps Needs verification.
 - Every row requires unit, integration, security or demonstrated manual evidence appropriate to its behavior. Tests run and commits recorded per milestone.
 - Tenant data export, backup and restore are product/operations functionality, not cleanup work.
-- Founders decide the teacher fee outside the system; meter only records evidence according to `14-usage-metering`.
+- الاشتراك الخادمي وفق 19؛ نسخة السعر والعدد والمدة الفعلية والتسوية والدين السابق قابلة للتدقيق؛ لا تحصيل طلاب قبل F1.
+
+## إضافات حاكمة: الاشتراك والتحصيل والسنتر
+
+| ID | الوظيفة | ترتيب/تبعيات | معيار القبول |
+|---|---|---|---|
+| B1 | تسجيل ذاتي للمدرس/السنتر وبروفايل وsubdomain وcheckout | M2 بعد S1–S9 | تحقق اتصال ودور آمن؛ تأكيد خادمي يفعل الاشتراك؛ callback متكرر لا يكرر التفعيل |
+| B2 | شرائح عدد تسجيلات الطلاب والعروض الخاصة | M2؛ قرار معادلة 19 | طالب عند 3 مدرسين = 3؛ فاتورة بنسخة السعر؛ الخصم محدد المستفيد/المدة؛ الحالات غير المعتمدة لا تفوتر |
+| B3 | مدير سنتر فوق مدرسين وفروع وطلاب | M2/S3 | المدرس لا يرى مدرسًا آخر دون capability؛ مدير المؤسسة لا يتجاوز tenant |
+| B4 | نوع طالب وموافقة Offline وسعر شهر المدرس | M2 | Offline يسجل دون checkout وينتظر موافقة؛ Online يدفع قبل التفعيل؛ تغيير السعر لا يعدل الطلب السابق |
+| B5 | دفع Offline إلكتروني اختياري | M2/B4 | المدرس يغلق/يفتح الإعداد؛ دفع Offline لا يحوله إلى Online؛ نقد لا يضيف available wallet |
+| B6 | audience لكل المحتوى | M2 policies/M3 media/M4 assessment/M5 live | النوع يطبق على الملفات والفيديو والاختبارات والواجبات والحصص والتسجيلات؛ direct API/manifest/key لا يتجاوز |
+| B7 | دفتر تحصيل ومحفظة المؤسسة | M2 قبل دفع الطلاب/F1 ثم إدارة M7 | لا عمولة منصة ولا splits داخل السنتر؛ نقد منفصل؛ قيود متوازنة وتسوية ودedupe وrefund/dispute reconciliation |
+| B8 | صفحة سحب وتحويل | بعد B7 ومزود payouts موثق | سحبان متزامنان لا يتجاوزان المتاح؛ الحجز والتحرير مرة واحدة؛ نتيجة تحويل موثقة؛ A لا يسحب من B |
+| B9 | لوحة الإدارة للعروض والرسوم والقياس والمراجعة | أساس B2/B7 في M2، إدارة شاملة M7 | audit/version/permissions؛ مفاتيح المزود سرية؛ تقرير عدد ودفعات وسحب قابل للمصالحة |
+
+كل بند ينتظر عرض دفعة العمل واعتمادها وفق 18. التقارير التاريخية لا تجعل هذه الإضافات منفذة.
+## بوابات الفوترة والقبول المالي المعتمدة
+
+| ID | الوظيفة | التبعيات | معيار القبول |
+|---|---|---|---|
+| B10 | عد الفعال عند تغير الأحداث وتسعير تدريجي وتسوية | S1/B2/19 | المدرس 50/51/100/101/150/151/200/201؛ السنتر 200/201/250/251/300/301/350/351؛ الإجمالي لا ينخفض؛ expired/pending مستبعد والمهلة محتسبة؛ علاقات متعددة وعدم ازدواج المقررات |
+| B11 | اشتراك ومهلة 4 أيام | B7/B10 | available فقط، حجز اشتراك قبل سحب جديد ويحترم حجز قائم؛ نقص ودفع فرق idempotent؛ 96 ساعة لا تتجدد بالretry؛ حماية كل فترات الطلاب المدفوعة الحالية والمستقبلية ووقف التسجيل/التجديد/النشر الجديد؛ سداد يعيد الصلاحيات |
+| B12 | نقد وطلب استرداد | B4/B7 | إيصال مدقق لا يزيد wallet؛ يقرر المحصل؛ توفير المبلغ ثم حجزه قبل مزود؛ pending funding لا يعلن success؛ اعتراض بنك مسار منفصل |
+| S10 | عزل المدرسين والصلاحيات المالية | S1/S3/B3 | مدرس X لا يقرأ أو يعدل طلاب/محتوى Y في نفس السنتر دون capability؛ لا يسحب من محفظة السنتر دون إذن؛ signup لا يمنح owner لمؤسسة قائمة |
+| N1 | OTP وnotification core/outbox | S2/M2 | event ids، retry/deduplication ورسائل تفعيل/دفع/مهلة؛ القنوات المعتمدة مثبتة قبل تدفقات M2 |
+| F1 | بوابة تفعيل التحصيل والفوترة والسحب | B1–B12/S10/N1/vendor contract | حدود الأسعار والحساب النسبي (50 ثم51 بعد15 يومًا=2025)، دائن وتسوية وتراكم لا يتكرر، webhook مكرر/مزور ومبلغ خاطئ، concurrent invoice/withdrawal/refund، A→B وداخل السنتر، انقطاع المزود ومصالحة، شرط موافقة recurring، chargeback policy موثقة، provider sandbox run وإثبات ledger؛ كل فشل حاجز |
+
+S9 يظل شرط الانتقال إلى M2، ومعه عزل assignments من S10 قبل surfaces. أجزاء S10 المالية تختبر بfixtures/service-free ثم تعاد حيًا قبل F1؛ لا يتطلب M1 تنفيذ محفظة كاملة. F1 شرط مستقل قبل تشغيل المال، وليس سببًا لحذف بقية المنتج. بوابة كل دفعة عرض وموافقة 18.
+## ضبط الحساب والمحفظة والحماية
+
+19 يحدد فترات الأحداث UTC والثواني بدل تقريب يوم كامل، وفصل receivable وmerchant_wallet وsubscription_credit، وأول فاتورة الأساسي دون عدد متوقع. الحجز القائم لا يستخدم ثانية؛ دائن الاشتراك يخصم فواتيره وليس سحبًا نقديًا. الفترات المستقبلية المؤكدة المدفوعة محمية عند تقييد المؤسسة؛ المهلة الدراسية لها نهاية إلزامية، والمحتوى والنطاق داخل السنتر لا ينقلان بمجرد خروج المدرس. تحقق هذه الحدود في F1 قبل تشغيل المال، ولا تعتبرها منفذة من تحديث الوثيقة.
+
+| ID | الوظيفة | التبعيات | معيار القبول |
+|---|---|---|---|
+| F2 | قبول المدة والفصل المالي والوصول المستقبل | F1/19 | ساعة تسجيل زائد=2000.07؛ DST/retry/overlap؛ دائن لا يدخلwallet؛ مقدّم محمي بعد التقييد؛ مؤجل/منتهي لا يحتسب؛ snapshot/events قابلة لإعادة البناء |

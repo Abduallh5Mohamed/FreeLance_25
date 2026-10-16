@@ -1,13 +1,34 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import jwt from 'jsonwebtoken';
-import { optionalAuth, AuthRequest } from '../src/middleware/auth';
+import { AuthRequest, createOptionalAuth } from '../src/middleware/auth';
+import type { PrincipalRepository } from '../src/security/principal-repository';
 import { enforceStudentWorkspaceBoundary } from '../src/middleware/student-workspace-boundary';
 import { enforceTenantAuthorityBoundary } from '../src/middleware/tenant-authority-boundary';
 import { verifySocketPrincipal } from '../src/services/socket';
 
 const secret = 'test-only-secret-with-sufficient-entropy';
 process.env.JWT_SECRET = secret;
+
+/**
+ * Hermetic injection (no database). The production default `optionalAuth`
+ * wired a SQL-backed repository, so these tests now build the middleware
+ * over an injected fixture repository through `createOptionalAuth`, keeping
+ * every original security assertion. Static-import note: this file also
+ * imports services/socket.ts (outside the editable batch), which statically
+ * imports ../db; db.ts runs dotenv.config() at import (no .env file exists in
+ * this project - verified) and creates the MySQL pool lazily on the first
+ * query, which never happens here, so no local env values are loaded and no
+ * DB/network connection is attempted.
+ */
+const fixtureRepository: PrincipalRepository = {
+    findUsersIdentity: async (id) => (id === 'admin-a' ? { is_active: 1, token_version: 0, suspension_active: 0 } : null),
+    findStaffIdentity: async () => null,
+    findInstructorAccount: async () => null,
+    findStudentEnrollments: async () => [],
+    findActiveTenantMemberships: async () => [],
+};
+const optionalAuth = createOptionalAuth(fixtureRepository);
 
 function invokeMiddleware(middleware: any, reqOverrides: Record<string, any> = {}) {
     const req: any = { headers: {}, method: 'GET', path: '/api/courses', body: {}, query: {}, ...reqOverrides };
@@ -47,6 +68,21 @@ test('optional auth resolves supported authenticated claims for downstream route
     assert.equal(result.nextCalled, true);
     assert.equal(result.req.user.id, 'admin-a');
     assert.equal(result.req.user.role, 'admin');
+});
+
+test('optional auth rejects a revoked principal instead of downgrading to anonymous', async () => {
+    // The admin validation bypass is removed: a stale token version fails the
+    // per-request liveness check even for the admin role.
+    const revokedRepository: PrincipalRepository = {
+        ...fixtureRepository,
+        findUsersIdentity: async () => ({ is_active: 1, token_version: 5, suspension_active: 0 }),
+    };
+    const revokedAuth = createOptionalAuth(revokedRepository);
+    const token = jwt.sign({ id: 'admin-a', role: 'admin', tv: 0 }, secret, { expiresIn: '1m' });
+    const result = await invokeMiddleware(revokedAuth, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(result.res.statusCode, 401);
+    assert.equal(result.nextCalled, false);
+    assert.equal(result.req.user, undefined);
 });
 
 test('student boundary blocks tenant B identifiers at the API boundary', async () => {

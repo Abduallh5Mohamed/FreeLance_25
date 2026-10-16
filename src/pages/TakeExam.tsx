@@ -13,6 +13,12 @@ import { FloatingParticles } from "@/components/FloatingParticles";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { getExamById, getExamQuestions, canAttemptExam, startExamAttempt, submitExamAttempt, saveExamProgress } from "@/lib/api";
+import {
+  createExamSubmissionController,
+  runExamSubmission,
+  type ExamSubmissionController,
+  type ExamSubmissionState,
+} from "@/utils/examSubmissionResult";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 import jsPDF from "jspdf";
 
@@ -29,20 +35,6 @@ interface Question {
   points?: number;
   display_order?: number;
 }
-
-type ExamScoreBreakdown = {
-  hasEssayQuestions: boolean;
-  autoScore: number;
-  manualScore: number;
-  pendingManualReview: boolean;
-};
-
-type SubmittedExamResult = {
-  score: number;
-  total: number;
-  percentage: number;
-  passed: boolean;
-} & ExamScoreBreakdown;
 
 type PreviousAttemptResult = {
   score: number;
@@ -84,9 +76,7 @@ const TakeExam = () => {
   const [answerImages, setAnswerImages] = useState<Record<string, string>>({});  // ✅ صور الإجابات
   const [uploadingAnswerImage, setUploadingAnswerImage] = useState(false);  // ✅ حالة رفع صورة الإجابة
   const [timeLeft, setTimeLeft] = useState(0); // in seconds
-  const [isSubmitted, setIsSubmitted] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [result, setResult] = useState<SubmittedExamResult | null>(null);
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [canAttempt, setCanAttempt] = useState(true);
   const [attemptMessage, setAttemptMessage] = useState('');
@@ -94,6 +84,25 @@ const TakeExam = () => {
   const [examStartTime, setExamStartTime] = useState<Date | null>(null);
   const [generatingPDF, setGeneratingPDF] = useState(false);
   const [studentId, setStudentId] = useState<string>('');
+  // Submission state machine (idle → submitting → submitted | failed) owned
+  // by a shared controller. Its synchronous latch is the single authority
+  // for whether a new attempt may begin, so same-tick duplicates (a click
+  // plus the countdown auto-submit) cannot invoke the submit API twice, a
+  // completed attempt can never begin again, and failures release the latch
+  // so the student can retry with answers retained.
+  const submissionControllerRef = useRef<ExamSubmissionController | null>(null);
+  if (submissionControllerRef.current === null) {
+    submissionControllerRef.current = createExamSubmissionController();
+  }
+  const submissionController = submissionControllerRef.current;
+  const [submission, setSubmission] = useState<ExamSubmissionState>(submissionController.getState());
+  useEffect(() => submissionController.subscribe(setSubmission), [submissionController]);
+  const isSubmitted = submission.phase === 'submitted';
+  const isSubmitting = submission.phase === 'submitting';
+  const result = submission.result;
+  const submissionError = submission.error;
+  // Prevents the countdown effect from re-triggering a failed auto-submit in a loop.
+  const submitAttemptedRef = useRef(false);
 
   // Sample exam data - replace with real API call
   const sampleExam: ExamData = {
@@ -475,10 +484,9 @@ const TakeExam = () => {
     let wrongCount = 0;
     let hasEssayQuestions = false;
 
+    // Note: student answers are deliberately not logged (no PII payloads).
     console.log('=== Calculating Score ===');
     console.log('Exam questions:', exam.questions);
-    console.log('User answers:', answers);
-    console.log('Essay answers:', essayAnswers);
 
     exam.questions.forEach((question: Question, idx: number) => {
       const questionType = question.question_type || 'multiple_choice';
@@ -497,8 +505,6 @@ const TakeExam = () => {
         // Compare directly as numbers (both are indices 0-3)
         const isCorrect = userAnswerIndex !== undefined && userAnswerIndex !== null
           && Number(userAnswerIndex) === Number(correctAnswer);
-
-        console.log(`Q${idx + 1}: User answered index: ${userAnswerIndex}, Correct: ${correctAnswer}, Match: ${isCorrect}`);
 
         if (isCorrect) {
           autoScore += questionPoints;
@@ -544,90 +550,80 @@ const TakeExam = () => {
   }, [exam, answers, essayAnswers]);
 
   const handleSubmit = useCallback(async () => {
-    const examResult = calculateScore();
-    setIsSubmitted(true);
+    const controller = submissionControllerRef.current;
+    if (!controller) return;
 
-    // Submit attempt to backend with all answer types
-    if (examId && studentId) {
-      try {
-        // ✅ Include essay answers and answer images
-        const response: any = await submitExamAttempt(
-          examId,
-          studentId,
-          answers,  // Multiple choice answers
-          examResult.autoScore,  // Only auto-scored marks
-          essayAnswers,  // Essay text answers
-          answerImages,  // Uploaded images
-          examResult.hasEssayQuestions  // Flag for manual review needed
-        );
-
-        console.log('✅ Exam attempt submitted successfully', {
-          hasEssayQuestions: examResult.hasEssayQuestions,
-          autoScore: examResult.autoScore,
-          manualScore: examResult.manualScore,
-          backendResponse: response
-        });
-
-        // ✅ Update result from backend response
-        const finalScore = response.score !== undefined ? response.score : examResult.autoScore;
-        const totalMarks = response.total_marks !== undefined ? response.total_marks : examResult.total;
-        const passingMarks = response.passing_marks !== undefined ? response.passing_marks : (exam?.passing_marks || exam?.passingMarks || 0);
-        const pendingManualReview = response.status !== undefined
-          ? response.status === 'pending_review'
-          : examResult.pendingManualReview;
-        const passed = pendingManualReview ? false : (response.passed ?? (finalScore >= passingMarks));
-
-        const finalResult = {
-          score: finalScore,
-          total: totalMarks,
-          percentage: totalMarks > 0 ? (finalScore / totalMarks) * 100 : 0,
-          passed: passed,
-          hasEssayQuestions: examResult.hasEssayQuestions,
-          autoScore: examResult.autoScore,
-          manualScore: examResult.manualScore,
-          pendingManualReview
-        };
-
-        setResult(finalResult);
-
-        // إذا كان في أسئلة مقالية، لا نعرض النتيجة النهائية
-        if (examResult.hasEssayQuestions) {
-          toast({
-            title: "تم تسليم الامتحان ✅",
-            description: "سيتم مراجعة إجاباتك المقالية وإعلان النتيجة النهائية قريباً",
-          });
-        } else {
-          // لا يوجد أسئلة مقالية - نعرض النتيجة مباشرة
-          toast({
-            title: passed ? "تهانينا! 🎉" : "للأسف",
-            description: passed
-              ? `لقد نجحت بدرجة ${finalScore}/${totalMarks}`
-              : `لم تحصل على درجة النجاح. حصلت على ${finalScore}/${totalMarks}`,
-            variant: passed ? "default" : "destructive"
-          });
-        }
-      } catch (error) {
-        console.error('❌ Failed to submit exam attempt:', error);
-        // If backend fails, fallback to local calculation
-        setResult(examResult);
-        toast({
-          title: "خطأ في الإرسال",
-          description: "حدث خطأ أثناء إرسال الامتحان، يرجى المحاولة مرة أخرى",
-          variant: "destructive"
-        });
-      }
-    } else {
-      // No examId or studentId, use local calculation
-      setResult(examResult);
+    if (!examId || !studentId) {
+      submitAttemptedRef.current = true;
+      controller.fail('تعذر تسليم الامتحان: لم يتم تحديد هوية الطالب. يرجى إعادة تسجيل الدخول والمحاولة مرة أخرى.');
+      return;
     }
-  }, [calculateScore, toast, examId, studentId, answers, essayAnswers, answerImages, exam]);
+
+    const examResult = calculateScore();
+    submitAttemptedRef.current = true;
+
+    // The shared controller acquires its synchronous latch before any
+    // submission side effect: a same-tick duplicate (repeated click or
+    // timer auto-submit) returns 'blocked' without invoking the API, and a
+    // completed attempt can never submit again.
+    const run = await runExamSubmission(
+      controller,
+      // ✅ Include essay answers and answer images
+      () => submitExamAttempt(
+        examId,
+        studentId,
+        answers,  // Multiple choice answers
+        examResult.autoScore,  // Only auto-scored marks
+        essayAnswers,  // Essay text answers
+        answerImages,  // Uploaded images
+        examResult.hasEssayQuestions  // Flag for manual review needed
+      ),
+      examResult,
+    );
+
+    if (run.status === 'blocked') return;
+
+    if (run.status === 'failed') {
+      // Submission failed: no result is shown and answers are retained for a retry.
+      if (run.cause !== undefined) {
+        console.error('❌ Failed to submit exam attempt:', run.cause);
+      }
+      toast({
+        title: "خطأ في الإرسال",
+        description: run.error,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    // Only a validated server outcome finalizes the attempt: the grade
+    // always comes from the server response, never from the local score,
+    // and nothing is logged as success before this validation.
+    const finalResult = run.result;
+
+    // ✅ Pending essay review follows the server status
+    if (finalResult.pendingManualReview) {
+      toast({
+        title: "تم تسليم الامتحان ✅",
+        description: "سيتم مراجعة إجاباتك المقالية وإعلان النتيجة النهائية قريباً",
+      });
+    } else {
+      toast({
+        title: finalResult.passed ? "تهانينا! 🎉" : "للأسف",
+        description: finalResult.passed
+          ? `لقد نجحت بدرجة ${finalResult.score}/${finalResult.total}`
+          : `لم تحصل على درجة النجاح. حصلت على ${finalResult.score}/${finalResult.total}`,
+        variant: finalResult.passed ? "default" : "destructive"
+      });
+    }
+  }, [calculateScore, toast, examId, studentId, answers, essayAnswers, answerImages]);
 
   // Timer countdown
   useEffect(() => {
     if (timeLeft > 0 && !isSubmitted && !loading) {
       const timer = setTimeout(() => setTimeLeft(timeLeft - 1), 1000);
       return () => clearTimeout(timer);
-    } else if (timeLeft === 0 && exam && !isSubmitted && !loading) {
+    } else if (timeLeft === 0 && exam && !isSubmitted && !loading && !submitAttemptedRef.current) {
       handleSubmit();
     }
   }, [timeLeft, isSubmitted, exam, loading, handleSubmit]);
@@ -1843,12 +1839,32 @@ const TakeExam = () => {
                   onClick={handleSubmit}
                   size="lg"
                   className="bg-gradient-to-r from-green-600 to-green-500 w-full sm:w-auto order-3"
-                  disabled={answeredCount < exam.questions.length}
+                  disabled={answeredCount < exam.questions.length || isSubmitting}
                 >
-                  تسليم الامتحان
+                  {isSubmitting ? 'جاري التسليم...' : 'تسليم الامتحان'}
                 </Button>
               )}
             </div>
+
+            {/* Submission failure — answers are retained and a retry is offered */}
+            {submissionError && !isSubmitted && (
+              <Card className="mt-4 border-red-500 bg-red-500/10">
+                <CardContent className="pt-4 flex flex-col gap-3">
+                  <div className="flex items-center gap-2">
+                    <XCircle className="w-5 h-5 text-red-600 flex-shrink-0" />
+                    <span className="text-sm font-medium text-red-700 dark:text-red-400">{submissionError}</span>
+                  </div>
+                  <Button
+                    onClick={() => handleSubmit()}
+                    variant="destructive"
+                    className="w-full sm:w-auto self-start"
+                    disabled={isSubmitting}
+                  >
+                    إعادة محاولة التسليم
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Warning if not all answered */}
             {currentQuestion === exam.questions.length - 1 && answeredCount < exam.questions.length && (

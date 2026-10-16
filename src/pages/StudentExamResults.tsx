@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Trophy, CheckCircle2, XCircle, Clock, Calendar, FileText, TrendingUp, Award, Eye } from "lucide-react";
@@ -10,9 +10,20 @@ import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+// Vite injects `import.meta.env` at build time; it is absent when this module
+// is imported outside Vite (isolated Node tests), so guard the read and fall
+// back to the nginx-proxied relative path.
+const readApiBase = (): string => {
+  try {
+    return import.meta.env.VITE_API_URL || '/api';
+  } catch {
+    return '/api';
+  }
+};
 
-interface ExamResult {
+const API_BASE_URL = readApiBase();
+
+export interface ExamResult {
   id: string;
   exam_id: string;
   exam_title: string;
@@ -25,20 +36,70 @@ interface ExamResult {
   percentage: number;
 }
 
+export type FetchOutcome = 'ok' | 'unauthorized' | 'forbidden' | 'error';
+
+/**
+ * Maps an HTTP status to a page outcome. 401 (missing/expired session) and 403
+ * (wrong role / no permission) must be handled separately from generic
+ * failures, so the page never renders an empty-results state for an
+ * authentication or permission problem.
+ */
+export const classifyFetchOutcome = (status: number): FetchOutcome => {
+  if (status === 401) return 'unauthorized';
+  if (status === 403) return 'forbidden';
+  if (status >= 200 && status < 300) return 'ok';
+  return 'error';
+};
+
+/**
+ * Normalizes one backend result row. The server stays authoritative: the
+ * `status` field is taken from the payload when present and only derived from
+ * the score when the backend omits it.
+ */
+export const normalizeExamResult = (result: any): ExamResult => {
+  const score = result.score || 0;
+  const totalMarks = result.total_marks || result.exam?.total_marks || 0;
+  const passingMarks = result.passing_marks || result.exam?.passing_marks || 0;
+  const percentage = totalMarks > 0 ? (score / totalMarks) * 100 : 0;
+  const status = result.status || (score >= passingMarks ? 'passed' : 'failed');
+  return {
+    id: result.id,
+    exam_id: result.exam_id,
+    exam_title: result.exam_title || result.exam?.title || 'امتحان',
+    score,
+    total_marks: totalMarks,
+    passing_marks: passingMarks,
+    passed: status === 'passed',
+    status: status as 'pending_review' | 'passed' | 'failed',
+    attempted_at: result.attempted_at || result.created_at,
+    percentage,
+  };
+};
+
+export const sortResultsByDate = (results: ExamResult[]): ExamResult[] =>
+  [...results].sort((a, b) => new Date(b.attempted_at).getTime() - new Date(a.attempted_at).getTime());
+
 const StudentExamResults = () => {
   useScreenRecordingPrevention(); // Prevent screen recording & screenshots
   const [examResults, setExamResults] = useState<ExamResult[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [studentId, setStudentId] = useState<string>('');
+  // Monotonic sequence so a slow in-flight response can never overwrite a newer one
+  const loadSeqRef = useRef(0);
 
   const navigate = useNavigate();
   const { toast } = useToast();
 
   useEffect(() => {
     fetchExamResults();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchExamResults = async () => {
+    const requestSeq = ++loadSeqRef.current;
+    setLoading(true);
+    setError(null);
     try {
       // Check if user is logged in and is a student
       const userStr = localStorage.getItem('currentUser');
@@ -50,7 +111,6 @@ const StudentExamResults = () => {
           title: "غير مسموح",
           description: "يرجى تسجيل الدخول أولاً",
         });
-        setLoading(false);
         return;
       }
 
@@ -62,7 +122,6 @@ const StudentExamResults = () => {
           title: "غير مسموح",
           description: "هذه الصفحة للطلاب فقط",
         });
-        setLoading(false);
         return;
       }
 
@@ -76,51 +135,42 @@ const StudentExamResults = () => {
         },
       });
 
-      if (!response.ok) {
-        throw new Error('Failed to fetch exam results');
+      if (requestSeq !== loadSeqRef.current) return; // stale response — a newer load superseded this one
+
+      const outcome = classifyFetchOutcome(response.status);
+      if (outcome === 'unauthorized') {
+        navigate('/auth');
+        return;
+      }
+      if (outcome === 'forbidden') {
+        setError('ليست لديك صلاحية لعرض هذه النتائج');
+        toast({
+          variant: "destructive",
+          title: "غير مسموح",
+          description: "ليست لديك صلاحية لعرض هذه النتائج",
+        });
+        return;
+      }
+      if (outcome !== 'ok') {
+        throw new Error(`Failed to fetch exam results (${response.status})`);
       }
 
       const data = await response.json();
-      console.log('Exam results:', data);
+      if (requestSeq !== loadSeqRef.current) return;
 
-      // Process and sort results
-      const processedResults = (data || []).map((result: any) => {
-        const score = result.score || 0;
-        const totalMarks = result.total_marks || result.exam?.total_marks || 0;
-        const passingMarks = result.passing_marks || result.exam?.passing_marks || 0;
-        const percentage = totalMarks > 0 ? (score / totalMarks) * 100 : 0;
-
-        // Use status from backend (pending_review, passed, failed)
-        const status = result.status || (score >= passingMarks ? 'passed' : 'failed');
-        const isPassed = status === 'passed';
-        const isPending = status === 'pending_review';
-
-        return {
-          id: result.id,
-          exam_id: result.exam_id,
-          exam_title: result.exam_title || result.exam?.title || 'امتحان',
-          score: score,
-          total_marks: totalMarks,
-          passing_marks: passingMarks,
-          passed: isPassed,
-          status: status as 'pending_review' | 'passed' | 'failed',
-          attempted_at: result.attempted_at || result.created_at,
-          percentage: percentage
-        };
-      }).sort((a: ExamResult, b: ExamResult) =>
-        new Date(b.attempted_at).getTime() - new Date(a.attempted_at).getTime()
-      );
-
-      setExamResults(processedResults);
-      setLoading(false);
-    } catch (error) {
-      console.error('Error fetching exam results:', error);
+      // Server-authoritative normalization; newest attempt first.
+      setExamResults(sortResultsByDate((data || []).map(normalizeExamResult)));
+    } catch (err) {
+      if (requestSeq !== loadSeqRef.current) return;
+      console.error('Error fetching exam results:', err);
+      setError('فشل تحميل نتائج الامتحانات');
       toast({
         variant: "destructive",
         title: "خطأ",
         description: "فشل تحميل نتائج الامتحانات",
       });
-      setLoading(false);
+    } finally {
+      if (requestSeq === loadSeqRef.current) setLoading(false);
     }
   };
 
@@ -151,87 +201,6 @@ const StudentExamResults = () => {
   const totalExams = examResults.length;
   const totalGraded = gradedResults.length;
 
-  // Generate PDF for a specific result
-  const generateResultPDF = async (result: ExamResult) => {
-    setGeneratingPDF(result.id);
-    try {
-      const doc = new jsPDF({
-        orientation: 'portrait',
-        unit: 'mm',
-        format: 'a4'
-      });
-
-      // Get student name from localStorage
-      const userStr = localStorage.getItem('currentUser');
-      const user = userStr ? JSON.parse(userStr) : null;
-      const studentName = user?.name || 'طالب';
-
-      // Arabic font setup
-      doc.setFont('helvetica', 'bold');
-
-      // Header
-      doc.setFillColor(59, 130, 246);
-      doc.rect(0, 0, 210, 40, 'F');
-
-      doc.setTextColor(255, 255, 255);
-      doc.setFontSize(24);
-      doc.text('Exam Result Certificate', 105, 25, { align: 'center' });
-
-      // Student info
-      doc.setTextColor(0, 0, 0);
-      doc.setFontSize(14);
-      doc.text(`Student: ${studentName}`, 20, 55);
-      doc.text(`Exam: ${result.exam_title}`, 20, 65);
-      doc.text(`Date: ${new Date(result.attempted_at).toLocaleDateString('en-US')}`, 20, 75);
-
-      // Score box
-      const passed = result.passed;
-      doc.setFillColor(passed ? 34 : 239, passed ? 197 : 68, passed ? 94 : 68);
-      doc.roundedRect(50, 90, 110, 50, 5, 5, 'F');
-
-      doc.setTextColor(255, 255, 255);
-      doc.setFontSize(32);
-      doc.text(`${result.score} / ${result.total_marks}`, 105, 115, { align: 'center' });
-      doc.setFontSize(16);
-      doc.text(`${result.percentage.toFixed(1)}%`, 105, 130, { align: 'center' });
-
-      // Status
-      doc.setTextColor(0, 0, 0);
-      doc.setFontSize(20);
-      doc.text(passed ? 'PASSED' : 'FAILED', 105, 160, { align: 'center' });
-
-      // Grade
-      doc.setFontSize(16);
-      doc.text(`Grade: ${getGradeLabel(result.percentage)}`, 105, 175, { align: 'center' });
-
-      // Passing mark info
-      doc.setFontSize(12);
-      doc.setTextColor(100, 100, 100);
-      doc.text(`Passing Score: ${result.passing_marks}`, 105, 190, { align: 'center' });
-
-      // Footer
-      doc.setFontSize(10);
-      doc.text('Tabweb Academy', 105, 280, { align: 'center' });
-
-      // Save
-      doc.save(`exam-result-${result.exam_title.replace(/\s+/g, '-')}.pdf`);
-
-      toast({
-        title: "تم التحميل",
-        description: "تم تحميل شهادة نتيجة الامتحان بنجاح",
-      });
-    } catch (error) {
-      console.error('PDF generation error:', error);
-      toast({
-        variant: "destructive",
-        title: "خطأ",
-        description: "فشل إنشاء ملف PDF",
-      });
-    } finally {
-      setGeneratingPDF(null);
-    }
-  };
-
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
@@ -246,6 +215,31 @@ const StudentExamResults = () => {
             <Clock className="w-16 h-16 mx-auto mb-4 text-primary animate-spin" />
             <p className="text-lg font-medium">جاري تحميل النتائج...</p>
           </motion.div>
+        </div>
+      </div>
+    );
+  }
+
+  // A failed load must never be shown as the "no results yet" empty state.
+  if (error && examResults.length === 0) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
+        <StudentHeader />
+        <FloatingParticles />
+        <div className="container mx-auto px-4 py-12 flex items-center justify-center min-h-[60vh]">
+          <Card className="max-w-md mx-auto">
+            <CardContent className="pt-12 pb-12 text-center">
+              <XCircle className="w-16 h-16 mx-auto mb-4 text-red-500" />
+              <h3 className="text-xl font-bold mb-2">تعذر تحميل النتائج</h3>
+              <p className="text-muted-foreground mb-6">{error}</p>
+              <Button
+                onClick={() => fetchExamResults()}
+                className="bg-gradient-to-r from-primary to-accent hover:opacity-90"
+              >
+                إعادة المحاولة
+              </Button>
+            </CardContent>
+          </Card>
         </div>
       </div>
     );

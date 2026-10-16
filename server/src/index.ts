@@ -28,7 +28,13 @@ import filesRoutes from './routes/files';
 import expensesRoutes from './routes/expenses';
 import importsRoutes from './routes/imports';
 import messagesRoutes from './routes/messages';
-import videosRoutes from './routes/videos';
+import videosRoutes, {
+    scheduleVideoQueueConsumer,
+    requestVideoProcessingShutdown,
+    inFlightVideoProcessingCount,
+    closeUploadLockPool,
+    closeProcessingLockPool,
+} from './routes/videos';
 import secureVideoRoutes from './routes/secure-video';
 import manualGradingRoutes from './routes/manual-grading';
 import staffRoutes from './routes/staff';
@@ -48,8 +54,6 @@ import adminApprovalsRoutes from './routes/admin-approvals';
 import adminDashboardRoutes from './routes/admin-dashboard';
 import adminInsightsRoutes from './routes/admin-insights';
 import { initializeBuckets } from './services/minio';
-import { query, execute } from './db';
-import { processVideo } from './services/video-processor';
 import { reconcileTenantSubscriptions } from './services/subscription-lifecycle';
 import { optionalAuth } from './middleware/auth';
 import { enforceStudentWorkspaceBoundary } from './middleware/student-workspace-boundary';
@@ -60,6 +64,9 @@ dotenv.config();
 const app = express();
 const httpServer = createServer(app);
 const PORT = process.env.PORT || 3001;
+
+/** The single processing-queue consumer; started when the DB is available. */
+let videoQueueConsumer: ReturnType<typeof scheduleVideoQueueConsumer> | null = null;
 
 // Middleware
 app.use(cors({
@@ -261,6 +268,19 @@ const startServer = async () => {
                 lifecycleTimer.unref();
             }
 
+            // Single coherent consumer of the processing queue: an immediate
+            // sweep at startup — a crash between the claim+enqueue commit
+            // and the in-process run leaves a committed
+            // video_processing_queue row no worker would otherwise pick up —
+            // then a periodic sweep. Every run goes through the shared
+            // protected path (cross-process named lock, exact tenant
+            // matching, bounded concurrency, row settling). No path here
+            // touches the processor directly.
+            if (!skipDb) {
+                videoQueueConsumer ??= scheduleVideoQueueConsumer();
+                videoQueueConsumer.start();
+            }
+
             if (!skipDb) {
                 const cleanupPrivacyData = async () => {
                     try { await cleanupEnrollmentPrivacyData(); }
@@ -271,32 +291,11 @@ const startServer = async () => {
                 privacyTimer.unref();
             }
 
-            // Recover stuck video processing (from previous server crash/restart)
-            setTimeout(async () => {
-                try {
-                    const stuck = await query(
-                        `SELECT id,tenant_id FROM videos WHERE status IN ('processing') AND delivery_provider='minio' AND tenant_id IS NOT NULL
-                         AND created_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)`,
-                        []
-                    );
-                    if (stuck && stuck.length > 0) {
-                        console.log(`[Startup] Found ${stuck.length} stuck processing videos, re-triggering...`);
-                        for (const video of stuck) {
-                            await execute(
-                                `UPDATE videos SET status = 'uploading', processing_progress = 0 WHERE id = ? AND tenant_id = ?`,
-                                [video.id, video.tenant_id]
-                            );
-                            // Stagger processing to avoid overloading
-                            await new Promise(r => setTimeout(r, 2000));
-                            processVideo(video.id, video.tenant_id).catch(err => {
-                                console.error(`[Startup] Failed to re-process video ${video.id}:`, err);
-                            });
-                        }
-                    }
-                } catch (err) {
-                    console.error('[Startup] Error recovering stuck videos:', err);
-                }
-            }, 15000); // Wait 15s after startup to let everything stabilize
+            // Recover stuck video processing happens through the unified
+            // queue consumer above: no startup path resets a video status or
+            // invokes the processor directly. Stale 'processing' rows are
+            // re-claimed only after the named lock proves their claimant is
+            // gone (server/src/routes/videos.ts runVideoProcessingJob).
         });
 
         server.on('error', (error: NodeJS.ErrnoException) => {
@@ -325,14 +324,39 @@ const startServer = async () => {
 };
 
 // Handle graceful shutdown
-process.on('SIGTERM', () => {
-    console.log('⚠️  SIGTERM received, shutting down gracefully...');
+/** Bounded drain: in-flight processing runs settle, or the process exits anyway. */
+const VIDEO_SHUTDOWN_DRAIN_MS = 30_000;
+
+const gracefulShutdown = async (signal: string): Promise<void> => {
+    console.log(`⚠️  ${signal} received, shutting down gracefully...`);
+    // Stop the queue consumer first: no NEW processing runs during shutdown.
+    if (videoQueueConsumer) videoQueueConsumer.stop();
+    requestVideoProcessingShutdown();
+    httpServer.close();
+
+    // Bounded drain: an in-flight run holds a dedicated lock connection and
+    // will settle its queue row when it finishes.
+    const deadline = Date.now() + VIDEO_SHUTDOWN_DRAIN_MS;
+    while (inFlightVideoProcessingCount() > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    if (inFlightVideoProcessingCount() > 0) {
+        console.warn('⚠️  Shutdown drain timed out with processing still in flight; exiting (MySQL releases owner-dead locks with their sessions)');
+    }
+
+    // Dedicated lock pools: closing them returns their sessions cleanly; a
+    // held named lock dies with its connection either way. Never the
+    // request pool — db.ts owns that one.
+    await Promise.allSettled([closeUploadLockPool(), closeProcessingLockPool()]);
     process.exit(0);
+};
+
+process.on('SIGTERM', () => {
+    void gracefulShutdown('SIGTERM');
 });
 
 process.on('SIGINT', () => {
-    console.log('⚠️  SIGINT received, shutting down gracefully...');
-    process.exit(0);
+    void gracefulShutdown('SIGINT');
 });
 
 startServer();

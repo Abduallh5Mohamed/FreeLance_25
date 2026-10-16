@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { getGrades, getGroups, getStudents, getAttendance, type Grade, type Group, type Student, type Attendance } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
+import { classifyAttendanceError } from '@/pages/QRAttendance';
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, Search, Check, X, MessageCircle } from 'lucide-react';
 
 const AttendanceLog = () => {
@@ -61,6 +62,11 @@ const AttendanceLog = () => {
       setGrades(data || []);
     } catch (error) {
       console.error('Error fetching grades:', error);
+      toast({
+        title: 'خطأ',
+        description: `فشل تحميل الصفوف الدراسية: ${classifyAttendanceError(error).message}`,
+        variant: 'destructive'
+      });
     }
   };
 
@@ -71,6 +77,11 @@ const AttendanceLog = () => {
       setGroups(filtered);
     } catch (error) {
       console.error('Error fetching groups:', error);
+      toast({
+        title: 'خطأ',
+        description: `فشل تحميل المجموعات: ${classifyAttendanceError(error).message}`,
+        variant: 'destructive'
+      });
     }
   };
 
@@ -81,6 +92,11 @@ const AttendanceLog = () => {
       setStudents(filtered);
     } catch (error) {
       console.error('Error fetching students:', error);
+      toast({
+        title: 'خطأ',
+        description: `فشل تحميل الطلاب: ${classifyAttendanceError(error).message}`,
+        variant: 'destructive'
+      });
     }
   };
 

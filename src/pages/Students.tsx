@@ -1,50 +1,155 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Users, Plus, Edit2, Trash2, Search, Phone, Mail } from "lucide-react";
+import { Users, Edit2, Trash2, Search, Phone, Mail } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-import { getStudents, getGrades, getGroups, getCourses, getSubscriptions, updateStudent, deleteStudent, deleteUserByStudentId } from "@/lib/api-http";
-import { supabase } from "@/integrations/supabase/client";
+import { getStudents, getGrades, getGroups, updateStudent, deleteStudent, deleteUserByStudentId, type Student } from "@/lib/api-http";
+
+/**
+ * Row shape returned by GET /students (server/src/routes/students.ts):
+ * the students table columns (s.*) plus grade_name, group_name,
+ * enrollment_date and the aggregated course_names CSV string.
+ */
+export interface StudentListItem extends Student {
+  is_active?: boolean;
+  created_at?: string;
+  course_names?: string | null;
+  enrollment_date?: string;
+}
+
+/**
+ * is_offline arrives from MySQL as 0/1 at runtime even though the shared
+ * Student type declares boolean; normalize before trust.
+ */
+export const isOfflineStudent = (value: unknown): boolean =>
+  value === true || value === 1 || value === "1";
+
+/** Search across the fields the students API actually returns. */
+export const filterStudentsBySearch = (students: StudentListItem[], term: string): StudentListItem[] => {
+  const needle = term.trim();
+  if (!needle) return students;
+  const lowerNeedle = needle.toLowerCase();
+  return students.filter(student =>
+    student.name?.toLowerCase().includes(lowerNeedle) ||
+    student.email?.toLowerCase().includes(lowerNeedle) ||
+    student.phone?.includes(needle) ||
+    student.guardian_phone?.includes(needle)
+  );
+};
+
+/** course_names is a comma-separated string produced by GROUP_CONCAT. */
+export const splitCourseNames = (courseNames?: string | null): string[] =>
+  courseNames ? String(courseNames).split(",").filter(Boolean) : [];
+
+export interface StudentMutationDeps {
+  updateStudent: (id: string, data: Record<string, unknown>) => Promise<boolean>;
+  deleteStudent: (id: string) => Promise<boolean>;
+  deleteUserByStudentId: (id: string) => Promise<boolean>;
+  /** Server-authoritative refresh: only invoked after the server confirms success. */
+  refresh: () => void | Promise<void>;
+  notify: (kind: "success" | "error", title: string, description: string) => void;
+}
+
+export interface StudentMutationOutcome {
+  ok: boolean;
+}
+
+export interface StudentMutationMessages {
+  successTitle: string;
+  successDescription: string;
+  failureTitle: string;
+  failureDescription: string;
+}
+
+/**
+ * Mutation controller for the student management pages. Keeps the pages thin
+ * and makes the outcomes testable: every mutation is single-flight (a repeat
+ * click while a request for the same target is in flight reuses it instead of
+ * issuing a duplicate request), the list is refreshed only after the server
+ * confirms success, and failures are surfaced without mutating local state.
+ */
+export const createStudentMutationController = (deps: StudentMutationDeps) => {
+  const inFlight = new Map<string, Promise<StudentMutationOutcome>>();
+
+  const run = (key: string, op: () => Promise<StudentMutationOutcome>): Promise<StudentMutationOutcome> => {
+    const existing = inFlight.get(key);
+    if (existing) return existing;
+    const promise = op().finally(() => {
+      inFlight.delete(key);
+    });
+    inFlight.set(key, promise);
+    return promise;
+  };
+
+  const runMutation = (
+    key: string,
+    call: () => Promise<boolean>,
+    messages: StudentMutationMessages
+  ): Promise<StudentMutationOutcome> =>
+    run(key, async () => {
+      try {
+        const ok = await call();
+        if (!ok) {
+          deps.notify("error", messages.failureTitle, messages.failureDescription);
+          return { ok: false };
+        }
+        await deps.refresh();
+        deps.notify("success", messages.successTitle, messages.successDescription);
+        return { ok: true };
+      } catch (error: unknown) {
+        deps.notify(
+          "error",
+          messages.failureTitle,
+          error instanceof Error ? error.message : messages.failureDescription
+        );
+        return { ok: false };
+      }
+    });
+
+  return {
+    update: (id: string, data: Record<string, unknown>, messages: StudentMutationMessages) =>
+      runMutation(`update:${id}`, () => deps.updateStudent(id, data), messages),
+    remove: (id: string, messages: StudentMutationMessages) =>
+      runMutation(`delete:${id}`, () => deps.deleteStudent(id), messages),
+    removeUser: (id: string, messages: StudentMutationMessages) =>
+      runMutation(`delete-user:${id}`, () => deps.deleteUserByStudentId(id), messages),
+  };
+};
+
+const EMPTY_FORM = {
+  name: "",
+  email: "",
+  phone: "",
+  guardian_phone: "",
+  grade: "",
+  grade_id: "",
+  group_id: ""
+};
+
+type ConfirmableDelete = { kind: "student" | "user"; id: string } | null;
 
 const Students = () => {
   const currentRole = (() => { try { return JSON.parse(localStorage.getItem('currentUser') || '{}').role as string | undefined; } catch { return undefined; } })();
-  const [students, setStudents] = useState([]);
-  const [courses, setCourses] = useState([]);
-  const [subscriptions, setSubscriptions] = useState([]);
+  const [students, setStudents] = useState<StudentListItem[]>([]);
   const [groups, setGroups] = useState([]);
   const [grades, setGrades] = useState([]);
   const [isOpen, setIsOpen] = useState(false);
-  const [editingStudent, setEditingStudent] = useState(null);
+  const [editingStudent, setEditingStudent] = useState<StudentListItem | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
-  const [selectedCourses, setSelectedCourses] = useState([]);
-  const [formData, setFormData] = useState({
-    name: "",
-    email: "",
-    phone: "",
-    guardian_phone: "",
-    grade: "",
-    grade_id: "",
-    subscription_id: "",
-    subscription_price: "",
-    group_id: "",
-    password: ""
-  });
-
+  const [formData, setFormData] = useState(EMPTY_FORM);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<ConfirmableDelete>(null);
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
 
   useEffect(() => {
     fetchStudents();
-    fetchCourses();
-    if (currentRole !== 'instructor') fetchSubscriptions();
     fetchGroups();
     fetchGrades();
   }, []);
@@ -55,35 +160,20 @@ const Students = () => {
       setGrades(data || []);
     } catch (error) {
       console.error('Error fetching grades:', error);
+      setLoadError('تعذر تحميل الصفوف الدراسية');
     }
   };
 
   const fetchStudents = async () => {
+    setLoadError(null);
     try {
       const data = await getStudents();
       // Filter for online students only (is_offline = false or 0)
-      const onlineStudents = data.filter(student => !student.is_offline || student.is_offline === 0 || student.is_offline === false);
-      setStudents(onlineStudents || []);
+      const onlineStudents = (data || []).filter(student => !isOfflineStudent(student.is_offline));
+      setStudents(onlineStudents);
     } catch (error) {
       console.error('Error fetching students:', error);
-    }
-  };
-
-  const fetchCourses = async () => {
-    try {
-      const data = await getCourses();
-      setCourses(data || []);
-    } catch (error) {
-      console.error('Error fetching courses:', error);
-    }
-  };
-
-  const fetchSubscriptions = async () => {
-    try {
-      const data = await getSubscriptions();
-      setSubscriptions(data || []);
-    } catch (error) {
-      console.error('Error fetching subscriptions:', error);
+      setLoadError('تعذر تحميل قائمة الطلاب');
     }
   };
 
@@ -93,29 +183,29 @@ const Students = () => {
       setGroups(data || []);
     } catch (error) {
       console.error('Error fetching groups:', error);
+      setLoadError('تعذر تحميل المجموعات');
     }
   };
 
-  const filteredStudents = students.filter(student =>
-    student.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    student.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    student.phone?.includes(searchTerm) ||
-    student.guardian_phone?.includes(searchTerm)
-  );
+  const mutations = useMemo(() => createStudentMutationController({
+    updateStudent,
+    deleteStudent,
+    deleteUserByStudentId,
+    refresh: fetchStudents,
+    notify: (kind, title, description) => toast({
+      title,
+      description,
+      ...(kind === "error" ? { variant: "destructive" as const } : {}),
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), []);
+
+  const filteredStudents = filterStudentsBySearch(students, searchTerm);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return; // ignore duplicate submits while a request is in flight
     setLoading(true);
-
-    if (selectedCourses.length === 0) {
-      toast({
-        title: "خطأ",
-        description: "يجب اختيار كورس واحد على الأقل",
-        variant: "destructive",
-      });
-      setLoading(false);
-      return;
-    }
 
     try {
       if (!editingStudent) {
@@ -133,22 +223,18 @@ const Students = () => {
         group_id: formData.group_id || null,
       };
 
-      const success = await updateStudent(editingStudent.id, updateData);
-
-      if (!success) {
-        throw new Error("فشل تحديث بيانات الطالب");
-      }
-
-      toast({
-        title: "تم التحديث بنجاح",
-        description: "تم تحديث بيانات الطالب في قاعدة البيانات",
+      const outcome = await mutations.update(editingStudent.id, updateData, {
+        successTitle: "تم التحديث بنجاح",
+        successDescription: "تم تحديث بيانات الطالب في قاعدة البيانات",
+        failureTitle: "خطأ",
+        failureDescription: "فشل تحديث بيانات الطالب",
       });
 
-      fetchStudents();
+      if (!outcome.ok) return; // keep the dialog open with the entered form state
+
       setIsOpen(false);
       setEditingStudent(null);
-      setSelectedCourses([]);
-      setFormData({ name: "", email: "", phone: "", guardian_phone: "", grade: "", grade_id: "", subscription_id: "", subscription_price: "", group_id: "", password: "" });
+      setFormData(EMPTY_FORM);
     } catch (error: unknown) {
       console.error('Error:', error);
       toast({
@@ -161,68 +247,40 @@ const Students = () => {
     }
   };
 
-  const handleEdit = (student) => {
+  const handleEdit = (student: StudentListItem) => {
     setEditingStudent(student);
     setFormData({
       name: student.name,
-      email: student.email,
-      phone: student.phone,
+      email: student.email || "",
+      phone: student.phone || "",
       guardian_phone: student.guardian_phone || "",
-      grade: student.grade,
+      grade: student.grade || "",
       grade_id: student.grade_id || "",
-      subscription_id: student.subscription_id || "",
-      subscription_price: student.subscription_price?.toString() || "",
-      group_id: student.group_id || "",
-      password: "" // Don't show existing password
+      group_id: student.group_id || ""
     });
-    setSelectedCourses(student.student_courses?.map(sc => sc.courses.id) || []);
     setIsOpen(true);
   };
 
-  const handleDelete = async (id: string) => {
-    try {
-      const success = await deleteStudent(id);
-
-      if (success) {
-        fetchStudents();
-        toast({
-          title: "تم الحذف بنجاح",
-          description: "تم حذف الطالب من قاعدة البيانات",
-        });
-      } else {
-        throw new Error("فشل حذف الطالب");
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    const { kind, id } = pendingDelete;
+    const messages = kind === "user"
+      ? {
+        successTitle: "تم الحذف نهائياً",
+        successDescription: "تم حذف الطالب نهارياً من users و students",
+        failureTitle: "خطأ",
+        failureDescription: "فشل الحذف النهائي",
       }
-    } catch (error) {
-      console.error('Error deleting student:', error);
-      toast({
-        title: "خطأ",
-        description: "حدث خطأ في حذف الطالب",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const handleDeleteUser = async (studentId: string) => {
-    try {
-      const success = await deleteUserByStudentId(studentId);
-
-      if (success) {
-        fetchStudents();
-        toast({
-          title: "تم الحذف نهائياً",
-          description: "تم حذف الطالب نهارياً من users و students",
-        });
-      } else {
-        throw new Error("فشل الحذف النهائي");
-      }
-    } catch (error) {
-      console.error('Error deleting user:', error);
-      toast({
-        title: "خطأ",
-        description: "حدث خطأ في الحذف النهائي",
-        variant: "destructive",
-      });
-    }
+      : {
+        successTitle: "تم الحذف بنجاح",
+        successDescription: "تم حذف الطالب من قاعدة البيانات",
+        failureTitle: "خطأ",
+        failureDescription: "فشل حذف الطالب",
+      };
+    const outcome = kind === "user"
+      ? await mutations.removeUser(id, messages)
+      : await mutations.remove(id, messages);
+    if (outcome.ok) setPendingDelete(null);
   };
 
   const getInitials = (name: string) => {
@@ -336,82 +394,35 @@ const Students = () => {
                     <p className="text-xs text-muted-foreground">لا توجد مجموعات متاحة لهذا الصف</p>
                   )}
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="password">كلمة المرور</Label>
-                  <Input
-                    id="password"
-                    type="text"
-                    value={formData.password}
-                    onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))}
-                    placeholder={editingStudent ? "اتركه فارغاً للإبقاء على كلمة المرور الحالية" : "أدخل كلمة المرور"}
-                  />
-                  {!editingStudent && (
-                    <p className="text-xs text-muted-foreground">سيتم توليد كلمة مرور تلقائياً إذا تركت هذا الحقل فارغاً</p>
-                  )}
-                </div>
-                {currentRole !== 'instructor' && <>
-                <div className="space-y-2">
-                  <Label htmlFor="subscription">خطة الاشتراك</Label>
-                  <Select value={formData.subscription_id} onValueChange={(value) => {
-                    const selectedSub = subscriptions.find(s => s.id === value);
-                    setFormData(prev => ({
-                      ...prev,
-                      subscription_id: value,
-                      subscription_price: selectedSub ? selectedSub.price.toString() : ""
-                    }));
-                  }}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="اختر خطة الاشتراك" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {subscriptions.map((subscription) => (
-                        <SelectItem key={subscription.id} value={subscription.id}>
-                          {subscription.name} - {subscription.price} جنيه
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="subscription_price">سعر الاشتراك (قابل للتعديل)</Label>
-                  <Input
-                    id="subscription_price"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={formData.subscription_price}
-                    onChange={(e) => setFormData(prev => ({ ...prev, subscription_price: e.target.value }))}
-                    placeholder="500"
-                  />
-                </div>
-                </>}
-                <div className="space-y-2">
-                  <Label>الكورسات المسجلة</Label>
-                  <div className="space-y-2">
-                    {courses.map((course) => (
-                      <div key={course.id} className="flex items-center space-x-2 space-x-reverse">
-                        <Checkbox
-                          id={course.id}
-                          checked={selectedCourses.includes(course.id)}
-                          onCheckedChange={(checked) => {
-                            if (checked) {
-                              setSelectedCourses([...selectedCourses, course.id]);
-                            } else {
-                              setSelectedCourses(selectedCourses.filter(id => id !== course.id));
-                            }
-                          }}
-                        />
-                        <Label htmlFor={course.id} className="text-sm font-normal">
-                          {course.name}
-                        </Label>
-                      </div>
-                    ))}
-                  </div>
-                </div>
                 <Button type="submit" className="w-full" disabled={loading}>
-                  {loading ? "جاري المعالجة..." : (editingStudent ? "تحديث البيانات" : "إضافة الطالب")}
+                  {loading ? "جاري المعالجة..." : "تحديث البيانات"}
                 </Button>
               </form>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={pendingDelete !== null} onOpenChange={(open) => { if (!open) setPendingDelete(null); }}>
+            <DialogContent className="max-w-sm">
+              <DialogHeader>
+                <DialogTitle>تأكيد الحذف</DialogTitle>
+                <DialogDescription>
+                  {pendingDelete?.kind === "user"
+                    ? "سيتم حذف الطالب نهائياً من users و students. لا يمكن التراجع عن هذه العملية."
+                    : "سيتم حذف الطالب من قائمة students. هل تريد المتابعة؟"}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex gap-2">
+                <Button variant="outline" className="flex-1" onClick={() => setPendingDelete(null)}>
+                  إلغاء
+                </Button>
+                <Button
+                  variant="destructive"
+                  className="flex-1"
+                  onClick={confirmDelete}
+                >
+                  تأكيد الحذف
+                </Button>
+              </div>
             </DialogContent>
           </Dialog>
         </div>
@@ -430,11 +441,20 @@ const Students = () => {
             </div>
           </CardHeader>
           <CardContent className="p-4">
+            {loadError && (
+              <div role="alert" className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                {loadError}
+              </div>
+            )}
+            {filteredStudents.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground">
+                <Users className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                <p className="text-lg font-medium">لا يوجد طلاب أونلاين حالياً</p>
+              </div>
+            ) : (
             <div className="space-y-4">
-              {filteredStudents.map((student, index) => {
-                const courseNames: string[] = student.course_names
-                  ? String(student.course_names).split(',').filter(Boolean)
-                  : (student.student_courses ? student.student_courses.map((enrollment) => enrollment.courses?.name).filter(Boolean) : []);
+              {filteredStudents.map((student) => {
+                const courseNames = splitCourseNames(student.course_names);
                 const joinDateSource = student.enrollment_date || student.created_at;
                 let joinDateDisplay = '-';
                 if (joinDateSource) {
@@ -474,14 +494,17 @@ const Students = () => {
                           size="sm"
                           onClick={() => handleEdit(student)}
                           className="h-8 w-8 p-0 text-white hover:bg-white/20"
+                          aria-label="تعديل بيانات الطالب"
+                          title="تعديل بيانات الطالب"
                         >
                           <Edit2 className="w-4 h-4" />
                         </Button>
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => handleDelete(student.id)}
+                          onClick={() => setPendingDelete({ kind: "student", id: student.id })}
                           className="h-8 w-8 p-0 text-white hover:bg-red-500/30"
+                          aria-label="حذف من students"
                           title="حذف من students"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -489,8 +512,9 @@ const Students = () => {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => handleDeleteUser(student.id)}
+                          onClick={() => setPendingDelete({ kind: "user", id: student.id })}
                           className="h-8 w-8 p-0 bg-red-600/90 text-white hover:bg-red-700 border-2 border-red-800 shadow-lg"
+                          aria-label="حذف نهائي من users"
                           title="⚠️ حذف نهائي من users"
                         >
                           <Trash2 className="w-4 h-4 font-bold" />
@@ -530,29 +554,6 @@ const Students = () => {
                       </div>
 
                       <div>
-                        <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">💳 الاشتراك</div>
-                        <div className="text-sm">
-                          {student.subscriptions ? (
-                            <div className="space-y-1">
-                              <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs font-medium">
-                                {student.subscriptions.name}
-                              </span>
-                              <div className="text-xs text-muted-foreground">
-                                {student.subscription_price} جنيه
-                              </div>
-                              {student.subscription_end_date && (
-                                <div className="text-xs text-muted-foreground">
-                                  ينتهي: {new Date(student.subscription_end_date).toLocaleDateString('ar-SA')}
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">لا يوجد اشتراك</span>
-                          )}
-                        </div>
-                      </div>
-
-                      <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">📚 الكورسات</div>
                         <div className="flex flex-wrap gap-1">
                           {courseNames.length > 0 ? (
@@ -581,6 +582,7 @@ const Students = () => {
                 );
               })}
             </div>
+            )}
           </CardContent>
         </Card>
       </div>

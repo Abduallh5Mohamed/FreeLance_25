@@ -1,22 +1,7 @@
-# 14 — Technical usage metering only
+# 14 — عد التسجيلات والتسوية
 
-التحليل السابق لأسعار الباقات، تكلفة المزود، الهوامش والتعادل خارج النطاق الحالي، لذلك لا تستخدم جداول/أسعار النسخة السابقة كقرار تجاري. لا يضع النظام سعرًا للمدرس أو حد خطة محسوبًا على تكلفة فيديو.
+المرجع [19](19-commercial-registration-wallet-agreement-ar.md). علاقة student–teacher تحتسب مرة مهما تعددت مقرراتها؛ التفعيل الخادمي والمهلة المخولة يحتسبان، الانتظار والمنتهي دون تجديد لا يحتسبان. أحداث التفعيل/الانتهاء محفوظة؛ حذف الحساب لا يحذف استحقاقًا.
 
-## متطلبات القياس التقنية
+دورة المؤسسة 2592000 ثانية؛ مجموع سعر عدد الفعال × ثواني الفترة ÷2592000؛ aggregate تقريري يومي قابل لإعادة البناء بلا تقريب يومي. فاتورة البداية مقدم، ثم تسوية الفعلية ناقص المفوتر للفترة الماضية مع مقدم الجديدة. الدين المرحل مرجع سابق لا إيراد جديد. tenant/registration/event_id ومراجع invoice تمنع التكرار. price_version محفوظة لكل فترة. Watch minutes/storage مقاييس مستقلة لا تضيف رسومًا غير معتمدة.
 
-المنصة تجمع وتصدر usage evidence لكل tenant والمدرس والفترة، بما يشمل:
-
-| مقياس | event source | تعريف/دقة |
-|---|---|---|
-| Active students | enrollment + authenticated learning activity | تعريف activity window قابل للتكوين والتوثيق؛ لا يحسب pending/deleted |
-| Watch minutes | signed player heartbeat/provider usage reconciliation | dedupe by session/event ID؛ يشمل partial/resume/seek policy معلنة |
-| Storage | provider/object inventory snapshots | bytes per original/rendition/recording، status/deleted/reconciled |
-| Live/recorded consumption | verified provider callbacks and media events | participants and playback separated |
-
-## سياسة القياس
-
-- سجل immutable `usage_event(tenant_id, actor_id, metric, quantity, unit, occurred_at, source, source_event_id, idempotency_key, schema_version)`؛ uniqueness تمنع التكرار.
-- Aggregate يومي/شهري يمكن إعادة بنائه من ledger؛ لا تستخدم aggregate وحده كمرجع تدقيق.
-- المدير يستطيع عرض وتصدير تقرير مفصل/ملخص؛ سبب/الفاعل/الفترة/التوقيت مسجلون؛ المدرس يرى استعمال مؤسسته فقط.
-- مؤسس المنتج يقرر قيمة العقد والفاتورة يدويًا وفق عدد الطلاب؛ لا توجد auto charge, overage price, plan cap enforcement أو هامش ربح مشتق.
-- مصالحة event counts/bytes/minutes مع مزود الفيديو والإبلاغ عن gap. Vendor metrics/API availability تحتاج تحققًا قبل الاعتماد.
+19 يحسم UTC والثواني والقروش والتقريب؛ الضريبة تحقق مستقل قبل التنفيذ. لا تغير الأسعار أو الـ4 أيام دون قرار المستخدم. F1 واختبارات 17 تتحقق من حدود الشرائح والانتهاء والتجديد والتزامن والدين والدائن.

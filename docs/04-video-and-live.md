@@ -1,5 +1,7 @@
 # الفيديو المسجل، الحماية، والدروس الحية
 
+**القرار الحاكم المحدث:** التسعير تدريجي للمدرس والسنتر؛ فوترة المؤسسة كل 30 يومًا مع حساب مدة فعلية بالثواني وتسوية، لا عمولة على الطلاب؛ محفظة السنتر وحده أو المدرس المستقل؛ خصم الاشتراك من المتاح ومهلة 4 أيام. المرجع [19 — القرارات المعتمدة](19-commercial-registration-wallet-agreement-ar.md)، والموافقة قبل التنفيذ في 18. الوثائق ليست دليل تشغيل.
+
 ## provider-neutral media layer
 
 يوثق المشروع MinIO/FFmpeg/HLS ومزود VdoCipher Multi-DRM، لكن لا يفترض أن كل asset قديم محمي أو قابل للتحويل. احتفظوا بـ`VideoProvider` adapter يحوي upload session، asset state، playback token، watermark policy، usage report، recording ingest وdelete lifecycle. لا تعرضوا feature capability قبل test compatibility لكل جهاز/متصفح.

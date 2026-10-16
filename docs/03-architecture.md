@@ -1,5 +1,7 @@
 # معمارية المنصة الكاملة
 
+**القرار الحاكم المحدث:** التسعير تدريجي للمدرس والسنتر؛ فوترة المؤسسة كل 30 يومًا مع حساب مدة فعلية بالثواني وتسوية، لا عمولة على الطلاب؛ محفظة السنتر وحده أو المدرس المستقل؛ خصم الاشتراك من المتاح ومهلة 4 أيام. المرجع [19 — القرارات المعتمدة](19-commercial-registration-wallet-agreement-ar.md)، والموافقة قبل التنفيذ في 18. الوثائق ليست دليل تشغيل.
+
 ## الوضع والقرار
 
 التطبيق الحالي React/Vite + Express/TypeScript + MySQL مع modules تعليمية وشريحة SaaS جزئية. التصميم المقترح Modular Monolith بخدمات domain وفصل workers عند الحاجة، وليس افتراضًا أن كل endpoint آمن أو tenant-aware. المرجع الفعلي هو [audit](ARCHITECTURE_AUDIT_AND_MIGRATION_PLAN_AR.md) مع مطابقة بيئة التشغيل قبل كل migration. الأمن والعزل يسبقان كل سطح منتج.
@@ -73,3 +75,15 @@ MySQL InnoDB بمخطط/migrations موحدة؛ Redis للcache والqueue فق
 | schema مشتركة مع FK مركبة وscope مركزي | `tenant_id` في بعض الجداول فقط | العلاقات المتداخلة والتقارير والjobs تتسرب إن غاب invariant |
 | owner resolution مراجَع + quarantine للغموض | backfill تخميني | حفظ الخصوصية والبيانات قبل convenience |
 | multi-region بعد SLO/DR evidence | multi-region writes مبكرًا | إدارة الاتساق والتعافي لها تكلفة وحاجة مثبتة |
+
+## domains الاشتراك والتحصيل الجديدة
+
+organization.kind = center/independent_teacher؛ teacher_membership داخل السنتر ليس tenant منفصلًا. student_teacher_registration يملك tenant/student/teacher/status/type وفترة؛ enrollment للمقرر مستقل. lesson/video.audience = online_only/offline_only/both؛ إعداد قبول دفع Offline لكل مدرس لا يغير النوع.
+
+مجالات platform_subscription/price_version/private_offer/invoice وstudent_order/monthly_price_version، wallet_account/ledger_transaction/ledger_entry/settlement/withdrawal/provider_event. دفتر متوازن بقيد ذري ومعرف حدث فريد؛ البيانات المالية tenant-owned؛ نسخة السعر والرسوم مثبتة لكل دفعة. webhook موقّع ومصالحات وطابور retries وoutbox؛ السحب حجز ذري ثم تحويل عبر مزود موثق. لا يحتاج هذا التوثيق أي migration حاليًا. العلاقة ERD: CENTER→TEACHER_MEMBERSHIP→STUDENT_TEACHER_REGISTRATION؛ PAYMENT→LEDGER_TRANSACTION→LEDGER_ENTRY؛ WALLET→WITHDRAWAL. تفاصيل المعادلة والعقود المفتوحة في 19.
+## تحديث النموذج المالي المعتمد
+19 يحل محل أي split/revenue_agreement requirement سابق: wallet_owner=tenant(center أو independent_teacher)، لا توزيع آلي على مدرسين داخل السنتر. subscription/pricing_version/billing_period/daily_registration_count/invoice/invoice_line/receivable/payment_allocation/ledger/reservation/withdrawal/refund/provider_event. tenant-scoped uniqueness، DECIMAL/minor units، transaction locks وoutbox. timestamps UTC؛ change-event intervals [start,end)؛ تجميع يومي للتقارير فقط. الرصيد المرحل debt reference لا إيراد مكرر. القرار retrofit vs tenant-core نهائي بعد Spike وفق15؛ Modular Monolith شكل مستهدف لا إثبات اختيار ترحيل محسوم.
+
+## ضبط الحساب والمحفظة والحماية
+
+19 يحدد فترات الأحداث UTC والثواني بدل تقريب يوم كامل، وفصل receivable وmerchant_wallet وsubscription_credit، وأول فاتورة الأساسي دون عدد متوقع. الحجز القائم لا يستخدم ثانية؛ دائن الاشتراك يخصم فواتيره وليس سحبًا نقديًا. الفترات المستقبلية المؤكدة المدفوعة محمية عند تقييد المؤسسة؛ المهلة الدراسية لها نهاية إلزامية، والمحتوى والنطاق داخل السنتر لا ينقلان بمجرد خروج المدرس. تحقق هذه الحدود في F1 قبل تشغيل المال، ولا تعتبرها منفذة من تحديث الوثيقة.

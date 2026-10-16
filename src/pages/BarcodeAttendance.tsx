@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,7 @@ import { Scan, CheckCircle, XCircle, MessageCircle, Calendar, Send, DollarSign, 
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
 import axios from 'axios';
+import { classifyAttendanceError, createSubmissionGuard } from '@/pages/QRAttendance';
 
 const API_URL = import.meta.env.VITE_API_URL || '/api';
 
@@ -92,6 +93,11 @@ const BarcodeAttendance = () => {
   const [crossGroupWarning, setCrossGroupWarning] = useState<{ open: boolean; student: any; studentGroup: any; } | null>(null);
   const { toast } = useToast();
 
+  // Duplicate scan/submission suppression: one attendance POST in flight at a time.
+  const submitGuard = useRef(createSubmissionGuard());
+  const [submitting, setSubmitting] = useState(false);
+  const barcodeInputRef = useRef<HTMLInputElement>(null);
+
   // Filter groups to only show those scheduled for today
   const todayGroups = groups.filter((g: any) => isTodayScheduled(g.schedule_days));
 
@@ -113,6 +119,12 @@ const BarcodeAttendance = () => {
       fetchAbsentStudents();
     }
   }, [todayAttendance, selectedGroupId, students]);
+
+  // Re-enabling a disabled input drops focus; restore it so the operator can
+  // keep scanning (also makes a failed submission immediately actionable).
+  useEffect(() => {
+    if (!submitting) barcodeInputRef.current?.focus();
+  }, [submitting]);
 
   const fetchGroups = async () => {
     try {
@@ -353,6 +365,7 @@ const BarcodeAttendance = () => {
 
   // تسجيل حضور فقط (لم نعد ندعم إدخال غياب يدوي من الواجهة)
   const recordAttendance = async (barcodeId: string) => {
+    if (submitGuard.current.busy) return; // a submission is already in flight
     try {
       const student = students.find((s: any) => s.barcode_id === barcodeId || s.barcode === barcodeId);
 
@@ -382,6 +395,8 @@ const BarcodeAttendance = () => {
 
   // Actual attendance recording logic (used by both normal and cross-group flows)
   const doRecordAttendance = async (student: any, groupId: string) => {
+    if (!submitGuard.current.tryAcquire()) return;
+    setSubmitting(true);
     try {
       const today = new Date().toISOString().split('T')[0];
       const token = localStorage.getItem('token');
@@ -406,24 +421,32 @@ const BarcodeAttendance = () => {
       }
     } catch (error: any) {
       handleAttendanceError(error);
+    } finally {
+      setSubmitting(false);
+      submitGuard.current.release();
     }
   };
 
   const handleAttendanceError = (error: any) => {
     console.error('Error recording attendance:', error);
+    const classified = classifyAttendanceError(error);
 
-    if (error.response?.status === 409 ||
-      (error.response?.status === 400 && error.response?.data?.message?.includes('already recorded')) ||
-      error.response?.data?.error?.includes('already recorded')) {
+    if (classified.kind === 'duplicate') {
       toast({
         title: "تنبيه",
         description: "تم تسجيل الحضور مسبقاً اليوم",
         variant: "default",
       });
+    } else if (classified.kind === 'auth') {
+      toast({
+        title: "انتهت الجلسة",
+        description: classified.message,
+        variant: "destructive",
+      });
     } else {
       toast({
         title: "خطأ",
-        description: error.response?.data?.error || error.response?.data?.message || "حدث خطأ أثناء تسجيل الحضور",
+        description: classified.serverMessage ?? classified.message,
         variant: "destructive",
       });
     }
@@ -448,7 +471,8 @@ const BarcodeAttendance = () => {
 
   const handleBarcodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (barcodeInput.trim()) {
+    // Suppress the Enter that follows an auto-submitted 25-char scan.
+    if (barcodeInput.trim() && !submitGuard.current.busy) {
       recordAttendance(barcodeInput.trim());
     }
   };
@@ -458,7 +482,7 @@ const BarcodeAttendance = () => {
     setBarcodeInput(value);
 
     // Auto-submit when barcode is exactly 25 characters
-    if (value.length === 25) {
+    if (value.length === 25 && !submitGuard.current.busy) {
       recordAttendance(value);
     }
   };
@@ -660,16 +684,19 @@ const BarcodeAttendance = () => {
                 </div>
 
                 <div>
-                  <label className="text-sm font-medium mb-2 block">
+                  <label htmlFor="barcode-attendance-input" className="text-sm font-medium mb-2 block">
                     امسح أو أدخل رقم الباركود
                   </label>
                   <Input
+                    id="barcode-attendance-input"
+                    ref={barcodeInputRef}
                     value={barcodeInput}
                     onChange={handleBarcodeChange}
                     placeholder="YX6CKWVPB835S2HPKSP57R9PO"
                     autoFocus
                     className="text-lg font-mono"
                     maxLength={25}
+                    disabled={submitting}
                   />
                   <p className="text-xs text-muted-foreground mt-1">
                     سيتم التسجيل تلقائياً عند إدخال 25 رقم

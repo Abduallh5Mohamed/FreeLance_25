@@ -1,0 +1,27 @@
+name: M1 Security Config Regression
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  storage-config-regression:
+    name: Static storage security configuration regression
+    runs-on: ubuntu-latest
+    # Static only: this job reads configuration files and runs isolated tests.
+    # It starts no containers, databases, object stores or live services.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Run static security regression tests (storage config + CI marker boundary)
+        run: |
+          cd server
+          npm ci
+          npx tsx --test tests/m1-storage-config.test.ts tests/m1-ci-boundary.test.ts

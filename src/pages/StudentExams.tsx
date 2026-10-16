@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,10 +9,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
-import { getStudentExams, getStudents, Exam, User, Student } from "@/lib/api";
+import { getStudentExams, Exam, User } from "@/lib/api";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 
-interface StudentExam extends Exam {
+export type ExamStatus = 'available' | 'upcoming' | 'completed' | 'expired';
+
+export interface StudentExam extends Exam {
   course_name?: string;
   description?: string;
   start_time?: string;
@@ -20,14 +22,85 @@ interface StudentExam extends Exam {
   start_date?: string;
   end_date?: string;
   passing_score?: number;
-  status?: 'available' | 'upcoming' | 'completed' | 'expired';
+  status?: ExamStatus;
   attempts?: number;
   maxAttempts?: number;
   lastScore?: number;
   difficulty?: 'easy' | 'medium' | 'hard';
   has_in_progress?: boolean;
   in_progress_started_at?: string;
+  start_dt?: string;
+  end_dt?: string;
 }
+
+// ===== DateTime Helpers (module scope, pure — shared by loader + render) =====
+export const sanitizeDateTime = (raw?: string): string | undefined => {
+  if (!raw) return undefined;
+  const trimmed = raw.trim();
+  const parts = trimmed.split(/\s+/);
+  // Pattern like: YYYY-MM-DD YYYY-MM-DD HH:MM:SS → collapse duplicate date
+  if (parts.length === 3 && parts[0] === parts[1]) {
+    return `${parts[0]} ${parts[2]}`;
+  }
+  return trimmed;
+};
+
+export const parseSafe = (raw?: string): Date | null => {
+  const s = sanitizeDateTime(raw);
+  if (!s) return null;
+  const isoCandidate = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(s) ? s.replace(' ', 'T') : s;
+  const d = new Date(isoCandidate);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+/**
+ * Classifies an exam for the student list from server data plus the current time.
+ * Presentation-only classification: the server remains authoritative for attempt
+ * limits, scores and permissions (TakeExam re-validates before starting).
+ */
+export const computeExamStatus = (exam: StudentExam, now: Date): ExamStatus => {
+  const hasAttempted = (exam.attempts || 0) > 0;
+  const hasInProgress = exam.has_in_progress === true;
+
+  const startDate = parseSafe(exam.start_dt || exam.start_time);
+  const endDate = parseSafe(exam.end_dt || exam.end_time);
+
+  // If in_progress, check if exam time window is still open
+  if (hasInProgress) {
+    if (endDate && now > endDate) {
+      return 'expired';
+    }
+    // Also check if the attempt's own duration has expired
+    const startedAt = exam.in_progress_started_at ? new Date(exam.in_progress_started_at) : null;
+    const durationMs = (exam.duration_minutes || 60) * 60 * 1000;
+    if (startedAt && !isNaN(startedAt.getTime()) && (now.getTime() - startedAt.getTime()) > durationMs) {
+      return 'expired';
+    }
+    return 'available';
+  }
+  if (hasAttempted) {
+    return 'completed';
+  }
+  if (startDate && endDate) {
+    if (now < startDate) return 'upcoming';
+    if (now > endDate) return 'expired';
+    return 'available';
+  }
+  return 'available';
+};
+
+/**
+ * Single gate used by the card button and its click handler so the rendered
+ * affordance and the navigation can never disagree (the retry button previously
+ * rendered for completed exams but the handler rejected every non-'available'
+ * status, making "إعادة المحاولة" a dead button).
+ */
+export const canStartExam = (exam: StudentExam): boolean => {
+  if (exam.has_in_progress) return true; // resuming an in-progress attempt
+  const attemptsLeft = (exam.attempts || 0) < (exam.maxAttempts || 1);
+  if (exam.status === 'available' || exam.status === 'completed') return attemptsLeft;
+  return false; // upcoming / expired / unknown
+};
 
 const StudentExams = () => {
   useScreenRecordingPrevention(); // Prevent screen recording & screenshots
@@ -36,33 +109,27 @@ const StudentExams = () => {
   const [selectedTab, setSelectedTab] = useState<'available' | 'upcoming' | 'completed' | 'expired'>('available');
   const [exams, setExams] = useState<StudentExam[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Monotonic sequence so a slow in-flight response can never overwrite a newer one
+  const loadSeqRef = useRef(0);
 
-  // ===== DateTime Helpers (shared between loader + render) =====
-  const sanitizeDateTime = (raw?: string): string | undefined => {
-    if (!raw) return undefined;
-    const trimmed = raw.trim();
-    const parts = trimmed.split(/\s+/);
-    // Pattern like: YYYY-MM-DD YYYY-MM-DD HH:MM:SS → collapse duplicate date
-    if (parts.length === 3 && parts[0] === parts[1]) {
-      return `${parts[0]} ${parts[2]}`;
+  const readStudentUser = (): User | null => {
+    try {
+      const userStr = localStorage.getItem('currentUser');
+      if (!userStr) return null;
+      const parsed: unknown = JSON.parse(userStr);
+      if (!parsed || typeof parsed !== 'object') return null;
+      const role = (parsed as { role?: unknown }).role;
+      return role === 'student' ? (parsed as User) : null;
+    } catch {
+      return null; // malformed local session — treat as unauthenticated
     }
-    return trimmed;
-  };
-
-  const parseSafe = (raw?: string): Date | null => {
-    const s = sanitizeDateTime(raw);
-    if (!s) return null;
-    const isoCandidate = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(s) ? s.replace(' ', 'T') : s;
-    const d = new Date(isoCandidate);
-    return isNaN(d.getTime()) ? null : d;
   };
 
   // Check authentication
   useEffect(() => {
-    const userStr = localStorage.getItem('currentUser');
-    const user: User | null = userStr ? JSON.parse(userStr) : null;
-
-    if (!user || user.role !== 'student') {
+    const user = readStudentUser();
+    if (!user) {
       navigate('/auth');
       return;
     }
@@ -72,13 +139,11 @@ const StudentExams = () => {
   }, []);
 
   const loadExams = async () => {
+    const requestSeq = ++loadSeqRef.current;
+    setLoading(true);
+    setLoadError(null);
     try {
-      setLoading(true);
-
-      // Determine student ID
-      const userStr = localStorage.getItem('currentUser');
-      const user: User | null = userStr ? JSON.parse(userStr) : null;
-      const studentId = user?.id;
+      const studentId = readStudentUser()?.id;
 
       if (!studentId) {
         toast({
@@ -86,101 +151,42 @@ const StudentExams = () => {
           description: 'لم يتم العثور على بيانات الطالب',
           variant: 'destructive'
         });
+        setLoadError('لم يتم العثور على بيانات الطالب');
         setLoading(false);
         return;
       }
 
       // ✅ Fetch exams ONLY for this student's group
       const data = await getStudentExams(studentId);
+      if (requestSeq !== loadSeqRef.current) return; // stale response — a newer load superseded this one
       const now = new Date();
 
-      console.log('🕐 Current time:', now.toISOString(), '(Local:', now.toLocaleString('ar-EG'), ')');
       console.log(`📚 Loaded ${data?.length || 0} exams for student's group`);
 
-      const examsData = data?.map((exam: StudentExam & { start_dt?: string; end_dt?: string }) => {
-        const hasAttempted = (exam.attempts || 0) > 0;
-        const hasInProgress = exam.has_in_progress === true;
-
-        // Sanitize raw times first
-        const combinedStart = exam.start_dt || exam.start_time;
-        const combinedEnd = exam.end_dt || exam.end_time;
-        const rawStart = sanitizeDateTime(combinedStart);
-        const rawEnd = sanitizeDateTime(combinedEnd);
-        const startDate = parseSafe(rawStart);
-        const endDate = parseSafe(rawEnd);
-
-        console.log(`\n📝 Exam: ${exam.title}`);
-        console.log('  Has attempted:', hasAttempted, 'Has in_progress:', hasInProgress);
-        console.log('  Start time (raw):', exam.start_time, '→', rawStart, 'Parsed valid?', !!startDate);
-        console.log('  End time (raw):', exam.end_time, '→', rawEnd, 'Parsed valid?', !!endDate);
-
-        let status: 'available' | 'upcoming' | 'completed' | 'expired' = 'available';
-
-        // ✅ If in_progress, check if exam time window is still open
-        if (hasInProgress) {
-          // Check if exam end_time has passed
-          if (endDate && now > endDate) {
-            status = 'expired';
-            console.log('  ⏰ Status: expired (in_progress but end time passed)');
-          } else {
-            // Also check if the attempt's own duration has expired
-            const startedAt = exam.in_progress_started_at ? new Date(exam.in_progress_started_at) : null;
-            const durationMs = (exam.duration_minutes || 60) * 60 * 1000;
-            if (startedAt && (now.getTime() - startedAt.getTime()) > durationMs) {
-              status = 'expired';
-              console.log('  ⏰ Status: expired (attempt duration exceeded)');
-            } else {
-              status = 'available';
-              console.log('  🔄 Status: available (in_progress, can resume)');
-            }
-          }
-        } else if (hasAttempted) {
-          status = 'completed';
-          console.log('  ✅ Status: completed (already attempted)');
-        } else if (startDate && endDate) {
-          console.log('  Start parsed:', startDate.toISOString(), '(Local:', startDate.toLocaleString('ar-EG'), ')');
-          console.log('  End parsed:', endDate.toISOString(), '(Local:', endDate.toLocaleString('ar-EG'), ')');
-          console.log('  Now < Start?', now < startDate);
-          console.log('  Now > End?', now > endDate);
-
-          if (now < startDate) {
-            status = 'upcoming';
-            console.log('  📅 Status: upcoming (not started yet)');
-          } else if (now > endDate) {
-            status = 'expired';
-            console.log('  ⏰ Status: expired (time ended, not attempted)');
-          } else {
-            status = 'available';
-            console.log('  ✅ Status: available (within time window)');
-          }
-        } else {
-          status = hasAttempted ? 'completed' : 'available';
-          console.log('  ⚠️ Status:', status, '(timing missing or invalid)');
-        }
-
-        return {
-          ...exam,
-          start_time: rawStart, // sanitized
-          end_time: rawEnd,     // sanitized
-          status,
-          has_in_progress: hasInProgress,
-          in_progress_started_at: exam.in_progress_started_at,
-          attempts: exam.attempts || 0,
-          maxAttempts: exam.maxAttempts || 1,
-          difficulty: (exam.difficulty || 'medium') as 'easy' | 'medium' | 'hard'
-        };
-      }) || [];
+      const examsData: StudentExam[] = (data || []).map((exam: StudentExam) => ({
+        ...exam,
+        start_time: sanitizeDateTime(exam.start_dt || exam.start_time), // sanitized
+        end_time: sanitizeDateTime(exam.end_dt || exam.end_time),       // sanitized
+        status: computeExamStatus(exam, now),
+        has_in_progress: exam.has_in_progress === true,
+        in_progress_started_at: exam.in_progress_started_at,
+        attempts: exam.attempts || 0,
+        maxAttempts: exam.maxAttempts || 1,
+        difficulty: (exam.difficulty || 'medium') as 'easy' | 'medium' | 'hard'
+      }));
 
       setExams(examsData);
     } catch (error) {
+      if (requestSeq !== loadSeqRef.current) return;
       console.error('Error loading exams:', error);
+      setLoadError(error instanceof Error && error.message ? error.message : 'فشل تحميل الامتحانات');
       toast({
         title: 'خطأ',
         description: 'فشل تحميل الامتحانات',
         variant: 'destructive'
       });
     } finally {
-      setLoading(false);
+      if (requestSeq === loadSeqRef.current) setLoading(false);
     }
   };
 
@@ -249,34 +255,19 @@ const StudentExams = () => {
   });
 
   const handleStartExam = (exam: StudentExam) => {
-    // ✅ Allow if in_progress (resuming)
-    if (exam.has_in_progress) {
-      navigate(`/take-exam/${exam.id}`);
-      return;
-    }
-
-    // Check if exam is available
-    if (exam.status !== 'available') {
+    if (!canStartExam(exam)) {
       let message = 'لا يمكن الدخول للامتحان';
       if (exam.status === 'upcoming') {
         message = 'الامتحان لم يبدأ بعد';
       } else if (exam.status === 'expired') {
         message = 'انتهى وقت الامتحان';
+      } else if ((exam.attempts || 0) >= (exam.maxAttempts || 1)) {
+        message = 'لقد استنفذت عدد المحاولات المتاحة';
       }
 
       toast({
         title: "لا يمكن الدخول للامتحان",
         description: message,
-        variant: "destructive"
-      });
-      return;
-    }
-
-    // Check attempts
-    if ((exam.attempts || 0) >= (exam.maxAttempts || 1)) {
-      toast({
-        title: "لا يمكن الدخول للامتحان",
-        description: "لقد استنفذت عدد المحاولات المتاحة",
         variant: "destructive"
       });
       return;
@@ -327,6 +318,8 @@ const StudentExams = () => {
                   return (
                     <Button
                       key={tab.value}
+                      type="button"
+                      aria-pressed={selectedTab === tab.value}
                       variant={selectedTab === tab.value ? 'default' : 'outline'}
                       onClick={() => setSelectedTab(tab.value as 'available' | 'upcoming' | 'completed' | 'expired')}
                       className="gap-1 xs:gap-1.5 sm:gap-2 text-[10px] xs:text-xs sm:text-sm px-2 xs:px-3 sm:px-4 py-1.5 xs:py-2"
@@ -343,8 +336,41 @@ const StudentExams = () => {
           </GlassmorphicCard>
         </motion.div>
 
-        {/* Exams Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-3 xs:gap-4 sm:gap-5 md:gap-6">
+        {/* Loading / Error / Empty states — never conflated with the grid */}
+        {loading && exams.length === 0 && !loadError ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="text-center py-20"
+          >
+            <GlassmorphicCard className="max-w-md mx-auto">
+              <CardContent className="pt-8 pb-8">
+                <Clock className="w-16 h-16 mx-auto mb-4 text-primary animate-spin" />
+                <h3 className="text-lg font-semibold mb-2">جاري تحميل الامتحانات...</h3>
+              </CardContent>
+            </GlassmorphicCard>
+          </motion.div>
+        ) : loadError && exams.length === 0 ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="text-center py-20"
+          >
+            <GlassmorphicCard className="max-w-md mx-auto">
+              <CardContent className="pt-8 pb-8">
+                <AlertCircle className="w-16 h-16 mx-auto mb-4 text-red-500" />
+                <h3 className="text-lg font-semibold mb-2">تعذر تحميل الامتحانات</h3>
+                <p className="text-sm text-muted-foreground mb-4">{loadError}</p>
+                <Button type="button" onClick={() => loadExams()}>
+                  إعادة المحاولة
+                </Button>
+              </CardContent>
+            </GlassmorphicCard>
+          </motion.div>
+        ) : (
+          <>
+            {/* Exams Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-3 xs:gap-4 sm:gap-5 md:gap-6">
           <AnimatePresence>
             {filteredExams.map((exam, idx) => (
               <motion.div
@@ -403,7 +429,7 @@ const StudentExams = () => {
                       </div>
                       <div className="flex items-center gap-1.5 xs:gap-2 text-[10px] xs:text-xs sm:text-sm">
                         <AlertCircle className="w-3 h-3 xs:w-3.5 xs:h-3.5 sm:w-4 sm:h-4 text-primary flex-shrink-0" />
-                        <span>{exam.attempts || 0}/{exam.maxAttempts || 2} محاولة</span>
+                        <span>{(exam.attempts ?? 0)}/{(exam.maxAttempts ?? 1)} محاولة</span>
                       </div>
                     </div>
 
@@ -454,15 +480,16 @@ const StudentExams = () => {
                     {/* Action Button */}
                     {exam.status === 'available' && (
                       <Button
+                        type="button"
                         onClick={() => handleStartExam(exam)}
                         className={`w-full ${exam.has_in_progress
                           ? 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600'
                           : 'bg-gradient-to-r from-primary to-accent'} hover:shadow-lg`}
-                        disabled={!exam.has_in_progress && (exam.attempts || 0) >= (exam.maxAttempts || 1)}
+                        disabled={!exam.has_in_progress && (exam.attempts ?? 0) >= (exam.maxAttempts ?? 1)}
                       >
                         {exam.has_in_progress
                           ? '🔄 استكمال الامتحان'
-                          : (exam.attempts || 0) >= (exam.maxAttempts || 1)
+                          : (exam.attempts ?? 0) >= (exam.maxAttempts ?? 1)
                             ? 'استنفذت المحاولات'
                             : 'بدء الامتحان'}
                       </Button>
@@ -491,13 +518,14 @@ const StudentExams = () => {
                         </div>
                       )
                     })()}
-                    {exam.status === 'completed' && (exam.attempts || 0) < (exam.maxAttempts || 1) && (
+                    {exam.status === 'completed' && (exam.attempts ?? 0) < (exam.maxAttempts ?? 1) && (
                       <Button
+                        type="button"
                         onClick={() => handleStartExam(exam)}
                         className="w-full"
                         variant="outline"
                       >
-                        إعادة المحاولة ({(exam.maxAttempts || 1) - (exam.attempts || 0)} متبقية)
+                        إعادة المحاولة ({(exam.maxAttempts ?? 1) - (exam.attempts ?? 0)} متبقية)
                       </Button>
                     )}
                   </CardContent>
@@ -527,6 +555,8 @@ const StudentExams = () => {
               </CardContent>
             </GlassmorphicCard>
           </motion.div>
+        )}
+          </>
         )}
       </div>
     </div>

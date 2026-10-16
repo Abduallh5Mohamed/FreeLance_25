@@ -6,11 +6,32 @@ import path from 'node:path';
 import test, { before, after } from 'node:test';
 import jwt from 'jsonwebtoken';
 import mysql from 'mysql2/promise';
+import { assertSafeM1TestTarget, resolveM1EnvPathFromIntegrationDir } from '../m1-test-target-safety';
 
-dotenv.config({ path: path.resolve(process.cwd(), '../.env.m1'), override: true });
-const database = process.env.DB_NAME;
-const port = Number(process.env.DB_PORT);
-const baseUrl = process.env.M1_API_BASE_URL || 'http://127.0.0.1:3188';
+// Resolved from this file's location through the shared root-relative
+// resolver, not the process working directory and not a hand-written chain:
+// two levels up from server/tests/integration lands in server/, while the
+// isolated .env.m1 is generated at the repository root. Pure path math —
+// no environment file is read here.
+dotenv.config({ path: resolveM1EnvPathFromIntegrationDir(__dirname), override: true });
+
+// Refuse missing, ambiguous or non-isolated targets (production database
+// names, non-compose ports, non-loopback hosts or API endpoints) before any
+// pool creation or request. Pure validation only: nothing connects here and
+// the guard itself reads no files, environment or network. String checks
+// cannot prove which process listens on the port or which database the
+// string reaches; that identity evidence stays with live verification.
+const target = assertSafeM1TestTarget({
+    dbName: process.env.DB_NAME,
+    dbPort: process.env.DB_PORT,
+    dbHost: process.env.DB_HOST,
+    apiBaseUrl: process.env.M1_API_BASE_URL,
+    jwtSecret: process.env.JWT_SECRET,
+});
+const database = target.database;
+const port = target.dbPort;
+const dbHost = target.dbHost;
+const baseUrl = target.baseUrl;
 const tenantA = 'a0000000-0000-4000-8000-000000000001';
 const tenantB = 'b0000000-0000-4000-8000-000000000001';
 const apiUserA = 'm1-a-teacher';
@@ -31,6 +52,10 @@ function token(userId: string, tenantId: string) {
 async function api(method: string, route: string, jwtToken?: string, body?: unknown) {
     const response = await fetch(`${baseUrl}${route}`, {
         method,
+        // Refuse redirects instead of following them: a 3xx would otherwise
+        // take the harness to an endpoint whose identity was never validated,
+        // so any redirect surfaces as a failed status assertion instead.
+        redirect: 'manual',
         headers: {
             ...(jwtToken ? { authorization: `Bearer ${jwtToken}` } : {}),
             ...(body === undefined ? {} : { 'content-type': 'application/json' }),
@@ -45,12 +70,12 @@ before(async () => {
     assert.ok(port === 13316, 'M1 integration tests require compose MySQL on port 13316');
     assert.ok(secret.length >= 32, 'M1 test JWT secret is missing');
     pool = mysql.createPool({
-        host: process.env.DB_HOST || '127.0.0.1', port, user: process.env.DB_USER || 'root',
+        host: dbHost, port, user: process.env.DB_USER || 'root',
         password: process.env.DB_PASSWORD || process.env.MYSQL_ROOT_PASSWORD, database,
         connectionLimit: 2,
     });
     await pool.query('SELECT 1');
-    const health = await fetch(`${baseUrl}/health`);
+    const health = await fetch(`${baseUrl}/health`, { redirect: 'manual' });
     assert.equal(health.status, 200, 'Start the M1 API before running this suite');
 
     const [aRows] = await pool.query<any[]>('SELECT id FROM tenant_memberships WHERE tenant_id=? AND user_id=? AND status=\'active\'', [tenantA, apiUserA]);

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -9,7 +9,32 @@ import { useToast } from "@/hooks/use-toast";
 import { motion } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+// Vite injects `import.meta.env` at build time; it is absent when this module
+// is imported outside Vite (isolated Node tests), so guard the read.
+const readApiBase = (): string => {
+    try {
+        return import.meta.env.VITE_API_URL || '/api';
+    } catch {
+        return '/api';
+    }
+};
+
+const API_BASE_URL = readApiBase();
+
+export type FetchOutcome = 'ok' | 'unauthorized' | 'forbidden' | 'not_found' | 'error';
+
+/**
+ * Maps an HTTP status to a page outcome. A missing review (404) is a genuine
+ * "not found", while 401/403 are auth/permission problems and must not be
+ * conflated with it. The server stays authoritative for the payload itself.
+ */
+export const classifyReviewOutcome = (status: number): FetchOutcome => {
+    if (status === 401) return 'unauthorized';
+    if (status === 403) return 'forbidden';
+    if (status === 404) return 'not_found';
+    if (status >= 200 && status < 300) return 'ok';
+    return 'error';
+};
 
 interface Question {
     id: string;
@@ -48,6 +73,39 @@ interface ReviewData {
     questions: Question[];
 }
 
+/**
+ * Parses the `options` column, which the backend may deliver as an array, a
+ * JSON string, or an {a,b,c,d} object. Presentation-only; returns [] for
+ * anything unrecognized instead of throwing.
+ */
+export const parseOptions = (options: any): string[] => {
+    if (Array.isArray(options)) {
+        return options;
+    }
+    if (typeof options === 'string') {
+        try {
+            const parsed = JSON.parse(options);
+            if (Array.isArray(parsed)) {
+                return parsed;
+            }
+            if (parsed && typeof parsed === 'object') {
+                return [parsed.a, parsed.b, parsed.c, parsed.d].filter(Boolean);
+            }
+            return [];
+        } catch {
+            return [];
+        }
+    }
+    if (options && typeof options === 'object' && !Array.isArray(options)) {
+        return [options.a, options.b, options.c, options.d].filter(Boolean);
+    }
+    return [];
+};
+
+export const getOptionLabel = (index: number): string => {
+    return String.fromCharCode(65 + index); // A, B, C, D
+};
+
 const ExamReview = () => {
     const { examId } = useParams<{ examId: string }>();
     const navigate = useNavigate();
@@ -55,14 +113,22 @@ const ExamReview = () => {
 
     const [reviewData, setReviewData] = useState<ReviewData | null>(null);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
     const [studentId, setStudentId] = useState<string>('');
     const [generatingPDF, setGeneratingPDF] = useState(false);
+    // Monotonic sequence so a slow response for a previous exam can never
+    // overwrite the review of a newer examId.
+    const loadSeqRef = useRef(0);
 
     useEffect(() => {
         fetchReviewData();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [examId]);
 
     const fetchReviewData = async () => {
+        const requestSeq = ++loadSeqRef.current;
+        setLoading(true);
+        setError(null);
         try {
             const userStr = localStorage.getItem('currentUser');
             if (!userStr) {
@@ -80,58 +146,45 @@ const ExamReview = () => {
 
             const response = await fetch(`${API_BASE_URL}/exams/${examId}/review/${user.id}`);
 
-            if (!response.ok) {
-                throw new Error('Failed to fetch review data');
+            if (requestSeq !== loadSeqRef.current) return; // stale response
+
+            const outcome = classifyReviewOutcome(response.status);
+            if (outcome === 'unauthorized') {
+                navigate('/auth');
+                return;
+            }
+            if (outcome === 'forbidden') {
+                setError('ليست لديك صلاحية لعرض نتيجة هذا الامتحان');
+                toast({
+                    variant: "destructive",
+                    title: "غير مسموح",
+                    description: "ليست لديك صلاحية لعرض نتيجة هذا الامتحان",
+                });
+                return;
+            }
+            if (outcome === 'not_found') {
+                setError('لم يتم العثور على بيانات المراجعة');
+                return;
+            }
+            if (outcome !== 'ok') {
+                throw new Error(`Failed to fetch review data (${response.status})`);
             }
 
             const data = await response.json();
+            if (requestSeq !== loadSeqRef.current) return;
             setReviewData(data);
-        } catch (error) {
-            console.error('Error loading review:', error);
+        } catch (err) {
+            if (requestSeq !== loadSeqRef.current) return;
+            console.error('Error loading review:', err);
+            setError('فشل تحميل بيانات المراجعة');
             toast({
                 variant: "destructive",
                 title: "خطأ",
                 description: "فشل تحميل بيانات المراجعة",
             });
         } finally {
-            setLoading(false);
+            if (requestSeq === loadSeqRef.current) setLoading(false);
         }
-    };
-
-    const parseOptions = (options: any): string[] => {
-        if (Array.isArray(options)) {
-            console.log('✅ Options is already array:', options);
-            return options;
-        }
-        if (typeof options === 'string') {
-            try {
-                const parsed = JSON.parse(options);
-                if (Array.isArray(parsed)) {
-                    console.log('✅ Parsed options from string:', parsed);
-                    return parsed;
-                }
-                if (parsed && typeof parsed === 'object') {
-                    const arr = [parsed.a, parsed.b, parsed.c, parsed.d].filter(Boolean);
-                    console.log('✅ Parsed options from object:', arr);
-                    return arr;
-                }
-                return [];
-            } catch (e) {
-                console.error('❌ Failed to parse options:', e);
-                return [];
-            }
-        }
-        if (options && typeof options === 'object' && !Array.isArray(options)) {
-            const arr = [options.a, options.b, options.c, options.d].filter(Boolean);
-            console.log('✅ Converted object to array:', arr);
-            return arr;
-        }
-        console.warn('⚠️ Options format unknown:', options);
-        return [];
-    };
-
-    const getOptionLabel = (index: number): string => {
-        return String.fromCharCode(65 + index); // A, B, C, D
     };
 
     const generateExamPDF = async () => {
@@ -571,6 +624,27 @@ const ExamReview = () => {
                 <FloatingParticles />
                 <div className="container mx-auto px-4 py-12 flex items-center justify-center min-h-[60vh]">
                     <p className="text-lg">جاري التحميل...</p>
+                </div>
+            </div>
+        );
+    }
+
+    // A load failure (or a 404) must be shown as an error with a retry path,
+    // not conflated with a genuinely empty review.
+    if (error && !reviewData) {
+        return (
+            <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5" dir="rtl">
+                <StudentHeader />
+                <FloatingParticles />
+                <div className="container mx-auto px-4 py-12 text-center max-w-md">
+                    <XCircle className="w-16 h-16 mx-auto mb-4 text-red-500" />
+                    <p className="text-lg font-medium mb-6">{error}</p>
+                    <div className="flex flex-col gap-3">
+                        <Button onClick={() => fetchReviewData()}>إعادة المحاولة</Button>
+                        <Button variant="outline" onClick={() => navigate('/student-exam-results')}>
+                            العودة للنتائج
+                        </Button>
+                    </div>
                 </div>
             </div>
         );

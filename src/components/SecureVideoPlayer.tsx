@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Hls from 'hls.js';
-import { Loader2, X, Play, Pause, Volume2, VolumeX, Shield, AlertTriangle, RotateCcw, RotateCw } from 'lucide-react';
+import { Loader2, X, Play, Pause, Volume2, VolumeX, Shield, AlertTriangle, RotateCcw, RotateCw, Maximize, Minimize } from 'lucide-react';
 import { VideoSecurityManager, SecurityViolation } from '@/utils/VideoSecurityManager';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
@@ -69,44 +69,29 @@ export function SecureVideoPlayer({
     const watermarkText = `${studentName} • ${groupName} • ${userId.slice(-4)}`;
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
-    // AUTO FULLSCREEN + FORCE LANDSCAPE ON MOBILE
+    // Release the forced landscape orientation lock when the player is torn down.
+    const unlockOrientation = useCallback(() => {
+        try {
+            if (screen.orientation && typeof screen.orientation.unlock === 'function') {
+                screen.orientation.unlock();
+            }
+        } catch (e) {
+            console.log('Orientation unlock failed:', e);
+        }
+    }, []);
+
+    useEffect(() => unlockOrientation, [unlockOrientation]);
+
+    // Keep the fullscreen state in sync with the browser (user can press Esc).
     useEffect(() => {
-        const requestFullscreenAndLandscape = async () => {
-            const container = containerRef.current;
-            if (!container) return;
-
-            // Force landscape orientation on mobile
-            if (isMobile) {
-                try {
-                    // Try to lock to landscape
-                    if (screen.orientation && (screen.orientation as any).lock) {
-                        await (screen.orientation as any).lock('landscape').catch(() => {});
-                    }
-                } catch (e) {
-                    console.log('Orientation lock failed:', e);
-                }
-            }
-
-            try {
-                if (container.requestFullscreen) {
-                    await container.requestFullscreen();
-                } else if ((container as any).webkitRequestFullscreen) {
-                    await (container as any).webkitRequestFullscreen();
-                } else if ((container as any).webkitEnterFullscreen) {
-                    await (container as any).webkitEnterFullscreen();
-                } else if ((container as any).msRequestFullscreen) {
-                    await (container as any).msRequestFullscreen();
-                }
-                setIsFullscreen(true);
-            } catch (e) {
-                console.log('Auto fullscreen failed:', e);
-            }
+        const handleFullscreenChange = () => {
+            const isNowFullscreen = Boolean(document.fullscreenElement);
+            setIsFullscreen(isNowFullscreen);
+            if (!isNowFullscreen) unlockOrientation();
         };
-
-        // Request fullscreen after a short delay
-        const timer = setTimeout(requestFullscreenAndLandscape, 100);
-        return () => clearTimeout(timer);
-    }, [isMobile]);
+        document.addEventListener('fullscreenchange', handleFullscreenChange);
+        return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    }, [unlockOrientation]);
 
     // CANVAS WATERMARK RENDERER - STATIC (not animated)
     const renderWatermarks = useCallback(() => {
@@ -594,7 +579,7 @@ export function SecureVideoPlayer({
     }, [sessionActive, forceLogout]);
 
     // VIDEO CONTROLS
-    const togglePlay = () => {
+    const togglePlay = useCallback(() => {
         if (videoRef.current) {
             if (isPlaying) {
                 videoRef.current.pause();
@@ -602,29 +587,141 @@ export function SecureVideoPlayer({
                 videoRef.current.play();
             }
         }
-    };
+    }, [isPlaying]);
 
-    const toggleMute = () => {
+    const toggleMute = useCallback(() => {
         if (videoRef.current) {
             videoRef.current.muted = !videoRef.current.muted;
             setIsMuted(!isMuted);
         }
-    };
+    }, [isMuted]);
+
+    // Fullscreen is only requested from a user gesture (button or 'f' key).
+    const toggleFullscreen = useCallback(async () => {
+        const container = containerRef.current;
+        if (!container) return;
+        try {
+            if (document.fullscreenElement) {
+                await document.exitFullscreen();
+            } else if (container.requestFullscreen) {
+                await container.requestFullscreen();
+            } else if ((container as any).webkitRequestFullscreen) {
+                await (container as any).webkitRequestFullscreen();
+            } else if ((container as any).msRequestFullscreen) {
+                await (container as any).msRequestFullscreen();
+            }
+        } catch (e) {
+            console.log('Fullscreen toggle failed:', e);
+        }
+    }, []);
 
     // SKIP FORWARD/BACKWARD
-    const skip = (seconds: number) => {
+    const skip = useCallback((seconds: number) => {
         if (videoRef.current) {
             videoRef.current.currentTime = Math.max(0, Math.min(duration, videoRef.current.currentTime + seconds));
         }
-    };
+    }, [duration]);
 
-    // SEEK TO POSITION
+    // Keyboard controls for the secure player (plain keys only; modifier
+    // combinations are reserved for the security supervisor's blocking rules).
+    useEffect(() => {
+        if (!hasStarted) return;
+        if (sourceType !== 'hls' && sourceType !== 'mp4') return;
+
+        const isTypingTarget = (target: EventTarget | null): boolean => {
+            if (!(target instanceof HTMLElement)) return false;
+            return target.tagName === 'INPUT'
+                || target.tagName === 'TEXTAREA'
+                || target.tagName === 'SELECT'
+                || target.isContentEditable
+                // The seek slider handles its own arrow keys; global
+                // shortcuts must not double-seek while it is focused.
+                || target.getAttribute('role') === 'slider';
+        };
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
+            if (isTypingTarget(e.target)) return;
+
+            switch (e.key) {
+                case ' ':
+                case 'k':
+                    e.preventDefault();
+                    togglePlay();
+                    break;
+                case 'ArrowLeft':
+                case 'j':
+                    e.preventDefault();
+                    skip(-5);
+                    break;
+                case 'ArrowRight':
+                case 'l':
+                    e.preventDefault();
+                    skip(5);
+                    break;
+                case 'm':
+                    e.preventDefault();
+                    toggleMute();
+                    break;
+                case 'f':
+                    e.preventDefault();
+                    void toggleFullscreen();
+                    break;
+                default:
+                    break;
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [hasStarted, sourceType, togglePlay, skip, toggleMute, toggleFullscreen]);
+
+    // SEEK TO POSITION (pointer)
     const seekTo = (e: React.MouseEvent<HTMLDivElement>) => {
         if (videoRef.current && duration) {
             const rect = e.currentTarget.getBoundingClientRect();
             const x = e.clientX - rect.left;
             const percentage = x / rect.width;
             videoRef.current.currentTime = percentage * duration;
+        }
+    };
+
+    // SEEK WITH KEYBOARD on the scrubber. The scrubber is an interactive
+    // slider (role="slider"), so it owns its own arrow/Home/End/Page keys;
+    // the global player shortcuts must not double-seek while it is focused.
+    const handleScrubberKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+        const video = videoRef.current;
+        if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return;
+
+        switch (e.key) {
+            case 'ArrowRight':
+            case 'ArrowUp':
+                e.preventDefault();
+                video.currentTime = Math.min(video.duration, video.currentTime + 5);
+                break;
+            case 'ArrowLeft':
+            case 'ArrowDown':
+                e.preventDefault();
+                video.currentTime = Math.max(0, video.currentTime - 5);
+                break;
+            case 'PageUp':
+                e.preventDefault();
+                video.currentTime = Math.min(video.duration, video.currentTime + 30);
+                break;
+            case 'PageDown':
+                e.preventDefault();
+                video.currentTime = Math.max(0, video.currentTime - 30);
+                break;
+            case 'Home':
+                e.preventDefault();
+                video.currentTime = 0;
+                break;
+            case 'End':
+                e.preventDefault();
+                video.currentTime = video.duration;
+                break;
+            default:
+                break;
         }
     };
 
@@ -639,6 +736,7 @@ export function SecureVideoPlayer({
     const handleClose = () => {
         securityManagerRef.current?.stop();
         if (hlsRef.current) hlsRef.current.destroy();
+        unlockOrientation();
         if (document.fullscreenElement) {
             document.exitFullscreen().catch(() => {});
         }
@@ -782,6 +880,7 @@ export function SecureVideoPlayer({
             {sourceType === 'youtube' || sourceType === 'drive' ? (
                 <iframe
                     src={embedUrl}
+                    title="مشغل الفيديو"
                     className={`${isSecurityBlurred ? 'blur-xl' : ''}`}
                     allow="autoplay; encrypted-media; fullscreen"
                     allowFullScreen
@@ -831,7 +930,12 @@ export function SecureVideoPlayer({
                 >
                     {/* TOP BAR */}
                     <div className="flex justify-between items-center p-4 bg-gradient-to-b from-black/70 to-transparent">
-                        <button onClick={(e) => { e.stopPropagation(); handleClose(); }} className="p-2 bg-red-600/80 rounded-full hover:bg-red-600 text-white transition-colors">
+                        <button
+                            onClick={(e) => { e.stopPropagation(); handleClose(); }}
+                            aria-label="إغلاق المشغل"
+                            title="إغلاق المشغل"
+                            className="p-2 bg-red-600/80 rounded-full hover:bg-red-600 text-white transition-colors"
+                        >
                             <X className="w-5 h-5" />
                         </button>
                         <div className="flex items-center gap-2 text-green-500 text-xs">
@@ -845,6 +949,8 @@ export function SecureVideoPlayer({
                         {/* -5 SECONDS */}
                         <button
                             onClick={() => skip(-5)}
+                            aria-label="ترجيع 5 ثوانٍ"
+                            title="ترجيع 5 ثوانٍ"
                             className="p-3 bg-white/20 rounded-full hover:bg-white/30 text-white transition-colors flex flex-col items-center"
                         >
                             <RotateCcw className="w-7 h-7" />
@@ -854,6 +960,8 @@ export function SecureVideoPlayer({
                         {/* PLAY/PAUSE */}
                         <button
                             onClick={togglePlay}
+                            aria-label={isPlaying ? 'إيقاف مؤقت' : 'تشغيل'}
+                            title={isPlaying ? 'إيقاف مؤقت' : 'تشغيل'}
                             className="p-5 bg-white/25 rounded-full hover:bg-white/35 text-white transition-colors"
                         >
                             {isPlaying ? <Pause className="w-10 h-10" /> : <Play className="w-10 h-10 fill-white" />}
@@ -862,6 +970,8 @@ export function SecureVideoPlayer({
                         {/* +5 SECONDS */}
                         <button
                             onClick={() => skip(5)}
+                            aria-label="تقديم 5 ثوانٍ"
+                            title="تقديم 5 ثوانٍ"
                             className="p-3 bg-white/20 rounded-full hover:bg-white/30 text-white transition-colors flex flex-col items-center"
                         >
                             <RotateCw className="w-7 h-7" />
@@ -871,10 +981,19 @@ export function SecureVideoPlayer({
 
                     {/* BOTTOM BAR - PROGRESS + CONTROLS */}
                     <div className="bg-gradient-to-t from-black/80 to-transparent p-4" onClick={(e) => e.stopPropagation()}>
-                        {/* PROGRESS BAR */}
+                        {/* PROGRESS / SEEK SLIDER — interactive seek is a
+                            keyboard-operable slider, not just a progressbar */}
                         <div
                             className="w-full h-2 bg-white/30 rounded-full cursor-pointer mb-3 relative group"
                             onClick={seekTo}
+                            onKeyDown={handleScrubberKeyDown}
+                            role="slider"
+                            tabIndex={0}
+                            aria-label="شريط تقدم الفيديو"
+                            aria-valuemin={0}
+                            aria-valuemax={Number.isFinite(duration) ? Math.max(0, Math.round(duration)) : 0}
+                            aria-valuenow={Number.isFinite(currentTime) ? Math.max(0, Math.round(currentTime)) : 0}
+                            aria-valuetext={`${formatTime(currentTime)} / ${formatTime(duration)}`}
                         >
                             <div
                                 className="h-full bg-blue-500 rounded-full relative"
@@ -884,12 +1003,27 @@ export function SecureVideoPlayer({
                             </div>
                         </div>
 
-                        {/* TIME + VOLUME */}
+                        {/* TIME + VOLUME + FULLSCREEN */}
                         <div className="flex justify-between items-center text-white text-sm">
                             <span className="font-mono">{formatTime(currentTime)} / {formatTime(duration)}</span>
-                            <button onClick={toggleMute} className="p-2 bg-white/10 rounded-full hover:bg-white/20">
-                                {isMuted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
-                            </button>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={toggleMute}
+                                    aria-label={isMuted ? 'إلغاء كتم الصوت' : 'كتم الصوت'}
+                                    title={isMuted ? 'إلغاء كتم الصوت' : 'كتم الصوت'}
+                                    className="p-2 bg-white/10 rounded-full hover:bg-white/20"
+                                >
+                                    {isMuted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+                                </button>
+                                <button
+                                    onClick={() => void toggleFullscreen()}
+                                    aria-label={isFullscreen ? 'إنهاء ملء الشاشة' : 'ملء الشاشة'}
+                                    title={isFullscreen ? 'إنهاء ملء الشاشة' : 'ملء الشاشة'}
+                                    className="p-2 bg-white/10 rounded-full hover:bg-white/20"
+                                >
+                                    {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -897,7 +1031,12 @@ export function SecureVideoPlayer({
 
             {/* CLOSE BUTTON FOR EXTERNAL */}
             {(sourceType === 'youtube' || sourceType === 'drive') && (
-                <button onClick={handleClose} className="absolute top-6 left-6 z-[70] p-3 bg-red-600 rounded-full hover:bg-red-700 text-white shadow-lg">
+                <button
+                    onClick={handleClose}
+                    aria-label="إغلاق المشغل"
+                    title="إغلاق المشغل"
+                    className="absolute top-6 left-6 z-[70] p-3 bg-red-600 rounded-full hover:bg-red-700 text-white shadow-lg"
+                >
                     <X className="w-6 h-6" />
                 </button>
             )}

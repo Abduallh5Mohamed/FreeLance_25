@@ -19,8 +19,7 @@
  */
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-
-const API_BASE = import.meta.env.VITE_API_URL || '/api';
+import { buildSecurityEventRequest } from '@/utils/VideoSecurityManager';
 
 interface SecurityConfig {
     sessionId: string;
@@ -72,20 +71,16 @@ export function useSecuritySupervisor(config: SecurityConfig) {
         // Kill session on server
         try {
             if (config.sessionId) {
-                await fetch(`${API_BASE}/secure-video/force-logout`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`,
-                    },
-                    body: JSON.stringify({
-                        sessionId: config.sessionId,
-                        activityType: reason.includes('MediaRecorder') ? 'media_recorder_detected' : 'screen_capture_attempt',
-                        details: reason
-                    })
+                const { url, init } = buildSecurityEventRequest('/secure-video/force-logout', {
+                    sessionId: config.sessionId,
+                    activityType: reason.includes('MediaRecorder') ? 'media_recorder_detected' : 'screen_capture_attempt',
+                    details: reason
                 });
+                await fetch(url, init);
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) {
+            console.error('[Security] Failed to kill session on server:', e);
+        }
 
         // Clear all storage
         localStorage.removeItem('currentUser');
@@ -101,35 +96,39 @@ export function useSecuritySupervisor(config: SecurityConfig) {
     }, [config.sessionId, navigate, config.onSessionKilled]);
 
     // ═══ REPORT VIOLATION ═══
-    const reportViolation = useCallback(async (type: string, details: string, confidence: 'low' | 'medium' | 'high' = 'medium') => {
-        if (isKilledRef.current) return;
+    const reportViolation = useCallback(async (type: string, details: string, confidence: 'low' | 'medium' | 'high' = 'medium'): Promise<boolean> => {
+        if (isKilledRef.current) return false;
 
         violationsRef.current.push({ type, details, timestamp: Date.now() });
         config.onViolation?.(type, details);
 
         try {
-            if (!config.sessionId) return; // Skip in legacy mode
-            const response = await fetch(`${API_BASE}/secure-video/report-violation`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    sessionId: config.sessionId,
-                    sessionToken: sessionTokenRef.current,
-                    violationType: type,
-                    details,
-                    confidence
-                })
+            if (!config.sessionId) return false; // Skip in legacy mode
+            const { url, init } = buildSecurityEventRequest('/secure-video/report-violation', {
+                sessionId: config.sessionId,
+                sessionToken: sessionTokenRef.current,
+                violationType: type,
+                details,
+                confidence
             });
+            const response = await fetch(url, init);
+            const result = await response.json().catch(() => ({})) as Record<string, unknown>;
 
-            const result = await response.json();
+            if (!response.ok) {
+                // Report failures honestly: a rejected report must not look delivered.
+                console.error('[Security] Violation report rejected: HTTP', response.status);
+                return false;
+            }
 
-            if (result.restrictions) setRestrictions(result.restrictions);
+            if (result.restrictions) setRestrictions(result.restrictions as VideoRestrictions);
 
             if (result.killed || result.suspended) {
                 forceLogout(`Server killed session: ${type}`);
             }
+            return true;
         } catch (e) {
             console.error('[Security] Failed to report violation:', e);
+            return false;
         }
     }, [config.sessionId, forceLogout, config.onViolation]);
 
@@ -606,19 +605,18 @@ export function useSecuritySupervisor(config: SecurityConfig) {
         heartbeatRef.current = setInterval(async () => {
             if (isKilledRef.current || !config.sessionId) return;
             try {
-                const resp = await fetch(`${API_BASE}/secure-video/heartbeat`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        sessionId: config.sessionId,
-                        sessionToken: sessionTokenRef.current
-                    })
+                const { url, init } = buildSecurityEventRequest('/secure-video/heartbeat', {
+                    sessionId: config.sessionId,
+                    sessionToken: sessionTokenRef.current
                 });
+                const resp = await fetch(url, init);
 
                 if (!resp.ok) {
-                    const data = await resp.json().catch(() => ({}));
+                    const data = await resp.json().catch(() => ({})) as { error?: string };
                     if (data.error === 'session_dead' || data.error === 'token_invalid') {
                         forceLogout('Session invalidated by server');
+                    } else {
+                        console.warn('[Security] Heartbeat rejected: HTTP', resp.status);
                     }
                 }
             } catch (e) {

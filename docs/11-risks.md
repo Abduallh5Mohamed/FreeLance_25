@@ -1,5 +1,7 @@
 # سجل المخاطر للمنتج الكامل
 
+**القرار الحاكم المحدث:** التسعير تدريجي للمدرس والسنتر؛ فوترة المؤسسة كل 30 يومًا مع حساب مدة فعلية بالثواني وتسوية، لا عمولة على الطلاب؛ محفظة السنتر وحده أو المدرس المستقل؛ خصم الاشتراك من المتاح ومهلة 4 أيام. المرجع [19 — القرارات المعتمدة](19-commercial-registration-wallet-agreement-ar.md)، والموافقة قبل التنفيذ في 18. الوثائق ليست دليل تشغيل.
+
 | # | الخطر | الأثر | التخفيف/دليل الإغلاق |
 |---:|---|---|---|
 | 1 | IDOR بين tenants | تسرب طلاب/درجات/ملفات | M1 ownership invariants واختبار API A→B |
@@ -27,3 +29,9 @@
 | 23 | vendor lock-in and data residency | migration/legal barrier | provider adapters, data-processing register, export tests |
 | 24 | feature toggles hide API access | insecure hidden endpoints | server-side entitlement and route authorization always enforced |
 | 25 | growth promise exceeds evidence | reputation/churn | status-by-evidence, release notes and verified claims only |
+
+## مخاطر إضافية من الاتفاق التجاري
+
+شرائح قد تخفض إجمالي الفاتورة عند الحدود: حسم المعادلة قبل الكود. تكرار webhooks وسحب مزدوج: uniqueness/ledger متوازن/حجز ذري واختبار تزامن. تسوية قبل اكتمال KYC أو دعم payouts: بوابة مزود موثقة قبل التفعيل. تغيير اتفاق توزيع قديم: version effective date وفاتورة snapshot. خلط Offline بالدفع الإلكتروني أو audience: خصائص مستقلة واختبارات وصول. ازدواج عد مقررات الطالب: اعتماد وحدة student–teacher وحالات القياس قبل بناء meter. النسب غير المحددة لا تستبدل بقيمة مفترضة.
+## معالجة مخاطر التسعير والمحفظة
+التسعير تدريجي بنوعي المؤسسة فلا توجد cliffs؛ الخطر المتبقي تلاعب تفعيل/انتهاء وعد مزدوج، تمنعه server events وunique daily relation. ترتيب الحجز والاشتراك والسحب atomic؛ لا مال pending يستخدم. مهلة96ساعة لا تتجدد بطلب جديد، ولا يحجب الوصول المدفوع الحالي أو المستقبلي بسبب دين المؤسسة. provider/chargeback/رسوم وضرائب ومبالغ refund تحتاج تحققًا مع المحصل قبل F1.
