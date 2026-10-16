@@ -93,6 +93,18 @@ const MEETING_BY_ID_WITH_GRADE = `
             LEFT JOIN \`groups\` gr ON m.group_id = gr.id
             WHERE m.id = ?`;
 
+const TENANT_GROUP_SCOPE = `EXISTS (
+    SELECT 1
+    FROM tenants t
+    WHERE t.id = ?
+      AND t.status = 'active'
+      AND (g.instructor_id = t.owner_user_id OR g.instructor_id IS NULL)
+      AND (g.course_id IS NULL OR EXISTS (
+          SELECT 1 FROM courses c WHERE c.id = g.course_id AND c.tenant_id = t.id
+      ))
+      AND (g.instructor_id IS NOT NULL OR g.course_id IS NOT NULL)
+)`;
+
 /**
  * A join link is opened directly by the student UI (`window.open`), so only
  * http(s) URLs are accepted; `javascript:`/`data:` payloads are rejected
@@ -152,7 +164,8 @@ export const createMeetingsRouter = (deps: MeetingsRouterDeps): Router => {
     const isLiveStudentWorkspace = (user: NonNullable<AuthRequest['user']>): boolean =>
         user.role === 'student'
         && typeof user.studentEnrollmentId === 'string' && user.studentEnrollmentId.length > 0
-        && typeof user.tenantId === 'string' && user.tenantId.length > 0;
+        && typeof user.tenantId === 'string' && user.tenantId.length > 0
+        && typeof user.instructorId === 'string' && user.instructorId.length > 0;
 
     /**
      * A meeting targets the student's workspace when it is specific to the
@@ -161,9 +174,10 @@ export const createMeetingsRouter = (deps: MeetingsRouterDeps): Router => {
      * grade-wide meeting of another grade never leaks across grades.
      */
     const isMeetingForStudentWorkspace = (
-        meeting: { group_id: string | null; grade_id: string | null },
+        meeting: { group_id: string | null; grade_id: string | null; created_by: string | null },
         user: NonNullable<AuthRequest['user']>,
     ): boolean => {
+        if (String(meeting.created_by) !== String(user.instructorId)) return false;
         if (meeting.group_id != null) {
             return user.groupId != null && String(meeting.group_id) === String(user.groupId);
         }
@@ -234,9 +248,10 @@ export const createMeetingsRouter = (deps: MeetingsRouterDeps): Router => {
             LEFT JOIN users u ON m.created_by = u.id
             WHERE m.is_active = 1
             AND (m.group_id = ? OR (m.group_id IS NULL AND m.grade_id = ?))
+            AND m.created_by = ?
             AND m.scheduled_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
             ORDER BY m.scheduled_at ASC
-        `, [user.groupId, user.gradeId]);
+        `, [user.groupId, user.gradeId, user.instructorId]);
 
             res.json(meetings);
         } catch (error) {
@@ -254,25 +269,27 @@ export const createMeetingsRouter = (deps: MeetingsRouterDeps): Router => {
             }
             const { id } = req.params;
 
-            if (user.role === 'student' && !isLiveStudentWorkspace(user)) {
-                return res.status(403).json({ error: 'Student workspace access required' });
+            let meeting: MeetingRow | null;
+            if (isMeetingManager(user)) {
+                meeting = await queryOne<MeetingRow>(`${MEETING_BY_ID} AND m.created_by = ?`, [id, user.id]);
+                if (meeting && String(meeting.created_by) !== String(user.id)) meeting = null;
+            } else if (user.role === 'student') {
+                if (!isLiveStudentWorkspace(user)) {
+                    return res.status(403).json({ error: 'Student workspace access required' });
+                }
+                meeting = await queryOne<MeetingRow>(`${MEETING_BY_ID} AND m.created_by = ?`, [id, user.instructorId]);
+                if (meeting && !isMeetingForStudentWorkspace(meeting, user)) {
+                    return res.status(404).json({ error: 'Meeting not found' });
+                }
+            } else {
+                if (!(await deps.hasVerifiedPlatformCapability(user.id))) {
+                    return res.status(403).json({ error: 'Forbidden' });
+                }
+                meeting = await queryOne<MeetingRow>(MEETING_BY_ID, [id]);
             }
 
-            const meeting = await queryOne<MeetingRow>(MEETING_BY_ID, [id]);
             if (!meeting) {
                 return res.status(404).json({ error: 'Meeting not found' });
-            }
-
-            if (isMeetingManager(user)) {
-                if (String(meeting.created_by) !== String(user.id)) {
-                    return res.status(404).json({ error: 'Meeting not found' });
-                }
-            } else if (user.role === 'student') {
-                if (!isMeetingForStudentWorkspace(meeting, user)) {
-                    return res.status(404).json({ error: 'Meeting not found' });
-                }
-            } else if (!(await deps.hasVerifiedPlatformCapability(user.id))) {
-                return res.status(403).json({ error: 'Forbidden' });
             }
 
             res.json(meeting);
@@ -344,12 +361,18 @@ export const createMeetingsRouter = (deps: MeetingsRouterDeps): Router => {
                 return res.status(400).json({ error: 'Invalid duration_minutes' });
             }
 
-            // Instructors can only schedule meetings for their own groups
-            if (user.role === 'instructor' && group_id) {
+            if (group_id && user.role === 'instructor') {
                 const grp = await queryOne('SELECT id FROM `groups` WHERE id = ? AND instructor_id = ?', [group_id, user.id]);
                 if (!grp) {
-                    return res.status(403).json({ error: 'لا يمكن إنشاء اجتماع لمجموعة لا تتبعك' });
+                    return res.status(403).json({ error: 'Forbidden' });
                 }
+            } else if (group_id && user.role === 'teacher') {
+                if (!user.tenantId) return res.status(403).json({ error: 'Forbidden' });
+                const grp = await queryOne(
+                    `SELECT g.id FROM \`groups\` g WHERE g.id = ? AND ${TENANT_GROUP_SCOPE}`,
+                    [group_id, user.tenantId]
+                );
+                if (!grp) return res.status(403).json({ error: 'Forbidden' });
             }
 
             // Generate UUID
@@ -383,16 +406,18 @@ export const createMeetingsRouter = (deps: MeetingsRouterDeps): Router => {
             }
             const { id } = req.params;
 
-            const existing = await queryOne<{ created_by: string | null }>('SELECT created_by FROM online_meetings WHERE id = ?', [id]);
-            if (!existing) {
-                return res.status(404).json({ error: 'Meeting not found' });
-            }
-            if (isMeetingManager(user)) {
-                if (String(existing.created_by) !== String(user.id)) {
-                    return res.status(404).json({ error: 'Meeting not found' });
-                }
-            } else if (!(await deps.hasVerifiedPlatformCapability(user.id))) {
+            const manager = isMeetingManager(user);
+            if (!manager && !(await deps.hasVerifiedPlatformCapability(user.id))) {
                 return res.status(403).json({ error: 'Forbidden' });
+            }
+            const existing = await queryOne<{ created_by: string | null }>(
+                manager
+                    ? 'SELECT created_by FROM online_meetings WHERE id = ? AND created_by = ?'
+                    : 'SELECT created_by FROM online_meetings WHERE id = ?',
+                manager ? [id, user.id] : [id]
+            );
+            if (!existing || (manager && String(existing.created_by) !== String(user.id))) {
+                return res.status(404).json({ error: 'Meeting not found' });
             }
 
             const body = (req.body ?? {}) as Record<string, unknown>;
@@ -441,11 +466,16 @@ export const createMeetingsRouter = (deps: MeetingsRouterDeps): Router => {
             }
             const duration = duration_minutes === undefined ? undefined : parseDuration(duration_minutes);
 
-            if (user.role === 'instructor' && group_id) {
+            if (group_id && user.role === 'instructor') {
                 const grp = await queryOne('SELECT id FROM `groups` WHERE id = ? AND instructor_id = ?', [group_id, user.id]);
-                if (!grp) {
-                    return res.status(403).json({ error: 'لا يمكن نقل الاجتماع لمجموعة لا تتبعك' });
-                }
+                if (!grp) return res.status(403).json({ error: 'Forbidden' });
+            } else if (group_id && user.role === 'teacher') {
+                if (!user.tenantId) return res.status(403).json({ error: 'Forbidden' });
+                const grp = await queryOne(
+                    `SELECT g.id FROM \`groups\` g WHERE g.id = ? AND ${TENANT_GROUP_SCOPE}`,
+                    [group_id, user.tenantId]
+                );
+                if (!grp) return res.status(403).json({ error: 'Forbidden' });
             }
 
             await execute(`
@@ -460,10 +490,13 @@ export const createMeetingsRouter = (deps: MeetingsRouterDeps): Router => {
                 scheduled_at = COALESCE(?, scheduled_at),
                 duration_minutes = COALESCE(?, duration_minutes),
                 is_active = COALESCE(?, is_active)
-            WHERE id = ?
-        `, [title, description, meeting_link, meeting_type, meeting_password, grade_id, group_id, scheduled_at, duration, is_active, id]);
+            WHERE id = ? ${manager ? 'AND created_by = ?' : ''}
+        `, [title, description, meeting_link, meeting_type, meeting_password, grade_id, group_id, scheduled_at, duration, is_active, id, ...(manager ? [user.id] : [])]);
 
-            const meeting = await queryOne<MeetingRow>(MEETING_BY_ID_WITH_GRADE, [id]);
+            const meeting = await queryOne<MeetingRow>(
+                `${MEETING_BY_ID_WITH_GRADE}${manager ? ' AND created_by = ?' : ''}`,
+                manager ? [id, user.id] : [id]
+            );
 
             res.json(meeting);
         } catch (error) {
@@ -481,19 +514,25 @@ export const createMeetingsRouter = (deps: MeetingsRouterDeps): Router => {
             }
             const { id } = req.params;
 
-            const existing = await queryOne<{ created_by: string | null }>('SELECT created_by FROM online_meetings WHERE id = ?', [id]);
-            if (!existing) {
-                return res.status(404).json({ error: 'Meeting not found' });
-            }
-            if (isMeetingManager(user)) {
-                if (String(existing.created_by) !== String(user.id)) {
-                    return res.status(404).json({ error: 'Meeting not found' });
-                }
-            } else if (!(await deps.hasVerifiedPlatformCapability(user.id))) {
+            const manager = isMeetingManager(user);
+            if (!manager && !(await deps.hasVerifiedPlatformCapability(user.id))) {
                 return res.status(403).json({ error: 'Forbidden' });
             }
+            const existing = await queryOne<{ created_by: string | null }>(
+                manager
+                    ? 'SELECT created_by FROM online_meetings WHERE id = ? AND created_by = ?'
+                    : 'SELECT created_by FROM online_meetings WHERE id = ?',
+                manager ? [id, user.id] : [id]
+            );
+            if (!existing || (manager && String(existing.created_by) !== String(user.id))) {
+                return res.status(404).json({ error: 'Meeting not found' });
+            }
 
-            await execute('DELETE FROM online_meetings WHERE id = ?', [id]);
+            const result = await execute(
+                `DELETE FROM online_meetings WHERE id = ? ${manager ? 'AND created_by = ?' : ''}`,
+                manager ? [id, user.id] : [id]
+            );
+            if (result.affectedRows === 0) return res.status(404).json({ error: 'Meeting not found' });
             res.json({ message: 'Meeting deleted successfully' });
         } catch (error) {
             console.error('Error deleting meeting:', error);

@@ -3,6 +3,7 @@ import test, { after, before } from 'node:test';
 import jwt from 'jsonwebtoken';
 import type { NextFunction, RequestHandler, Router } from 'express';
 import { createAuthenticateToken, requireRoles } from '../src/middleware/auth';
+import { createRequireAdminPermission } from '../src/security/admin-permissions';
 import type { PrincipalRepository } from '../src/security/principal-repository';
 import { createSubscriptionsRouter } from '../src/routes/subscriptions';
 import { createSubscriptionPlansRouter } from '../src/routes/subscription-plans';
@@ -449,6 +450,14 @@ const makeHarness = (fixtures: Fixtures = makeFixtures()) => {
     const repository = makeRepository(fixtures);
     const authenticate = createAuthenticateToken(repository) as RequestHandler;
     const authorize = requireRoles('admin', 'instructor', 'teacher', 'staff');
+    const adminPermissionLookup = {
+        isSuperAdmin: async (userId: string) => (fixtures.adminRoles[userId] ?? []).includes('super_admin'),
+        getAdminPermissions: async (userId: string) => fixtures.adminPermissions[userId] ?? [],
+    };
+    const authorizeSubscriptionPlanWrite = createRequireAdminPermission(
+        'subscription.create',
+        adminPermissionLookup,
+    );
     const hasVerifiedPlatformFinanceAccess = async (userId: string): Promise<boolean> =>
         (fixtures.adminRoles[userId] ?? []).includes('super_admin');
     const loadActiveTenantAuthority = async (userId: string, tenantId: string) => {
@@ -464,7 +473,12 @@ const makeHarness = (fixtures: Fixtures = makeFixtures()) => {
         fixtures,
         executed: db.executed,
         subscriptions: createSubscriptionsRouter({ db, authenticate, authorize, hasVerifiedPlatformFinanceAccess, loadActiveTenantAuthority }),
-        plans: createSubscriptionPlansRouter({ db, authenticate, authorize }),
+        plans: createSubscriptionPlansRouter({
+            db,
+            authenticate,
+            authorize,
+            authorizeWrite: authorizeSubscriptionPlanWrite,
+        }),
         subRequests: createSubscriptionRequestsRouter({
             db, authenticate, authorize, hasVerifiedPlatformFinanceAccess, loadActiveTenantAuthority,
             sendApprovalNotification: async () => ({ success: true, whatsappLink: 'https://wa.me/test' }),
@@ -557,7 +571,7 @@ test('money: subscriptions reject a 3dp float and issue no write', async () => {
 test('money: subscription plans reject a non-numeric price', async () => {
     const { plans, executed } = makeHarness();
     const response = await invokeRoute(plans, {
-        method: 'POST', url: '/', token: OWNER_A,
+        method: 'POST', url: '/', token: ADMIN_SUPER,
         body: { name: 'Bad', duration_months: 1, price: 'free' },
     });
     assert.equal(response.statusCode, 400);

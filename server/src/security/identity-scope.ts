@@ -11,6 +11,8 @@
 export interface UserIdentityState {
     is_active: boolean | number;
     token_version: number | null;
+    /** Current role from `users`; JWT roles are accepted only when it matches. */
+    role?: string;
     /**
      * Server-computed flag: true while a time-bound suspension
      * (`users.suspended_until`) is still in effect. The comparison against
@@ -37,8 +39,12 @@ export function isIssuableIdentity(identity: { is_active: boolean | number; susp
 export function isUsersIdentityLive(
     state: UserIdentityState | null | undefined,
     claimedTokenVersion: number | null | undefined,
+    claimedRole?: string,
 ): boolean {
     if (!isIssuableIdentity(state)) return false;
+    // The SQL repository always selects role. Optionality only preserves older
+    // injected repositories; when present, a stale role claim revokes the token.
+    if (state!.role !== undefined && claimedRole !== undefined && state!.role !== claimedRole) return false;
     const current = Number(state!.token_version || 0);
     return Number(claimedTokenVersion || 0) === current;
 }

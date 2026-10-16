@@ -12,7 +12,10 @@
  *     selection all run;
  *   - the REAL teaching-write guard (`createRequireTeachingWrite('groups')`)
  *     over an in-memory TeachingAccessRepository fixture, so the real
- *     entitlement decision runs for grade writes;
+ *     entitlement decision runs for per-tenant grade writes;
+ *   - the REAL platform permission guard (`createRequireAdminPermission('grade.manage')`)
+ *     over server-verified in-memory platform authority, so only verified
+ *     platform authority may maintain the legacy shared (NULL tenant) rows;
  *   - an in-memory data-access adapter that answers the exact SQL the routers
  *     emit, mirroring the emitted predicates (scope filters, ownership,
  *     affectedRows). It is not a MySQL engine — the point is to prove the
@@ -33,6 +36,7 @@ import jwt from 'jsonwebtoken';
 
 import { createAuthenticateToken, createOptionalAuth } from '../src/middleware/auth';
 import { createRequireTeachingWrite, type TeachingAccessRepository } from '../src/middleware/teaching-access';
+import { createRequireAdminPermission } from '../src/security/admin-permissions';
 import type { PrincipalRepository } from '../src/security/principal-repository';
 import { createAttendanceRouter } from '../src/routes/attendance';
 import { createGradesRouter } from '../src/routes/grades';
@@ -59,6 +63,7 @@ interface State {
   grades: Row[];
   teachingMemberships: Record<string, { role_key: string; user_is_active: number; tenant_status: string; tenant_legacy_compat: number; subscription_entitles: number }>;
   staffPages: Record<string, { accessible_pages: string | string[] | null; is_active: number }>;
+  platformSuperAdmins: Set<string>;
   executed: { sql: string; params: unknown[] }[];
   notifyCalls: { to: string; body: string }[];
   failWith: Error | null;
@@ -77,6 +82,7 @@ const makeState = (): State => ({
   grades: [],
   teachingMemberships: {},
   staffPages: {},
+  platformSuperAdmins: new Set<string>(),
   executed: [],
   notifyCalls: [],
   failWith: null,
@@ -233,19 +239,34 @@ const runSelect = (sql: string, params: unknown[]): Row[] => {
     });
   }
 
-  // --- grades -------------------------------------------------------------
-  if (q.includes('FROM grades WHERE is_active = TRUE ORDER BY display_order')) {
+  // --- grades (per-tenant plus the legacy shared catalog) -----------------
+  if (q.includes('FROM grades WHERE (tenant_id = ? OR tenant_id IS NULL) AND is_active = TRUE')) {
+    const tenantId = params[0] ?? null;
     return state.grades
-      .filter((g) => Boolean(g.is_active))
+      .filter((g) => Boolean(g.is_active) && (g.tenant_id === null || g.tenant_id === tenantId))
       .sort((a, b) => Number(a.display_order) - Number(b.display_order))
       .map((g) => ({ ...g }));
   }
-  if (q.includes('FROM grades WHERE id = ? AND is_active = TRUE')) {
-    const grade = state.grades.find((g) => g.id === params[0] && Boolean(g.is_active));
+  if (q.includes('FROM grades WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL) AND is_active = TRUE')) {
+    const [id, tenantId] = params;
+    const grade = state.grades.find((g) => g.id === id && Boolean(g.is_active)
+      && (g.tenant_id === null || g.tenant_id === tenantId));
     return grade ? [{ ...grade }] : [];
   }
-  if (q.includes('FROM grades WHERE id = ?')) {
-    const grade = state.grades.find((g) => g.id === params[0]);
+  if (q.includes('FROM grades WHERE id = ? AND tenant_id IS NULL AND is_active = TRUE')) {
+    const grade = state.grades.find((g) => g.id === params[0] && g.tenant_id === null && Boolean(g.is_active));
+    return grade ? [{ ...grade }] : [];
+  }
+  if (q.includes('FROM grades WHERE id = ? AND tenant_id IS NULL')) {
+    const grade = state.grades.find((g) => g.id === params[0] && g.tenant_id === null);
+    return grade ? [{ ...grade }] : [];
+  }
+  if (q.includes('FROM grades WHERE id = ? AND tenant_id = ? AND is_active = TRUE')) {
+    const grade = state.grades.find((g) => g.id === params[0] && g.tenant_id === params[1] && Boolean(g.is_active));
+    return grade ? [{ ...grade }] : [];
+  }
+  if (q.includes('FROM grades WHERE id = ? AND tenant_id = ?')) {
+    const grade = state.grades.find((g) => g.id === params[0] && g.tenant_id === params[1]);
     return grade ? [{ ...grade }] : [];
   }
 
@@ -288,9 +309,10 @@ const runWrite = (sql: string, params: unknown[]): { affectedRows: number; inser
     return { affectedRows: before - state.attendance.length, insertId: 0 };
   }
   if (sql.includes('INSERT INTO grades')) {
-    const [id, name, displayOrder] = params;
+    const [id, tenantId, name, displayOrder] = params;
     state.grades.push({
       id,
+      tenant_id: tenantId ?? null,
       name,
       display_order: displayOrder,
       is_active: 1,
@@ -300,15 +322,19 @@ const runWrite = (sql: string, params: unknown[]): { affectedRows: number; inser
     return { affectedRows: 1, insertId: 0 };
   }
   if (sql.includes('UPDATE grades SET name = ?')) {
+    const shared = sql.includes('tenant_id IS NULL');
     const [name, displayOrder, id] = params;
-    const grade = state.grades.find((g) => g.id === id);
+    const tenantId = shared ? null : params[3];
+    const grade = state.grades.find((g) => g.id === id && g.tenant_id === tenantId);
     if (!grade) return { affectedRows: 0, insertId: 0 };
     grade.name = name;
     grade.display_order = displayOrder;
     return { affectedRows: 1, insertId: 0 };
   }
   if (sql.includes('UPDATE grades SET is_active = FALSE')) {
-    const grade = state.grades.find((g) => g.id === params[0]);
+    const shared = sql.includes('tenant_id IS NULL');
+    const tenantId = shared ? null : params[1];
+    const grade = state.grades.find((g) => g.id === params[0] && g.tenant_id === tenantId);
     if (!grade) return { affectedRows: 0, insertId: 0 };
     grade.is_active = 0;
     return { affectedRows: 1, insertId: 0 };
@@ -367,7 +393,11 @@ const buildApp = (): express.Express => {
     db: fakeDb as never,
     authenticate,
     optionalAuthenticate,
-    requireGroupWrite: createRequireTeachingWrite('groups', teachingRepo),
+    requireTenantWrite: createRequireTeachingWrite('groups', teachingRepo),
+    authorizePlatformWrite: createRequireAdminPermission('grade.manage', {
+      isSuperAdmin: async (userId) => state.platformSuperAdmins.has(userId),
+      getAdminPermissions: async () => [] as string[],
+    }),
   }));
   return app;
 };
@@ -427,6 +457,7 @@ const seedBase = () => {
   state.users['instr-2'] = { is_active: 1, token_version: 0, suspension_active: 0 };
   state.users['instr-b'] = { is_active: 1, token_version: 0, suspension_active: 0 };
   state.users['super-1'] = { is_active: 1, token_version: 0, suspension_active: 0 };
+  state.users['admin-bare'] = { is_active: 1, token_version: 0, suspension_active: 0 };
   state.staff['staff-no-tenant'] = { is_active: 1 };
   state.staff['staff-revoked'] = { is_active: 0 };
 
@@ -462,8 +493,8 @@ const seedBase = () => {
     { id: 'a-b', student_id: 's-other-tenant', course_id: 'c-b', group_id: 'g-b', attendance_date: '2026-10-15', attendance_time: '09:00:00', status: 'present', notes: null, marked_by: null, method: 'manual', created_at: '2026-10-15T09:10:00Z' },
   );
   state.grades.push(
-    { id: 'gr-active', name: 'Grade One', display_order: 1, is_active: 1, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z' },
-    { id: 'gr-deleted', name: 'Grade Two', display_order: 2, is_active: 0, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z' },
+    { id: 'gr-active', tenant_id: TENANT_A, name: 'Grade One', display_order: 1, is_active: 1, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z' },
+    { id: 'gr-deleted', tenant_id: TENANT_A, name: 'Grade Two', display_order: 2, is_active: 0, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z' },
   );
   state.teachingMemberships['instr-1:tenant-a'] = { role_key: 'instructor', user_is_active: 1, tenant_status: 'active', tenant_legacy_compat: 1, subscription_entitles: 0 };
   state.staffPages['staff-no-tenant'] = { accessible_pages: JSON.stringify(['groups']), is_active: 1 };
@@ -776,28 +807,30 @@ test('grades reject anonymous readers and serve authenticated ones', async () =>
 });
 
 // ---------------------------------------------------------------------------
-// Grades — write entitlement (real teaching-write guard)
+// Grades — per-tenant writes (real teaching-write guard)
 // ---------------------------------------------------------------------------
 
-test('grades writes are denied without a selected-tenant teaching membership', async () => {
+test('per-tenant grade writes deny unentitled instructors and bare admin role claims', async () => {
   await withState(seedBase, async (h) => {
-    // A bare admin role claim carries no tenant membership and never satisfies the guard.
-    const adminClaim = await api(h, 'POST', '/api/grades', sign({ id: 'ghost-admin', role: 'admin' }), { name: 'X' });
-    assert.equal(adminClaim.status, 401, 'a forged admin claim fails authentication');
+    // An instructor with no teaching membership in the selected tenant.
+    const unentitled = await api(h, 'POST', '/api/grades', sign(instr2), { name: 'Blocked Instructor' });
+    assert.equal(unentitled.status, 403, 'tenant membership alone is not teaching authority');
 
-    const adminNoMembership = await api(h, 'POST', '/api/grades', sign({ id: 'super-1', role: 'admin' }), { name: 'X' });
-    assert.equal(adminNoMembership.status, 403, 'a platform admin without a tenant membership is denied here');
+    const bareAdmin = await api(h, 'POST', '/api/grades', sign({ id: 'admin-bare', role: 'admin' }), { name: 'Blocked Admin' });
+    assert.equal(bareAdmin.status, 403, 'a live admin role claim grants no tenant teaching entitlement');
 
-    assert.equal(state.executed.some((e) => e.sql.includes('INSERT INTO grades')), false);
+    const forgedAdmin = await api(h, 'POST', '/api/grades', sign({ id: 'ghost-admin', role: 'admin' }), { name: 'Blocked Ghost' });
+    assert.equal(forgedAdmin.status, 401, 'an unknown identity cannot authenticate');
+    assert.equal(state.executed.some((e) => /INSERT INTO grades|UPDATE grades/.test(e.sql)), false);
   });
 });
 
-test('grades writes are allowed for an entitled instructor of the selected tenant', async () => {
+test('an entitled instructor of the tenant manages their own tenant grades', async () => {
   await withState(seedBase, async (h) => {
     const created = await api(h, 'POST', '/api/grades', sign(instr1), { name: 'Grade Three', display_order: 3 });
     assert.equal(created.status, 201);
     assert.ok(created.body.id, 'the id is generated server-side');
-    assert.ok(state.grades.some((g) => g.id === created.body.id && g.name === 'Grade Three'));
+    assert.equal(state.grades.find((g) => g.id === created.body.id)!.tenant_id, TENANT_A);
 
     const updated = await api(h, 'PUT', '/api/grades/gr-active', sign(instr1), { name: 'Grade One Updated' });
     assert.equal(updated.status, 200);

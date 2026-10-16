@@ -122,24 +122,27 @@ const revoked = (error: string, code = 'SESSION_REVOKED'): PrincipalFailure => (
  */
 async function resolvePrincipal(claims: TokenClaims, req: Request, repository: PrincipalRepository): Promise<PrincipalOutcome> {
     let identitySource: 'users' | 'staff' = 'users';
+    let liveRole = claims.role;
 
     const identity = await repository.findUsersIdentity(claims.id);
     if (identity) {
-        if (!isUsersIdentityLive(identity, Number(claims.tv || 0))) {
+        if (!isUsersIdentityLive(identity, Number(claims.tv || 0), claims.role)) {
             return { ok: false, failure: revoked('Session revoked') };
         }
+        liveRole = identity.role ?? claims.role;
     } else if (claims.role === 'staff') {
         const staffIdentity = await repository.findStaffIdentity(claims.id);
         if (!isStaffIdentityLive(staffIdentity)) {
             return { ok: false, failure: revoked('Session revoked') };
         }
+        liveRole = 'staff';
         identitySource = 'staff';
     } else {
         return { ok: false, failure: revoked('Session revoked') };
     }
 
     let billingOnly = false;
-    if (claims.role === 'instructor') {
+    if (liveRole === 'instructor') {
         const account = await repository.findInstructorAccount(claims.id);
         if (!account || account.tenant_status !== 'active') {
             return { ok: false, failure: { status: 403, body: { error: 'Instructor account is administratively suspended', code: 'TENANT_SUSPENDED' } } };
@@ -158,7 +161,7 @@ async function resolvePrincipal(claims: TokenClaims, req: Request, repository: P
     let groupId: string | undefined;
     let gradeId: string | undefined;
 
-    if (claims.role === 'student') {
+    if (liveRole === 'student') {
         const enrollments = await repository.findStudentEnrollments(claims.id);
         const scope: StudentWorkspaceScope | null = selectStudentWorkspaceScope(enrollments, claims);
         if (!scope && typeof claims.student_enrollment_id === 'string' && claims.student_enrollment_id) {
@@ -171,7 +174,7 @@ async function resolvePrincipal(claims: TokenClaims, req: Request, repository: P
         instructorId = scope?.instructorId ?? undefined;
         groupId = scope?.groupId ?? undefined;
         gradeId = scope?.gradeId ?? undefined;
-    } else if (claims.role !== 'admin') {
+    } else if (liveRole !== 'admin') {
         const memberships = await repository.findActiveTenantMemberships(claims.id);
         tenantId = selectActiveTenantScope(memberships, claims.tenant_id) ?? undefined;
     }
@@ -183,7 +186,7 @@ async function resolvePrincipal(claims: TokenClaims, req: Request, repository: P
             id: claims.id,
             email: claims.email || null,
             phone: claims.phone || null,
-            role: claims.role,
+            role: liveRole,
             billingOnly,
             tenantId,
             studentEnrollmentId,

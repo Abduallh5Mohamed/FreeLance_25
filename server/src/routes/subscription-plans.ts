@@ -2,6 +2,7 @@ import { Router, RequestHandler, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { AuthRequest, authenticateToken, requireRoles } from '../middleware/auth';
 import { query, queryOne, execute } from '../db';
+import { requireAdminPermission } from '../security/admin-permissions';
 
 export interface SubscriptionPlansDataAccess {
     query: typeof query;
@@ -13,6 +14,7 @@ export interface SubscriptionPlansRouterDeps {
     db: SubscriptionPlansDataAccess;
     authenticate: RequestHandler;
     authorize: RequestHandler;
+    authorizeWrite: RequestHandler;
 }
 
 /**
@@ -91,7 +93,7 @@ export const createSubscriptionPlansRouter = (deps: SubscriptionPlansRouterDeps)
     });
 
     // Create new subscription plan (Decimal price, integer duration)
-    router.post('/', async (req: AuthRequest, res: Response) => {
+    router.post('/', deps.authorizeWrite, async (req: AuthRequest, res: Response) => {
         try {
             const { id, name, duration_months, price, description } = req.body;
 
@@ -136,7 +138,7 @@ export const createSubscriptionPlansRouter = (deps: SubscriptionPlansRouterDeps)
     });
 
     // Update subscription plan (guarded: missing -> 404, money revalidated)
-    router.put('/:id', async (req: AuthRequest, res: Response) => {
+    router.put('/:id', deps.authorizeWrite, async (req: AuthRequest, res: Response) => {
         try {
             const { name, duration_months, price, description, is_active } = req.body;
 
@@ -198,7 +200,7 @@ export const createSubscriptionPlansRouter = (deps: SubscriptionPlansRouterDeps)
     });
 
     // Delete subscription plan (soft delete, guarded)
-    router.delete('/:id', async (req: AuthRequest, res: Response) => {
+    router.delete('/:id', deps.authorizeWrite, async (req: AuthRequest, res: Response) => {
         try {
             const result = await execute(
                 'UPDATE subscription_plans SET is_active = FALSE WHERE id = ? AND is_active = TRUE',
@@ -224,4 +226,5 @@ export default createSubscriptionPlansRouter({
     db: productionDb,
     authenticate: authenticateToken,
     authorize: requireRoles('admin', 'teacher'),
+    authorizeWrite: requireAdminPermission('subscription.create'),
 });

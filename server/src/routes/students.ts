@@ -1,13 +1,33 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response, RequestHandler } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { getPool, query, queryOne, execute } from '../db';
 import { optionalAuth, instructorScopeId, AuthRequest, authenticateToken } from '../middleware/auth';
 import { requireTeachingWrite } from '../middleware/teaching-access';
 import { normalizeEgyptianPhone, phoneLookupCandidates } from '../security/phone';
+import { isSuperAdmin } from '../security/admin-permissions';
 
-const router = Router();
-router.use(optionalAuth);
+const STUDENT_COLUMNS = `
+    s.id, s.user_id, s.tenant_id, s.name, s.email, s.phone, s.guardian_phone,
+    s.guardian_name, s.grade, s.grade_id, s.group_id, s.instructor_id, s.barcode,
+    s.is_offline, s.approval_status, s.parent_phone, s.address, s.notes,
+    s.is_active, s.created_at, s.updated_at`;
+
+export interface StudentsRouterDeps {
+    query: typeof query;
+    queryOne: typeof queryOne;
+    authenticate: RequestHandler;
+    optionalAuth: RequestHandler;
+    hasPlatformCapability: (userId: string) => Promise<boolean>;
+}
+
+const defaultStudentsRouterDeps: StudentsRouterDeps = {
+    query,
+    queryOne,
+    authenticate: authenticateToken,
+    optionalAuth,
+    hasPlatformCapability: isSuperAdmin,
+};
 
 // Does this student belong to the instructor? Either directly assigned
 // (instructor_id) or a member of one of the instructor's groups.
@@ -29,12 +49,11 @@ const isGroupInScope = async (groupId: string | null | undefined, scopeId: strin
     return !!row;
 };
 
-const canReadStudent = async (req: AuthRequest, studentId: string): Promise<boolean> => {
-    if (!req.user) return false;
-    if (['admin', 'teacher', 'staff'].includes(req.user.role)) return true;
-    if (req.user.role === 'instructor') return isStudentInScope(studentId, req.user.id);
-    return req.user.role === 'student' && req.user.studentEnrollmentId === studentId;
-};
+interface StudentReadScope {
+    tenantId?: string;
+    studentId?: string;
+    platformWide: boolean;
+}
 
 const BARCODE_CHARSET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const BARCODE_LENGTH = 25;
@@ -58,13 +77,42 @@ const sanitizeBarcode = (value: string): string => {
     return normalized;
 };
 
-// Get all students
-router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
+export const createStudentsRouter = (deps: StudentsRouterDeps = defaultStudentsRouterDeps): Router => {
+    const router = Router();
+    router.use(deps.optionalAuth);
+
+    const resolveReadScope = async (req: AuthRequest, allowStudent: boolean): Promise<StudentReadScope | null> => {
+        const user = req.user;
+        if (!user || !['admin', 'instructor', 'teacher', 'staff', 'student'].includes(user.role)) return null;
+        if (user.role === 'student') {
+            if (!allowStudent || !user.tenantId || !user.studentEnrollmentId) return null;
+            return { tenantId: user.tenantId, studentId: user.studentEnrollmentId, platformWide: false };
+        }
+        if (user.role === 'admin' && await deps.hasPlatformCapability(user.id)) {
+            return { platformWide: true };
+        }
+        return user.tenantId ? { tenantId: user.tenantId, platformWide: false } : null;
+    };
+
+    const scopePredicate = (scope: StudentReadScope): { sql: string; params: string[] } => {
+        if (scope.platformWide) return { sql: '', params: [] };
+        const predicates = ['s.tenant_id = ?'];
+        const params = [scope.tenantId as string];
+        if (scope.studentId) {
+            predicates.push('s.id = ?');
+            params.push(scope.studentId);
+        }
+        return { sql: ` AND ${predicates.join(' AND ')}`, params };
+    };
+
+    // Get all students
+    router.get('/', deps.authenticate, async (req: AuthRequest, res: Response) => {
     try {
-        if (req.user?.role === 'student') return res.status(403).json({ error: 'Use /students/me' });
-        const scopeId = instructorScopeId(req);
-        let sql = `SELECT
-                s.*,
+        const scope = await resolveReadScope(req, false);
+        if (!scope) return res.status(403).json({ error: 'Forbidden' });
+        const scoped = scopePredicate(scope);
+        const sql = `SELECT
+                ${STUDENT_COLUMNS},
                 g.name AS grade_name,
                 grp.name AS group_name,
                 s.created_at AS enrollment_date,
@@ -77,14 +125,9 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
-             WHERE s.is_active = TRUE`;
-        const params: any[] = [];
-        if (scopeId) {
-            sql += ' AND (s.instructor_id = ? OR grp.instructor_id = ?)';
-            params.push(scopeId, scopeId);
-        }
-        sql += ' ORDER BY s.name';
-        const students = await query(sql, params);
+             WHERE s.is_active = TRUE${scoped.sql}
+             ORDER BY s.name`;
+        const students = await deps.query(sql, scoped.params);
         res.json(students);
     } catch (error) {
         console.error('Get students error:', error);
@@ -94,11 +137,11 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
 
 // The authenticated principal is the only source of student identity. A scoped
 // token is issued after the student chooses an instructor workspace.
-router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => {
+router.get('/me', deps.authenticate, async (req: AuthRequest, res: Response) => {
     if (req.user?.role !== 'student' || !req.user.studentEnrollmentId || !req.user.tenantId) {
         return res.status(409).json({ error: 'Select an instructor workspace first', code: 'STUDENT_SPACE_REQUIRED' });
     }
-    const student = await queryOne(
+    const student = await deps.queryOne(
         `SELECT s.id,s.user_id,s.tenant_id,s.name,s.phone,s.guardian_name,s.guardian_phone,s.grade_id,s.group_id,
                 s.barcode,s.approval_status,s.is_active,g.name grade_name,grp.name group_name,t.business_name
          FROM students s INNER JOIN tenants t ON t.id=s.tenant_id
@@ -111,11 +154,14 @@ router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => 
 });
 
 // Get student by ID
-router.get('/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+router.get('/:id', deps.authenticate, async (req: AuthRequest, res: Response) => {
     try {
-        const student = await queryOne(
+        const scope = await resolveReadScope(req, true);
+        if (!scope) return res.status(403).json({ error: 'Forbidden' });
+        const scoped = scopePredicate(scope);
+        const student = await deps.queryOne(
             `SELECT
-                s.*,
+                ${STUDENT_COLUMNS},
                 g.name AS grade_name,
                 grp.name AS group_name,
                 s.created_at AS enrollment_date,
@@ -128,15 +174,13 @@ router.get('/:id', authenticateToken, async (req: AuthRequest, res: Response) =>
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
-             WHERE s.id = ? AND s.is_active = TRUE`,
-            [req.params.id]
+             WHERE s.id = ? AND s.is_active = TRUE${scoped.sql}`,
+            [req.params.id, ...scoped.params]
         );
 
         if (!student) {
             return res.status(404).json({ error: 'Student not found' });
         }
-
-        if (!(await canReadStudent(req, student.id))) return res.status(404).json({ error: 'Student not found' });
         res.json(student);
     } catch (error) {
         console.error('Get student by ID error:', error);
@@ -145,11 +189,14 @@ router.get('/:id', authenticateToken, async (req: AuthRequest, res: Response) =>
 });
 
 // Get student by email
-router.get('/email/:email', authenticateToken, async (req: AuthRequest, res: Response) => {
+router.get('/email/:email', deps.authenticate, async (req: AuthRequest, res: Response) => {
     try {
-        const student = await queryOne(
+        const scope = await resolveReadScope(req, true);
+        if (!scope) return res.status(403).json({ error: 'Forbidden' });
+        const scoped = scopePredicate(scope);
+        const student = await deps.queryOne(
             `SELECT
-                s.*,
+                ${STUDENT_COLUMNS},
                 g.name AS grade_name,
                 grp.name AS group_name,
                 s.created_at AS enrollment_date,
@@ -162,15 +209,13 @@ router.get('/email/:email', authenticateToken, async (req: AuthRequest, res: Res
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
-             WHERE s.email = ? AND s.is_active = TRUE`,
-            [req.params.email]
+             WHERE s.email = ? AND s.is_active = TRUE${scoped.sql}`,
+            [req.params.email, ...scoped.params]
         );
 
         if (!student) {
             return res.status(404).json({ error: 'Student not found' });
         }
-
-        if (!(await canReadStudent(req, student.id))) return res.status(404).json({ error: 'Student not found' });
         res.json(student);
     } catch (error) {
         console.error('Get student by email error:', error);
@@ -179,12 +224,14 @@ router.get('/email/:email', authenticateToken, async (req: AuthRequest, res: Res
 });
 
 // Get student by phone
-router.get('/phone/:phone', authenticateToken, async (req: AuthRequest, res: Response) => {
+router.get('/phone/:phone', deps.authenticate, async (req: AuthRequest, res: Response) => {
     try {
-        if (req.user?.role === 'student') return res.status(403).json({ error: 'Use /students/me' });
-        const student = await queryOne(
+        const scope = await resolveReadScope(req, false);
+        if (!scope) return res.status(403).json({ error: 'Forbidden' });
+        const scoped = scopePredicate(scope);
+        const student = await deps.queryOne(
             `SELECT
-                s.*,
+                ${STUDENT_COLUMNS},
                 g.name AS grade_name,
                 grp.name AS group_name,
                 s.created_at AS enrollment_date,
@@ -197,15 +244,13 @@ router.get('/phone/:phone', authenticateToken, async (req: AuthRequest, res: Res
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
-             WHERE s.phone = ? AND s.is_active = TRUE`,
-            [req.params.phone]
+             WHERE s.phone = ? AND s.is_active = TRUE${scoped.sql}`,
+            [req.params.phone, ...scoped.params]
         );
 
         if (!student) {
             return res.status(404).json({ error: 'Student not found' });
         }
-
-        if (!(await canReadStudent(req, student.id))) return res.status(404).json({ error: 'Student not found' });
         res.json(student);
     } catch (error) {
         console.error('Get student by phone error:', error);
@@ -214,11 +259,14 @@ router.get('/phone/:phone', authenticateToken, async (req: AuthRequest, res: Res
 });
 
 // Get student by ID
-router.get('/barcode/:barcode', authenticateToken, async (req: AuthRequest, res: Response) => {
+router.get('/barcode/:barcode', deps.authenticate, async (req: AuthRequest, res: Response) => {
     try {
-        const student = await queryOne(
+        const scope = await resolveReadScope(req, true);
+        if (!scope) return res.status(403).json({ error: 'Forbidden' });
+        const scoped = scopePredicate(scope);
+        const student = await deps.queryOne(
             `SELECT
-                s.*,
+                ${STUDENT_COLUMNS},
                 g.name AS grade_name,
                 grp.name AS group_name,
                 s.created_at AS enrollment_date,
@@ -231,15 +279,13 @@ router.get('/barcode/:barcode', authenticateToken, async (req: AuthRequest, res:
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
-             WHERE s.barcode = ? AND s.is_active = TRUE`,
-            [req.params.barcode]
+             WHERE s.barcode = ? AND s.is_active = TRUE${scoped.sql}`,
+            [req.params.barcode, ...scoped.params]
         );
 
         if (!student) {
             return res.status(404).json({ error: 'Student not found' });
         }
-
-        if (!(await canReadStudent(req, student.id))) return res.status(404).json({ error: 'Student not found' });
         res.json(student);
     } catch (error) {
         console.error('Get student error:', error);
@@ -332,7 +378,7 @@ router.post('/', requireTeachingWrite('students'), async (req: AuthRequest, res:
 
         const newStudent = await queryOne(
             `SELECT
-                s.*,
+                ${STUDENT_COLUMNS},
                 g.name AS grade_name,
                 grp.name AS group_name,
                 s.created_at AS enrollment_date,
@@ -365,15 +411,14 @@ router.post('/', requireTeachingWrite('students'), async (req: AuthRequest, res:
 });
 
 // Get student admin notes
-router.get('/:id/notes', async (req: AuthRequest, res: Response) => {
+router.get('/:id/notes', deps.authenticate, async (req: AuthRequest, res: Response) => {
     try {
-        const scopeId = instructorScopeId(req);
-        if (scopeId && !(await isStudentInScope(req.params.id, scopeId))) {
-            return res.status(404).json({ error: 'Student not found' });
-        }
-        const student = await queryOne<{ id: string; notes: string | null }>(
-            'SELECT id, notes FROM students WHERE id = ?',
-            [req.params.id]
+        const scope = await resolveReadScope(req, false);
+        if (!scope) return res.status(403).json({ error: 'Forbidden' });
+        const scoped = scopePredicate(scope);
+        const student = await deps.queryOne<{ id: string; notes: string | null }>(
+            `SELECT s.id, s.notes FROM students s WHERE s.id = ?${scoped.sql}`,
+            [req.params.id, ...scoped.params]
         );
         if (!student) {
             return res.status(404).json({ error: 'Student not found' });
@@ -508,7 +553,7 @@ router.put('/:id', requireTeachingWrite('students'), async (req: AuthRequest, re
 
         const updatedStudent = await queryOne(
             `SELECT
-                s.*,
+                ${STUDENT_COLUMNS},
                 g.name AS grade_name,
                 grp.name AS group_name,
                 s.created_at AS enrollment_date,
@@ -562,4 +607,7 @@ router.delete('/:id', requireTeachingWrite('students'), async (req: AuthRequest,
     }
 });
 
-export default router;
+    return router;
+};
+
+export default createStudentsRouter();

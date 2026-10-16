@@ -68,22 +68,48 @@ const PORT = process.env.PORT || 3001;
 /** The single processing-queue consumer; started when the DB is available. */
 let videoQueueConsumer: ReturnType<typeof scheduleVideoQueueConsumer> | null = null;
 
+function isAllowedCorsOrigin(origin: string | undefined, corsOrigin: string | undefined, vercelUrl: string | undefined): boolean {
+    const allowedOrigins = [
+        'http://localhost:8080',
+        'http://localhost:8081',
+        'http://localhost:3000',
+        'http://127.0.0.1:8080',
+        'http://127.0.0.1:8081',
+        'http://127.0.0.1:3000',
+        corsOrigin,
+        vercelUrl ? `https://${vercelUrl}` : undefined,
+    ].filter((value): value is string => Boolean(value));
+
+    if (!origin || allowedOrigins.includes(origin)) return true;
+
+    try {
+        const parsedOrigin = new URL(origin);
+        return parsedOrigin.origin === origin
+            && (parsedOrigin.protocol === 'http:' || parsedOrigin.protocol === 'https:')
+            && (parsedOrigin.hostname === 'localhost' || parsedOrigin.hostname === '127.0.0.1');
+    } catch {
+        return false;
+    }
+}
+
+function trustedProxyAddresses(value: string | undefined): string[] {
+    return value ? value.split(',').map((address) => address.trim()).filter(Boolean) : [];
+}
+
+function getErrorResponse(error: Error) {
+    if (error.name === 'MulterError') {
+        return { status: 400, body: { error: 'ملف الإثبات غير صالح أو يتجاوز الحد الأقصى 8MB' } };
+    }
+    return { status: 500, body: { error: 'Internal server error', message: 'Internal server error' } };
+}
+
+// Only explicitly configured proxy addresses may supply client IPs through X-Forwarded-For.
+app.set('trust proxy', trustedProxyAddresses(process.env.TRUSTED_PROXY_IPS));
+
 // Middleware
 app.use(cors({
     origin: (origin, callback) => {
-        const allowedOrigins = [
-            'http://localhost:8080',
-            'http://localhost:8081',
-            'http://localhost:3000',
-            'http://127.0.0.1:8080',
-            'http://127.0.0.1:8081',
-            'http://127.0.0.1:3000',
-            process.env.CORS_ORIGIN,
-            process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined,
-        ].filter(Boolean);
-
-        // Allow requests from localhost on any port (development)
-        if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1') || allowedOrigins.includes(origin)) {
+        if (isAllowedCorsOrigin(origin, process.env.CORS_ORIGIN, process.env.VERCEL_URL)) {
             callback(null, true);
         } else callback(new Error('Origin is not allowed by CORS'));
     },
@@ -161,10 +187,8 @@ app.use((req: Request, res: Response) => {
 // Error handler
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     console.error('Error:', err);
-    if (err.name === 'MulterError') {
-        return res.status(400).json({ error: 'ملف الإثبات غير صالح أو يتجاوز الحد الأقصى 8MB' });
-    }
-    res.status(500).json({ error: 'Internal server error', message: err.message });
+    const response = getErrorResponse(err);
+    res.status(response.status).json(response.body);
 });
 
 // Start server

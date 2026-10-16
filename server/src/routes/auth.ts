@@ -11,7 +11,7 @@ import {
     resolvePublicRegistrationRole,
     validatePublicRegistrationInput,
 } from '../security/registration-policy';
-import { getAdminPermissions, getAdminRoleCodes } from '../security/admin-permissions';
+import { getAdminPermissions, getAdminRoleCodes, isSuperAdmin } from '../security/admin-permissions';
 import { rateLimit } from '../middleware/rate-limit';
 import { normalizeEgyptianPhone, phoneLookupCandidates } from '../security/phone';
 import { isIssuableIdentity } from '../security/identity-scope';
@@ -101,11 +101,6 @@ interface JWTPayload {
     email: string | null;
     phone: string | null;
     role: string;
-}
-
-interface QueryResult {
-    insertId: number;
-    affectedRows: number;
 }
 
 // Staff interface for login
@@ -422,117 +417,139 @@ router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => 
 
 // Delete user by student_id (for admins to delete student user accounts)
 // This will delete BOTH from users table AND students table (complete removal)
-router.delete('/users/student/:studentId', authenticateToken, requireRoles('admin', 'teacher'), async (req: AuthRequest, res: Response) => {
-    try {
-        const { query, queryOne } = await loadDb();
-        const { studentId } = req.params;
+export interface DeleteStudentEnrollmentDeps {
+    queryOne: <T>(sql: string, params?: unknown[]) => Promise<T | null>;
+    execute: (sql: string, params?: unknown[]) => Promise<{ affectedRows: number }>;
+    isPlatformAdmin: (userId: string) => Promise<boolean>;
+}
 
-        if (!studentId) {
-            return res.status(400).json({ error: 'Student ID is required' });
-        }
+export const createDeleteStudentEnrollmentHandler = (deps: DeleteStudentEnrollmentDeps) =>
+    async (req: AuthRequest, res: Response) => {
+        try {
+            const user = req.user;
+            const studentId = req.params.studentId;
+            if (!studentId) return res.status(400).json({ error: 'Student ID is required' });
+            if (!user) return res.status(401).json({ error: 'Authentication required' });
 
-        // First, get student info to find associated user by phone/email
-        const student = await queryOne<{ phone?: string; email?: string; tenant_id?: string | null }>(
-            'SELECT phone, email, tenant_id FROM students WHERE id = ?',
-            [studentId]
-        );
-
-        if (!student) {
-            return res.status(404).json({ error: 'Student not found' });
-        }
-
-        // Deny-by-default tenant binding: a teacher acts only inside their
-        // resolved workspace, so a cross-tenant id fails as 404 instead of
-        // revealing (or deleting) another tenant's student. Platform admins
-        // keep global reach; legacy rows without a tenant fail closed.
-        if (req.user?.role !== 'admin') {
-            const scopeTenantId = req.user?.tenantId;
-            if (!scopeTenantId || student.tenant_id !== scopeTenantId) {
-                return res.status(404).json({ error: 'Student not found' });
+            let platformWide = false;
+            if (user.role === 'admin') {
+                try {
+                    platformWide = await deps.isPlatformAdmin(user.id);
+                } catch {
+                    return res.status(503).json({ error: 'Platform authorization unavailable' });
+                }
             }
-        }
+            const tenantId = platformWide ? undefined : user.tenantId;
+            if (!tenantId && !platformWide) {
+                return res.status(403).json({ error: 'Tenant scope required' });
+            }
 
-        // Delete user by every normalized variant of the phone (users table doesn't have student_id)
-        const userPhoneCandidates = student.phone ? phoneLookupCandidates(student.phone) : [];
-        let result = await query(
-            userPhoneCandidates.length
-                ? `DELETE FROM users WHERE phone IN (${userPhoneCandidates.map(() => '?').join(',')}) AND role = "student"`
-                : 'DELETE FROM users WHERE phone = ? AND role = "student"',
-            userPhoneCandidates.length ? userPhoneCandidates : [student.phone]
-        );
-
-        let affectedRows = (result as unknown as QueryResult).affectedRows;
-
-        // If no rows deleted and student has email, try deleting by email
-        if (affectedRows === 0 && student.email) {
-            result = await query(
-                'DELETE FROM users WHERE email = ? AND role = "student"',
-                [student.email]
+            const student = await deps.queryOne<{ id: string; tenant_id: string | null }>(
+                tenantId
+                    ? 'SELECT id, tenant_id FROM students WHERE id = ? AND tenant_id = ?'
+                    : 'SELECT id, tenant_id FROM students WHERE id = ?',
+                tenantId ? [studentId, tenantId] : [studentId],
             );
-            affectedRows = (result as unknown as QueryResult).affectedRows;
-        }
+            if (!student) return res.status(404).json({ error: 'Student not found' });
 
-        // If still no rows deleted and student has email, try deleting by email
-        if (affectedRows === 0 && student.email) {
-            result = await query(
-                'DELETE FROM users WHERE email = ? AND role = "student"',
-                [student.email]
+            // A student row is a tenant enrollment; the users row is a global
+            // identity and is deliberately never deleted by this operation.
+            await deps.execute('DELETE FROM student_courses WHERE student_id = ?', [studentId]);
+            const result = await deps.execute(
+                tenantId
+                    ? 'DELETE FROM students WHERE id = ? AND tenant_id = ?'
+                    : 'DELETE FROM students WHERE id = ?',
+                tenantId ? [studentId, tenantId] : [studentId],
             );
-            affectedRows = (result as unknown as QueryResult).affectedRows;
+            if (result.affectedRows === 0) return res.status(404).json({ error: 'Student not found' });
+
+            return res.json({
+                message: 'Student enrollment deleted; global user account preserved',
+                userDeleted: false,
+                studentDeleted: true,
+                enrollmentDeleted: true,
+            });
+        } catch (error) {
+            console.error('Delete student enrollment error:', error);
+            return res.status(500).json({ error: 'Failed to delete student enrollment' });
         }
+    };
 
-        // Now delete from students table (and related records via CASCADE)
-        await query(
-            'DELETE FROM student_courses WHERE student_id = ?',
-            [studentId]
-        );
+export interface SearchByPhoneDeps {
+    query: <T>(sql: string, params?: unknown[]) => Promise<T[]>;
+    isPlatformAdmin: (userId: string) => Promise<boolean>;
+}
 
-        await query(
-            'DELETE FROM students WHERE id = ?',
-            [studentId]
-        );
+export const createSearchByPhoneHandler = (deps: SearchByPhoneDeps) =>
+    async (req: AuthRequest, res: Response) => {
+        try {
+            const user = req.user;
+            const phone = req.params.phone;
+            if (!phone) return res.status(400).json({ error: 'Phone number is required' });
+            if (!user) return res.status(401).json({ error: 'Authentication required' });
 
-        res.json({
-            message: 'Student and user account deleted completely',
-            userDeleted: affectedRows > 0,
-            studentDeleted: true
-        });
-    } catch (error) {
-        console.error('Delete user and student error:', error);
-        res.status(500).json({ error: 'Failed to delete user and student' });
-    }
+            let platformWide = false;
+            if (!user.tenantId && user.role === 'admin') {
+                try {
+                    platformWide = await deps.isPlatformAdmin(user.id);
+                } catch {
+                    return res.status(503).json({ error: 'Platform authorization unavailable' });
+                }
+            }
+            if (!user.tenantId && !platformWide) {
+                return res.status(403).json({ error: 'Tenant scope required' });
+            }
+
+            const candidates = phoneLookupCandidates(phone);
+            const phonePredicate = candidates.length
+                ? `u.phone IN (${candidates.map(() => '?').join(',')})`
+                : 'u.phone = ?';
+            const tenantPredicate = platformWide ? '' : 'AND s.tenant_id = ?';
+            const params = candidates.length ? [...candidates] : [phone.trim()];
+            if (!platformWide) params.push(user.tenantId as string);
+
+            const users = await deps.query<User>(
+                `SELECT DISTINCT u.id, u.phone, u.name, u.role, u.is_active
+                 FROM users u
+                 WHERE ${phonePredicate}
+                   AND u.is_active = TRUE
+                   AND u.role = 'student'
+                   AND EXISTS (
+                     SELECT 1 FROM students s
+                     INNER JOIN tenants t ON t.id = s.tenant_id AND t.status = 'active'
+                     WHERE s.user_id = u.id
+                       AND s.is_active = 1
+                       AND s.approval_status = 'approved'
+                       ${tenantPredicate}
+                   )
+                 LIMIT 2`,
+                params,
+            );
+
+            if (users.length === 0) return res.status(404).json({ error: 'User not found' });
+            if (users.length > 1) return res.status(409).json({ error: 'Multiple students match this phone number' });
+            return res.json(users[0]);
+        } catch (error) {
+            console.error('Search user by phone error:', error);
+            return res.status(500).json({ error: 'Failed to search user' });
+        }
+    };
+
+const deleteStudentEnrollmentHandler = createDeleteStudentEnrollmentHandler({
+    queryOne: (sql, params) => loadDb().then((db) => db.queryOne(sql, params)),
+    execute: (sql, params) => loadDb().then((db) => db.execute(sql, params)),
+    isPlatformAdmin: isSuperAdmin,
 });
 
-// Search user by phone (staff operation: teachers/admins only, rate-limited)
-router.get('/search-by-phone/:phone', authenticateToken, requireRoles('admin', 'teacher', 'staff'), rateLimit('auth-search-phone', 60, 60_000), async (req: Request, res: Response) => {
-    try {
-        const { queryOne } = await loadDb();
-        const { phone } = req.params;
+router.delete('/users/student/:studentId', authenticateToken, requireRoles('admin', 'teacher'), deleteStudentEnrollmentHandler);
 
-        if (!phone) {
-            return res.status(400).json({ error: 'Phone number is required' });
-        }
-
-        const candidates = phoneLookupCandidates(phone);
-        const user = await queryOne<User>(
-            `SELECT id, phone, name, role, is_active
-             FROM users
-             WHERE ${candidates.length ? `phone IN (${candidates.map(() => '?').join(',')})` : 'phone = ?'} AND is_active = TRUE`,
-            candidates.length ? candidates : [phone.trim()]
-        );
-
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-
-        // Don't return sensitive data
-        const { password_hash: _passwordHash, ...userData } = user;
-
-        res.json(userData);
-    } catch (error) {
-        console.error('Search user by phone error:', error);
-        res.status(500).json({ error: 'Failed to search user' });
-    }
+const searchByPhoneHandler = createSearchByPhoneHandler({
+    query: (sql, params) => loadDb().then((db) => db.query(sql, params)),
+    isPlatformAdmin: isSuperAdmin,
 });
+
+// Phone lookup is limited to active student enrollments in the caller's tenant.
+// Only a server-verified platform admin may use the unscoped variant.
+router.get('/search-by-phone/:phone', authenticateToken, requireRoles('admin', 'teacher', 'staff'), rateLimit('auth-search-phone', 60, 60_000), searchByPhoneHandler);
 
 export default router;

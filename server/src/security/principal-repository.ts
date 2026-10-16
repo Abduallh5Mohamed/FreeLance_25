@@ -31,6 +31,8 @@ const loadDb = async (): Promise<typeof import('../db')> => {
 export interface UsersIdentityRow {
     is_active: boolean | number;
     token_version: number | null;
+    /** Current database role used to validate the signed role claim. */
+    role?: string;
     /** SQL-computed: true while users.suspended_until is still in the future. */
     suspension_active: boolean | number;
 }
@@ -62,7 +64,7 @@ export const defaultPrincipalRepository: PrincipalRepository = {
     findUsersIdentity: async (id) => {
         const { queryOne } = await loadDb();
         return queryOne<UsersIdentityRow>(
-            `SELECT is_active, token_version,
+            `SELECT is_active, token_version, role,
                     ${ACTIVE_SUSPENSION_PREDICATE_SQL} AS suspension_active
              FROM users WHERE id=? LIMIT 1`,
             [id]

@@ -2,6 +2,7 @@ import { Router, Request, Response, RequestHandler } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt, { Secret } from 'jsonwebtoken';
 import { authenticateToken, getJwtSecret } from '../middleware/auth';
+import { resolveJwtLifetimeSeconds } from './auth';
 import { rateLimit } from '../middleware/rate-limit';
 import { requireAdminPermission } from '../security/admin-permissions';
 
@@ -385,7 +386,9 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
 
             // Generate JWT token
             const jwtSecret: Secret = getJwtSecret();
-            const jwtExpiry = process.env.JWT_EXPIRES_IN || '7d';
+            // Bound the exposure window even though the current schema has no
+            // staff token_version column for immediate password-change revocation.
+            const jwtExpiry = resolveJwtLifetimeSeconds(process.env.JWT_EXPIRES_IN);
             const token = jwt.sign(
                 {
                     id: staff.id,
