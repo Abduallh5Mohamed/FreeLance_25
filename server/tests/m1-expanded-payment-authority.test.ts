@@ -87,7 +87,9 @@ interface Fixtures {
     instructorAccounts: Record<string, { tenant_status: string; legacy_compat: number; allowed: number }>;
     adminRoles: Record<string, string[]>;
     adminPermissions: Record<string, string[]>;
-    tenants: Array<{ id: string; status: string }>;
+    /** Admins holding the verified platform finance-read capability (global read only). */
+    financeReadAdmins: Set<string>;
+    tenants: Array<{ id: string; status: string; owner_user_id: string }>;
     grades: Array<{ id: string; name: string }>;
     groups: Array<{ id: string; name: string; instructor_id: string; tenant_id: string }>;
     students: StudentRow[];
@@ -110,6 +112,8 @@ const makeFixtures = (): Fixtures => ({
         'instructor-none': { is_active: 1, token_version: 0, suspension_active: 0 },
         'teacher-a': { is_active: 1, token_version: 0, suspension_active: 0 },
         'staff-a': { is_active: 1, token_version: 0, suspension_active: 0 },
+        'owner-a': { is_active: 1, token_version: 0, suspension_active: 0 },
+        'owner-b': { is_active: 1, token_version: 0, suspension_active: 0 },
         'admin-plat': { is_active: 1, token_version: 0, suspension_active: 0 },
         'admin-super': { is_active: 1, token_version: 0, suspension_active: 0 },
         'student-a': { is_active: 1, token_version: 0, suspension_active: 0 },
@@ -121,17 +125,19 @@ const makeFixtures = (): Fixtures => ({
         'instructor-none': [],
         'teacher-a': [{ tenant_id: 'tenant-a' }],
         'staff-a': [{ tenant_id: 'tenant-a' }],
+        'owner-a': [{ tenant_id: 'tenant-a' }],
     },
     instructorAccounts: {
         'instructor-a': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
         'instructor-b': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
         'instructor-none': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
+        'owner-a': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
     },
     adminRoles: { 'admin-super': ['super_admin'] },
     adminPermissions: { 'admin-super': ['service_credit.read', 'service_credit.adjust'] },
     tenants: [
-        { id: 'tenant-a', status: 'active' },
-        { id: 'tenant-b', status: 'active' },
+        { id: 'tenant-a', status: 'active', owner_user_id: 'owner-a' },
+        { id: 'tenant-b', status: 'active', owner_user_id: 'owner-b' },
     ],
     grades: [
         { id: 'grade-a1', name: 'Grade A1' },
@@ -182,6 +188,7 @@ const makeFixtures = (): Fixtures => ({
     revenues: [],
     notifications: [],
     legacyAdminId: 'admin-plat',
+    financeReadAdmins: new Set(['admin-super']),
 });
 
 const makeRepository = (fixtures: Fixtures): PrincipalRepository => ({
@@ -265,6 +272,12 @@ const makePaymentDb = (fixtures: Fixtures) => {
                 ? (f.memberships[group.instructor_id] ?? []).some((m) => m.tenant_id === tenantId)
                 : false;
             return group && tenant && instructorMember ? [{ id: group.id, name: group.name }] : [];
+        }
+        if (sql.includes('owner_user_id') && sql.includes('FROM tenants')) {
+            const tenantId = params[0];
+            const status = params[1];
+            const tenant = f.tenants.find((t) => t.id === tenantId && (status === undefined || t.status === status));
+            return tenant?.owner_user_id ? [{ owner_user_id: tenant.owner_user_id }] : [];
         }
         if (sql.includes("role='admin'")) {
             return f.legacyAdminId ? [{ id: f.legacyAdminId }] : [];
@@ -449,6 +462,8 @@ const T = {
     instructorB: tokenFor({ id: 'instructor-b', role: 'instructor', tv: 0 }),
     instructorNone: tokenFor({ id: 'instructor-none', role: 'instructor', tv: 0 }),
     teacherA: tokenFor({ id: 'teacher-a', role: 'teacher', tv: 0 }),
+    staffA: tokenFor({ id: 'staff-a', role: 'staff', tv: 0 }),
+    ownerA: tokenFor({ id: 'owner-a', role: 'instructor', tv: 0 }),
     adminPlat: tokenFor({ id: 'admin-plat', role: 'admin', tv: 0 }),
     adminSuper: tokenFor({ id: 'admin-super', role: 'admin', tv: 0 }),
     studentA: tokenFor({ id: 'student-a', role: 'student', tv: 0 }),
@@ -457,10 +472,22 @@ const T = {
 
 const makePaymentHarness = (fixtures: Fixtures = makeFixtures()) => {
     const { db, executed } = makePaymentDb(fixtures);
+    // Injected server-owned authority seams (mirror the production
+    // finance.read capability and the tenant owner/instructor authority
+    // lookup used by fees.ts). Hermetic so the real guard runs without a DB.
+    const hasVerifiedPlatformFinanceAccess = async (userId: string): Promise<boolean> =>
+        fixtures.financeReadAdmins?.has(userId) ?? false;
+    const loadActiveTenantAuthority = async (userId: string, tenantId: string) => {
+        if (userId === 'instructor-a' && tenantId === 'tenant-a') return { authority: 'instructor' };
+        if (userId === 'owner-a' && tenantId === 'tenant-a') return { authority: 'owner' };
+        return null;
+    };
     const router = createPaymentRequestsRouter({
         db,
         authenticate: createAuthenticateToken(makeRepository(fixtures)) as RequestHandler,
         authorize: requireRoles('admin', 'instructor', 'teacher', 'staff'),
+        hasVerifiedPlatformFinanceAccess,
+        loadActiveTenantAuthority,
     });
     return { fixtures, executed, router };
 };
@@ -545,9 +572,20 @@ test('payment requests: an instructor lists only its own tenant (tenant predicat
     assert.deepEqual(list.params, ['tenant-a']);
 });
 
-test('payment requests: a platform admin lists across tenants (no tenant predicate)', async () => {
-    const { router, executed } = makePaymentHarness();
+test('payment requests: a bare platform admin (role label only, no finance capability) is denied 403', async () => {
+    // SUPERVISOR: the bare `admin` role label must NOT confer platform
+    // authority. A platform admin without the verified finance.read capability
+    // cannot read across tenants; the request fails closed.
+    const { router } = makePaymentHarness();
     const res = await invokeRoute(router, { method: 'GET', url: '/', token: T.adminPlat });
+    assert.equal(res.statusCode, 403);
+});
+
+test('payment requests: a verified finance-capable admin reads across tenants (global read only)', async () => {
+    // Positive case: super_admin / finance.read holder gets a global read with
+    // no tenant predicate. Reads only — see the mutation-denial tests below.
+    const { router, executed } = makePaymentHarness();
+    const res = await invokeRoute(router, { method: 'GET', url: '/', token: T.adminSuper });
     assert.equal(res.statusCode, 200);
     assert.equal((res.body as any[]).length, 3);
     const list = executed.find((e) => e.sql.includes('FROM payment_requests pr'))!;
@@ -555,13 +593,44 @@ test('payment requests: a platform admin lists across tenants (no tenant predica
     assert.deepEqual(list.params, []);
 });
 
-test('payment requests: an instructor with no active membership gets a fail-closed empty scope', async () => {
-    const { router, executed } = makePaymentHarness();
+test('payment requests: a same-tenant teacher without owner/instructor authority is denied 403', async () => {
+    // SUPERVISOR: same-tenant unrelated teacher/staff rejection. teacher-a is
+    // active in tenant-a but holds no owner/instructor authority there.
+    const { router } = makePaymentHarness();
+    const res = await invokeRoute(router, { method: 'GET', url: '/', token: T.teacherA });
+    assert.equal(res.statusCode, 403);
+});
+
+test('payment requests: a same-tenant staff without owner/instructor authority is denied 403', async () => {
+    const { router } = makePaymentHarness();
+    const res = await invokeRoute(router, { method: 'GET', url: '/', token: T.staffA });
+    assert.equal(res.statusCode, 403);
+});
+
+test('payment requests: a bare platform admin approve mutation is denied 403 (platform = reads only)', async () => {
+    // SUPERVISOR: exact selected tenant financial authority is required for a
+    // mutation; the verified platform capability grants reads only.
+    const { router, fixtures } = makePaymentHarness();
+    const res = await invokeRoute(router, { method: 'POST', url: '/req-a1/approve', token: T.adminPlat });
+    assert.equal(res.statusCode, 403);
+    assert.equal(fixtures.studentFees.length, 0);
+    assert.equal(fixtures.paymentRequests.find((r) => r.id === 'req-a1')!.status, 'pending');
+});
+
+test('payment requests: a finance-capable admin approve mutation is denied 403 (platform = reads only)', async () => {
+    const { router, fixtures } = makePaymentHarness();
+    const res = await invokeRoute(router, { method: 'POST', url: '/req-a1/approve', token: T.adminSuper });
+    assert.equal(res.statusCode, 403);
+    assert.equal(fixtures.studentFees.length, 0);
+    assert.equal(fixtures.paymentRequests.find((r) => r.id === 'req-a1')!.status, 'pending');
+});
+
+test('payment requests: an instructor with no active membership is denied 403 (fail closed)', async () => {
+    // No active workspace scope resolves to no tenant authority: fail closed
+    // rather than serving an empty cross-tenant scope.
+    const { router } = makePaymentHarness();
     const res = await invokeRoute(router, { method: 'GET', url: '/', token: T.instructorNone });
-    assert.equal(res.statusCode, 200);
-    assert.deepEqual(res.body, []);
-    const list = executed.find((e) => e.sql.includes('FROM payment_requests pr'))!;
-    assert.deepEqual(list.params, ['']);
+    assert.equal(res.statusCode, 403);
 });
 
 // ---------------------------------------------------------------------------
@@ -680,6 +749,56 @@ test('approve: a mid-transaction failure rolls the whole write back (no partial 
     assert.equal(fixtures.studentFees.length, 0);
     assert.equal(fixtures.revenues.length, 0);
     assert.equal(fixtures.paymentRequests.find((r) => r.id === 'req-a1')!.status, 'pending');
+});
+
+// ---------------------------------------------------------------------------
+// Authorization: exact tenant owner authority + cross-tenant notification scope
+// ---------------------------------------------------------------------------
+
+test('approve: the verified tenant owner approves a request in their tenant', async () => {
+    // "exact selected tenant financial management/assignment authority for
+    // mutations": the tenant owner (authority 'owner') is authorized for the
+    // mutation within their own tenant.
+    const { router, fixtures } = makePaymentHarness();
+    const res = await invokeRoute(router, { method: 'POST', url: '/req-a1/approve', token: T.ownerA });
+    assert.equal(res.statusCode, 200);
+    assert.equal(fixtures.paymentRequests.find((r) => r.id === 'req-a1')!.status, 'approved');
+    assert.equal(fixtures.studentFees.length, 1);
+    assert.equal(fixtures.revenues.length, 1);
+});
+
+test('create: the new-payment notification goes to the proven tenant owner, never an arbitrary global admin', async () => {
+    // SUPERVISOR: the old code notified the arbitrary "oldest global admin",
+    // leaking the request across tenants. The fix notifies only the verified
+    // tenant owner (tenants.owner_user_id) and nothing if unprovable.
+    const { router, fixtures } = makePaymentHarness();
+    const res = await invokeRoute(router, {
+        method: 'POST', url: '/', token: T.instructorA,
+        body: { student_id: 'student-a1', grade_id: 'grade-a1', group_id: 'group-a1', amount: 10 },
+    });
+    assert.equal(res.statusCode, 201);
+    const paymentNotes = fixtures.notifications.filter((n) => n.type === 'payment_request');
+    // Exactly one recipient: the tenant-a owner.
+    assert.equal(paymentNotes.length, 1);
+    assert.equal(paymentNotes[0].user_id, 'owner-a');
+    // Cross-tenant exclusion: never the arbitrary global admin, never the
+    // other tenant's owner.
+    assert.ok(!fixtures.notifications.some((n) => n.user_id === 'admin-plat'),
+        'must not notify the arbitrary global admin');
+    assert.ok(!fixtures.notifications.some((n) => n.user_id === 'owner-b'),
+        'must not notify a cross-tenant owner');
+});
+
+test('create: a request in tenant-a notifies only tenant-a, even when a finance admin could read it', async () => {
+    // A finance-capable admin (admin-super) can read req-b1 globally, but a
+    // create in tenant-a must not notify them across tenants.
+    const { router, fixtures } = makePaymentHarness();
+    await invokeRoute(router, {
+        method: 'POST', url: '/', token: T.instructorA,
+        body: { student_id: 'student-a1', grade_id: 'grade-a1', group_id: 'group-a1', amount: 10 },
+    });
+    assert.ok(!fixtures.notifications.some((n) => n.user_id === 'admin-super'),
+        'must not notify a cross-tenant finance admin');
 });
 
 // ---------------------------------------------------------------------------

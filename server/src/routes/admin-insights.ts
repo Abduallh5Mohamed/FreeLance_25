@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { Router, Response } from 'express';
 import { execute, query, queryOne } from '../db';
+import { setNoStoreCacheHeaders } from '../utils/cache-headers';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { getAdminPermissions, isSuperAdmin, requireAdminPermission } from '../security/admin-permissions';
 
@@ -266,6 +267,7 @@ router.get('/finance/export', requireAdminPermission('finance.export'), async (r
        VALUES (?,?,?,?,?,?,?)`,
       [randomUUID(), req.user!.id, 'finance_report.exported', 'finance_report', 'aggregate', JSON.stringify({ months: data.months, detailed: data.detailed }), 'CSV analytics export']
     );
+    setNoStoreCacheHeaders(res);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="platform-analytics-${new Date().toISOString().slice(0, 10)}.csv"`);
     return res.send(csv);

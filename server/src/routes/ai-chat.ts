@@ -1,19 +1,40 @@
-import express, { Response } from 'express';
+import express, { Response, RequestHandler } from 'express';
 import { AuthRequest, authenticateToken } from '../middleware/auth';
+import { rateLimit } from '../middleware/rate-limit';
 
+export const AI_CHAT_MESSAGE_MAX_LENGTH = 2000;
+export const AI_CHAT_RATE_LIMIT = { max: 20, windowMs: 60_000 } as const;
+
+export const validateAiChatMessage = (value: unknown): { ok: true; message: string } | { ok: false; error: string } => {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return { ok: false, error: 'Message is required' };
+  }
+  if (value.length > AI_CHAT_MESSAGE_MAX_LENGTH) {
+    return { ok: false, error: 'Message is too long' };
+  }
+  return { ok: true, message: value };
+};
+
+export interface AiChatRouterDeps {
+  authenticate: RequestHandler;
+  chatRateLimit: RequestHandler;
+}
+
+export const createAiChatRouter = (deps: AiChatRouterDeps): express.Router => {
 const router = express.Router();
 
 // AI Chat endpoint
-router.post('/chat', authenticateToken, async (req: AuthRequest, res: Response) => {
+router.post('/chat', deps.authenticate, deps.chatRateLimit, async (req: AuthRequest, res: Response) => {
   try {
-    const { message } = req.body;
+    const { message } = req.body as { message?: unknown };
     const apiKey = process.env.GROQ_API_KEY;
 
-    console.log('🤖 AI Chat request received:', { message: message?.substring(0, 50), userId: req.user?.id });
+    console.log('🤖 AI Chat request received:', { userId: req.user?.id });
 
-    if (!message) {
-      console.log('❌ AI Chat: Message is required');
-      return res.status(400).json({ error: 'Message is required' });
+    const validation = validateAiChatMessage(message);
+    if (!validation.ok) {
+      console.log('❌ AI Chat: invalid message');
+      return res.status(400).json({ error: validation.error });
     }
 
     if (!apiKey) {
@@ -51,7 +72,7 @@ router.post('/chat', authenticateToken, async (req: AuthRequest, res: Response) 
       'mixtral-8x7b-32768'
     ];
 
-    let lastError;
+    let lastError: string | undefined;
 
     for (const model of groqModels) {
       try {
@@ -74,7 +95,7 @@ router.post('/chat', authenticateToken, async (req: AuthRequest, res: Response) 
                 },
                 {
                   role: 'user',
-                  content: message
+                  content: validation.message
                 }
               ],
               temperature: 0.7,
@@ -93,10 +114,10 @@ router.post('/chat', authenticateToken, async (req: AuthRequest, res: Response) 
           continue;
         }
 
-        let data;
+        let data: { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } };
         try {
-          data = JSON.parse(responseText);
-        } catch (parseError) {
+          data = JSON.parse(responseText) as typeof data;
+        } catch {
           lastError = `Parse error: ${responseText.substring(0, 100)}`;
           console.log(`❌ ${model}: JSON parse failed`);
           continue;
@@ -113,8 +134,8 @@ router.post('/chat', authenticateToken, async (req: AuthRequest, res: Response) 
 
         lastError = data.error?.message || JSON.stringify(data).substring(0, 200);
         console.log(`❌ ${model}:`, lastError);
-      } catch (err: any) {
-        lastError = err.message || 'Unknown error';
+      } catch (err: unknown) {
+        lastError = err instanceof Error ? err.message : 'Unknown error';
         console.log(`❌ ${model} exception:`, lastError);
         continue;
       }
@@ -122,11 +143,11 @@ router.post('/chat', authenticateToken, async (req: AuthRequest, res: Response) 
 
     // If all configs failed, return detailed error
     console.error('🚨 All AI models failed. Last error:', lastError);
-    
+
     // Check if it's a quota/rate limit error
-    const isQuotaError = lastError?.includes('quota') || lastError?.includes('Quota') || 
-                         lastError?.includes('rate limit') || lastError?.includes('429');
-    
+    const isQuotaError = lastError !== undefined && (lastError.includes('quota') || lastError.includes('Quota') ||
+                         lastError.includes('rate limit') || lastError.includes('429'));
+
     if (isQuotaError) {
       return res.status(429).json({
         error: 'خدمة المساعد الذكي مشغولة حالياً',
@@ -134,17 +155,23 @@ router.post('/chat', authenticateToken, async (req: AuthRequest, res: Response) 
         details: 'AI quota exceeded'
       });
     }
-    
+
     return res.status(500).json({
       error: 'خدمة المساعد الذكي غير متاحة مؤقتاً',
       message: 'عذراً، حدث خطأ في خدمة المساعد الذكي.\n\nالرجاء المحاولة مرة أخرى لاحقاً أو التواصل مع الأستاذ.',
       details: lastError
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('AI Chat Error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-export default router;
+return router;
+};
+
+export default createAiChatRouter({
+  authenticate: authenticateToken,
+  chatRateLimit: rateLimit('ai-chat', AI_CHAT_RATE_LIMIT.max, AI_CHAT_RATE_LIMIT.windowMs),
+});

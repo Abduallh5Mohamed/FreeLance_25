@@ -159,6 +159,11 @@ export const createInstructorWalletRouter = (deps: InstructorWalletRouterDeps): 
                 type: 'credit',
                 amount: req.body.amount,
                 reason: req.body.description,
+                // Idempotency: a client-supplied key is stored as the
+                // transaction reference so retried approvals can be deduped
+                // by (reference_type, reference_uuid) instead of double-posting.
+                referenceType: req.body.idempotencyKey || req.body.referenceUuid ? 'wallet_adjustment' : undefined,
+                referenceUuid: req.body.idempotencyKey || req.body.referenceUuid || undefined,
             });
             res.json({
                 message: 'تم إضافة رصيد خدمات المنصة بنجاح',
@@ -186,6 +191,9 @@ export const createInstructorWalletRouter = (deps: InstructorWalletRouterDeps): 
                 type: 'debit',
                 amount: req.body.amount,
                 reason: req.body.description,
+                // Idempotency: see the credit endpoint above.
+                referenceType: req.body.idempotencyKey || req.body.referenceUuid ? 'wallet_adjustment' : undefined,
+                referenceUuid: req.body.idempotencyKey || req.body.referenceUuid || undefined,
             });
             res.json({
                 message: 'تم خصم رصيد خدمات المنصة بنجاح',

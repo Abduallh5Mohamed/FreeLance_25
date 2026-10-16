@@ -2,6 +2,7 @@ import { Router, RequestHandler, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { AuthRequest, authenticateToken, requireRoles } from '../middleware/auth';
 import { execute, query, queryOne, getPool } from '../db';
+import { hasVerifiedPlatformPermission } from '../security/admin-permissions';
 
 /**
  * Data-access seam for the payment-requests router. Production binds ../db;
@@ -26,31 +27,166 @@ export interface PaymentRequestsDataAccess {
 
 /**
  * Injectable seams for the payment-requests router. The default export binds
- * the production SQL adapters, the real authentication middleware, and the
- * real role gate. Tests inject fixtures through this boundary instead of
- * bypassing production authorization.
+ * the production SQL adapters, the real authentication middleware, the real
+ * role gate, and the server-owned platform-finance and tenant-authority
+ * lookups. Tests inject fixtures through this boundary instead of bypassing
+ * production authorization.
  */
 export interface PaymentRequestsRouterDeps {
   db: PaymentRequestsDataAccess;
   authenticate: RequestHandler;
   authorize: RequestHandler;
+  /**
+   * Server-verified platform finance-read capability (active super_admin or a
+   * seeded platform permission key), resolved against admin_user_roles. A JWT
+   * role claim never satisfies this predicate. Production binds the real
+   * SQL-backed check; hermetic tests inject isolated fixtures through this
+   * same boundary so the production guard runs without a database.
+   */
+  hasVerifiedPlatformFinanceAccess?: (userId: string) => Promise<boolean>;
+  /**
+   * Active authority of a principal inside one tenant: the verified owner
+   * row, or an active membership with role_key IN ('owner','instructor') in
+   * an active tenant by an active user. Mirrors the server-owned authority
+   * lookup used by fees.ts / video-access-policy / videos.ts / teaching-access
+   * so no new authority vocabulary is invented. Production binds the
+   * SQL-backed lookup; hermetic tests inject isolated fixtures through this
+   * boundary.
+   */
+  loadActiveTenantAuthority?: (userId: string, tenantId: string) => Promise<{ authority: string } | null>;
 }
 
 export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Router => {
   const router = Router();
   const { query, queryOne, execute, withTransaction } = deps.db;
   router.use(deps.authenticate, deps.authorize);
-  const tenantSql = (req: AuthRequest, alias = '') => req.user?.role === 'admin' ? '' : ` AND ${alias}tenant_id=?`;
-  const tenantArgs = (req: AuthRequest) => req.user?.role === 'admin' ? [] : [req.user?.tenantId || ''];
+
+  // -------------------------------------------------------------------------
+  // Server-owned authority model (mirrors fees.ts). A JWT role claim never
+  // grants platform or tenant authority; every grant is resolved from
+  // server-side rows only. The bare `admin` role label confers nothing.
+  // -------------------------------------------------------------------------
+
+  const hasVerifiedPlatformFinanceAccess = deps.hasVerifiedPlatformFinanceAccess
+    ?? ((userId: string) => hasVerifiedPlatformPermission('finance.read', userId));
+
+  const loadActiveTenantAuthority = deps.loadActiveTenantAuthority
+    ?? (async (userId: string, tenantId: string) => queryOne<{ authority: string }>(
+      `SELECT 'owner' AS authority
+       FROM tenants t
+       WHERE t.id = ? AND t.owner_user_id = ? AND t.status = 'active'
+       UNION ALL
+       SELECT m.role_key AS authority
+       FROM tenant_memberships m
+       INNER JOIN tenants t ON t.id = m.tenant_id
+       INNER JOIN users u ON u.id = m.user_id
+       WHERE m.user_id = ? AND m.tenant_id = ? AND m.status = 'active'
+         AND t.status = 'active' AND u.is_active = 1
+         AND m.role_key IN ('owner','instructor')
+       LIMIT 1`,
+      [tenantId, userId, userId, tenantId],
+    ));
+
+  interface PaymentScope {
+    platform: boolean;
+    authority: 'owner' | 'instructor' | null;
+    userId: string;
+    tenantId: string | null;
+  }
+
+  /**
+   * Verify the platform finance-read capability before any data access. A
+   * lookup failure denies with 503 instead of failing open onto a role claim.
+   */
+  const verifyPlatformFinanceAccess = async (
+    req: AuthRequest,
+    res: Response,
+  ): Promise<boolean | null> => {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return null;
+    }
+    try {
+      return await hasVerifiedPlatformFinanceAccess(user.id);
+    } catch (error) {
+      console.error('Finance permission lookup failed:', error);
+      res.status(503).json({ error: 'Finance permissions unavailable' });
+      return null;
+    }
+  };
+
+  /**
+   * Resolve read authority. A verified platform operator (super_admin or a
+   * holder of finance.read) reads across tenants; the verified tenant owner
+   * or assigned instructor reads the whole tenant. Everyone else — including
+   * a bare admin role label, an active membership that is not owner/instructor
+   * (e.g. teacher/staff), or a principal with no active workspace — is denied
+   * before any query runs.
+   */
+  const resolveReadScope = async (
+    req: AuthRequest,
+    res: Response,
+  ): Promise<PaymentScope | null> => {
+    const platform = await verifyPlatformFinanceAccess(req, res);
+    if (platform === null) return null;
+    const user = req.user as NonNullable<AuthRequest['user']>;
+    if (platform) return { platform: true, authority: null, userId: user.id, tenantId: null };
+    const tenantId = user.tenantId;
+    if (!tenantId) {
+      res.status(403).json({ error: 'Workspace access required' });
+      return null;
+    }
+    let authorityRow: { authority: string } | null;
+    try {
+      authorityRow = await loadActiveTenantAuthority(user.id, tenantId);
+    } catch (error) {
+      console.error('Tenant authority lookup failed:', error);
+      res.status(503).json({ error: 'Tenant authority unavailable' });
+      return null;
+    }
+    if (!authorityRow || (authorityRow.authority !== 'owner' && authorityRow.authority !== 'instructor')) {
+      res.status(403).json({ error: 'Payment requests require owner or assigned-instructor authority' });
+      return null;
+    }
+    return { platform: false, authority: authorityRow.authority, userId: user.id, tenantId };
+  };
+
+  /**
+   * Writes need an active tenant authority: the verified platform capability
+   * grants reads only, so a platform principal without a tenant membership is
+   * denied before any mutation (unchanged fail-closed write contract).
+   */
+  const resolveWriteScope = async (
+    req: AuthRequest,
+    res: Response,
+  ): Promise<PaymentScope | null> => {
+    const scope = await resolveReadScope(req, res);
+    if (!scope) return null;
+    if (scope.platform) {
+      res.status(403).json({ error: 'Active tenant membership required' });
+      return null;
+    }
+    return scope;
+  };
+
+  /** Read clause derived from the resolved scope. Platform reads are global. */
+  const readClause = (scope: PaymentScope): { sql: string; params: unknown[] } => {
+    if (scope.platform) return { sql: '', params: [] };
+    return { sql: ' AND pr.tenant_id=?', params: [scope.tenantId as string] };
+  };
 
   router.get('/', async (req: AuthRequest, res: Response) => {
     try {
+      const scope = await resolveReadScope(req, res);
+      if (!scope) return;
       const { status, student_id } = req.query;
+      const clause = readClause(scope);
       let sql = `SELECT pr.*,s.name AS student_name,s.phone AS student_phone,g.name AS grade_name,gr.name AS group_name
       FROM payment_requests pr LEFT JOIN students s ON pr.student_id=s.id AND s.tenant_id=pr.tenant_id
       LEFT JOIN grades g ON pr.grade_id=g.id LEFT JOIN \`groups\` gr ON pr.group_id=gr.id
-      WHERE 1=1${tenantSql(req, 'pr.')}`;
-      const params: unknown[] = tenantArgs(req);
+      WHERE 1=1${clause.sql}`;
+      const params: unknown[] = [...clause.params];
       if (status) { sql += ' AND pr.status=?'; params.push(status); }
       if (student_id) { sql += ' AND pr.student_id=?'; params.push(student_id); }
       sql += ' ORDER BY pr.created_at DESC';
@@ -63,9 +199,10 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
 
   router.post('/', async (req: AuthRequest, res: Response) => {
     try {
-      const tenantId = req.user?.tenantId;
+      const scope = await resolveWriteScope(req, res);
+      if (!scope) return;
+      const tenantId = scope.tenantId as string;
       const { student_id, grade_id, group_id, amount, payment_method = 'cash', receipt_image, notes } = req.body;
-      if (!tenantId) return res.status(403).json({ error: 'Active tenant membership required' });
       if (!student_id || !grade_id || !group_id || !Number.isFinite(Number(amount)) || Number(amount) <= 0) {
         return res.status(400).json({ error: 'Missing or invalid payment fields' });
       }
@@ -87,10 +224,20 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending')`,
         [id, tenantId, student.id, student.name, student.phone, student.email, grade.id, grade.name, group.id, group.name, Number(amount), payment_method, receipt_image || null, notes || null]
       );
-      const admin = await queryOne<any>("SELECT id FROM users WHERE role='admin' AND is_active=1 ORDER BY created_at LIMIT 1");
-      if (admin) await execute(
-        `INSERT INTO notifications (user_id,user_type,title,message,type) VALUES (?,'admin','طلب دفع جديد','تم استلام طلب دفع جديد من الطالب','payment_request')`, [admin.id]
+      // Notify the PROVEN tenant owner of this request's tenant — never an
+      // arbitrary global admin. The recipient relationship is server-verified
+      // (tenants.owner_user_id); if it cannot be proven we send nothing rather
+      // than leak the request across tenants to an unrelated recipient.
+      const owner = await queryOne<any>(
+        'SELECT owner_user_id FROM tenants WHERE id=? AND status=?',
+        [tenantId, 'active'],
       );
+      if (owner?.owner_user_id) {
+        await execute(
+          `INSERT INTO notifications (user_id,user_type,title,message,type) VALUES (?,'owner','طلب دفع جديد','تم استلام طلب دفع جديد من الطالب','payment_request')`,
+          [owner.owner_user_id]
+        );
+      }
       res.status(201).json({ message: 'Payment request created successfully', id });
     } catch (error) {
       console.error('Create payment request error:', error);
@@ -98,26 +245,25 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
     }
   });
 
-  async function getOwnedRequest(req: AuthRequest, id: string) {
-    return queryOne<any>(`SELECT * FROM payment_requests WHERE id=?${tenantSql(req)}`, [id, ...tenantArgs(req)]);
-  }
-
   router.post('/:id/approve', async (req: AuthRequest, res: Response) => {
     try {
+      const scope = await resolveWriteScope(req, res);
+      if (!scope) return;
+      const tenantId = scope.tenantId as string;
       // One transaction: the fee row, the revenue row, the status transition,
       // and the student notification commit together. The row is locked with
       // FOR UPDATE so two concurrent approvals serialize on it; the second
       // observes status='approved' and is rejected instead of double-posting.
       const outcome = await withTransaction(async (tx) => {
         const request = await tx.queryOne<any>(
-          `SELECT * FROM payment_requests WHERE id=?${tenantSql(req)} FOR UPDATE`,
-          [req.params.id, ...tenantArgs(req)]
+          `SELECT * FROM payment_requests WHERE id=? AND tenant_id=? FOR UPDATE`,
+          [req.params.id, tenantId]
         );
         if (!request) return { status: 404, body: { error: 'Payment request not found' } };
         if (request.status !== 'pending') return { status: 400, body: { error: 'Request already processed' } };
         const enrollment = await tx.queryOne<any>(
           'SELECT id,user_id,name,phone,guardian_phone,barcode FROM students WHERE id=? AND tenant_id=? AND is_active=1',
-          [request.student_id, request.tenant_id]
+          [request.student_id, tenantId]
         );
         if (!enrollment) return { status: 409, body: { error: 'Student enrollment is no longer active' } };
         // Guarded flip FIRST: exactly one caller can move the request out of
@@ -127,7 +273,7 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
         // the flip back together with the fee and revenue rows.
         const transition = await tx.execute(
           `UPDATE payment_requests SET status='approved',updated_at=NOW() WHERE id=? AND tenant_id=? AND status='pending'`,
-          [request.id, request.tenant_id]
+          [request.id, tenantId]
         );
         if (transition.affectedRows === 0) return { status: 400, body: { error: 'Request already processed' } };
         await tx.execute(
@@ -153,16 +299,19 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
 
   router.post('/:id/reject', async (req: AuthRequest, res: Response) => {
     try {
+      const scope = await resolveWriteScope(req, res);
+      if (!scope) return;
+      const tenantId = scope.tenantId as string;
       const { rejection_reason } = req.body;
       if (!rejection_reason) return res.status(400).json({ error: 'Rejection reason is required' });
-      const request = await getOwnedRequest(req, req.params.id);
+      const request = await queryOne<any>(`SELECT * FROM payment_requests WHERE id=? AND tenant_id=?`, [req.params.id, tenantId]);
       if (!request) return res.status(404).json({ error: 'Payment request not found' });
       if (request.status !== 'pending') return res.status(400).json({ error: 'Request already processed' });
-      const transition = await execute(`UPDATE payment_requests SET status='rejected',rejection_reason=?,updated_at=NOW() WHERE id=? AND tenant_id=? AND status='pending'`, [rejection_reason, request.id, request.tenant_id]);
+      const transition = await execute(`UPDATE payment_requests SET status='rejected',rejection_reason=?,updated_at=NOW() WHERE id=? AND tenant_id=? AND status='pending'`, [rejection_reason, request.id, tenantId]);
       // A concurrent rejection already consumed the transition: do not send a
       // second notification for a request this call did not reject.
       if (transition.affectedRows === 0) return res.status(400).json({ error: 'Request already processed' });
-      const enrollment = await queryOne<any>('SELECT user_id FROM students WHERE id=? AND tenant_id=?', [request.student_id, request.tenant_id]);
+      const enrollment = await queryOne<any>('SELECT user_id FROM students WHERE id=? AND tenant_id=?', [request.student_id, tenantId]);
       if (enrollment?.user_id) await execute(
         `INSERT INTO notifications (user_id,user_type,title,message,type) VALUES (?,'student','تم رفض طلب الدفع',?,'payment_rejected')`,
         [enrollment.user_id, `تم رفض طلب الدفع. السبب: ${rejection_reason}`]
@@ -176,10 +325,14 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
 
   router.get('/stats/summary', async (req: AuthRequest, res: Response) => {
     try {
+      const scope = await resolveReadScope(req, res);
+      if (!scope) return;
+      const clause = scope.platform ? '' : ' AND tenant_id=?';
+      const params = scope.platform ? [] : [scope.tenantId as string];
       const rows = await query(
         `SELECT COUNT(*) AS total,SUM(status='pending') AS pending,SUM(status='approved') AS approved,SUM(status='rejected') AS rejected,
-       SUM(CASE WHEN status='approved' THEN amount ELSE 0 END) AS total_approved_amount FROM payment_requests WHERE 1=1${tenantSql(req)}`,
-        tenantArgs(req)
+       SUM(CASE WHEN status='approved' THEN amount ELSE 0 END) AS total_approved_amount FROM payment_requests WHERE 1=1${clause}`,
+        params
       );
       res.json(rows[0] || {});
     } catch (error) {

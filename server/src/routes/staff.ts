@@ -2,6 +2,7 @@ import { Router, Request, Response, RequestHandler } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt, { Secret } from 'jsonwebtoken';
 import { authenticateToken, getJwtSecret } from '../middleware/auth';
+import { rateLimit } from '../middleware/rate-limit';
 import { requireAdminPermission } from '../security/admin-permissions';
 
 interface Staff {
@@ -42,6 +43,42 @@ export interface StaffRouterDeps {
     authenticate: RequestHandler;
     authorizeAdmin: RequestHandler;
 }
+
+export const STAFF_NAME_MAX_LENGTH = 100;
+export const STAFF_PHONE_MIN_LENGTH = 5;
+export const STAFF_PHONE_MAX_LENGTH = 20;
+export const STAFF_PASSWORD_MIN_LENGTH = 8;
+export const STAFF_PASSWORD_MAX_LENGTH = 128;
+export const STAFF_ACCESSIBLE_PAGES_MAX = 50;
+export const STAFF_PAGE_KEY_MAX_LENGTH = 64;
+
+export const validateStaffCreate = (body: Record<string, unknown>): { ok: true; value: { name: string; phone: string; password: string; accessiblePages: string[] } } | { ok: false; error: string } => {
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const phone = typeof body.phone === 'string' ? body.phone.trim() : '';
+    const password = typeof body.password === 'string' ? body.password : '';
+    const accessiblePagesRaw = body.accessible_pages ?? body.accessiblePages ?? [];
+    if (!name || !phone || !password) {
+        return { ok: false, error: 'الاسم ورقم الهاتف وكلمة المرور مطلوبة' };
+    }
+    if (name.length > STAFF_NAME_MAX_LENGTH) {
+        return { ok: false, error: 'Staff name is too long' };
+    }
+    if (phone.length < STAFF_PHONE_MIN_LENGTH || phone.length > STAFF_PHONE_MAX_LENGTH) {
+        return { ok: false, error: 'Invalid phone number' };
+    }
+    if (password.length < STAFF_PASSWORD_MIN_LENGTH || password.length > STAFF_PASSWORD_MAX_LENGTH) {
+        return { ok: false, error: 'Password must be 8-128 characters' };
+    }
+    if (!Array.isArray(accessiblePagesRaw) || accessiblePagesRaw.length > STAFF_ACCESSIBLE_PAGES_MAX) {
+        return { ok: false, error: 'Invalid accessible pages' };
+    }
+    for (const page of accessiblePagesRaw) {
+        if (typeof page !== 'string' || page.length === 0 || page.length > STAFF_PAGE_KEY_MAX_LENGTH) {
+            return { ok: false, error: 'Invalid accessible pages' };
+        }
+    }
+    return { ok: true, value: { name, phone, password, accessiblePages: accessiblePagesRaw as string[] } };
+};
 
 export const createStaffRouter = (deps: StaffRouterDeps) => {
     const staffRouter = Router();
@@ -101,16 +138,17 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
     // Create new staff member
     staffRouter.post('/', deps.authenticate, deps.authorizeAdmin, async (req: Request, res: Response) => {
         try {
-            const { name, phone, password, accessible_pages = [] } = req.body;
-
-            if (!name || !phone || !password) {
-                return res.status(400).json({ error: 'الاسم ورقم الهاتف وكلمة المرور مطلوبة' });
+            const body = (req.body ?? {}) as Record<string, unknown>;
+            const validation = validateStaffCreate(body);
+            if (!validation.ok) {
+                return res.status(400).json({ error: validation.error });
             }
+            const { name, phone, password, accessiblePages } = validation.value;
 
             // Check if phone exists in staff table
             const existingStaff = await deps.queryOne(
                 'SELECT id FROM staff WHERE phone = ?',
-                [phone.trim()]
+                [phone]
             );
 
             if (existingStaff) {
@@ -120,7 +158,7 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
             // Check if phone exists in users table (admin/teacher/student)
             const existingUser = await deps.queryOne(
                 'SELECT id, role FROM users WHERE phone = ?',
-                [phone.trim()]
+                [phone]
             );
 
             if (existingUser) {
@@ -135,10 +173,10 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
                 `INSERT INTO staff (name, phone, password_hash, role, accessible_pages, is_active)
                  VALUES (?, ?, ?, 'staff', ?, 1)`,
                 [
-                    name.trim(),
-                    phone.trim(),
+                    name,
+                    phone,
                     passwordHash,
-                    JSON.stringify(accessible_pages)
+                    JSON.stringify(accessiblePages)
                 ]
             );
 
@@ -146,10 +184,10 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
 
             res.status(201).json({
                 id: staffId.toString(),
-                name: name.trim(),
-                phone: phone.trim(),
+                name,
+                phone,
                 role: 'staff',
-                accessible_pages,
+                accessible_pages: accessiblePages,
                 is_active: true,
                 message: 'تم إنشاء الموظف بنجاح'
             });
@@ -163,7 +201,31 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
     staffRouter.put('/:id', deps.authenticate, deps.authorizeAdmin, async (req: Request, res: Response) => {
         try {
             const { id } = req.params;
-            const { name, phone, password, accessible_pages } = req.body;
+            const body = (req.body ?? {}) as Record<string, unknown>;
+            const nameRaw = typeof body.name === 'string' ? body.name.trim() : undefined;
+            const phoneRaw = typeof body.phone === 'string' ? body.phone.trim() : undefined;
+            const passwordRaw = typeof body.password === 'string' ? body.password : undefined;
+            const accessiblePagesRaw = body.accessible_pages;
+
+            if (nameRaw !== undefined && (nameRaw.length === 0 || nameRaw.length > STAFF_NAME_MAX_LENGTH)) {
+                return res.status(400).json({ error: 'Invalid staff name' });
+            }
+            if (phoneRaw !== undefined && (phoneRaw.length < STAFF_PHONE_MIN_LENGTH || phoneRaw.length > STAFF_PHONE_MAX_LENGTH)) {
+                return res.status(400).json({ error: 'Invalid phone number' });
+            }
+            if (passwordRaw !== undefined && (passwordRaw.length < STAFF_PASSWORD_MIN_LENGTH || passwordRaw.length > STAFF_PASSWORD_MAX_LENGTH)) {
+                return res.status(400).json({ error: 'Password must be 8-128 characters' });
+            }
+            if (accessiblePagesRaw !== undefined) {
+                if (!Array.isArray(accessiblePagesRaw) || accessiblePagesRaw.length > STAFF_ACCESSIBLE_PAGES_MAX) {
+                    return res.status(400).json({ error: 'Invalid accessible pages' });
+                }
+                for (const page of accessiblePagesRaw) {
+                    if (typeof page !== 'string' || page.length === 0 || page.length > STAFF_PAGE_KEY_MAX_LENGTH) {
+                        return res.status(400).json({ error: 'Invalid accessible pages' });
+                    }
+                }
+            }
 
             // Check if staff exists
             const existingStaff = await deps.queryOne<Staff>(
@@ -176,11 +238,11 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
             }
 
             // Check for duplicate phone (if phone is being changed)
-            if (phone && phone.trim() !== existingStaff.phone) {
+            if (phoneRaw && phoneRaw !== existingStaff.phone) {
                 // Check in staff table
                 const duplicateStaffPhone = await deps.queryOne(
                     'SELECT id FROM staff WHERE phone = ? AND id != ?',
-                    [phone.trim(), id]
+                    [phoneRaw, id]
                 );
                 if (duplicateStaffPhone) {
                     return res.status(409).json({ error: 'رقم الهاتف مسجل بالفعل كموظف آخر' });
@@ -189,7 +251,7 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
                 // Check in users table
                 const duplicateUserPhone = await deps.queryOne(
                     'SELECT id FROM users WHERE phone = ?',
-                    [phone.trim()]
+                    [phoneRaw]
                 );
                 if (duplicateUserPhone) {
                     return res.status(409).json({ error: 'رقم الهاتف مسجل بالفعل في النظام' });
@@ -198,24 +260,24 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
 
             // Build update query
             const updateFields: string[] = [];
-            const updateValues: any[] = [];
+            const updateValues: unknown[] = [];
 
-            if (name) {
+            if (nameRaw) {
                 updateFields.push('name = ?');
-                updateValues.push(name.trim());
+                updateValues.push(nameRaw);
             }
-            if (phone) {
+            if (phoneRaw) {
                 updateFields.push('phone = ?');
-                updateValues.push(phone.trim());
+                updateValues.push(phoneRaw);
             }
-            if (password) {
-                const passwordHash = await bcrypt.hash(password, 10);
+            if (passwordRaw) {
+                const passwordHash = await bcrypt.hash(passwordRaw, 10);
                 updateFields.push('password_hash = ?');
                 updateValues.push(passwordHash);
             }
-            if (accessible_pages !== undefined) {
+            if (accessiblePagesRaw !== undefined) {
                 updateFields.push('accessible_pages = ?');
-                updateValues.push(JSON.stringify(accessible_pages));
+                updateValues.push(JSON.stringify(accessiblePagesRaw));
             }
 
             if (updateFields.length === 0) {
@@ -281,18 +343,23 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
     });
 
     // Staff login endpoint (public: authentication happens here)
-    staffRouter.post('/login', async (req: Request, res: Response) => {
+    staffRouter.post('/login', rateLimit('staff-login', 12, 15 * 60_000), async (req: Request, res: Response) => {
         try {
-            const { phone, password } = req.body;
+            const body = (req.body ?? {}) as Record<string, unknown>;
+            const phone = typeof body.phone === 'string' ? body.phone.trim() : '';
+            const password = typeof body.password === 'string' ? body.password : '';
 
             if (!phone || !password) {
                 return res.status(400).json({ error: 'Phone and password are required' });
+            }
+            if (phone.length > STAFF_PHONE_MAX_LENGTH || password.length > STAFF_PASSWORD_MAX_LENGTH) {
+                return res.status(401).json({ error: 'Invalid credentials' });
             }
 
             const staff = await deps.queryOne<Staff>(
                 `SELECT id, name, email, phone, password_hash, role, accessible_pages, is_active
                  FROM staff WHERE phone = ?`,
-                [phone.trim()]
+                [phone]
             );
 
             if (!staff || !staff.password_hash) {

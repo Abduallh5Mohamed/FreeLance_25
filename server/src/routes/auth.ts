@@ -7,7 +7,10 @@ import {
     getJwtSecret,
     requireRoles,
 } from '../middleware/auth';
-import { resolvePublicRegistrationRole } from '../security/registration-policy';
+import {
+    resolvePublicRegistrationRole,
+    validatePublicRegistrationInput,
+} from '../security/registration-policy';
 import { getAdminPermissions, getAdminRoleCodes } from '../security/admin-permissions';
 import { rateLimit } from '../middleware/rate-limit';
 import { normalizeEgyptianPhone, phoneLookupCandidates } from '../security/phone';
@@ -27,6 +30,53 @@ const loadDb = async (): Promise<typeof import('../db')> => {
 };
 
 const router = Router();
+
+/** Maximum lifetime for locally issued auth tokens (7 days, in seconds). */
+export const MAX_JWT_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
+
+/**
+ * Resolve the JWT lifetime from JWT_EXPIRES_IN, capped at 7 days so a
+ * misconfigured environment cannot mint effectively non-expiring sessions.
+ * Accepts seconds ("3600") or suffixed durations ("15m", "12h", "7d");
+ * anything unparseable falls back to the 7-day default.
+ */
+export function resolveJwtLifetimeSeconds(raw: string | undefined): number {
+    const fallback = MAX_JWT_LIFETIME_SECONDS;
+    if (!raw) return fallback;
+    const match = /^(\d+)(s|m|h|d)?$/.exec(raw.trim().toLowerCase());
+    if (!match) return fallback;
+    const multipliers: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
+    const seconds = Number(match[1]) * (multipliers[match[2] || 's'] ?? 1);
+    if (!Number.isSafeInteger(seconds) || seconds <= 0) return fallback;
+    return Math.min(seconds, fallback);
+}
+
+/**
+ * Precomputed bcrypt hash used only to equalize login timing when no stored
+ * credential exists for the identifier. A missing identity then costs one
+ * comparison just like a wrong password, so response timing does not reveal
+ * whether the account exists.
+ */
+const DUMMY_PASSWORD_HASH = '$2b$10$vGfr4/IEfyDXElhFZsbRXuF7FuiF./Z6SuVTLjJGdcfQy4cmvbMma';
+
+/**
+ * Parse accessible_pages defensively: a malformed legacy row yields no extra
+ * pages instead of crashing login with a 500.
+ */
+function parseAccessiblePages(value: unknown): string[] {
+    if (Array.isArray(value)) {
+        return value.filter((entry): entry is string => typeof entry === 'string');
+    }
+    if (typeof value !== 'string') return [];
+    try {
+        const parsed: unknown = JSON.parse(value);
+        return Array.isArray(parsed)
+            ? parsed.filter((entry): entry is string => typeof entry === 'string')
+            : [];
+    } catch {
+        return [];
+    }
+}
 
 interface User {
     id: string;
@@ -109,6 +159,12 @@ export const createLoginHandler = (deps: LoginHandlerDeps) =>
             );
 
             // If user found in users table
+            if (!user || !user.password_hash) {
+                // No local credential for this identifier (missing identity or
+                // invitation-pending account without a password yet): spend
+                // one comparison so timing does not reveal which case it is.
+                await deps.comparePassword(password, DUMMY_PASSWORD_HASH);
+            }
             if (user && user.password_hash) {
                 const isValidPassword = await deps.comparePassword(password, user.password_hash);
 
@@ -143,12 +199,11 @@ export const createLoginHandler = (deps: LoginHandlerDeps) =>
                     }
                     // Generate JWT token
                     const jwtSecret: Secret = getJwtSecret();
-                    const jwtExpiry = process.env.JWT_EXPIRES_IN || '7d';
                     const token = jwt.sign(
                         { id: user.id, email: user.email || null, phone: user.phone || null, role: user.role,
                             tv: Number(user.token_version || 0) },
                         jwtSecret,
-                        { expiresIn: jwtExpiry } as jwt.SignOptions
+                        { expiresIn: resolveJwtLifetimeSeconds(process.env.JWT_EXPIRES_IN) } as jwt.SignOptions
                     );
 
                     let adminPermissions: string[] = [];
@@ -161,8 +216,7 @@ export const createLoginHandler = (deps: LoginHandlerDeps) =>
                             'SELECT accessible_pages FROM staff WHERE id = ?', [user.id]
                         );
                         if (staffProfile) {
-                            legacyPages = typeof staffProfile.accessible_pages === 'string'
-                                ? JSON.parse(staffProfile.accessible_pages) : (staffProfile.accessible_pages || []);
+                            legacyPages = parseAccessiblePages(staffProfile.accessible_pages);
                         }
                     }
                     // Remove password hash from response
@@ -176,11 +230,17 @@ export const createLoginHandler = (deps: LoginHandlerDeps) =>
                 }
             }
 
-            // If not found in users or password invalid, check staff table
+            // If not found in users or password invalid, check staff table.
+            // Staff phones are matched over the same normalized format
+            // variants as users so one number cannot hold two identities.
+            const staffCandidates = phone ? phoneLookupCandidates(phone) : [];
+            const staffWhere = staffCandidates.length
+                ? `phone IN (${staffCandidates.map(() => '?').join(',')})`
+                : 'phone = ?';
             const staff = await deps.queryOne<Staff>(
                 `SELECT id, name, email, phone, password_hash, role, accessible_pages, is_active
-                 FROM staff WHERE phone = ?`,
-                [identifier]
+                 FROM staff WHERE ${staffWhere}`,
+                staffCandidates.length ? staffCandidates : [identifier]
             );
 
             if (staff && staff.password_hash) {
@@ -192,13 +252,10 @@ export const createLoginHandler = (deps: LoginHandlerDeps) =>
                         return res.status(403).json({ error: 'Account is suspended', code: 'ACCOUNT_SUSPENDED' });
                     }
                     // Parse accessible_pages
-                    const accessiblePages = typeof staff.accessible_pages === 'string'
-                        ? JSON.parse(staff.accessible_pages)
-                        : (staff.accessible_pages || []);
+                    const accessiblePages = parseAccessiblePages(staff.accessible_pages);
 
                     // Generate JWT token
                     const jwtSecret: Secret = getJwtSecret();
-                    const jwtExpiry = process.env.JWT_EXPIRES_IN || '7d';
                     const token = jwt.sign(
                         {
                             id: staff.id,
@@ -207,7 +264,7 @@ export const createLoginHandler = (deps: LoginHandlerDeps) =>
                             accessible_pages: accessiblePages
                         },
                         jwtSecret,
-                        { expiresIn: jwtExpiry } as jwt.SignOptions
+                        { expiresIn: resolveJwtLifetimeSeconds(process.env.JWT_EXPIRES_IN) } as jwt.SignOptions
                     );
 
                     return res.json({
@@ -240,69 +297,93 @@ router.post('/login', rateLimit('auth-login', 12, 15 * 60_000), createLoginHandl
     loadAdminRoleCodes: getAdminRoleCodes,
 }));
 
-// Register endpoint
-router.post('/register', async (req: Request, res: Response) => {
-    try {
-        const { query, queryOne } = await loadDb();
-        // Register with phone (preferred). For backward compatibility email may still be used.
-        const { phone, email, password, name, role: requestedRole } = req.body;
-        const role = resolvePublicRegistrationRole(requestedRole);
+// Register endpoint - public self-registration for student identities only.
+// Built over injected dependencies (same pattern as createLoginHandler) so
+// validation and rejection behavior is hermetically testable; production
+// wiring passes the real adapters below.
+export interface RegisterHandlerDeps {
+    queryOne: <T>(sql: string, params?: unknown[]) => Promise<T | null>;
+    query: (sql: string, params?: unknown[]) => Promise<{ insertId: number; affectedRows: number }>;
+    hashPassword: (password: string) => Promise<string>;
+}
 
-        if ((!phone && !email) || !password || !name) {
-            return res.status(400).json({ error: 'Phone (or email), password, and name are required' });
+export const createRegisterHandler = (deps: RegisterHandlerDeps) =>
+    async (req: Request, res: Response) => {
+        try {
+            const { phone, email, password, name, role: requestedRole } = req.body ?? {};
+            const role = resolvePublicRegistrationRole(requestedRole);
+
+            const validated = validatePublicRegistrationInput({ phone, email, password, name });
+            if (!validated.ok) {
+                return res.status(400).json({ error: validated.error });
+            }
+
+            // Normalized existence checks: every stored format variant of the
+            // phone is probed so one number cannot register twice, and a
+            // taken email cannot be reused either. The rejection is
+            // deliberately field-neutral to slow account enumeration.
+            if (validated.phone) {
+                const candidates = phoneLookupCandidates(validated.phone);
+                const existingByPhone = await deps.queryOne(
+                    `SELECT id FROM users WHERE phone IN (${candidates.map(() => '?').join(',')})`,
+                    candidates
+                );
+                if (existingByPhone) {
+                    return res.status(409).json({ error: 'An account with these details already exists' });
+                }
+            }
+            if (validated.email) {
+                const existingByEmail = await deps.queryOne(
+                    'SELECT id FROM users WHERE email = ?',
+                    [validated.email]
+                );
+                if (existingByEmail) {
+                    return res.status(409).json({ error: 'An account with these details already exists' });
+                }
+            }
+
+            const passwordHash = await deps.hashPassword(password);
+
+            const result = await deps.query(
+                `INSERT INTO users (email, phone, password_hash, name, role) VALUES (?, ?, ?, ?, ?)`,
+                [validated.email, validated.phone, passwordHash, validated.name, role]
+            );
+
+            const userId = result.insertId;
+
+            // Generate JWT token
+            const jwtSecret: Secret = getJwtSecret();
+            const token = jwt.sign(
+                { id: userId, email: validated.email, phone: validated.phone, role, tv: 0 },
+                jwtSecret,
+                { expiresIn: resolveJwtLifetimeSeconds(process.env.JWT_EXPIRES_IN) } as jwt.SignOptions
+            );
+
+            const user = {
+                id: userId.toString(),
+                email: validated.email,
+                phone: validated.phone,
+                name: validated.name,
+                role,
+                is_active: true,
+            };
+
+            return res.status(201).json({
+                user,
+                token,
+            });
+        } catch (error) {
+            console.error('Registration error:', error);
+            return res.status(500).json({ error: 'Registration failed' });
         }
+    };
 
-        const identifier = phone ? phone.trim() : (email || '').toLowerCase().trim();
-        const where = phone ? 'phone' : 'email';
-
-        // Check if user already exists by phone or email
-        const existingUser = await queryOne(
-            `SELECT id FROM users WHERE ${where} = ?`,
-            [identifier]
-        );
-
-        if (existingUser) {
-            return res.status(409).json({ error: 'User already exists' });
-        }
-
-        // Hash password
-        const passwordHash = await bcrypt.hash(password, 10);
-
-        // Insert new user
-        const result = await query(
-            `INSERT INTO users (email, phone, password_hash, name, role) VALUES (?, ?, ?, ?, ?)`,
-            [email ? email.toLowerCase().trim() : null, phone ? phone.trim() : null, passwordHash, name, role]
-        );
-
-        const userId = (result as unknown as QueryResult).insertId;
-
-        // Generate JWT token
-        const jwtSecret: Secret = getJwtSecret();
-        const jwtExpiry = process.env.JWT_EXPIRES_IN || '7d';
-        const token = jwt.sign(
-            { id: userId, email: email || null, phone: phone || null, role, tv: 0 },
-            jwtSecret,
-            { expiresIn: jwtExpiry } as jwt.SignOptions
-        );
-
-        const user = {
-            id: userId.toString(),
-            email: email ? email.toLowerCase().trim() : null,
-            phone: phone ? phone.trim() : null,
-            name,
-            role,
-            is_active: true,
-        };
-
-        res.status(201).json({
-            user,
-            token,
-        });
-    } catch (error) {
-        console.error('Registration error:', error);
-        res.status(500).json({ error: 'Registration failed' });
-    }
-});
+router.post('/register', rateLimit('auth-register', 10, 15 * 60_000), createRegisterHandler({
+    queryOne: (sql, params) => loadDb().then((db) => db.queryOne(sql, params)),
+    query: (sql, params) =>
+        loadDb().then((db) => db.query(sql, params) as unknown as Promise<{ insertId: number; affectedRows: number }>),
+    hashPassword: (password) => bcrypt.hash(password, 10),
+}));
 
 // Get current user (requires token)
 router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => {
@@ -322,10 +403,7 @@ router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => 
                     [req.user.id]
                 );
                 if (staff) {
-                    const accessiblePages = typeof staff.accessible_pages === 'string'
-                        ? JSON.parse(staff.accessible_pages)
-                        : (staff.accessible_pages || []);
-                    return res.json({ user: { ...staff, accessible_pages: accessiblePages } });
+                    return res.json({ user: { ...staff, accessible_pages: parseAccessiblePages(staff.accessible_pages) } });
                 }
             }
             return res.status(404).json({ error: 'User not found' });
@@ -344,7 +422,7 @@ router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => 
 
 // Delete user by student_id (for admins to delete student user accounts)
 // This will delete BOTH from users table AND students table (complete removal)
-router.delete('/users/student/:studentId', authenticateToken, requireRoles('admin', 'teacher'), async (req: Request, res: Response) => {
+router.delete('/users/student/:studentId', authenticateToken, requireRoles('admin', 'teacher'), async (req: AuthRequest, res: Response) => {
     try {
         const { query, queryOne } = await loadDb();
         const { studentId } = req.params;
@@ -354,8 +432,8 @@ router.delete('/users/student/:studentId', authenticateToken, requireRoles('admi
         }
 
         // First, get student info to find associated user by phone/email
-        const student = await queryOne<{ phone?: string; email?: string }>(
-            'SELECT phone, email FROM students WHERE id = ?',
+        const student = await queryOne<{ phone?: string; email?: string; tenant_id?: string | null }>(
+            'SELECT phone, email, tenant_id FROM students WHERE id = ?',
             [studentId]
         );
 
@@ -363,10 +441,24 @@ router.delete('/users/student/:studentId', authenticateToken, requireRoles('admi
             return res.status(404).json({ error: 'Student not found' });
         }
 
-        // Delete user by phone (users table doesn't have student_id)
+        // Deny-by-default tenant binding: a teacher acts only inside their
+        // resolved workspace, so a cross-tenant id fails as 404 instead of
+        // revealing (or deleting) another tenant's student. Platform admins
+        // keep global reach; legacy rows without a tenant fail closed.
+        if (req.user?.role !== 'admin') {
+            const scopeTenantId = req.user?.tenantId;
+            if (!scopeTenantId || student.tenant_id !== scopeTenantId) {
+                return res.status(404).json({ error: 'Student not found' });
+            }
+        }
+
+        // Delete user by every normalized variant of the phone (users table doesn't have student_id)
+        const userPhoneCandidates = student.phone ? phoneLookupCandidates(student.phone) : [];
         let result = await query(
-            'DELETE FROM users WHERE phone = ? AND role = "student"',
-            [student.phone]
+            userPhoneCandidates.length
+                ? `DELETE FROM users WHERE phone IN (${userPhoneCandidates.map(() => '?').join(',')}) AND role = "student"`
+                : 'DELETE FROM users WHERE phone = ? AND role = "student"',
+            userPhoneCandidates.length ? userPhoneCandidates : [student.phone]
         );
 
         let affectedRows = (result as unknown as QueryResult).affectedRows;
@@ -411,8 +503,8 @@ router.delete('/users/student/:studentId', authenticateToken, requireRoles('admi
     }
 });
 
-// Search user by phone
-router.get('/search-by-phone/:phone', authenticateToken, async (req: Request, res: Response) => {
+// Search user by phone (staff operation: teachers/admins only, rate-limited)
+router.get('/search-by-phone/:phone', authenticateToken, requireRoles('admin', 'teacher', 'staff'), rateLimit('auth-search-phone', 60, 60_000), async (req: Request, res: Response) => {
     try {
         const { queryOne } = await loadDb();
         const { phone } = req.params;
@@ -421,11 +513,12 @@ router.get('/search-by-phone/:phone', authenticateToken, async (req: Request, re
             return res.status(400).json({ error: 'Phone number is required' });
         }
 
+        const candidates = phoneLookupCandidates(phone);
         const user = await queryOne<User>(
-            `SELECT id, phone, name, role, is_active 
-             FROM users 
-             WHERE phone = ? AND is_active = TRUE`,
-            [phone.trim()]
+            `SELECT id, phone, name, role, is_active
+             FROM users
+             WHERE ${candidates.length ? `phone IN (${candidates.map(() => '?').join(',')})` : 'phone = ?'} AND is_active = TRUE`,
+            candidates.length ? candidates : [phone.trim()]
         );
 
         if (!user) {
@@ -433,7 +526,7 @@ router.get('/search-by-phone/:phone', authenticateToken, async (req: Request, re
         }
 
         // Don't return sensitive data
-        const { password_hash, ...userData } = user as any;
+        const { password_hash: _passwordHash, ...userData } = user;
 
         res.json(userData);
     } catch (error) {

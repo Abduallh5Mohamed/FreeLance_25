@@ -192,8 +192,16 @@ export const createAdminWorkItemsRouter = (deps: AdminWorkItemsRouterDeps): Rout
         }
       }
       if (adminId) {
-        const target = await queryOne('SELECT user_id FROM admin_user_roles WHERE user_id=? LIMIT 1', [adminId]);
-        if (!target) return res.status(400).json({ error: 'Assignee is not an admin member' });
+        // Verified ACTIVE target: the assignee must hold an admin role on an
+        // ACTIVE users row. A revoked/disabled principal must never receive
+        // work, so the lookup joins users and requires is_active = 1, failing
+        // closed for unknown or inactive targets (user-controlled id verified
+        // server-side).
+        const target = await queryOne(
+          'SELECT u.id FROM users u INNER JOIN admin_user_roles r ON r.user_id = u.id WHERE u.id = ? AND u.is_active = 1 LIMIT 1',
+          [adminId]
+        );
+        if (!target) return res.status(400).json({ error: 'Assignee is not an active admin member' });
         if (!permissions.includes('admin_roles.manage')) {
           const sharedTeam = await queryOne(
             `SELECT target.team_id FROM admin_team_memberships mine

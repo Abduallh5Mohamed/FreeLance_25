@@ -214,11 +214,11 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[], throwOnSql?: (sql: s
             return tenant ? [tenant] : [];
         }
         if (sql.includes('FROM courses WHERE name=?')) {
-            // Mirror the real predicate (name AND instructor_id): fixture
-            // courses carry no name, so no default course is found until the
-            // handler's INSERT INTO courses creates one.
+            // Mirror the real predicate (name AND instructor_id AND tenant_id):
+            // fixture courses carry no name, so no default course is found
+            // until the handler's INSERT INTO courses creates one.
             return Object.values(f.courses).filter(
-                (c) => c.name === params[0] && c.instructor_id === (params[1] ?? null)
+                (c) => c.name === params[0] && c.instructor_id === (params[1] ?? null) && c.tenant_id === (params[2] ?? null)
             );
         }
         if (sql.includes('INSERT INTO courses')) {
@@ -368,6 +368,21 @@ const STUDENT_B = tokenFor({ id: 'student-b', role: 'student', tv: 0, student_en
 const INSTRUCTOR_A = tokenFor({ id: 'instructor-a', role: 'instructor', tv: 0 });
 const INSTRUCTOR_B = tokenFor({ id: 'instructor-b', role: 'instructor', tv: 0 });
 const PLATFORM_ADMIN = tokenFor({ id: 'platform-admin', role: 'admin', tv: 0 });
+// instructor-a as an active member of tenant-b (a tenant they do not own),
+// selected explicitly via the tenant_id claim.
+const INSTRUCTOR_A_IN_TENANT_B = tokenFor({ id: 'instructor-a', role: 'instructor', tv: 0, tenant_id: 'tenant-b' });
+
+/**
+ * instructor-a becomes an active member of BOTH tenant-a (owned) and tenant-b
+ * (not owned) so the selected-tenant scoping can be exercised: a single
+ * membership would auto-select tenant-a, hiding the arbitrary-tenant bug that
+ * used `tenants WHERE owner_user_id=? LIMIT 1`.
+ */
+const makeMultiTenantFixtures = (): Fixtures => {
+    const f = makeFixtures();
+    f.memberships['instructor-a'] = [{ tenant_id: 'tenant-a' }, { tenant_id: 'tenant-b' }];
+    return f;
+};
 
 const assertNoWrite = (executed: ExecutedStatement[]) => {
     for (const statement of executed) {
@@ -469,6 +484,18 @@ test('instructor B cannot read instructor A published lecture (cross-instructor 
     assert.equal(response.statusCode, 404);
 });
 
+test('platform admin cannot read another instructor draft via role alone (bare-admin deny)', async () => {
+    // The previous handler granted any `role === 'admin'` token cross-tenant
+    // draft access, leaking private video sources. Access now requires the
+    // server-verified owning instructor scope; a bare platform admin without
+    // ownership receives the same 404 as any other caller (fail closed).
+    const { router } = makeHarness();
+    const response = await invokeRoute(router, { method: 'GET', url: '/lecture-a-draft', token: PLATFORM_ADMIN });
+    assert.equal(response.statusCode, 404);
+    assert.equal((response.body as { error?: string }).error, 'Lecture not found');
+    assert.ok(!JSON.stringify(response.body ?? {}).includes('video://'), 'no private video source in response');
+});
+
 // ---------------------------------------------------------------------------
 // POST / — create-path ownership (forged course identifiers)
 // ---------------------------------------------------------------------------
@@ -556,6 +583,67 @@ test('anonymous create is denied with 401 before any data access', async () => {
     const response = await invokeRoute(router, { method: 'POST', url: '/', body: validLectureBody() });
     assert.equal(response.statusCode, 401);
     assert.equal(executed.length, 0);
+});
+
+test('instructor create with a course that does not resolve to the selected tenant is denied (wrong course deny)', async () => {
+    // The precise selected-tenant course check rejects any course_id that does
+    // not map to the instructor's explicitly selected active tenant.
+    const { router, executed } = makeHarness();
+    const response = await invokeRoute(router, {
+        method: 'POST', url: '/', token: INSTRUCTOR_A,
+        body: validLectureBody({ course_id: 'course-does-not-exist' }),
+    });
+    assert.equal(response.statusCode, 403);
+    assert.equal((response.body as { error?: string }).error, 'Course not found in your workspace');
+    assertNoWrite(executed);
+});
+
+test('instructor create in another tenant is denied even when the grade matches (same-grade cross-tenant deny)', async () => {
+    // Cross-tenant isolation is enforced by the selected tenant, not by the
+    // lecture's grade: instructor-a (tenant-a) may not bind a lecture to
+    // course-b (tenant-b) even though it targets the same grade-a.
+    const { router, executed } = makeHarness();
+    const response = await invokeRoute(router, {
+        method: 'POST', url: '/', token: INSTRUCTOR_A,
+        body: validLectureBody({ course_id: 'course-b', grade_id: 'grade-a', group_id: 'group-a' }),
+    });
+    assert.equal(response.statusCode, 403);
+    assert.equal((response.body as { error?: string }).error, 'Course not found in your workspace');
+    assertNoWrite(executed);
+});
+
+test('multi-tenant instructor may create under a course in their selected (non-owned) tenant', async () => {
+    // The old check used `tenants WHERE owner_user_id=? LIMIT 1`, which pinned
+    // instructor-a to owned tenant-a and denied course-b (tenant-b) even though
+    // instructor-a is an active member there. The selected-tenant check (from
+    // the auth middleware) resolves course-b correctly under tenant-b.
+    const { router, executed } = makeHarness({ fixtures: makeMultiTenantFixtures() });
+    const response = await invokeRoute(router, {
+        method: 'POST', url: '/', token: INSTRUCTOR_A_IN_TENANT_B,
+        body: validLectureBody({ course_id: 'course-b', grade_id: 'grade-b', group_id: 'group-b' }),
+    });
+    assert.equal(response.statusCode, 201);
+    const body = response.body as LectureRow;
+    assert.equal(body.instructor_id, 'instructor-a');
+    assert.equal(body.course_id, 'course-b');
+    const insert = executed.find((e) => e.sql.includes('INSERT INTO lectures'));
+    assert.ok(insert, 'lecture INSERT executed');
+    assert.equal(insert!.params[1], 'course-b');
+    assert.equal(insert!.params[4], 'instructor-a');
+});
+
+test('instructor with multiple memberships but no selected tenant fails closed (no arbitrary owner-tenant pick)', async () => {
+    // With two active memberships and no tenant selector, the auth middleware
+    // resolves no tenant scope (deny-by-default). The create path must not
+    // fall back to an arbitrary first-owned tenant; it fails closed instead.
+    const { router, executed } = makeHarness({ fixtures: makeMultiTenantFixtures() });
+    const response = await invokeRoute(router, {
+        method: 'POST', url: '/', token: INSTRUCTOR_A,
+        body: validLectureBody(),
+    });
+    assert.equal(response.statusCode, 403);
+    assert.equal((response.body as { error?: string }).error, 'Course not found in your workspace');
+    assertNoWrite(executed);
 });
 
 // ---------------------------------------------------------------------------
@@ -649,6 +737,37 @@ test('anonymous list keeps the pre-existing published-only public contract', asy
     const listQuery = executed.find((e) => e.sql.includes('WHERE l.is_published = TRUE'));
     assert.ok(listQuery);
     assert.ok(!listQuery!.sql.includes('AND l.instructor_id = ?'), 'no instructor scoping for anonymous callers');
+});
+
+test('GET / public list uses a minimal safe projection (no l.* source leakage) while remaining allowed', async () => {
+    // Decision-boundary: the marketplace discovery list must not select l.*
+    // (which would expose the private video source/key to anonymous browsers).
+    // The projection is now an explicit public-safe column set and the
+    // published-discovery contract is preserved.
+    const { router, executed } = makeHarness();
+    const response = await invokeRoute(router, { method: 'GET', url: '/' });
+    assert.equal(response.statusCode, 200);
+    const listQuery = executed.find((e) => e.sql.includes('WHERE l.is_published = TRUE'));
+    assert.ok(listQuery, 'list query executed');
+    assert.ok(!/l\.\*/.test(listQuery!.sql), 'list projection must not select l.*');
+    assert.ok(!/\bl\.video_url\b/.test(listQuery!.sql), 'list projection must not expose l.video_url');
+    const body = response.body as LectureRow[];
+    assert.deepEqual(body.map((l) => l.id).sort(), ['lecture-a-pub', 'lecture-b-pub']);
+});
+
+test('entitled student still receives private lecture metadata (video_url) for their audience', async () => {
+    // The minimal public projection does not apply to an entitled student
+    // audience: the student workspace route returns the full row (video_url)
+    // for lectures the student is entitled to, preserving playback while the
+    // open marketplace stays source-free.
+    const { router, executed } = makeHarness();
+    const response = await invokeRoute(router, { method: 'GET', url: '/student/student-a', token: STUDENT_A });
+    assert.equal(response.statusCode, 200);
+    const body = response.body as LectureRow[];
+    assert.equal(body.length, 1);
+    assert.equal(body[0].id, 'lecture-a-pub');
+    assert.equal(body[0].video_url, 'video://video-a');
+    assert.ok(executed.some((e) => e.sql.includes('sl.lecture_id=l.id')), 'student audience query executed');
 });
 
 // ---------------------------------------------------------------------------

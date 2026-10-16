@@ -119,6 +119,10 @@ const makeFixtures = (): Fixtures => ({
         nobody: adminUser('nobody', 'Nobody', '0100000006'),
         peer: adminUser('peer', 'Peer', '0100000007'),
         target1: { id: 'target1', name: 'Target One', email: 'target1@example.test', phone: '0100000008', is_active: 1, role: 'staff' },
+        // Revoked/disabled admin member: holds an admin role but is_active=0.
+        // Used to prove inactive targets are never assigned work and that the
+        // active-target join is honored.
+        'target-inactive': { id: 'target-inactive', name: 'Target Inactive', email: 'targeti@example.test', phone: '0100000009', is_active: 0, role: 'staff' },
         // Staff promotion fixtures
         'staff-conflict': { id: 'staff-conflict', name: 'Conflicting Identity', email: 'sc@example.test', phone: '0100000031', is_active: 1, role: 'instructor' },
         [INSTRUCTOR_1]: { id: INSTRUCTOR_1, name: 'Instructor One', email: 'i1@example.test', phone: '0100000011', is_active: 1, role: 'instructor' },
@@ -133,6 +137,7 @@ const makeFixtures = (): Fixtures => ({
         creator: ['creator'],
         peer: ['operations'],
         target1: ['analyst'],
+        'target-inactive': ['analyst'],
     },
     adminRolePermissions: {
         super_admin: ['admin_roles.manage', 'task.read', 'task.create', 'task.assign', 'approval.read', 'approval.approve', 'service_credit.adjust'],
@@ -274,6 +279,14 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[], throwOnSql?: (sql: s
         if (sql.includes('SELECT user_id FROM admin_user_roles WHERE user_id=?')) {
             const id = String(params[0]);
             return (f.adminUserRoles[id] ?? []).length ? [{ user_id: id }] : [];
+        }
+        // Active-target join used by the work-items assign handler: the
+        // assignee must hold an admin role on an ACTIVE users row. Returns a
+        // row only when the principal is both roled and active.
+        if (sql.includes('INNER JOIN admin_user_roles r ON r.user_id = u.id') && sql.includes('u.is_active = 1')) {
+            const user = f.users[String(params[0])];
+            if (user && user.is_active === 1 && (f.adminUserRoles[user.id] ?? []).length) return [{ id: user.id }];
+            return [];
         }
         if (sql.includes('SELECT u.id,u.is_active FROM users u WHERE u.id=?')) {
             const user = f.users[String(params[0])];
@@ -692,6 +705,31 @@ test('members: super admin deactivates a target admin (update + audit)', async (
     assert.equal(fixtures.users['target1'].is_active, 0);
 });
 
+test('members: super admin reactivates a target with a real boolean true', async () => {
+    const { router, executed, fixtures } = makeMembersHarness();
+    const response = await invokeRoute(router, { method: 'PATCH', url: '/target1', token: ROOT, body: { is_active: true, reason: 'reinstate' } });
+    assert.equal(response.statusCode, 200);
+    assert.ok(executed.some((e) => e.sql.includes('UPDATE users SET is_active=?')));
+    assert.equal(fixtures.users['target1'].is_active, 1);
+});
+
+test('members: string is_active is rejected 400 (no silent reactivation by coercion)', async () => {
+    const { router, executed, fixtures } = makeMembersHarness();
+    const before = fixtures.users['target1'].is_active;
+    const response = await invokeRoute(router, { method: 'PATCH', url: '/target1', token: ROOT, body: { is_active: 'false', reason: 'tamper' } });
+    assert.equal(response.statusCode, 400);
+    assertNoWrite(executed);
+    // The disabled account must remain unchanged.
+    assert.equal(fixtures.users['target1'].is_active, before);
+});
+
+test('members: numeric is_active is rejected 400', async () => {
+    const { router, executed } = makeMembersHarness();
+    const response = await invokeRoute(router, { method: 'PATCH', url: '/target1', token: ROOT, body: { is_active: 0, reason: 'tamper' } });
+    assert.equal(response.statusCode, 400);
+    assertNoWrite(executed);
+});
+
 test('members: staff promotion by a non-super admin is denied 403 with no write (M1 authority fix)', async () => {
     const { router, executed } = makeMembersHarness();
     const response = await invokeRoute(router, { method: 'POST', url: '/staff/staff-1/roles', token: LEAD, body: { role_code: 'analyst' } });
@@ -1064,6 +1102,21 @@ test('work items: assign to a non-admin assignee is 400', async () => {
     const response = await invokeRoute(router, { method: 'PATCH', url: '/wi-own/assign', token: LEAD, body: { assigned_admin_id: INSTRUCTOR_1, reason: 'handoff' } });
     assert.equal(response.statusCode, 400);
     assertNoWrite(executed);
+});
+
+test('work items: assign to an inactive/revoked admin member is 400 (active target verified)', async () => {
+    const { router, executed } = makeWorkItemsHarness();
+    const response = await invokeRoute(router, { method: 'PATCH', url: '/wi-own/assign', token: LEAD, body: { assigned_admin_id: 'target-inactive', reason: 'handoff' } });
+    assert.equal(response.statusCode, 400);
+    assert.equal((response.body as { error?: string }).error, 'Assignee is not an active admin member');
+    assertNoWrite(executed);
+});
+
+test('work items: assigning to an active admin member is allowed (intended active assignment)', async () => {
+    const { router, fixtures } = makeWorkItemsHarness();
+    const response = await invokeRoute(router, { method: 'PATCH', url: '/wi-own/assign', token: LEAD, body: { assigned_admin_id: 'ops', reason: 'handoff' } });
+    assert.equal(response.statusCode, 200);
+    assert.equal(fixtures.workItems['wi-own'].assigned_admin_id, 'ops');
 });
 
 test('work items: cross-team handoff by a non-management member is 403', async () => {

@@ -121,6 +121,9 @@ export type MessageRecipientDecision =
  * Authorize a send: the receiver must be legitimately related to the sender.
  * Runs before any row is written on every surface.
  */
+export const MESSAGE_SEND_RATE_LIMIT = { max: 30, windowMs: 60_000 } as const;
+export const MESSAGE_IMAGE_SEND_RATE_LIMIT = { max: 20, windowMs: 60_000 } as const;
+
 export const authorizeMessageRecipient = async (
     reader: MessageRelationReader,
     senderId: string,
@@ -128,6 +131,9 @@ export const authorizeMessageRecipient = async (
 ): Promise<MessageRecipientDecision> => {
     if (!senderId || !receiverId) {
         return { allowed: false, error: 'Missing sender or receiver' };
+    }
+    if (String(senderId) === String(receiverId)) {
+        return { allowed: false, error: 'Cannot message yourself' };
     }
     const related = await reader.areMessageRelated(senderId, receiverId);
     return related ? { allowed: true } : { allowed: false, error: 'Receiver is outside your workspace network' };

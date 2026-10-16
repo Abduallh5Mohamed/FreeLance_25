@@ -71,6 +71,9 @@ export const createManualGradingRouter = (deps: ManualGradingRouterDeps): expres
 
             // Get all pending attempts for students in this grade (and optionally group)
             // NOTE: Removed ORDER BY to avoid MySQL sort buffer overflow - results sorted in memory
+            // Attempts are keyed by enrollment (students.id): join students
+            // directly on ea.student_id and resolve the display name via the
+            // phone-matched user row.
             const sql = `
       SELECT 
         ea.exam_id,
@@ -85,8 +88,8 @@ export const createManualGradingRouter = (deps: ManualGradingRouterDeps): expres
         s.group_id
       FROM exam_attempts ea
       INNER JOIN exams e ON e.id = ea.exam_id
-      INNER JOIN users u ON u.id = ea.student_id
-      INNER JOIN students s ON s.phone = u.phone
+      INNER JOIN students s ON s.id = ea.student_id
+      LEFT JOIN users u ON u.phone = s.phone
       WHERE ea.status = 'pending_review'
         AND s.grade_id = ?
         ${hasGroupFilter ? 'AND s.group_id = ?' : ''}
@@ -175,32 +178,50 @@ export const createManualGradingRouter = (deps: ManualGradingRouterDeps): expres
 
             console.log('🔍 Manual Grading - Submit grades');
             console.log('📝 Exam ID:', exam_id);
-            console.log('👤 Student ID (user_id):', student_id);
+            console.log('👤 Student ID:', student_id);
             console.log('📊 Essay Scores:', essay_scores);
             console.log('📊 Total Score:', total_score);
 
-            // ✅ Get actual student.id from students table using phone
-            console.log('🔍 Getting actual student.id from students table...');
+            // Attempts, answers and results are all keyed by enrollment
+            // (students.id). Accept either a user id or an enrollment id and
+            // resolve server-side so both address the same attempt row.
+            console.log('🔍 Resolving enrollment id for grading...');
 
-            // First get user phone
-            const [userRecord] = await query<any>(
-                'SELECT phone FROM users WHERE id = ?',
+            let actualStudentId: string | null = null;
+            const byEnrollment = await queryOne<{ id: string }>(
+                'SELECT id FROM students WHERE id = ?',
                 [student_id]
             );
+            if (byEnrollment?.id) {
+                actualStudentId = byEnrollment.id;
+            } else {
+                // First get user phone
+                const [userRecord] = await query<any>(
+                    'SELECT phone FROM users WHERE id = ?',
+                    [student_id]
+                );
 
-            if (!userRecord || !userRecord.phone) {
-                return res.status(404).json({ error: 'User not found or has no phone' });
+                if (userRecord?.phone) {
+                    // Then get student by phone
+                    const studentRecord = await query<any>(
+                        'SELECT id FROM students WHERE phone = ?',
+                        [userRecord.phone]
+                    );
+                    actualStudentId = studentRecord[0]?.id ?? null;
+                }
+                if (!actualStudentId) {
+                    const byUser = await queryOne<{ id: string }>(
+                        'SELECT id FROM students WHERE user_id = ? LIMIT 1',
+                        [student_id]
+                    );
+                    actualStudentId = byUser?.id ?? null;
+                }
             }
 
-            // Then get student by phone
-            const studentRecord = await query<any>(
-                'SELECT id FROM students WHERE phone = ?',
-                [userRecord.phone]
-            );
-
-            const actualStudentId = studentRecord[0]?.id || student_id;
-            console.log(`📊 User ID: ${student_id}`);
-            console.log(`📊 User Phone: ${userRecord.phone}`);
+            if (!actualStudentId) {
+                return res.status(404).json({ error: 'User not found or has no phone' });
+            }
+            console.log(`📊 Supplied ID: ${student_id}`);
             console.log(`📊 Actual Student ID: ${actualStudentId}`);
 
             if (!exam_id || !student_id || !essay_scores || total_score === undefined) {
@@ -224,7 +245,7 @@ export const createManualGradingRouter = (deps: ManualGradingRouterDeps): expres
             // graded. A completed/absent attempt is never (re)graded here.
             const attemptRow = await queryOne<any>(
                 'SELECT id, status FROM exam_attempts WHERE exam_id = ? AND student_id = ?',
-                [exam_id, student_id]
+                [exam_id, actualStudentId]
             );
             if (!attemptRow) {
                 return res.status(404).json({ error: 'Exam attempt not found' });
@@ -248,7 +269,7 @@ export const createManualGradingRouter = (deps: ManualGradingRouterDeps): expres
            status = ?,
            essay_scores = ?
        WHERE exam_id = ? AND student_id = ? AND status = 'pending_review'`,
-                [total_score, status, JSON.stringify(essay_scores), exam_id, student_id]
+                [total_score, status, JSON.stringify(essay_scores), exam_id, actualStudentId]
             );
 
             if (gradedResult.affectedRows === 0) {
@@ -261,10 +282,11 @@ export const createManualGradingRouter = (deps: ManualGradingRouterDeps): expres
             console.log('🔄 Updating exam_results with final grade...');
 
             // Calculate percentage and determine grade
-            // ⚠️ IMPORTANT: exam_results.student_id references users.id, NOT students.id
+            // exam_results.student_id references students(id) (enrollment id),
+            // same key as exam_attempts.student_id.
             const [examResult] = await query<any>(
                 `SELECT total_marks FROM exam_results WHERE exam_id = ? AND student_id = ?`,
-                [exam_id, student_id]
+                [exam_id, actualStudentId]
             );
 
             const totalMarks = examResult?.total_marks || 100;
@@ -285,7 +307,7 @@ export const createManualGradingRouter = (deps: ManualGradingRouterDeps): expres
                  graded_at = NOW(),
                  graded_by = ?
              WHERE exam_id = ? AND student_id = ?`,
-                [total_score, grade, null, exam_id, student_id]
+                [total_score, grade, null, exam_id, actualStudentId]
             );
 
             console.log('✅ exam_results updated with grade:', grade);
@@ -324,14 +346,14 @@ export const createManualGradingRouter = (deps: ManualGradingRouterDeps): expres
 
             console.log('✅ exam_student_answers updated with essay scores');
 
-            // ⚠️ Note: The first exam_results update already used the correct student_id (user_id)
-            // This final check is redundant but kept for safety - using correct student_id (user_id)
+            // The first exam_results update already used the enrollment id;
+            // this final check is redundant but kept for safety.
             console.log('🔄 Final exam_results check...');
             await execute(
                 `UPDATE exam_results 
        SET marks_obtained = ?
        WHERE exam_id = ? AND student_id = ?`,
-                [total_score, exam_id, student_id]  // ✅ Use student_id (user_id), NOT actualStudentId
+                [total_score, exam_id, actualStudentId]
             );
 
             console.log('✅ Grading complete');

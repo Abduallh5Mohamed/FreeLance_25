@@ -164,8 +164,81 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
     // closed instead of falling back to an unscoped view.
     const isAdmin = (req: AuthRequest): boolean => req.user?.role === 'admin';
 
-    const isStudentSelf = (req: AuthRequest, id: unknown): boolean =>
-        req.user?.role === 'student' && String(req.user.id) === String(id);
+    const isStudentSelf = (req: AuthRequest, id: unknown): boolean => {
+        if (req.user?.role !== 'student') return false;
+        if (String(req.user.id) === String(id)) return true;
+        const enrollmentId = req.user.studentEnrollmentId;
+        return !!enrollmentId && String(enrollmentId) === String(id);
+    };
+
+    /**
+     * Resolve the enrollment (students.id) backing a student-action URL param.
+     * Student callers never touch the database: the param must name their own
+     * user id or their server-derived enrollment id, and the returned key is
+     * always the server-derived enrollment id. Teachers/admins resolve the
+     * param server-side (enrollment id preferred, user id fallback) so a user
+     * id and an enrollment id that differ still address the same attempt row.
+     * Returns null when the param cannot be resolved to an enrollment.
+     */
+    const resolveAttemptStudentId = async (req: AuthRequest, studentIdParam: string): Promise<string | null> => {
+        if (req.user?.role === 'student') {
+            const enrollmentId = req.user.studentEnrollmentId;
+            if (!enrollmentId) return null;
+            if (String(req.user.id) === String(studentIdParam)) return enrollmentId;
+            if (String(enrollmentId) === String(studentIdParam)) return enrollmentId;
+            return null;
+        }
+        const byEnrollment = await queryOne<{ id: string }>(
+            'SELECT id FROM students WHERE id = ?',
+            [studentIdParam]
+        );
+        if (byEnrollment?.id) return byEnrollment.id;
+        const byUser = await queryOne<{ id: string }>(
+            'SELECT id FROM students WHERE user_id = ? LIMIT 1',
+            [studentIdParam]
+        );
+        if (byUser?.id) return byUser.id;
+        // Legacy fallback: rows created before the user_id backfill resolve via phone.
+        const userRow = await queryOne<{ phone: string | null }>(
+            'SELECT phone FROM users WHERE id = ?',
+            [studentIdParam]
+        );
+        if (userRow?.phone) {
+            const byPhone = await queryOne<{ id: string }>(
+                'SELECT id FROM students WHERE phone = ? LIMIT 1',
+                [userRow.phone]
+            );
+            if (byPhone?.id) return byPhone.id;
+        }
+        return null;
+    };
+
+    /**
+     * Enrollment scope for an instructor: the enrollment must be directly
+     * assigned or sit in one of the instructor's groups. Anything else is
+     * indistinguishable from missing (404) so group membership cannot be
+     * enumerated across instructors.
+     */
+    const isEnrollmentInInstructorScope = async (enrollmentId: string, scopeId: string): Promise<boolean> => {
+        const row = await queryOne(
+            `SELECT s.id FROM students s LEFT JOIN \`groups\` g ON s.group_id = g.id
+             WHERE s.id = ? AND (s.instructor_id = ? OR g.instructor_id = ?)`,
+            [enrollmentId, scopeId, scopeId]
+        );
+        return !!row;
+    };
+
+    /**
+     * Server-side attempt timer: true when now exceeds started_at + duration.
+     * The database started_at and the exam duration are the only clock inputs;
+     * client timestamps are never trusted.
+     */
+    const isAttemptExpired = (startedAt: unknown, durationMinutes: unknown, now: Date = new Date()): boolean => {
+        const start = startedAt instanceof Date ? startedAt : new Date(String(startedAt));
+        const duration = Number(durationMinutes);
+        if (isNaN(start.getTime()) || !isFinite(duration) || duration <= 0) return false;
+        return now.getTime() >= start.getTime() + duration * 60 * 1000;
+    };
 
     /**
      * Teacher-facing exam authorization. Returns null when the caller may act
@@ -469,10 +542,15 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             // Extract date and keep full datetime for start_time/end_time since they are DATETIME columns
             const examDateOnly = finalStartTime ? finalStartTime.split(' ')[0] : null;
 
-            const result = await execute(
+            // The id is generated server-side so the created row is read back
+            // through it; ordering the table by created_at would return another
+            // tenant's concurrent insert under load.
+            const newExamId = randomUUID();
+            await execute(
                 `INSERT INTO exams (id, title, description, course_id, grade_id, duration_minutes, total_marks, passing_marks, exam_date, start_time, end_time, is_active, is_published, created_at, updated_at)
-                 VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW())`,
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW())`,
                 [
+                    newExamId,
                     title,
                     description ?? null,
                     course_id,
@@ -488,7 +566,8 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             );
 
             const newExam = await queryOne<Exam>(
-                'SELECT * FROM exams WHERE id = (SELECT id FROM exams ORDER BY created_at DESC LIMIT 1)'
+                'SELECT * FROM exams WHERE id = ?',
+                [newExamId]
             );
 
             // ✅ Save group associations
@@ -826,10 +905,12 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                 return res.status(400).json({ error: 'Missing required fields' });
             }
 
+            const newQuestionId = randomUUID();
             await execute(
                 `INSERT INTO exam_questions (id, exam_id, question_text, question_image, question_type, options, correct_answer, points, display_order, created_at)
-                 VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
                 [
+                    newQuestionId,
                     req.params.examId,
                     question_text,
                     question_image ?? null,  // ✅ Save image URL
@@ -841,8 +922,12 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                 ]
             );
 
+            // Read back the row created above through its server-generated id;
+            // ordering the table by created_at would return another exam's
+            // concurrent insert.
             const newQuestion = await queryOne<ExamQuestion>(
-                'SELECT * FROM exam_questions WHERE id = (SELECT id FROM exam_questions ORDER BY created_at DESC LIMIT 1)'
+                'SELECT * FROM exam_questions WHERE id = ?',
+                [newQuestionId]
             );
 
             // ✅ Auto-update total_marks in exams table
@@ -895,9 +980,15 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             if (denied) {
                 return denyStatus(res, denied);
             }
+            // Results are keyed by enrollment (students.id); accept either a
+            // user id or an enrollment id and resolve server-side.
+            const enrollmentId = await resolveAttemptStudentId(req, req.params.studentId);
+            if (!enrollmentId) {
+                return res.status(404).json({ error: 'Exam result not found' });
+            }
             const result = await queryOne<ExamResult>(
                 'SELECT * FROM exam_results WHERE exam_id = ? AND student_id = ?',
-                [req.params.examId, req.params.studentId]
+                [req.params.examId, enrollmentId]
             );
 
             if (!result) {
@@ -925,15 +1016,40 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             if (!student_id || score === undefined || !total_marks) {
                 return res.status(400).json({ error: 'Missing required fields' });
             }
+            if (typeof score !== 'number' || !isFinite(score) || score < 0) {
+                return res.status(400).json({ error: 'Invalid score' });
+            }
+            if (typeof total_marks !== 'number' || !isFinite(total_marks) || total_marks <= 0) {
+                return res.status(400).json({ error: 'Invalid total_marks' });
+            }
+            if (score > total_marks) {
+                return res.status(400).json({ error: 'Score cannot exceed total marks' });
+            }
 
+            // exam_results.student_id references students(id): resolve the
+            // supplied user id or enrollment id to the enrollment id first.
+            const enrollmentId = await resolveAttemptStudentId(req, String(student_id));
+            if (!enrollmentId) {
+                return res.status(404).json({ error: 'Student not found' });
+            }
+            const scopeId = instructorScopeId(req);
+            if (scopeId && !(await isEnrollmentInInstructorScope(enrollmentId, scopeId))) {
+                return res.status(404).json({ error: 'Exam not found' });
+            }
+
+            // The id is generated server-side so the created row is read back
+            // through it; ordering the table by created_at would return
+            // another student's concurrent insert.
+            const newResultId = randomUUID();
             await execute(
-                `INSERT INTO exam_results (id, exam_id, student_id, score, total_marks, status, submitted_at, created_at)
-                 VALUES (UUID(), ?, ?, ?, ?, ?, NOW(), NOW())`,
-                [req.params.examId, student_id, score, total_marks, status]
+                `INSERT INTO exam_results (id, exam_id, student_id, marks_obtained, total_marks, submitted_at)
+                 VALUES (?, ?, ?, ?, ?, NOW())`,
+                [newResultId, req.params.examId, enrollmentId, score, total_marks]
             );
 
             const newResult = await queryOne<ExamResult>(
-                'SELECT * FROM exam_results WHERE id = (SELECT id FROM exam_results ORDER BY created_at DESC LIMIT 1)'
+                'SELECT * FROM exam_results WHERE id = ?',
+                [newResultId]
             );
 
             res.status(201).json(newResult);
@@ -955,6 +1071,17 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                 return denyStatus(res, denied);
             }
 
+            // Attempts are keyed by enrollment (students.id): a user id and an
+            // enrollment id that differ resolve to the same attempt row.
+            const enrollmentId = await resolveAttemptStudentId(req, studentId);
+            if (!enrollmentId) {
+                return res.status(404).json({ error: 'Student not found' });
+            }
+            const scopeId = instructorScopeId(req);
+            if (scopeId && !(await isEnrollmentInInstructorScope(enrollmentId, scopeId))) {
+                return res.status(404).json({ error: 'Exam not found' });
+            }
+
             // Fetch exam - start_time and end_time are already DATETIME columns
             const exam = await queryOne<any>(
                 `SELECT e.* FROM exams e WHERE e.id = ?`,
@@ -969,7 +1096,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             if (exam.course_id) {
                 const enrollment = await queryOne(
                     'SELECT * FROM student_courses WHERE student_id = ? AND course_id = ?',
-                    [studentId, exam.course_id]
+                    [enrollmentId, exam.course_id]
                 );
 
                 if (!enrollment) {
@@ -977,9 +1104,9 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                     try {
                         await execute(
                             'INSERT INTO student_courses (student_id, course_id) VALUES (?, ?)',
-                            [studentId, exam.course_id]
+                            [enrollmentId, exam.course_id]
                         );
-                        console.log(`✅ Auto-enrolled student ${studentId} in course ${exam.course_id}`);
+                        console.log(`✅ Auto-enrolled student ${enrollmentId} in course ${exam.course_id}`);
                     } catch (enrollError) {
                         console.error('⚠️ Auto-enrollment failed (continuing anyway):', enrollError);
                         // Continue to allow exam attempt even if enrollment fails
@@ -990,7 +1117,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             // Check if already attempted
             const attempt = await queryOne<any>(
                 'SELECT * FROM exam_attempts WHERE exam_id = ? AND student_id = ?',
-                [examId, studentId]
+                [examId, enrollmentId]
             );
 
             if (attempt) {
@@ -1102,6 +1229,16 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                 return denyStatus(res, denied);
             }
 
+            // Attempts are keyed by enrollment (students.id).
+            const enrollmentId = await resolveAttemptStudentId(req, studentId);
+            if (!enrollmentId) {
+                return res.status(404).json({ error: 'Student not found' });
+            }
+            const scopeId = instructorScopeId(req);
+            if (scopeId && !(await isEnrollmentInInstructorScope(enrollmentId, scopeId))) {
+                return res.status(404).json({ error: 'Exam not found' });
+            }
+
             // Get exam info - start_time and end_time are DATETIME columns
             const exam = await queryOne<any>(
                 `SELECT e.* FROM exams e WHERE e.id = ?`,
@@ -1116,7 +1253,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             if (exam.course_id) {
                 const enrollment = await queryOne(
                     'SELECT * FROM student_courses WHERE student_id = ? AND course_id = ?',
-                    [studentId, exam.course_id]
+                    [enrollmentId, exam.course_id]
                 );
 
                 if (!enrollment) {
@@ -1124,9 +1261,9 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                     try {
                         await execute(
                             'INSERT INTO student_courses (student_id, course_id) VALUES (?, ?)',
-                            [studentId, exam.course_id]
+                            [enrollmentId, exam.course_id]
                         );
-                        console.log(`✅ Auto-enrolled student ${studentId} in course ${exam.course_id}`);
+                        console.log(`✅ Auto-enrolled student ${enrollmentId} in course ${exam.course_id}`);
                     } catch (enrollError) {
                         console.error('Auto-enrollment failed:', enrollError);
                         // Continue anyway - enrollment is optional for exams
@@ -1152,16 +1289,24 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             }
 
             // Check if already attempted
-            const existingAttempt = await queryOne(
+            const existingAttempt = await queryOne<any>(
                 'SELECT * FROM exam_attempts WHERE exam_id = ? AND student_id = ?',
-                [examId, studentId]
+                [examId, enrollmentId]
             );
 
 
 
             if (existingAttempt) {
-                // ✅ Allow resuming if in_progress and time permits (or force resume to allow auto-submit logic)
+                // Resume only while the server-side timer still permits it;
+                // an expired in_progress attempt is failed shut, never resumed.
                 if (existingAttempt.status === 'in_progress') {
+                    if (isAttemptExpired(existingAttempt.started_at, exam.duration_minutes, now)) {
+                        await execute(
+                            `UPDATE exam_attempts SET status = 'failed', completed_at = NOW() WHERE id = ?`,
+                            [existingAttempt.id]
+                        );
+                        return res.status(400).json({ error: 'انتهى وقت الامتحان' });
+                    }
                     console.log('🔄 Resuming existing attempt:', existingAttempt.id);
                     return res.json(existingAttempt);
                 }
@@ -1169,11 +1314,11 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             }
 
             // Create new attempt with generated UUID
-            const attemptId = require('crypto').randomUUID();
+            const attemptId = randomUUID();
             await execute(
                 `INSERT INTO exam_attempts (id, exam_id, student_id, status, started_at, created_at)
                  VALUES (?, ?, ?, 'in_progress', NOW(), NOW())`,
-                [attemptId, examId, studentId]
+                [attemptId, examId, enrollmentId]
             );
 
             const newAttempt = await queryOne(
@@ -1200,7 +1345,17 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                 return denyStatus(res, denied);
             }
 
-            console.log(`💾 Auto-saving progress for student ${studentId} on exam ${examId}`);
+            // Attempts are keyed by enrollment (students.id).
+            const enrollmentId = await resolveAttemptStudentId(req, studentId);
+            if (!enrollmentId) {
+                return res.status(404).json({ error: 'Student not found' });
+            }
+            const scopeId = instructorScopeId(req);
+            if (scopeId && !(await isEnrollmentInInstructorScope(enrollmentId, scopeId))) {
+                return res.status(404).json({ error: 'Exam not found' });
+            }
+
+            console.log(`💾 Auto-saving progress for student ${enrollmentId} on exam ${examId}`);
 
             // Merge answers
             const allAnswers = {
@@ -1209,6 +1364,27 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                 images: answerImages || {}
             };
 
+            // Server-side timer: refuse writes once the attempt window lapsed.
+            const attemptState = await queryOne<any>(
+                'SELECT id, status, started_at FROM exam_attempts WHERE exam_id = ? AND student_id = ?',
+                [examId, enrollmentId]
+            );
+            if (!attemptState || attemptState.status !== 'in_progress') {
+                console.warn('⚠️ Auto-save failed: No in-progress attempt found');
+                return res.status(404).json({ error: 'No in_progress attempt found' });
+            }
+            const durationRow = await queryOne<any>(
+                'SELECT duration_minutes FROM exams WHERE id = ?',
+                [examId]
+            );
+            if (isAttemptExpired(attemptState.started_at, durationRow?.duration_minutes)) {
+                await execute(
+                    `UPDATE exam_attempts SET status = 'failed', completed_at = NOW() WHERE id = ?`,
+                    [attemptState.id]
+                );
+                return res.status(400).json({ error: 'انتهى وقت الامتحان' });
+            }
+
             // Update exam_attempts table only if status is 'in_progress'
             const result = await execute(
                 `UPDATE exam_attempts
@@ -1216,7 +1392,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                  WHERE exam_id = ?
                  AND student_id = ?
                  AND status = 'in_progress'`,
-                [JSON.stringify(allAnswers), examId, studentId]
+                [JSON.stringify(allAnswers), examId, enrollmentId]
             );
 
             if (result.affectedRows === 0) {
@@ -1236,47 +1412,32 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
     router.post('/:examId/submit/:studentId', deps.authenticate, async (req: AuthRequest, res: Response) => {
         try {
             const { examId, studentId } = req.params;
-            const { answers, score: frontendScore, essayAnswers, answerImages } = req.body;  // ✅ دعم الإجابات المقالية وصور الإجابات
+            const { answers, essayAnswers, answerImages } = req.body;
 
             const denied = await authorizeStudentAction(req, examId, studentId);
             if (denied) {
                 return denyStatus(res, denied);
             }
 
-            console.log('🔍 Submit exam attempt - Start');
-            console.log('📝 Exam ID:', examId);
-            console.log('👤 Student ID:', studentId);
-            console.log('📊 Frontend Score:', frontendScore);
-            console.log('✍️ Essay Answers:', essayAnswers);
-            console.log('🖼️ Answer Images:', answerImages);
-
-            // Get user info and find matching student by phone
-            const userRow = await queryOne<any>(
-                'SELECT id, phone FROM users WHERE id = ?',
-                [studentId]
-            );
-
-            // Find student ID by phone for exam_results table
-            let resultsStudentId = studentId; // Default to user ID
-            if (userRow?.phone) {
-                const studentRow = await queryOne<any>(
-                    'SELECT id FROM students WHERE phone = ?',
-                    [userRow.phone]
-                );
-                if (studentRow?.id) {
-                    resultsStudentId = studentRow.id;
-                }
+            // Attempts, answers and results are all keyed by enrollment
+            // (students.id). The client-supplied score is never trusted; the
+            // server recomputes every auto-gradable mark.
+            const enrollmentId = await resolveAttemptStudentId(req, studentId);
+            if (!enrollmentId) {
+                return res.status(404).json({ error: 'Student not found' });
+            }
+            const examScopeId = instructorScopeId(req);
+            if (examScopeId && !(await isEnrollmentInInstructorScope(enrollmentId, examScopeId))) {
+                return res.status(404).json({ error: 'Exam not found' });
             }
 
-            // Verify the student exists in students table for exam_results
-            const studentExists = await queryOne<any>(
-                'SELECT id FROM students WHERE id = ?',
-                [resultsStudentId]
-            );
+            console.log('🔍 Submit exam attempt - Start');
+            console.log('📝 Exam ID:', examId);
+            console.log('👤 Enrollment ID:', enrollmentId);
 
             // Get exam info for total_marks
             const exam = await queryOne<any>(
-                'SELECT total_marks, passing_marks FROM exams WHERE id = ?',
+                'SELECT total_marks, passing_marks, duration_minutes FROM exams WHERE id = ?',
                 [examId]
             );
 
@@ -1291,8 +1452,8 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             // A completed/graded attempt is never re-graded through this
             // endpoint, and a submission without a started attempt is refused.
             const attemptRow = await queryOne<any>(
-                'SELECT id, status FROM exam_attempts WHERE exam_id = ? AND student_id = ?',
-                [examId, studentId]
+                'SELECT id, status, started_at FROM exam_attempts WHERE exam_id = ? AND student_id = ?',
+                [examId, enrollmentId]
             );
             if (!attemptRow) {
                 return res.status(409).json({ error: 'No attempt in progress for this exam' });
@@ -1300,16 +1461,25 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             if (attemptRow.status !== 'in_progress') {
                 return res.status(409).json({ error: 'This attempt has already been submitted' });
             }
+            // Server-side timer: an attempt past its duration is failed shut
+            // and never graded.
+            if (isAttemptExpired(attemptRow.started_at, exam.duration_minutes)) {
+                await execute(
+                    `UPDATE exam_attempts SET status = 'failed', completed_at = NOW() WHERE id = ?`,
+                    [attemptRow.id]
+                );
+                return res.status(400).json({ error: 'انتهى وقت الامتحان' });
+            }
 
-            // ✅ Server-derived essay presence (never trust the client flag):
-            // an exam with essay questions must route to manual review.
-            const essayCountRow = await queryOne<{ cnt: number }>(
-                `SELECT COUNT(*) AS cnt FROM exam_questions WHERE exam_id = ? AND question_type = 'essay'`,
+            // ✅ Server-derived manual-review presence (never trust the client flag):
+            // an exam with essay/short-answer questions must route to review.
+            const manualCountRow = await queryOne<{ cnt: number }>(
+                `SELECT COUNT(*) AS cnt FROM exam_questions WHERE exam_id = ? AND question_type IN ('essay', 'short_answer')`,
                 [examId]
             );
-            const hasEssayQuestions = Number(essayCountRow?.cnt || 0) > 0;
+            const hasManualQuestions = Number(manualCountRow?.cnt || 0) > 0;
 
-            console.log('📝 Has Essay Questions (server-derived):', hasEssayQuestions);
+            console.log('📝 Has manual questions (server-derived):', hasManualQuestions);
 
             // ✅ Fetch all questions and calculate score on backend
             const questionRows = await query<any>(
@@ -1317,15 +1487,29 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                 [examId]
             );
 
+            const normalizeAnswerLetter = (value: unknown): string | null => {
+                if (typeof value === 'number' && isFinite(value)) {
+                    return String.fromCharCode(97 + value);
+                }
+                if (typeof value === 'string') {
+                    const trimmed = value.trim();
+                    if (/^[0-9]$/.test(trimmed)) {
+                        return String.fromCharCode(97 + parseInt(trimmed, 10));
+                    }
+                    if (trimmed !== '') return trimmed.toLowerCase();
+                }
+                return null;
+            };
+
             // Calculate score on backend to ensure accuracy
             let calculatedScore = 0;
-            let mcqTotal = 0;
+            let autoTotal = 0;
 
             for (const q of questionRows) {
                 const questionPoints = Number(q.points) || 1;
 
                 if (q.question_type === 'multiple_choice') {
-                    mcqTotal += questionPoints;
+                    autoTotal += questionPoints;
                     const studentAnswerIndex = answers?.[q.id];
 
                     if (studentAnswerIndex !== undefined && studentAnswerIndex !== null) {
@@ -1355,10 +1539,20 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                             console.log(`✅ Correct! +${questionPoints} points`);
                         }
                     }
+                } else if (q.question_type === 'true_false') {
+                    autoTotal += questionPoints;
+                    const rawAnswer = answers?.[q.id];
+                    if (rawAnswer !== undefined && rawAnswer !== null) {
+                        const studentNorm = normalizeAnswerLetter(rawAnswer);
+                        const correctNorm = normalizeAnswerLetter(q.correct_answer);
+                        if (studentNorm !== null && correctNorm !== null && studentNorm === correctNorm) {
+                            calculatedScore += questionPoints;
+                        }
+                    }
                 }
             }
 
-            console.log(`📊 Backend calculated score: ${calculatedScore}/${mcqTotal}`);
+            console.log(`📊 Backend calculated score: ${calculatedScore}/${autoTotal}`);
 
             // Use backend calculated score instead of frontend score
             const score = calculatedScore;
@@ -1380,8 +1574,8 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
 
             console.log('✅ Passing marks:', passingMarks);
 
-            // ✅ If essay questions exist, status is 'pending_review' until manually graded
-            const status = hasEssayQuestions ? 'pending_review' : (score >= passingMarks ? 'passed' : 'failed');
+            // ✅ If manual questions exist, status is 'pending_review' until manually graded
+            const status = hasManualQuestions ? 'pending_review' : (score >= passingMarks ? 'passed' : 'failed');
             const passed = status === 'passed';
 
             console.log('📝 Status:', status);
@@ -1406,7 +1600,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                      score = ?,
                      answers = ?
                  WHERE exam_id = ? AND student_id = ? AND status = 'in_progress'`,
-                [status, score, JSON.stringify(allAnswers), examId, studentId]
+                [status, score, JSON.stringify(allAnswers), examId, enrollmentId]
             );
 
             if (submitResult.affectedRows === 0) {
@@ -1414,64 +1608,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             }
 
             console.log('✅ Exam attempt updated');
-
-            // ✅ Get actual student.id from students table using phone
-            console.log('🔍 Getting student.id from students table...');
-
-            // First get user phone
-            const userRecordArray = await query<any>(
-                'SELECT phone FROM users WHERE id = ?',
-                [studentId]
-            );
-
-            const userRecord = userRecordArray[0];
-
-            if (!userRecord || !userRecord.phone) {
-                console.error('❌ User not found or has no phone');
-                return res.status(400).json({
-                    error: 'لا يمكن العثور على بيانات المستخدم. يرجى التواصل مع الإدارة.'
-                });
-            }
-
-            // Then get student by phone
-            const studentRecords = await query<any>(
-                'SELECT id FROM students WHERE phone = ?',
-                [userRecord.phone]
-            );
-
-            const actualStudentId = studentRecords[0]?.id;
-
-            // If student doesn't exist in students table, skip exam_student_answers (only save to exam_attempts and exam_results)
-            if (!actualStudentId) {
-                console.warn(`⚠️ Student not found in students table for phone ${userRecord.phone}. Skipping exam_student_answers.`);
-
-                // Still save to exam_results (uses user ID)
-                await execute(
-                    `INSERT INTO exam_results (exam_id, student_id, marks_obtained, total_marks, submitted_at)
-                     VALUES (?, ?, ?, ?, NOW())
-                     ON DUPLICATE KEY UPDATE
-                        marks_obtained = VALUES(marks_obtained),
-                        total_marks = VALUES(total_marks),
-                        submitted_at = VALUES(submitted_at)`,
-                    [examId, studentId, score, totalMarks]
-                );
-
-                const responseData = {
-                    exam_id: examId,
-                    student_id: studentId,
-                    status: status,
-                    completed_at: new Date().toISOString(),
-                    score: score,
-                    total_marks: totalMarks,
-                    passed: status === 'passed'
-                };
-
-                return res.status(201).json(responseData);
-            }
-
-            console.log(`📊 User ID: ${studentId}`);
-            console.log(`📊 User Phone: ${userRecord.phone}`);
-            console.log(`📊 Student ID: ${actualStudentId}`);
+            console.log(`📊 Enrollment ID: ${enrollmentId}`);
 
             // ✅ Fetch all questions for this exam
             console.log('🔄 Fetching questions for exam...');
@@ -1487,7 +1624,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             // Delete old answers first
             await execute(
                 `DELETE FROM exam_student_answers WHERE exam_id = ? AND student_id = ?`,
-                [examId, actualStudentId]
+                [examId, enrollmentId]
             );
 
             // Insert all answers
@@ -1499,7 +1636,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                 if (question.type === 'multiple_choice') {
                     const rawAnswer = allAnswers.multipleChoice?.[question.id];
                     if (rawAnswer !== undefined && rawAnswer !== null) {
-                        studentAnswer = String.fromCharCode(97 + rawAnswer); // Convert 0->a, 1->b, etc.
+                        studentAnswer = String.fromCharCode(97 + Number(rawAnswer)); // Convert 0->a, 1->b, etc.
 
                         // ✅ Handle correct_answer comparison - can be letter ('a') or number (0)
                         const correctAnswer = question.correct_answer;
@@ -1523,9 +1660,31 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                         isCorrect = (studentAnswer === correctLetter) ? 1 : 0;
                         pointsEarned = isCorrect ? (question.points || 0) : 0;
                     }
-                } else if (question.type === 'essay') {
+                } else if (question.type === 'true_false') {
+                    const rawAnswer = allAnswers.multipleChoice?.[question.id];
+                    if (rawAnswer !== undefined && rawAnswer !== null) {
+                        const normalizeTf = (v: unknown): string | null => {
+                            if (typeof v === 'boolean') return v ? 'true' : 'false';
+                            if (typeof v === 'number') return v === 1 ? 'true' : v === 0 ? 'false' : null;
+                            if (typeof v === 'string') {
+                                const t = v.trim().toLowerCase();
+                                if (['true', 't', '1'].includes(t)) return 'true';
+                                if (['false', 'f', '0'].includes(t)) return 'false';
+                                if (/^[0-1]$/.test(t)) return t === '1' ? 'true' : 'false';
+                                if (/^[a-b]$/.test(t)) return t === 'a' ? 'true' : 'false';
+                                return t;
+                            }
+                            return null;
+                        };
+                        studentAnswer = String(rawAnswer);
+                        const studentNorm = normalizeTf(rawAnswer);
+                        const correctNorm = normalizeTf(question.correct_answer);
+                        isCorrect = studentNorm !== null && correctNorm !== null && studentNorm === correctNorm ? 1 : 0;
+                        pointsEarned = isCorrect ? (question.points || 0) : 0;
+                    }
+                } else if (question.type === 'essay' || question.type === 'short_answer') {
                     studentAnswer = allAnswers.essay?.[question.id] || null;
-                    // Essay questions need manual grading, so is_correct and points_earned will be null initially
+                    // Manual questions need grading, so is_correct and points_earned stay 0 initially
                     isCorrect = 0;
                     pointsEarned = 0;
                 }
@@ -1539,15 +1698,15 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                             student_answer = VALUES(student_answer),
                             is_correct = VALUES(is_correct),
                             points_earned = VALUES(points_earned)`,
-                        [examId, actualStudentId, question.id, studentAnswer, isCorrect, pointsEarned]
+                        [examId, enrollmentId, question.id, studentAnswer, isCorrect, pointsEarned]
                     );
                 }
             }
 
             console.log('✅ Individual answers saved to exam_student_answers');
 
-            // Insert or update exam_results table for the results page
-            // ⚠️ IMPORTANT: exam_results.student_id references users.id, NOT students.id
+            // Insert or update exam_results table for the results page.
+            // exam_results.student_id references students(id) (enrollment id).
             console.log('🔄 Inserting/updating exam_results table...');
             await execute(
                 `INSERT INTO exam_results (exam_id, student_id, marks_obtained, total_marks, submitted_at)
@@ -1556,7 +1715,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                     marks_obtained = VALUES(marks_obtained),
                     total_marks = VALUES(total_marks),
                     submitted_at = VALUES(submitted_at)`,
-                [examId, studentId, score, totalMarks]
+                [examId, enrollmentId, score, totalMarks]
             );
 
             console.log('✅ Exam results inserted/updated');
@@ -1564,7 +1723,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             // ✅ Build response with fresh data instead of querying again
             const responseData = {
                 exam_id: examId,
-                student_id: studentId,
+                student_id: enrollmentId,
                 status: status,
                 completed_at: new Date().toISOString(),
                 score: score,

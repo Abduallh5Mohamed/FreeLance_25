@@ -44,11 +44,16 @@ export interface FeesRouterDeps {
 }
 
 /**
- * Money columns are DECIMAL: reject non-numeric, non-finite, or negative
- * input before the driver can coerce it into a money row.
+ * Money columns are DECIMAL: reject non-numeric, non-finite, negative, or
+ * >2dp input before the driver can coerce it into a money row. Only JSON
+ * numbers in integer minor units or decimal-safe form (finite, >= 0, at most
+ * two fraction digits) are accepted — numeric strings are rejected so the
+ * driver never coerces text into a ledger row.
  */
-const isValidMoney = (value: unknown): boolean =>
-    typeof value === 'number' && Number.isFinite(value) && value >= 0;
+const isValidMoney = (value: unknown): boolean => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return false;
+    return Math.abs(value - Math.round(value * 100) / 100) < 1e-9;
+};
 
 export const createFeesRouter = (deps: FeesRouterDeps): Router => {
     const router = Router();

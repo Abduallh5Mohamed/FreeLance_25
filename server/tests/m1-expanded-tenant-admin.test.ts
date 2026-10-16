@@ -181,7 +181,10 @@ function makeState(): State {
         wallets: { [OWNER_A]: { balance: '500.00', updated_at: null } },
         renewableSubscriptions: [{ id: 'sub-a', tenant_id: TENANT_A, plan_id: 'plan-1', agreed_price: '300.00', discount_amount: '0.00', status: 'active' }],
         pendingIntents: [],
-        cancellableIntents: [{ id: 'intent-1', instructor_id: OWNER_A, status: 'pending' }],
+        cancellableIntents: [
+            { id: 'intent-1', tenant_id: TENANT_A, instructor_id: OWNER_A, status: 'pending' },
+            { id: 'intent-foreign', tenant_id: TENANT_B, instructor_id: OWNER_A, status: 'pending' },
+        ],
     };
 }
 
@@ -201,9 +204,12 @@ function makeDispatch(state: State) {
             return row ? [{ ...row, tenant_status: 'active' }] : [];
         }
         if (n.includes('SELECT proof_object_key FROM instructor_topup_requests WHERE id=?')) {
-            const row = n.includes('AND instructor_id=?')
-                ? state.topups.find(t => t.id === params[0] && t.instructor_id === params[1])
-                : state.topups.find(t => t.id === params[0]);
+            if (n.includes('AND tenant_id=?')) {
+                const row = state.topups.find(t => t.id === params[0] && t.tenant_id === params[1] && t.instructor_id === params[2]);
+                return row ? [{ proof_object_key: row.proof_object_key }] : [];
+            }
+            // Platform router opens a proof by id under an admin capability (no tenant scope).
+            const row = state.topups.find(t => t.id === params[0]);
             return row ? [{ proof_object_key: row.proof_object_key }] : [];
         }
         if (n.includes('SELECT id,status,legacy_compat FROM tenants WHERE id=? FOR UPDATE')) {
@@ -262,7 +268,7 @@ function makeDispatch(state: State) {
         // ---- writes ----
         if (n.startsWith('UPDATE ') || n.startsWith('INSERT ') || n.startsWith('DELETE ')) {
             if (n.includes("UPDATE tenant_renewal_intents SET status='cancelled'")) {
-                const row = state.cancellableIntents.find(i => i.id === params[0] && i.instructor_id === params[1] && i.status === 'pending');
+                const row = state.cancellableIntents.find(i => i.id === params[0] && i.tenant_id === params[1] && i.instructor_id === params[2] && i.status === 'pending');
                 if (!row) return { affectedRows: 0 };
                 row.status = 'cancelled';
                 return { affectedRows: 1 };
@@ -487,6 +493,63 @@ test('tenant self-service: renewal intent cancel is owner scoped and pending-onl
 
     const notPending = await invoke(tenantSelf, makeReq('POST', '/renewal-intents/intent-1/cancel', '/api/tenants/me/renewal-intents/intent-1/cancel', { token: sign(OWNER_A, 'instructor') }));
     assert.equal(notPending.status, 409, 'an already-cancelled intent cannot transition again');
+});
+
+test('tenant self-service: renewal intent cancel requires the SELECTED active tenant authority (no selection / revoked selection denied before any write)', async () => {
+    // No selected workspace: authenticated principal with no membership scope.
+    const noneState = makeState();
+    const none = buildHarness(noneState);
+    const res = await invoke(none.tenantSelf, makeReq('POST', '/renewal-intents/intent-1/cancel', '/api/tenants/me/renewal-intents/intent-1/cancel', { token: sign(PLAIN, 'teacher') }));
+    assert.equal(res.status, 403, 'a principal with no selected workspace must be denied without touching the row');
+    assert.deepEqual(none.authorityCalls, [], 'deny-by-default must short-circuit before any authority probe when there is no selected tenant');
+    assert.equal(none.calls.some(c => c.sql.includes("UPDATE tenant_renewal_intents SET status='cancelled'")), false, 'no mutation SQL may run without a selected workspace');
+    assert.equal(noneState.cancellableIntents.find(i => i.id === 'intent-1')!.status, 'pending', 'the intent must remain untouched');
+
+    // Revoked selection: the selected tenant no longer grants management authority.
+    const revokedState = makeState();
+    delete revokedState.tenantOwner[TENANT_A];
+    delete revokedState.membershipRole[`${OWNER_A}@${TENANT_A}`];
+    const revoked = buildHarness(revokedState);
+    const revRes = await invoke(revoked.tenantSelf, makeReq('POST', '/renewal-intents/intent-1/cancel', '/api/tenants/me/renewal-intents/intent-1/cancel', { token: sign(OWNER_A, 'instructor') }));
+    assert.equal(revRes.status, 403, 'a revoked/former manager must be denied');
+    assert.deepEqual(revoked.authorityCalls, [{ userId: OWNER_A, tenantId: TENANT_A }], 'the selected tenant must be probed once and found lacking');
+    assert.equal(revoked.calls.some(c => c.sql.includes("UPDATE tenant_renewal_intents SET status='cancelled'")), false, 'no mutation SQL may run without management authority');
+    assert.equal(revokedState.cancellableIntents.find(i => i.id === 'intent-1')!.status, 'pending', 'the intent must remain untouched');
+});
+
+test('tenant self-service: renewal intent cancel is scoped to the SELECTED tenant (own selected allows, same-user foreign intent denied)', async () => {
+    // Own selected intent: intent id, selected tenant and original creator all match -> allow.
+    const ownState = makeState();
+    const own = buildHarness(ownState);
+    const allowed = await invoke(own.tenantSelf, makeReq('POST', '/renewal-intents/intent-1/cancel', '/api/tenants/me/renewal-intents/intent-1/cancel', { token: sign(OWNER_A, 'instructor') }));
+    assert.equal(allowed.status, 200);
+    assert.equal(allowed.body.status, 'cancelled');
+    const cancelCall = own.calls.find(c => c.sql.includes("UPDATE tenant_renewal_intents SET status='cancelled'"));
+    assert.ok(cancelCall, 'the cancel mutation must run for the selected workspace');
+    assert.deepEqual(cancelCall!.params, ['intent-1', TENANT_A, OWNER_A], 'the cancel must bind the selected tenant id, the intent id and the original creator');
+    assert.equal(ownState.cancellableIntents.find(i => i.id === 'intent-1')!.status, 'cancelled', 'the selected intent must transition');
+
+    // Same user, different tenant: instructor_id matches but the intent belongs to another workspace -> denied.
+    const foreignState = makeState();
+    const foreign = buildHarness(foreignState);
+    const denied = await invoke(foreign.tenantSelf, makeReq('POST', '/renewal-intents/intent-foreign/cancel', '/api/tenants/me/renewal-intents/intent-foreign/cancel', { token: sign(OWNER_A, 'instructor') }));
+    assert.equal(denied.status, 409, 'a foreign intent must never be cancelled through a different selected workspace');
+    assert.equal(foreignState.cancellableIntents.find(i => i.id === 'intent-foreign')!.status, 'pending', 'the foreign intent must remain untouched');
+});
+
+test('tenant self-service: top-up proof URL is scoped to the SELECTED tenant (own selected allows, other workspace denied)', async () => {
+    const state = makeState();
+    const { tenantSelf, calls } = buildHarness(state);
+
+    const own = await invoke(tenantSelf, makeReq('GET', '/topups/topup-1/proof-url', '/api/tenants/me/topups/topup-1/proof-url', { token: sign(OWNER_A, 'instructor') }));
+    assert.equal(own.status, 200);
+    assert.match(own.body.url, /proofs\/topup-1\.pdf$/);
+    const proofCall = findCall(calls, 'SELECT proof_object_key FROM instructor_topup_requests');
+    assert.ok(proofCall, 'a proof lookup must run for the selected workspace');
+    assert.deepEqual(proofCall!.params, ['topup-1', TENANT_A, OWNER_A], 'the proof lookup must bind the selected tenant id, the intent id and the instructor');
+
+    const other = await invoke(tenantSelf, makeReq('GET', '/topups/topup-1/proof-url', '/api/tenants/me/topups/topup-1/proof-url', { token: sign(OWNER_B, 'instructor') }));
+    assert.equal(other.status, 404, 'a different selected workspace must not read another tenant top-up proof');
 });
 
 // ===========================================================================

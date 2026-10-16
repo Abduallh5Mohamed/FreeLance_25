@@ -108,10 +108,10 @@ const makeFixtures = (): Fixtures => ({
         'student-b': [{ id: 'enrollment-b', user_id: 'student-b', tenant_id: 'tenant-b', instructor_id: 'instructor-b', group_id: 'group-b', grade_id: 'grade-b' }],
     },
     studentsById: {
-        'sa': { id: 'sa', phone: '0100000001', group_id: 'group-a', grade_id: 'grade-a', name: 'Student A' },
-        'sb': { id: 'sb', phone: '0100000002', group_id: 'group-b', grade_id: 'grade-b', name: 'Student B' },
+        'enrollment-a': { id: 'enrollment-a', phone: '0100000001', group_id: 'group-a', grade_id: 'grade-a', name: 'Student A' },
+        'enrollment-b': { id: 'enrollment-b', phone: '0100000002', group_id: 'group-b', grade_id: 'grade-b', name: 'Student B' },
     },
-    studentsByPhone: { '0100000001': 'sa', '0100000002': 'sb' },
+    studentsByPhone: { '0100000001': 'enrollment-a', '0100000002': 'enrollment-b' },
     groups: {
         'group-a': { id: 'group-a', instructor_id: 'instructor-a', name: 'Group A' },
         'group-b': { id: 'group-b', instructor_id: 'instructor-b', name: 'Group B' },
@@ -134,8 +134,12 @@ const makeFixtures = (): Fixtures => ({
         ],
     },
     examAttempts: {
-        [attemptKey('exam-a', 'student-a')]: { id: 'att-a1', exam_id: 'exam-a', student_id: 'student-a', status: 'in_progress', score: 0, started_at: '2026-10-16 00:00:00', answers: null, essay_scores: null },
-        [attemptKey('exam-b', 'student-b')]: { id: 'att-b1', exam_id: 'exam-b', student_id: 'student-b', status: 'pending_review', score: 0, started_at: '2026-10-16 00:00:00', answers: JSON.stringify({ essay: { qb1: 'answer' }, images: {} }), essay_scores: null },
+        // Attempts are keyed by enrollment (students.id), matching the
+        // production submit/start/save-progress resolution. started_at is
+        // anchored a few minutes before harness creation so the server-side
+        // duration timer does not treat the in_progress fixture as expired.
+        [attemptKey('exam-a', 'enrollment-a')]: { id: 'att-a1', exam_id: 'exam-a', student_id: 'enrollment-a', status: 'in_progress', score: 0, started_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(), answers: null, essay_scores: null },
+        [attemptKey('exam-b', 'enrollment-b')]: { id: 'att-b1', exam_id: 'exam-b', student_id: 'enrollment-b', status: 'pending_review', score: 0, started_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(), answers: JSON.stringify({ essay: { qb1: 'answer' }, images: {} }), essay_scores: null },
     },
     examResults: {},
 });
@@ -179,12 +183,26 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[]) => {
             const row = typeof params[0] === 'string' ? f.studentsById[params[0]] : undefined;
             return row ? [{ id: row.id }] : [];
         }
+        if (sql.includes('SELECT id FROM students WHERE user_id = ?')) {
+            // Teacher-side resolution of a user id to its enrollment id.
+            const rows = typeof params[0] === 'string' ? f.enrollments[params[0]] : undefined;
+            const direct = rows?.[0]?.id ?? (typeof params[0] === 'string' ? f.studentsById[params[0]]?.id : undefined);
+            return direct ? [{ id: direct }] : [];
+        }
         if (sql.includes('SELECT group_id, grade_id FROM students WHERE phone = ?')) {
             const id = f.studentsByPhone[String(params[0])];
             const row = id ? f.studentsById[id] : undefined;
             return row ? [{ group_id: row.group_id, grade_id: row.grade_id }] : [];
         }
         // --- exam lookups (specific before generic) ---
+        if (sql.includes('SELECT total_marks, passing_marks, duration_minutes FROM exams')) {
+            const exam = examById(params[0]);
+            return exam ? [{ total_marks: exam.total_marks, passing_marks: exam.passing_marks, duration_minutes: exam.duration_minutes }] : [];
+        }
+        if (sql.includes('SELECT duration_minutes FROM exams')) {
+            const exam = examById(params[0]);
+            return exam ? [{ duration_minutes: exam.duration_minutes }] : [];
+        }
         if (sql.includes('SELECT total_marks, passing_marks FROM exams')) {
             const exam = examById(params[0]);
             return exam ? [{ total_marks: exam.total_marks, passing_marks: exam.passing_marks }] : [];
@@ -215,9 +233,11 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[]) => {
                 .map((eg) => ({ group_id: eg.group_id, group_name: groupById(eg.group_id)?.name ?? null }));
         }
         // --- questions ---
-        if (sql.includes("question_type = 'essay'") && sql.includes('COUNT(*)')) {
+        // Production derives manual-review presence server-side via
+        // question_type IN ('essay', 'short_answer'); count both kinds.
+        if (sql.includes('FROM exam_questions') && sql.includes('COUNT(*)') && sql.includes("'essay'")) {
             const examId = String(params[0]);
-            const cnt = (f.examQuestions[examId] || []).filter((q) => q.question_type === 'essay').length;
+            const cnt = (f.examQuestions[examId] || []).filter((q) => q.question_type === 'essay' || q.question_type === 'short_answer').length;
             return [{ cnt }];
         }
         if (sql.includes('SELECT * FROM exam_questions WHERE exam_id = ? ORDER BY display_order')) {
@@ -233,12 +253,16 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[]) => {
             return (f.examQuestions[String(params[0])] || []).map((q) => ({ ...q }));
         }
         // --- attempts ---
-        if (sql.includes('SELECT id, status FROM exam_attempts')) {
-            const attempt = f.examAttempts[attemptKey(String(params[0]), String(params[1]))];
-            return attempt ? [{ id: attempt.id, status: attempt.status }] : [];
-        }
-        if (sql.includes('SELECT * FROM exam_attempts WHERE exam_id = ? AND student_id = ?')) {
-            const attempt = f.examAttempts[attemptKey(String(params[0]), String(params[1]))];
+        // Attempts are keyed by enrollment (students.id). A user id and its
+        // enrollment id address the same row: fall back to the mapped
+        // enrollment when the raw key misses so legacy callers still resolve.
+        // Production selects varying column lists (id/status, id/status/
+        // started_at, *); match on the WHERE shape and return the full row so
+        // every projection is satisfied.
+        if (sql.includes('FROM exam_attempts') && sql.includes('exam_id = ?') && sql.includes('student_id = ?')) {
+            const raw = String(params[1]);
+            const attempt = f.examAttempts[attemptKey(String(params[0]), raw)]
+                ?? f.examAttempts[attemptKey(String(params[0]), f.enrollments[raw]?.[0]?.id ?? '')];
             return attempt ? [{ ...attempt }] : [];
         }
         if (sql.includes('SELECT * FROM exam_attempts WHERE id = ?')) {
@@ -284,7 +308,11 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[]) => {
             return Object.values(f.examAttempts)
                 .filter((a) => a.status === 'pending_review')
                 .map((a) => {
-                    const sid = f.studentsByPhone[f.users[a.student_id]?.phone ?? ''] ?? '';
+                    // Attempts are keyed by enrollment: prefer the direct
+                    // enrollment lookup, fall back to the legacy user->phone
+                    // indirection for harness rows that predate the migration.
+                    const direct = f.studentsById[a.student_id];
+                    const sid = direct ? direct.id : (f.studentsByPhone[f.users[a.student_id]?.phone ?? ''] ?? '');
                     const student = f.studentsById[sid];
                     return { attempt: a, student };
                 })
@@ -336,8 +364,9 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[]) => {
         executed.push({ sql, params });
         if (sql.startsWith('UPDATE exam_attempts')) {
             const examId = String(params[3]);
-            const studentId = String(params[4]);
-            const attempt = f.examAttempts[attemptKey(examId, studentId)];
+            const raw = String(params[4]);
+            const attempt = f.examAttempts[attemptKey(examId, raw)]
+                ?? f.examAttempts[attemptKey(examId, f.enrollments[raw]?.[0]?.id ?? '')];
             const guard = sql.includes("status = 'in_progress'") ? 'in_progress'
                 : sql.includes("status = 'pending_review'") ? 'pending_review' : null;
             if (!attempt || (guard && attempt.status !== guard)) {

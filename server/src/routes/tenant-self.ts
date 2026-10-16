@@ -211,7 +211,12 @@ router.post('/topups', upload.single('proof'), async (req: AuthRequest, res: Res
 
 router.get('/topups/:id/proof-url', async (req: AuthRequest, res: Response) => {
   try {
-    const row = await queryOne<any>('SELECT proof_object_key FROM instructor_topup_requests WHERE id=? AND instructor_id=?', [req.params.id, req.user!.id]);
+    const tenant = await getOwnedTenant(req);
+    if (!tenant) return res.status(404).json({ error: 'Tenant membership not found' });
+    const row = await queryOne<any>(
+      'SELECT proof_object_key FROM instructor_topup_requests WHERE id=? AND tenant_id=? AND instructor_id=?',
+      [req.params.id, tenant.id, req.user!.id]
+    );
     if (!row) return res.status(404).json({ error: 'Top-up request not found' });
     return res.json({ url: await getPrivateObjectUrl(BUCKETS.PAYMENT_PROOFS, row.proof_object_key, 300), expires_in: 300 });
   } catch (error) { console.error('Get own proof URL error:', error); return res.status(500).json({ error: 'Failed to open proof' }); }
@@ -256,10 +261,13 @@ router.post('/renewal-intents/manual', async (req: AuthRequest, res: Response) =
 });
 
 router.post('/renewal-intents/:id/cancel', async (req: AuthRequest, res: Response) => {
+  const tenant = await getOwnedTenant(req);
+  if (!tenant || tenant.status !== 'active') return res.status(403).json({ error: 'Active tenant account required' });
   try {
     const result = await execute(
       `UPDATE tenant_renewal_intents SET status='cancelled',cancelled_at=UTC_TIMESTAMP()
-       WHERE id=? AND instructor_id=? AND status='pending'`, [req.params.id, req.user!.id]
+       WHERE id=? AND tenant_id=? AND instructor_id=? AND status='pending'`,
+      [req.params.id, tenant.id, req.user!.id]
     );
     if (!(result as any).affectedRows) return res.status(409).json({ error: 'Renewal intent is not pending' });
     return res.json({ status: 'cancelled' });

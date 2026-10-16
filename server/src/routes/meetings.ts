@@ -110,8 +110,14 @@ const parseHttpUrl = (value: unknown): URL | null => {
     return parsed;
 };
 
+export const MEETING_TITLE_MAX_LENGTH = 200;
+export const MEETING_DESCRIPTION_MAX_LENGTH = 5000;
+export const MEETING_PASSWORD_MAX_LENGTH = 256;
+export const MEETING_TYPE_MAX_LENGTH = 32;
+
 const parseScheduledAt = (value: unknown): string | null => {
     if (typeof value !== 'string' || value.trim().length === 0) return null;
+    if (value.length > 64) return null;
     if (Number.isNaN(Date.parse(value))) return null;
     return value;
 };
@@ -309,16 +315,22 @@ export const createMeetingsRouter = (deps: MeetingsRouterDeps): Router => {
                     error: 'Missing required fields: title, meeting_link, grade_id, scheduled_at'
                 });
             }
-            if (typeof title !== 'string' || title.trim().length === 0) {
+            if (typeof title !== 'string' || title.trim().length === 0 || title.length > MEETING_TITLE_MAX_LENGTH) {
                 return res.status(400).json({ error: 'Invalid meeting title' });
             }
-            if (typeof grade_id !== 'string' || grade_id.trim().length === 0) {
+            if (typeof description === 'string' && description.length > MEETING_DESCRIPTION_MAX_LENGTH) {
+                return res.status(400).json({ error: 'Invalid meeting description' });
+            }
+            if (typeof grade_id !== 'string' || grade_id.trim().length === 0 || grade_id.length > 64) {
                 return res.status(400).json({ error: 'Invalid grade_id' });
             }
-            if (typeof meeting_type !== 'string' || meeting_type.trim().length === 0) {
+            if (group_id !== undefined && group_id !== null && (typeof group_id !== 'string' || group_id.length > 64)) {
+                return res.status(400).json({ error: 'Invalid group_id' });
+            }
+            if (typeof meeting_type !== 'string' || meeting_type.trim().length === 0 || meeting_type.length > MEETING_TYPE_MAX_LENGTH) {
                 return res.status(400).json({ error: 'Invalid meeting type' });
             }
-            if (meeting_password !== undefined && meeting_password !== null && typeof meeting_password !== 'string') {
+            if (meeting_password !== undefined && meeting_password !== null && (typeof meeting_password !== 'string' || meeting_password.length > MEETING_PASSWORD_MAX_LENGTH)) {
                 return res.status(400).json({ error: 'Invalid meeting password' });
             }
             if (!parseHttpUrl(meeting_link)) {
@@ -397,19 +409,25 @@ export const createMeetingsRouter = (deps: MeetingsRouterDeps): Router => {
                 is_active,
             } = body;
 
-            if (title !== undefined && (typeof title !== 'string' || title.trim().length === 0)) {
+            if (title !== undefined && (typeof title !== 'string' || title.trim().length === 0 || title.length > MEETING_TITLE_MAX_LENGTH)) {
                 return res.status(400).json({ error: 'Invalid meeting title' });
+            }
+            if (description !== undefined && description !== null && (typeof description !== 'string' || description.length > MEETING_DESCRIPTION_MAX_LENGTH)) {
+                return res.status(400).json({ error: 'Invalid meeting description' });
             }
             if (meeting_link !== undefined && !parseHttpUrl(meeting_link)) {
                 return res.status(400).json({ error: 'Invalid meeting link' });
             }
-            if (meeting_type !== undefined && (typeof meeting_type !== 'string' || meeting_type.trim().length === 0)) {
+            if (meeting_type !== undefined && (typeof meeting_type !== 'string' || meeting_type.trim().length === 0 || meeting_type.length > MEETING_TYPE_MAX_LENGTH)) {
                 return res.status(400).json({ error: 'Invalid meeting type' });
             }
-            if (grade_id !== undefined && (typeof grade_id !== 'string' || grade_id.trim().length === 0)) {
+            if (grade_id !== undefined && (typeof grade_id !== 'string' || grade_id.trim().length === 0 || grade_id.length > 64)) {
                 return res.status(400).json({ error: 'Invalid grade_id' });
             }
-            if (meeting_password !== undefined && meeting_password !== null && typeof meeting_password !== 'string') {
+            if (group_id !== undefined && group_id !== null && (typeof group_id !== 'string' || group_id.length > 64)) {
+                return res.status(400).json({ error: 'Invalid group_id' });
+            }
+            if (meeting_password !== undefined && meeting_password !== null && (typeof meeting_password !== 'string' || meeting_password.length > MEETING_PASSWORD_MAX_LENGTH)) {
                 return res.status(400).json({ error: 'Invalid meeting password' });
             }
             if (scheduled_at !== undefined && !parseScheduledAt(scheduled_at)) {

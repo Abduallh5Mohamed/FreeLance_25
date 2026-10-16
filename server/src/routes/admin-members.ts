@@ -115,7 +115,16 @@ export const createAdminMembersRouter = (deps: AdminMembersRouterDeps): Router =
   router.patch('/:id', deps.manageRoles, async (req: AuthRequest, res: Response) => {
     if (!(await deps.isSuperAdmin(req.user!.id))) return res.status(403).json({ error: 'Super Admin only' });
     const roleCode = req.body.role_code === undefined ? null : String(req.body.role_code).trim();
-    const active = req.body.is_active === undefined ? null : Boolean(req.body.is_active);
+    // is_active must be a real boolean. Coercing with Boolean() would turn the
+    // string "false" into true and silently reactivate a disabled account, so
+    // reject any non-boolean input rather than acting on it.
+    let active: boolean | null = null;
+    if (req.body.is_active !== undefined) {
+      if (typeof req.body.is_active !== 'boolean') {
+        return res.status(400).json({ error: 'is_active يجب أن يكون قيمة منطقية (true/false)' });
+      }
+      active = req.body.is_active;
+    }
     const password = req.body.password === undefined ? '' : String(req.body.password);
     if (!roleCode && active === null && !password) return res.status(400).json({ error: 'لا توجد تغييرات' });
     if (password && (password.length < 8 || password.length > 128)) return res.status(400).json({ error: 'كلمة المرور يجب ألا تقل عن 8 أحرف' });

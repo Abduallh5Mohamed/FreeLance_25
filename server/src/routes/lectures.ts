@@ -67,7 +67,17 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
 
             let sql = `
                 SELECT
-                    l.*,
+                    l.id,
+                    l.course_id,
+                    l.grade_id,
+                    l.group_id,
+                    l.title,
+                    l.description,
+                    l.duration_minutes,
+                    l.price,
+                    l.is_free,
+                    l.is_published,
+                    l.display_order,
                     c.name as course_name,
                     c.subject as course_subject,
                     gr.name as grade_name,
@@ -242,13 +252,18 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             if (scopeId && lecture.instructor_id !== scopeId) {
                 return res.status(404).json({ error: 'Lecture not found' });
             }
-            // Unpublished lectures (drafts) are private: only the owning
-            // instructor or a platform admin may read them, so a draft and its
-            // private video source never leak to anonymous callers or to
-            // another tenant's student.
-            const isAdmin = req.user?.role === 'admin';
+            // Unpublished lectures (drafts) are private. Access is granted only
+            // to the owning instructor, whose identity is the server-verified
+            // principal resolved by the auth middleware (liveness-checked
+            // against the users table), not from a self-asserted role claim.
+            // A bare `role === 'admin'` from the token is no longer treated as
+            // platform authority for cross-tenant draft reads: that would let
+            // any admin-signed token read every tenant's drafts and leak
+            // private video sources. Platform capability, when required, must
+            // be resolved through server-side authority, not the JWT role
+            // string, so absent that verified capability we fail closed.
             const isOwner = scopeId !== null && lecture.instructor_id === scopeId;
-            if (!lecture.is_published && !isAdmin && !isOwner) {
+            if (!lecture.is_published && !isOwner) {
                 return res.status(404).json({ error: 'Lecture not found' });
             }
 
@@ -298,40 +313,49 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             let actualCourseId = course_id;
 
             // An explicit course_id from an instructor must belong to the
-            // instructor's own active tenant; a foreign or ownerless (legacy)
-            // course fails closed rather than binding a lecture into another
-            // workspace. Platform admins keep the pre-existing platform-wide
-            // path (scopeId is null for them).
+            // instructor's *explicitly selected* active tenant (server-derived
+            // via the auth middleware from tenant_memberships, never the JWT
+            // claim as authority). A course in another tenant, or one that does
+            // not resolve to the selected tenant, fails closed rather than
+            // binding a lecture into another workspace. The previous check used
+            // `tenants WHERE owner_user_id=? LIMIT 1`, which ignored the
+            // selected tenant and only recognized tenant *ownership*, so it
+            // denied legitimate members and pinned multi-tenant instructors to
+            // an arbitrary first-owned tenant. Platform admins keep the
+            // pre-existing platform-wide path (scopeId is null for them).
             if (scopeId && actualCourseId) {
-                const ownerTenant = await queryOne<{ id: string }>(
-                    "SELECT id FROM tenants WHERE owner_user_id=? AND status='active' LIMIT 1", [scopeId]
+                const selectedTenant = req.user?.tenantId;
+                if (!selectedTenant) {
+                    return res.status(403).json({ error: 'Course not found in your workspace' });
+                }
+                const owned = await queryOne<{ id: string }>(
+                    'SELECT id FROM courses WHERE id = ? AND tenant_id = ?',
+                    [actualCourseId, selectedTenant]
                 );
-                const owned = ownerTenant
-                    ? await queryOne<{ id: string }>(
-                        'SELECT id FROM courses WHERE id = ? AND tenant_id = ?',
-                        [actualCourseId, ownerTenant.id]
-                    )
-                    : null;
                 if (!owned) {
                     return res.status(403).json({ error: 'Course not found in your workspace' });
                 }
             }
 
             if (!actualCourseId && ownerId) {
-                const ownerTenant = scopeId ? await queryOne<{ id: string }>(
-                    "SELECT id FROM tenants WHERE owner_user_id=? AND status='active' LIMIT 1", [scopeId]
-                ) : null;
-                // Find or create a default course for this instructor
+                const selectedTenant = req.user?.tenantId;
+                if (!selectedTenant) {
+                    return res.status(403).json({ error: 'Course not found in your workspace' });
+                }
+                // Find or create a default course for this instructor scoped to
+                // the explicitly selected active tenant (the previous query did
+                // not constrain by tenant, so a default course could be reused
+                // across tenants).
                 let defaultCourse = await queryOne(
-                    `SELECT id FROM courses WHERE name=? AND ${scopeId ? 'instructor_id=?' : 'instructor_id IS NULL'} LIMIT 1`,
-                    scopeId ? ['فيديوهاتي', scopeId] : ['فيديوهاتي']
+                    `SELECT id FROM courses WHERE name=? AND instructor_id=? AND tenant_id=? LIMIT 1`,
+                    ['فيديوهاتي', scopeId, selectedTenant]
                 );
                 if (!defaultCourse) {
                     const courseId = uuidv4();
                     await execute(
                         `INSERT INTO courses (id,tenant_id,instructor_id,name,subject,description,is_active)
                          VALUES (?,?,?,?,?,?,TRUE)`,
-                        [courseId, ownerTenant?.id || null, scopeId || null, 'فيديوهاتي', 'عام', 'فيديوهاتي خاصة بالمحاضر']
+                        [courseId, selectedTenant, scopeId, 'فيديوهاتي', 'عام', 'فيديوهاتي خاصة بالمحاضر']
                     );
                     actualCourseId = courseId;
                 } else {

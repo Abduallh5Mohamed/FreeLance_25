@@ -2,7 +2,7 @@ import { randomUUID, randomBytes } from 'crypto';
 import { Router, Response } from 'express';
 import { execute, query, queryOne } from '../db';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
-import { requireAdminPermission, hasVerifiedPlatformPermission } from '../security/admin-permissions';
+import { requireAdminPermission, hasVerifiedPlatformPermission, isSuperAdmin } from '../security/admin-permissions';
 
 const router = Router();
 

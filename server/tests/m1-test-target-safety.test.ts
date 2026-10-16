@@ -152,7 +152,13 @@ test('refusals never echo the raw URL, userinfo, query or fragment', () => {
     for (const apiBaseUrl of submitted) {
         const message = guardViolations({ ...canonical, apiBaseUrl }).join('\n');
         assert.ok(!message.includes(apiBaseUrl), `refusal must not echo the raw URL:\n${message}`);
-        for (const secret of ['hunter2', 'm1-user', 'secret', 'session=abc', 'fragment', 'token=']) {
+        // Absence of echoed CREDENTIAL VALUES (not category labels): the
+        // refusal legitimately names the redacted category ("fragment
+        // redacted", "query redacted") as a diagnostic, so the bare word
+        // 'fragment' must remain allowed while the actual values stay banned.
+        // Hash/query-prefixed forms are used where the value collides with
+        // the category label (e.g. '#fragment'), so a real echo is still caught.
+        for (const secret of ['hunter2', 'm1-user', 'token=secret', '?token', '#session=abc', '#fragment', 'session=abc']) {
             assert.ok(!message.includes(secret), `refusal must not echo ${JSON.stringify(secret)}:\n${message}`);
         }
     }

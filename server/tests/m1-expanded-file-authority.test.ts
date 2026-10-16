@@ -645,9 +645,9 @@ test('valid own-tenant uploader download serves the canonical file with hardened
     assert.equal(executed.length, 1);
     const statement = executed[0];
     assert.match(statement.sql, /FROM tenant_media_files f/);
-    assert.match(statement.sql, /id = \?/);
-    assert.match(statement.sql, /tenant_id = \?/);
-    assert.match(statement.sql, /uploaded_by = \?/);
+    assert.match(statement.sql, /id\s*=\s*\?/);
+    assert.match(statement.sql, /tenant_id\s*=\s*\?/);
+    assert.match(statement.sql, /uploaded_by\s*=\s*\?/);
     assert.match(statement.sql, /FROM messages m/);
     assert.match(statement.sql, /FROM exam_questions q/);
     assert.match(statement.sql, /exam_attempts a/);
@@ -672,7 +672,7 @@ test('same-tenant unrelated user is rejected 404 for another users file', async 
     assert.equal(response.statusCode, 404);
     assert.deepEqual(response.body, { error: 'File not found' });
     assert.equal(response.sendFile.called, false);
-    assert.match(executed[0]?.sql, /uploaded_by = \?/);
+    assert.match(executed[0]?.sql, /uploaded_by\s*=\s*\?/);
     assert.deepEqual(executed[0]?.params.slice(0, 3), ['file-a1', 'tenant-a', 'teacher-a-other']);
 });
 

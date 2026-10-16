@@ -49,6 +49,13 @@ export interface AuthRequest extends Request {
 
 const supportedRoles = new Set(['admin', 'instructor', 'teacher', 'staff', 'student', 'parent']);
 
+/**
+ * Verification options shared by every token check: only HMAC-SHA256 tokens
+ * sealed with the server secret are accepted, so a token minted with any
+ * other algorithm (including 'none') is rejected instead of trusted.
+ */
+const verifyOptions: jwt.VerifyOptions = { algorithms: ['HS256'] };
+
 const readBearerToken = (req: Request): string | null => {
     const header = req.headers.authorization;
     if (!header) return null;
@@ -204,7 +211,7 @@ export const createAuthenticateToken = (repository: PrincipalRepository = defaul
                 return res.status(401).json({ error: 'No token provided' });
             }
 
-            const decoded = validateClaims(jwt.verify(token, getJwtSecret())) as TokenClaims;
+            const decoded = validateClaims(jwt.verify(token, getJwtSecret(), verifyOptions)) as TokenClaims;
             const outcome = await resolvePrincipal(decoded, req, repository);
             if (!outcome.ok) {
                 return res.status(outcome.failure.status).json(outcome.failure.body);
@@ -241,7 +248,7 @@ export const createOptionalAuth = (repository: PrincipalRepository = defaultPrin
             const token = readBearerToken(req);
 
             if (token) {
-                const decoded = validateClaims(jwt.verify(token, getJwtSecret())) as TokenClaims;
+                const decoded = validateClaims(jwt.verify(token, getJwtSecret(), verifyOptions)) as TokenClaims;
                 const outcome = await resolvePrincipal(decoded, req, repository);
                 if (!outcome.ok) {
                     return res.status(outcome.failure.status).json(outcome.failure.body);
@@ -343,7 +350,7 @@ export function generateVideoSessionToken(payload: {
             po: Boolean(payload.previewOnly)
         },
         getJwtSecret(),
-        { expiresIn: '60s' }
+        { expiresIn: '60s', algorithm: 'HS256' }
     );
 }
 
@@ -356,7 +363,7 @@ export function verifyVideoSessionToken(token: string, req: Request): {
     decoded?: any;
 } {
     try {
-        const decoded = jwt.verify(token, getJwtSecret()) as any;
+        const decoded = jwt.verify(token, getJwtSecret(), verifyOptions) as any;
 
         if (decoded.type !== 'video_session') {
             return { valid: false, reason: 'Invalid token type' };

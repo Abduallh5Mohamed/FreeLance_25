@@ -345,12 +345,13 @@ test('premium payments: the owning instructor approves and reviewed_by is the VE
         method: 'POST', url: '/payments/pay-1/approve',
         body: { reviewed_by: 'someone-else' },
     }));
-    assert.equal(response.capturedStatus, undefined); // success path answers with json only
+    assert.equal(response.capturedStatus, 200); // transactional approve answers with explicit 200 + json
     assert.ok((response.capturedBody as { success?: boolean } | undefined)?.success);
     const update = executed.find((call) => call.sql.includes('UPDATE premium_lecture_payments'));
     assert.ok(update);
     assert.deepEqual(update!.params, ['owner-1', 'pay-1']);
-    assert.ok(executed.some((call) => call.sql.includes('INSERT INTO premium_lecture_access')));
+    // Duplicate-payment guard uses INSERT IGNORE (unique_student_lecture dedupes retries).
+    assert.ok(executed.some((call) => call.sql.includes('INSERT IGNORE INTO premium_lecture_access')));
 });
 
 test('premium payments: a verified platform admin may approve any payment', async () => {

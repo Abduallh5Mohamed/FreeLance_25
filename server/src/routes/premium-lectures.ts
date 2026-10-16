@@ -100,6 +100,15 @@ export interface PremiumLectureRouterDeps {
     execute: (sql: string, params?: any[]) => Promise<{ insertId: number; affectedRows: number }>;
     authenticate: RequestHandler;
     /**
+     * Run `work` inside a single database transaction. The payment-approve
+     * flow's status flip and access grant commit or roll back together; the
+     * guarded flip (WHERE status='pending') means exactly one concurrent
+     * approval can win.
+     */
+    withTransaction?: <T>(
+        work: (tx: Pick<PremiumLectureRouterDeps, 'query' | 'queryOne' | 'execute'>) => Promise<T>,
+    ) => Promise<T>;
+    /**
      * Verified platform capability resolved server-side (active super_admin
      * or a seeded permission key). It never consults a JWT role claim, so an
      * arbitrary admin-role token cannot approve payments or read other
@@ -109,6 +118,26 @@ export interface PremiumLectureRouterDeps {
 }
 
 /**
+ * Money crosses the API as integer minor units or a decimal string with at
+ * most two fraction digits; MySQL DECIMAL(10,2) does the arithmetic. Native
+ * floats are accepted only when decimal-safe (finite, >= 0, <= 2dp).
+ */
+const DECIMAL_RE = /^(?:0|[1-9]\d{0,9})(?:\.\d{1,2})?$/;
+export const toDecimalMoney = (value: unknown): string | null => {
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        return DECIMAL_RE.test(trimmed) ? trimmed : null;
+    }
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value) || value < 0) return null;
+        const rounded = Math.round(value * 100) / 100;
+        if (Math.abs(value - rounded) > 1e-9) return null;
+        return rounded.toFixed(2);
+    }
+    return null;
+};
+
+/**
  * Build the premium-lectures router over injected dependencies. Production
  * wiring (default export) passes the lazily loaded pool, the production auth
  * middleware, and the verified platform-capability check; hermetic tests pass
@@ -116,6 +145,9 @@ export interface PremiumLectureRouterDeps {
  */
 export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
     const router = Router();
+
+    const withTransaction = deps.withTransaction ?? (async <T>(work: (tx: Pick<PremiumLectureRouterDeps, 'query' | 'queryOne' | 'execute'>) => Promise<T>): Promise<T> =>
+        work({ query: deps.query, queryOne: deps.queryOne, execute: deps.execute }));
 
     const hasPlatformAdmin = async (userId: string): Promise<boolean> =>
         deps.hasPlatformCapability(userId, PLATFORM_ADMIN_PERMISSION);
@@ -269,6 +301,10 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
             );
             if (!lecture) return res.status(404).json({ error: 'الحصة غير موجودة في مساحتك' });
 
+            if (amount !== undefined && amount !== null && amount !== '' && toDecimalMoney(amount) === null) {
+                return res.status(400).json({ error: 'المبلغ يجب أن يكون موجبًا وبدقتين عشريتين كحد أقصى' });
+            }
+
             // Check if student already has access or pending payment
             const existingPayment = await deps.queryOne(`
                 SELECT id, status FROM premium_lecture_payments
@@ -294,7 +330,7 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
             await deps.execute(`
                 INSERT INTO premium_lecture_payments (id, student_id, premium_lecture_id, receipt_image_url, amount, notes, status)
                 VALUES (?, ?, ?, ?, ?, ?, 'pending')
-            `, [id, student_id, premium_lecture_id, receiptUrl, amount || 0, notes || null]);
+            `, [id, student_id, premium_lecture_id, receiptUrl, toDecimalMoney(amount) ?? '0.00', notes || null]);
 
             const newPayment = await deps.queryOne('SELECT * FROM premium_lecture_payments WHERE id = ?', [id]);
             res.status(201).json(newPayment);
@@ -305,38 +341,51 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
     });
 
     // Approve payment request (owning instructor or verified platform admin; reviewed_by is the verified identity)
+    // Transactional + idempotent: the payment row is locked (FOR UPDATE),
+    // the status flips conditionally (WHERE status='pending') so exactly one
+    // concurrent approval wins, and the access grant commits in the same
+    // transaction. A retry of an approved payment returns 400 and grants
+    // nothing twice (unique_student_lecture + INSERT IGNORE).
     router.post('/payments/:id/approve', deps.authenticate, async (req: AuthRequest, res: Response) => {
         try {
             const { id } = req.params;
 
-            const payment = await deps.queryOne<PaymentRow>('SELECT * FROM premium_lecture_payments WHERE id = ?', [id]);
+            const outcome = await withTransaction(async (tx) => {
+                const payment = await tx.queryOne<PaymentRow>('SELECT * FROM premium_lecture_payments WHERE id = ? FOR UPDATE', [id]);
 
-            if (!payment) {
-                return res.status(404).json({ error: 'طلب الدفع غير موجود' });
-            }
+                if (!payment) {
+                    return { status: 404 as const, body: { error: 'طلب الدفع غير موجود' } };
+                }
 
-            if (payment.status !== 'pending') {
-                return res.status(400).json({ error: 'تم مراجعة هذا الطلب مسبقاً' });
-            }
+                if (payment.status !== 'pending') {
+                    return { status: 400 as const, body: { error: 'تم مراجعة هذا الطلب مسبقاً' } };
+                }
 
-            if (!(await canManageLecture(req.user!, payment.premium_lecture_id))) {
-                return res.status(403).json({ error: 'ليست لديك صلاحية على هذه الحصة' });
-            }
+                if (!(await canManageLecture(req.user!, payment.premium_lecture_id))) {
+                    return { status: 403 as const, body: { error: 'ليست لديك صلاحية على هذه الحصة' } };
+                }
 
-            await deps.execute(`
-                UPDATE premium_lecture_payments
-                SET status = 'approved', reviewed_by = ?, reviewed_at = NOW()
-                WHERE id = ?
-            `, [req.user!.id, id]);
+                // Guarded flip FIRST: the loser of a concurrent approval
+                // affects zero rows and grants no access.
+                const transition = await tx.execute(`
+                    UPDATE premium_lecture_payments
+                    SET status = 'approved', reviewed_by = ?, reviewed_at = NOW()
+                    WHERE id = ? AND status = 'pending'
+                `, [req.user!.id, id]);
+                if (transition.affectedRows === 0) {
+                    return { status: 400 as const, body: { error: 'تم مراجعة هذا الطلب مسبقاً' } };
+                }
 
-            // Grant access to the lecture
-            const accessId = uuidv4();
-            await deps.execute(`
-                INSERT INTO premium_lecture_access (id, student_id, premium_lecture_id, payment_id)
-                VALUES (?, ?, ?, ?)
-            `, [accessId, payment.student_id, payment.premium_lecture_id, id]);
-
-            res.json({ success: true, message: 'تمت الموافقة على طلب الدفع وتم منح الوصول للحصة' });
+                // Grant access to the lecture (idempotent: the unique
+                // (student_id, premium_lecture_id) key dedupes retries).
+                const accessId = uuidv4();
+                await tx.execute(`
+                    INSERT IGNORE INTO premium_lecture_access (id, student_id, premium_lecture_id, payment_id)
+                    VALUES (?, ?, ?, ?)
+                `, [accessId, payment.student_id, payment.premium_lecture_id, id]);
+                return { status: 200 as const, body: { success: true, message: 'تمت الموافقة على طلب الدفع وتم منح الوصول للحصة' } };
+            });
+            res.status(outcome.status === 200 ? 200 : outcome.status).json(outcome.body);
         } catch (error) {
             console.error('Approve payment error:', error);
             res.status(500).json({ error: 'فشل في الموافقة على طلب الدفع' });
@@ -344,6 +393,8 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
     });
 
     // Reject payment request (owning instructor or verified platform admin; reviewed_by is the verified identity)
+    // Guarded transition: a concurrent rejection already consumed the flip if
+    // this affects zero rows, and the retry returns 400 without side effects.
     router.post('/payments/:id/reject', deps.authenticate, async (req: AuthRequest, res: Response) => {
         try {
             const { id } = req.params;
@@ -363,11 +414,14 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
                 return res.status(403).json({ error: 'ليست لديك صلاحية على هذه الحصة' });
             }
 
-            await deps.execute(`
+            const transition = await deps.execute(`
                 UPDATE premium_lecture_payments
                 SET status = 'rejected', reviewed_by = ?, reviewed_at = NOW(), rejection_reason = ?
-                WHERE id = ?
+                WHERE id = ? AND status = 'pending'
             `, [req.user!.id, rejection_reason || null, id]);
+            if (transition.affectedRows === 0) {
+                return res.status(400).json({ error: 'تم مراجعة هذا الطلب مسبقاً' });
+            }
 
             res.json({ success: true, message: 'تم رفض طلب الدفع' });
         } catch (error) {
@@ -580,6 +634,10 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
             if (!title || !video_url || price === undefined) {
                 return res.status(400).json({ error: 'العنوان ورابط الفيديو والسعر مطلوبين' });
             }
+            const decimalPrice = toDecimalMoney(price);
+            if (decimalPrice === null) {
+                return res.status(400).json({ error: 'السعر يجب أن يكون موجبًا وبدقتين عشريتين كحد أقصى' });
+            }
 
             if (!(await hasPlatformAdmin(user.id))) {
                 if (!user.instructorId || !group_id) {
@@ -601,7 +659,7 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
             await deps.execute(`
                 INSERT INTO premium_lectures (id, title, description, video_url, thumbnail_url, duration_minutes, price, grade_id, group_id, is_published, created_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `, [id, title, description || null, video_url, thumbnail_url || null, duration_minutes || 0, price, grade_id || null, group_id || null, is_published ? 1 : 0, user.id]);
+            `, [id, title, description || null, video_url, thumbnail_url || null, duration_minutes || 0, decimalPrice, grade_id || null, group_id || null, is_published ? 1 : 0, user.id]);
 
             const newLecture = await deps.queryOne('SELECT * FROM premium_lectures WHERE id = ?', [id]);
             res.status(201).json(newLecture);
@@ -621,11 +679,15 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
                 return res.status(403).json({ error: 'ليست لديك صلاحية على هذه الحصة' });
             }
 
+            if (price !== undefined && toDecimalMoney(price) === null) {
+                return res.status(400).json({ error: 'السعر يجب أن يكون موجبًا وبدقتين عشريتين كحد أقصى' });
+            }
+
             await deps.execute(`
                 UPDATE premium_lectures
                 SET title = ?, description = ?, video_url = ?, thumbnail_url = ?, duration_minutes = ?, price = ?, grade_id = ?, group_id = ?, is_published = ?
                 WHERE id = ?
-            `, [title, description || null, video_url, thumbnail_url || null, duration_minutes || 0, price, grade_id || null, group_id || null, is_published ? 1 : 0, id]);
+            `, [title, description || null, video_url, thumbnail_url || null, duration_minutes || 0, toDecimalMoney(price) ?? price, grade_id || null, group_id || null, is_published ? 1 : 0, id]);
 
             const updatedLecture = await deps.queryOne('SELECT * FROM premium_lectures WHERE id = ?', [id]);
             res.json(updatedLecture);
@@ -674,6 +736,40 @@ export default createPremiumLectureRouter({
     query: (sql, params) => loadDb().then((db) => db.query(sql, params)),
     queryOne: (sql, params) => loadDb().then((db) => db.queryOne(sql, params)),
     execute: (sql, params) => loadDb().then((db) => db.execute(sql, params)),
+    withTransaction: async <T>(work: (tx: {
+        query: <U = unknown>(sql: string, params?: unknown[]) => Promise<U[]>;
+        queryOne: <U = unknown>(sql: string, params?: unknown[]) => Promise<U | null>;
+        execute: (sql: string, params?: unknown[]) => Promise<{ insertId: number; affectedRows: number }>;
+    }) => Promise<T>): Promise<T> => {
+        const db = await loadDb();
+        const connection = await db.getPool().getConnection();
+        try {
+            await connection.beginTransaction();
+            const tx = {
+                query: async <U = unknown>(sql: string, params?: unknown[]): Promise<U[]> => {
+                    const [rows] = await connection.execute(sql, params);
+                    return rows as U[];
+                },
+                queryOne: async <U = unknown>(sql: string, params?: unknown[]): Promise<U | null> => {
+                    const [rows] = await connection.execute(sql, params);
+                    const list = rows as U[];
+                    return list.length > 0 ? list[0] : null;
+                },
+                execute: async (sql: string, params?: unknown[]) => {
+                    const [result] = await connection.execute(sql, params);
+                    return result as { insertId: number; affectedRows: number };
+                },
+            };
+            const result = await work(tx);
+            await connection.commit();
+            return result;
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            connection.release();
+        }
+    },
     authenticate: authenticateToken,
     hasPlatformCapability: productionPlatformCapability,
 });

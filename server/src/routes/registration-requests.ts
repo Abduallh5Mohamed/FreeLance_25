@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import { getPool } from '../db';
 import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import bcrypt from 'bcryptjs';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { AuthRequest, authenticateToken } from '../middleware/auth';
 
 const router = express.Router();
@@ -161,7 +161,8 @@ router.get('/', authenticateToken, requireAdmin, async (req: AuthRequest, res: R
 
         const [requests] = await pool.query<RowDataPacket[]>(query, params);
 
-        res.json(requests);
+        // Never leak stored credential hashes to list callers.
+        res.json(requests.map(({ password_hash: _passwordHash, ...rest }) => rest));
     } catch (error) {
         console.error('Error fetching registration requests:', error);
         res.status(500).json({ error: 'Failed to fetch registration requests' });
@@ -227,8 +228,8 @@ router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthReq
             [userId, request.phone, request.password_hash, request.name, 'student', true, true]
         );
 
-        // Generate unique barcode for the student
-        const barcode = `STU${Date.now()}${Math.random().toString(36).substr(2, 9)}`.toUpperCase();
+        // Generate an unpredictable barcode for the student
+        const barcode = `STU${randomBytes(9).toString('hex')}`.toUpperCase();
 
         // Create student record with UUID and barcode
         const studentId = randomUUID();
@@ -268,7 +269,7 @@ router.post('/:id/approve', authenticateToken, requireAdmin, async (req: AuthReq
                         console.log('Inserting course:', courseId);
                         await connection.query(
                             'INSERT INTO student_courses (id, student_id, course_id) VALUES (?, ?, ?)',
-                            [randomUUID(), userId, courseId]
+                            [randomUUID(), studentId, courseId]
                         );
                     }
                 }

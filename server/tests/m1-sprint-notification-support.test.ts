@@ -90,16 +90,24 @@ const runSelect = (sql: string, params: unknown[]): Row[] => {
   if (sql.includes('FROM students')) return [];
 
   // --- notifications -------------------------------------------------------
+  // No stored preference row: the route falls back to quiet defaults.
+  if (sql.includes('FROM notification_preferences')) return [];
+  // Production binds the server-derived principal namespace (user_type) on
+  // every owner-scoped predicate: params are [userId, user_type] plus the
+  // optional is_read flag. The interpreter mirrors that shape so the real
+  // authorization decision is exercised, not a legacy user_id-only filter.
   if (sql.startsWith('SELECT COUNT(*)') && sql.includes('FROM notifications')) {
     const userId = String(params[0]);
-    const count = state.notifications.filter((n) => n.user_id === userId && !n.is_read).length;
+    const userType = String(params[1]);
+    const count = state.notifications.filter((n) => n.user_id === userId && n.user_type === userType && !n.is_read).length;
     return [{ count }];
   }
   if (sql.includes('FROM notifications') && sql.includes('ORDER BY created_at DESC')) {
     const userId = String(params[0]);
-    let rows = state.notifications.filter((n) => n.user_id === userId);
+    const userType = String(params[1]);
+    let rows = state.notifications.filter((n) => n.user_id === userId && n.user_type === userType);
     if (sql.includes('AND is_read = ?')) {
-      const wanted = Number(params[1]) === 1;
+      const wanted = Number(params[2]) === 1;
       rows = rows.filter((n) => Boolean(n.is_read) === wanted);
     }
     rows = [...rows].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
@@ -176,17 +184,18 @@ const runWrite = (sql: string, params: unknown[]): { affectedRows: number; inser
   if (state.failWith) throw state.failWith;
 
   if (sql.includes('UPDATE notifications SET is_read = TRUE WHERE id = ? AND user_id = ?')) {
-    const [id, userId] = params;
-    const row = state.notifications.find((n) => n.id === id && n.user_id === userId);
+    const [id, userId, userType] = params;
+    const row = state.notifications.find((n) => n.id === id && n.user_id === userId && n.user_type === userType);
     if (!row) return { affectedRows: 0, insertId: 0 };
     row.is_read = 1;
     return { affectedRows: 1, insertId: 0 };
   }
   if (sql.includes('UPDATE notifications SET is_read = TRUE WHERE user_id = ?')) {
     const userId = String(params[0]);
+    const userType = String(params[1]);
     let affected = 0;
     for (const row of state.notifications) {
-      if (row.user_id === userId && !row.is_read) {
+      if (row.user_id === userId && row.user_type === userType && !row.is_read) {
         row.is_read = 1;
         affected += 1;
       }
@@ -404,7 +413,8 @@ test('notifications list returns only the caller\'s rows (cross-user rows never 
     );
     const listSql = state.executed.find((e) => e.sql.includes('FROM notifications'));
     assert.match(listSql!.sql, /user_id = \?/);
-    assert.deepEqual(listSql!.params, ['user-a']);
+    assert.match(listSql!.sql, /user_type = \?/);
+    assert.deepEqual(listSql!.params, ['user-a', 'student']);
   });
 });
 
@@ -454,7 +464,7 @@ test('notifications is_read=false filters to unread rows only (and never the oth
     assert.equal(res.status, 200);
     assert.deepEqual(res.body.map((n: Row) => n.id), ['note-a-1']);
     const listSql = state.executed.find((e) => e.sql.includes('FROM notifications') && e.sql.includes('AND is_read = ?'))!;
-    assert.deepEqual(listSql.params, ['user-a', 0]);
+    assert.deepEqual(listSql.params, ['user-a', 'student', 0]);
   });
 });
 
@@ -501,7 +511,7 @@ test('mark-all-as-read touches only the caller\'s rows', async () => {
     assert.equal(state.notifications.find((n) => n.id === 'note-a-1')!.is_read, 1);
     assert.equal(state.notifications.find((n) => n.id === 'note-b-1')!.is_read, 0);
     const sql = state.executed.find((e) => e.sql.includes('WHERE user_id = ?'))!;
-    assert.deepEqual(sql.params, ['user-a']);
+    assert.deepEqual(sql.params, ['user-a', 'student']);
   });
 });
 

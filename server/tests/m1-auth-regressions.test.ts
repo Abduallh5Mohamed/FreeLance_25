@@ -85,7 +85,12 @@ const makeRepository = (fixtures: IdentityFixtures = {}): PrincipalRepository =>
 type CapturedResponse = Response & { capturedStatus?: number; capturedBody?: unknown };
 
 const createResponse = (): CapturedResponse => {
+    const headers: Record<string, string> = {};
     const response = {
+        setHeader(name: string, value: string | number | readonly string[]) {
+            headers[String(name)] = Array.isArray(value) ? value.join(', ') : String(value);
+            return response;
+        },
         status(code: number) {
             response.capturedStatus = code;
             return response;
