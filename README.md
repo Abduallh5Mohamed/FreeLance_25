@@ -1,5 +1,15 @@
 # منصة القائد التعليمية
 
+## تسليم العمل بين المطورين
+
+- [الخطة الكاملة](docs/README.md)
+- [تقسيم ملكية الخادم والواجهة والفروع](docs/20-two-developer-operating-plan-ar.md)
+- [خطة المطور الثاني ومهام M1](docs/streams/client/M1-HANDOFF.md)
+- [إعداد Codex + WorkBuddy للمطور الثاني](docs/21-developer-two-workbuddy-setup-ar.md)
+- [حزمة جسر MCP المحمولة](tools/workbuddy-bridge/README.md)
+
+الحالة المنشورة WIP؛ لا تعني جاهزية الإنتاج أو قبول بوابات M1.
+
 ## معلومات المشروع
 
 **الشركة المطورة**: Nested  

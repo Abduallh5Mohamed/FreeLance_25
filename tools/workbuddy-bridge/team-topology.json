@@ -1,0 +1,256 @@
+{
+  "version": 2,
+  "maxActiveClaims": 48,
+  "nativeRuntimeConcurrency": "unverified",
+  "hierarchy": "Flat WorkBuddy coordinator; organizational teams only; child agents cannot spawn children.",
+  "teams": [
+    {
+      "id": "backend",
+      "label": "Backend/Auth",
+      "maxActive": 6,
+      "slots": [
+        {
+          "slot": 1,
+          "role": "API implementation"
+        },
+        {
+          "slot": 2,
+          "role": "Identity/session"
+        },
+        {
+          "slot": 3,
+          "role": "Tenant policies"
+        },
+        {
+          "slot": 4,
+          "role": "Data contracts"
+        },
+        {
+          "slot": 5,
+          "role": "Backend reviewer"
+        },
+        {
+          "slot": 6,
+          "role": "Backend tests"
+        }
+      ]
+    },
+    {
+      "id": "security",
+      "label": "Security",
+      "maxActive": 6,
+      "slots": [
+        {
+          "slot": 1,
+          "role": "Threat review"
+        },
+        {
+          "slot": 2,
+          "role": "Authorization review"
+        },
+        {
+          "slot": 3,
+          "role": "Tenant isolation"
+        },
+        {
+          "slot": 4,
+          "role": "Abuse/rate limits"
+        },
+        {
+          "slot": 5,
+          "role": "Privacy review"
+        },
+        {
+          "slot": 6,
+          "role": "Security regressions"
+        }
+      ]
+    },
+    {
+      "id": "media",
+      "label": "Media",
+      "maxActive": 6,
+      "slots": [
+        {
+          "slot": 1,
+          "role": "Upload lifecycle"
+        },
+        {
+          "slot": 2,
+          "role": "Transcode lifecycle"
+        },
+        {
+          "slot": 3,
+          "role": "Playback policies"
+        },
+        {
+          "slot": 4,
+          "role": "Processing reliability"
+        },
+        {
+          "slot": 5,
+          "role": "Media reviewer"
+        },
+        {
+          "slot": 6,
+          "role": "Media tests"
+        }
+      ]
+    },
+    {
+      "id": "storage",
+      "label": "Storage",
+      "maxActive": 6,
+      "slots": [
+        {
+          "slot": 1,
+          "role": "Private files"
+        },
+        {
+          "slot": 2,
+          "role": "Download access"
+        },
+        {
+          "slot": 3,
+          "role": "Storage adapter"
+        },
+        {
+          "slot": 4,
+          "role": "Legacy migration plan"
+        },
+        {
+          "slot": 5,
+          "role": "Storage reviewer"
+        },
+        {
+          "slot": 6,
+          "role": "Storage tests"
+        }
+      ]
+    },
+    {
+      "id": "frontend",
+      "label": "Frontend/UIUX",
+      "maxActive": 6,
+      "slots": [
+        {
+          "slot": 1,
+          "role": "Teacher interface"
+        },
+        {
+          "slot": 2,
+          "role": "Student interface"
+        },
+        {
+          "slot": 3,
+          "role": "Forms and state"
+        },
+        {
+          "slot": 4,
+          "role": "Accessibility/RTL"
+        },
+        {
+          "slot": 5,
+          "role": "Frontend reviewer"
+        },
+        {
+          "slot": 6,
+          "role": "Frontend tests"
+        }
+      ]
+    },
+    {
+      "id": "qa",
+      "label": "Quality",
+      "maxActive": 6,
+      "slots": [
+        {
+          "slot": 1,
+          "role": "API scenarios"
+        },
+        {
+          "slot": 2,
+          "role": "Concurrency scenarios"
+        },
+        {
+          "slot": 3,
+          "role": "Boundary scenarios"
+        },
+        {
+          "slot": 4,
+          "role": "Failure/retry scenarios"
+        },
+        {
+          "slot": 5,
+          "role": "Regression review"
+        },
+        {
+          "slot": 6,
+          "role": "Evidence audit"
+        }
+      ]
+    },
+    {
+      "id": "devops",
+      "label": "DevOps",
+      "maxActive": 6,
+      "slots": [
+        {
+          "slot": 1,
+          "role": "CI checks"
+        },
+        {
+          "slot": 2,
+          "role": "Edge configuration"
+        },
+        {
+          "slot": 3,
+          "role": "Container test plans"
+        },
+        {
+          "slot": 4,
+          "role": "Observability design"
+        },
+        {
+          "slot": 5,
+          "role": "Release reviewer"
+        },
+        {
+          "slot": 6,
+          "role": "Recovery test plans"
+        }
+      ]
+    },
+    {
+      "id": "integration",
+      "label": "Integration",
+      "maxActive": 6,
+      "slots": [
+        {
+          "slot": 1,
+          "role": "Contract inventory"
+        },
+        {
+          "slot": 2,
+          "role": "Dependency planning"
+        },
+        {
+          "slot": 3,
+          "role": "Cross-domain review"
+        },
+        {
+          "slot": 4,
+          "role": "Schema drift review"
+        },
+        {
+          "slot": 5,
+          "role": "Integration reviewer"
+        },
+        {
+          "slot": 6,
+          "role": "Acceptance evidence"
+        }
+      ]
+    }
+  ]
+}

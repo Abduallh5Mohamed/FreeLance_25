@@ -9,6 +9,7 @@
 ## الملفات
 
 - [تقسيم العمل بين مطور الخادم ومطور الواجهة وحدود الملفات](20-two-developer-operating-plan-ar.md)
+- [تسليم المطور الثاني وربط WorkBuddy وCodex على جهازه](21-developer-two-workbuddy-setup-ar.md)
 
 - [الملخص التنفيذي وأول 10 مهام](00-executive-summary.md)
 - [السوق والمنافسون](01-market-and-competitors.md)
