@@ -56,6 +56,25 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
     const optionalAuthenticate = deps.optionalAuthenticate;
     const authenticateToken = deps.authenticate;
     const requireTeachingWriteAccess = deps.requireTeachingWriteAccess;
+    const getMutationScope = (req: AuthRequest) => {
+        const instructorId = instructorScopeId(req);
+        if (instructorId) {
+            return {
+                readPredicate: 'l.instructor_id = ?',
+                writePredicate: 'instructor_id = ?',
+                value: instructorId,
+            };
+        }
+        const tenantId = req.user?.tenantId;
+        if (tenantId) {
+            return {
+                readPredicate: 'c.tenant_id = ?',
+                writePredicate: 'EXISTS (SELECT 1 FROM courses scoped_course WHERE scoped_course.id = lectures.course_id AND scoped_course.tenant_id = ?)',
+                value: tenantId,
+            };
+        }
+        return null;
+    };
 
     router.use(optionalAuthenticate);
 
@@ -64,6 +83,10 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
         try {
             const { course_id, group_id, grade_id } = req.query;
             const scopeId = instructorScopeId(req);
+            const tenantId = req.user?.tenantId;
+            if (req.user && !scopeId && !tenantId) {
+                return res.json([]);
+            }
 
             let sql = `
                 SELECT
@@ -90,10 +113,15 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             `;
             const params: any[] = [];
 
-            // Instructors only see lectures they uploaded
+            // Instructors see their own lectures; other authenticated callers
+            // are confined to their server-selected tenant. Anonymous discovery
+            // remains published-only for the public marketplace.
             if (scopeId) {
                 sql += ' AND l.instructor_id = ?';
                 params.push(scopeId);
+            } else if (tenantId) {
+                sql += ' AND c.tenant_id = ?';
+                params.push(tenantId);
             }
 
             if (course_id && typeof course_id === 'string') {
@@ -231,6 +259,20 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
     router.get('/:id', async (req: AuthRequest, res: Response) => {
         try {
             const scopeId = instructorScopeId(req);
+            const tenantId = req.user?.tenantId;
+            if (req.user && !scopeId && !tenantId) {
+                return res.status(404).json({ error: 'Lecture not found' });
+            }
+
+            const visibilityPredicate = scopeId
+                ? 'l.instructor_id = ?'
+                : req.user
+                    ? 'c.tenant_id = ? AND l.is_published = TRUE'
+                    : 'l.is_published = TRUE';
+            const params: string[] = [req.params.id];
+            if (scopeId) params.push(scopeId);
+            else if (req.user && tenantId) params.push(tenantId);
+
             const lecture = await queryOne(
                 `SELECT
                     l.*,
@@ -239,29 +281,18 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                     gr.name as grade_name,
                     g.name as group_name
                 FROM lectures l
-                LEFT JOIN courses c ON l.course_id = c.id
+                INNER JOIN courses c ON l.course_id = c.id
                 LEFT JOIN grades gr ON l.grade_id = gr.id
                 LEFT JOIN \`groups\` g ON l.group_id = g.id
-                WHERE l.id = ?`,
-                [req.params.id]
+                WHERE l.id = ? AND ${visibilityPredicate}`,
+                params
             );
 
             if (!lecture) {
                 return res.status(404).json({ error: 'Lecture not found' });
             }
-            if (scopeId && lecture.instructor_id !== scopeId) {
-                return res.status(404).json({ error: 'Lecture not found' });
-            }
-            // Unpublished lectures (drafts) are private. Access is granted only
-            // to the owning instructor, whose identity is the server-verified
-            // principal resolved by the auth middleware (liveness-checked
-            // against the users table), not from a self-asserted role claim.
-            // A bare `role === 'admin'` from the token is no longer treated as
-            // platform authority for cross-tenant draft reads: that would let
-            // any admin-signed token read every tenant's drafts and leak
-            // private video sources. Platform capability, when required, must
-            // be resolved through server-side authority, not the JWT role
-            // string, so absent that verified capability we fail closed.
+            // Drafts are visible only to their server-verified owning instructor;
+            // non-instructors and anonymous callers are filtered in SQL.
             const isOwner = scopeId !== null && lecture.instructor_id === scopeId;
             if (!lecture.is_published && !isOwner) {
                 return res.status(404).json({ error: 'Lecture not found' });
@@ -293,8 +324,10 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 is_published = true
             } = req.body;
 
-            // Instructors can only create lectures under their own name
-            const ownerId = scopeId || instructor_id || null;
+            // The owner comes from the authenticated principal, never a
+            // caller-supplied instructor_id (the legacy platform-admin path
+            // remains unchanged).
+            const ownerId = scopeId || (req.user?.role === 'admin' ? instructor_id || null : req.user?.id || null);
 
             if (!title || !video_url) {
                 return res.status(400).json({
@@ -312,18 +345,10 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             // If no course_id provided, create a default course for the instructor
             let actualCourseId = course_id;
 
-            // An explicit course_id from an instructor must belong to the
-            // instructor's *explicitly selected* active tenant (server-derived
-            // via the auth middleware from tenant_memberships, never the JWT
-            // claim as authority). A course in another tenant, or one that does
-            // not resolve to the selected tenant, fails closed rather than
-            // binding a lecture into another workspace. The previous check used
-            // `tenants WHERE owner_user_id=? LIMIT 1`, which ignored the
-            // selected tenant and only recognized tenant *ownership*, so it
-            // denied legitimate members and pinned multi-tenant instructors to
-            // an arbitrary first-owned tenant. Platform admins keep the
-            // pre-existing platform-wide path (scopeId is null for them).
-            if (scopeId && actualCourseId) {
+            // Tenant members may only bind a lecture to a course in their
+            // server-selected workspace. The legacy platform-admin path stays
+            // platform-wide; ordinary role claims never supply the tenant.
+            if (req.user?.role !== 'admin' && actualCourseId) {
                 const selectedTenant = req.user?.tenantId;
                 if (!selectedTenant) {
                     return res.status(403).json({ error: 'Course not found in your workspace' });
@@ -342,20 +367,18 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 if (!selectedTenant) {
                     return res.status(403).json({ error: 'Course not found in your workspace' });
                 }
-                // Find or create a default course for this instructor scoped to
-                // the explicitly selected active tenant (the previous query did
-                // not constrain by tenant, so a default course could be reused
-                // across tenants).
+                // Keep a default course confined to the caller's selected
+                // tenant and server-derived owner.
                 let defaultCourse = await queryOne(
                     `SELECT id FROM courses WHERE name=? AND instructor_id=? AND tenant_id=? LIMIT 1`,
-                    ['فيديوهاتي', scopeId, selectedTenant]
+                    ['فيديوهاتي', ownerId, selectedTenant]
                 );
                 if (!defaultCourse) {
                     const courseId = uuidv4();
                     await execute(
                         `INSERT INTO courses (id,tenant_id,instructor_id,name,subject,description,is_active)
                          VALUES (?,?,?,?,?,?,TRUE)`,
-                        [courseId, selectedTenant, scopeId, 'فيديوهاتي', 'عام', 'فيديوهاتي خاصة بالمحاضر']
+                        [courseId, selectedTenant, ownerId, 'فيديوهاتي', 'عام', 'فيديوهاتي خاصة بالمحاضر']
                     );
                     actualCourseId = courseId;
                 } else {
@@ -410,11 +433,19 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
     router.put('/:id', requireTeachingWriteAccess, async (req: AuthRequest, res: Response) => {
         try {
             const scopeId = instructorScopeId(req);
-            if (scopeId) {
-                const existing = await queryOne<any>('SELECT id, instructor_id FROM lectures WHERE id = ?', [req.params.id]);
-                if (!existing || existing.instructor_id !== scopeId) {
-                    return res.status(404).json({ error: 'Lecture not found' });
-                }
+            const mutationScope = getMutationScope(req);
+            if (!mutationScope) {
+                return res.status(404).json({ error: 'Lecture not found' });
+            }
+            const existing = await queryOne<{ id: string; instructor_id: string | null; video_url: string }>(
+                `SELECT l.id, l.instructor_id, l.video_url
+                 FROM lectures l
+                 INNER JOIN courses c ON c.id = l.course_id
+                 WHERE l.id = ? AND ${mutationScope.readPredicate}`,
+                [req.params.id, mutationScope.value]
+            );
+            if (!existing) {
+                return res.status(404).json({ error: 'Lecture not found' });
             }
             const {
                 title,
@@ -433,10 +464,9 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             if (video_url !== undefined && !String(video_url).startsWith('video://')) {
                 return res.status(400).json({ error: 'External video links are not allowed. Upload the video to the platform.' });
             }
-            if (scopeId && video_url !== undefined) {
+            if (video_url !== undefined) {
                 const licensed = await queryOne('SELECT id FROM instructor_shared_lectures WHERE lecture_id=? LIMIT 1', [req.params.id]);
-                const current = await queryOne<any>('SELECT video_url FROM lectures WHERE id=?', [req.params.id]);
-                if (licensed && current && current.video_url !== video_url) {
+                if (licensed && existing.video_url !== video_url) {
                     return res.status(409).json({ error: 'The video file cannot be replaced after access has been sold' });
                 }
             }
@@ -452,7 +482,7 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                      is_free = COALESCE(?, is_free),
                      is_published = COALESCE(?, is_published),
                      updated_at = CURRENT_TIMESTAMP
-                 WHERE id = ?`,
+                 WHERE id = ? AND ${mutationScope.writePredicate}`,
                 [
                     title ?? null,
                     description ?? null,
@@ -462,7 +492,8 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                     display_order ?? null,
                     is_free ?? null,
                     is_published ?? null,
-                    req.params.id
+                    req.params.id,
+                    mutationScope.value
                 ]
             );
 
@@ -471,9 +502,15 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             }
 
             const updatedLecture = await queryOne(
-                'SELECT * FROM lectures WHERE id = ?',
-                [req.params.id]
+                `SELECT l.*
+                 FROM lectures l
+                 INNER JOIN courses c ON c.id = l.course_id
+                 WHERE l.id = ? AND ${mutationScope.readPredicate}`,
+                [req.params.id, mutationScope.value]
             );
+            if (!updatedLecture) {
+                return res.status(404).json({ error: 'Lecture not found' });
+            }
 
             res.json(updatedLecture);
         } catch (error) {
@@ -485,16 +522,24 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
     // Delete lecture (soft delete by unpublishing)
     router.delete('/:id', requireTeachingWriteAccess, async (req: AuthRequest, res: Response) => {
         try {
-            const scopeId = instructorScopeId(req);
-            if (scopeId) {
-                const existing = await queryOne<any>('SELECT id, instructor_id FROM lectures WHERE id = ?', [req.params.id]);
-                if (!existing || existing.instructor_id !== scopeId) {
-                    return res.status(404).json({ error: 'Lecture not found' });
-                }
+            const mutationScope = getMutationScope(req);
+            if (!mutationScope) {
+                return res.status(404).json({ error: 'Lecture not found' });
+            }
+            const existing = await queryOne<{ id: string }>(
+                `SELECT l.id
+                 FROM lectures l
+                 INNER JOIN courses c ON c.id = l.course_id
+                 WHERE l.id = ? AND ${mutationScope.readPredicate}`,
+                [req.params.id, mutationScope.value]
+            );
+            if (!existing) {
+                return res.status(404).json({ error: 'Lecture not found' });
             }
             const result = await execute(
-                'UPDATE lectures SET is_published = FALSE, archived_at = CURRENT_TIMESTAMP WHERE id = ?',
-                [req.params.id]
+                `UPDATE lectures SET is_published = FALSE, archived_at = CURRENT_TIMESTAMP
+                 WHERE id = ? AND ${mutationScope.writePredicate}`,
+                [req.params.id, mutationScope.value]
             );
 
             if (result.affectedRows === 0) {

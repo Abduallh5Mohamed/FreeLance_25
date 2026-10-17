@@ -84,6 +84,7 @@ const makeFixtures = (): Fixtures => ({
         'student-b': { is_active: 1, token_version: 0, suspension_active: 0, phone: '0100000002' },
         'instructor-a': { is_active: 1, token_version: 0, suspension_active: 0, phone: '0100000011' },
         'instructor-b': { is_active: 1, token_version: 0, suspension_active: 0, phone: '0100000012' },
+        'teacher-a': { is_active: 1, token_version: 0, suspension_active: 0, phone: '0100000013' },
         'platform-admin': { is_active: 1, token_version: 0, suspension_active: 0, phone: '0100000099' },
     },
     instructorAccounts: {
@@ -103,6 +104,7 @@ const makeFixtures = (): Fixtures => ({
     memberships: {
         'instructor-a': [{ tenant_id: 'tenant-a' }],
         'instructor-b': [{ tenant_id: 'tenant-b' }],
+        'teacher-a': [{ tenant_id: 'tenant-a' }],
     },
     studentsByPhone: {
         '0100000001': {
@@ -195,15 +197,22 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[], throwOnSql?: (sql: s
                 && (l.grade_id === gradeId || l.group_id === groupId));
         }
         if (sql.includes('FROM lectures l') && sql.includes('WHERE l.id = ?')) {
-            // GET /:id single lookup with joined names.
+            // Single reads and mutation preflights apply owner or tenant scope
+            // in SQL; mirror those decision boundaries in the fixture.
             const lecture = lectureById(params[0]);
             if (!lecture) return [];
+            if (sql.includes('l.instructor_id = ?') && lecture.instructor_id !== params[1]) return [];
+            if (sql.includes('c.tenant_id = ?') && f.courses[lecture.course_id]?.tenant_id !== params[1]) return [];
+            if (sql.includes('l.is_published = TRUE') && lecture.is_published !== 1) return [];
             return [{ ...lecture, course_name: 'Course', course_subject: 'Subject', grade_name: 'Grade', group_name: 'Group' }];
         }
         if (sql.includes('FROM lectures l')) {
-            // GET / list (published-only base filter; instructor scoping is
-            // appended by the handler and asserted via SQL text/params).
-            return Object.values(f.lectures).filter((l) => l.is_published === 1);
+            // GET / list: published rows are public only for anonymous callers;
+            // authenticated non-instructors also bind their selected tenant.
+            const tenantId = sql.includes('c.tenant_id = ?') ? params[0] : undefined;
+            return Object.values(f.lectures).filter((l) =>
+                l.is_published === 1 &&
+                (tenantId === undefined || f.courses[l.course_id]?.tenant_id === tenantId));
         }
         if (sql.includes('SELECT id FROM courses WHERE id = ? AND tenant_id = ?')) {
             const course = f.courses[String(params[0])];
@@ -368,6 +377,7 @@ const STUDENT_B = tokenFor({ id: 'student-b', role: 'student', tv: 0, student_en
 const INSTRUCTOR_A = tokenFor({ id: 'instructor-a', role: 'instructor', tv: 0 });
 const INSTRUCTOR_B = tokenFor({ id: 'instructor-b', role: 'instructor', tv: 0 });
 const PLATFORM_ADMIN = tokenFor({ id: 'platform-admin', role: 'admin', tv: 0 });
+const TEACHER_A = tokenFor({ id: 'teacher-a', role: 'teacher', tv: 0 });
 // instructor-a as an active member of tenant-b (a tenant they do not own),
 // selected explicitly via the tenant_id claim.
 const INSTRUCTOR_A_IN_TENANT_B = tokenFor({ id: 'instructor-a', role: 'instructor', tv: 0, tenant_id: 'tenant-b' });
@@ -471,6 +481,32 @@ test('anonymous read of a published lecture stays 200 (public marketplace contra
     assert.equal(body.video_url, 'video://video-a');
 });
 
+test('authenticated student reads a published lecture in its selected tenant', async () => {
+    const { router, executed } = makeHarness();
+    const response = await invokeRoute(router, { method: 'GET', url: '/lecture-a-pub', token: STUDENT_A });
+    assert.equal(response.statusCode, 200);
+    assert.equal((response.body as LectureRow).id, 'lecture-a-pub');
+    assert.ok(executed[0].sql.includes('c.tenant_id = ?'));
+    assert.deepEqual(executed[0].params, ['lecture-a-pub', 'tenant-a']);
+});
+
+test('authenticated student cannot read a published lecture from another tenant', async () => {
+    const { router, executed } = makeHarness();
+    const response = await invokeRoute(router, { method: 'GET', url: '/lecture-a-pub', token: STUDENT_B });
+    assert.equal(response.statusCode, 404);
+    assert.ok(executed[0].sql.includes('c.tenant_id = ?'));
+    assert.deepEqual(executed[0].params, ['lecture-a-pub', 'tenant-b']);
+});
+
+test('authenticated non-instructor without a selected tenant cannot read by id', async () => {
+    const fixtures = makeMultiTenantFixtures();
+    fixtures.memberships['teacher-a'] = [{ tenant_id: 'tenant-a' }, { tenant_id: 'tenant-b' }];
+    const { router, executed } = makeHarness({ fixtures });
+    const response = await invokeRoute(router, { method: 'GET', url: '/lecture-a-pub', token: TEACHER_A });
+    assert.equal(response.statusCode, 404);
+    assert.equal(executed.length, 0);
+});
+
 test('owning instructor still reads its own draft', async () => {
     const { router } = makeHarness();
     const response = await invokeRoute(router, { method: 'GET', url: '/lecture-a-draft', token: INSTRUCTOR_A });
@@ -542,6 +578,29 @@ test('instructor create with its own course succeeds and binds its own instructo
     assert.ok(insert, 'lecture INSERT executed');
     assert.equal(insert!.params[1], 'course-a');
     assert.equal(insert!.params[4], 'instructor-a');
+});
+
+test('tenant teacher cannot create a lecture under a foreign-tenant course', async () => {
+    const { router, executed } = makeHarness();
+    const response = await invokeRoute(router, {
+        method: 'POST', url: '/', token: TEACHER_A,
+        body: validLectureBody({ course_id: 'course-b', instructor_id: 'instructor-b' }),
+    });
+    assert.equal(response.statusCode, 403);
+    assert.equal((response.body as { error?: string }).error, 'Course not found in your workspace');
+    assertNoWrite(executed);
+});
+
+test('tenant teacher create derives the lecture owner from the verified principal', async () => {
+    const { router, executed } = makeHarness();
+    const response = await invokeRoute(router, {
+        method: 'POST', url: '/', token: TEACHER_A,
+        body: validLectureBody({ course_id: 'course-a', instructor_id: 'instructor-b' }),
+    });
+    assert.equal(response.statusCode, 201);
+    assert.equal((response.body as LectureRow).instructor_id, 'teacher-a');
+    const insert = executed.find((e) => e.sql.includes('INSERT INTO lectures'));
+    assert.equal(insert?.params[4], 'teacher-a');
 });
 
 test('instructor create without a positive price is rejected with 400', async () => {
@@ -669,6 +728,38 @@ test('instructor B delete of instructor A lecture is 404 with no UPDATE executed
     assertNoWrite(executed);
 });
 
+test('tenant teacher cannot update a lecture from another tenant', async () => {
+    const { router, executed } = makeHarness();
+    const response = await invokeRoute(router, {
+        method: 'PUT', url: '/lecture-b-pub', token: TEACHER_A,
+        body: { title: 'Cross-tenant update' },
+    });
+    assert.equal(response.statusCode, 404);
+    assertNoWrite(executed);
+});
+
+test('tenant teacher can update a lecture in its selected tenant', async () => {
+    const { router, executed } = makeHarness();
+    const response = await invokeRoute(router, {
+        method: 'PUT', url: '/lecture-a-pub', token: TEACHER_A,
+        body: { title: 'Tenant update' },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal((response.body as LectureRow).title, 'Tenant update');
+    const update = executed.find((e) => e.sql.includes('UPDATE lectures'));
+    assert.ok(update?.sql.includes('scoped_course.tenant_id = ?'));
+    assert.ok(update?.params.includes('tenant-a'));
+});
+
+test('tenant teacher cannot delete a lecture from another tenant', async () => {
+    const { router, executed } = makeHarness();
+    const response = await invokeRoute(router, {
+        method: 'DELETE', url: '/lecture-b-pub', token: TEACHER_A,
+    });
+    assert.equal(response.statusCode, 404);
+    assertNoWrite(executed);
+});
+
 test('owner update changes the lecture and preserves unspecified fields', async () => {
     const { router } = makeHarness();
     const response = await invokeRoute(router, {
@@ -737,6 +828,27 @@ test('anonymous list keeps the pre-existing published-only public contract', asy
     const listQuery = executed.find((e) => e.sql.includes('WHERE l.is_published = TRUE'));
     assert.ok(listQuery);
     assert.ok(!listQuery!.sql.includes('AND l.instructor_id = ?'), 'no instructor scoping for anonymous callers');
+});
+
+test('authenticated non-instructor list is scoped to its selected tenant', async () => {
+    const { router, executed } = makeHarness();
+    const response = await invokeRoute(router, { method: 'GET', url: '/', token: STUDENT_A });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual((response.body as LectureRow[]).map((l) => l.id), ['lecture-a-pub']);
+    const listQuery = executed.find((e) => e.sql.includes('WHERE l.is_published = TRUE'));
+    assert.ok(listQuery);
+    assert.ok(listQuery!.sql.includes('AND c.tenant_id = ?'));
+    assert.deepEqual(listQuery!.params, ['tenant-a']);
+});
+
+test('authenticated non-instructor without a selected tenant gets an empty list without querying', async () => {
+    const fixtures = makeMultiTenantFixtures();
+    fixtures.memberships['teacher-a'] = [{ tenant_id: 'tenant-a' }, { tenant_id: 'tenant-b' }];
+    const { router, executed } = makeHarness({ fixtures });
+    const response = await invokeRoute(router, { method: 'GET', url: '/', token: TEACHER_A });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.body, []);
+    assert.equal(executed.length, 0);
 });
 
 test('GET / public list uses a minimal safe projection (no l.* source leakage) while remaining allowed', async () => {

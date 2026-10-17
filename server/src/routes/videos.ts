@@ -453,6 +453,19 @@ export const buildUploadInitContract = (
     expiresIn: ttlMinutes * 60,
 });
 
+export interface UploadTransferContract {
+    success: true;
+    videoId: string;
+    objectKey: string;
+    sizeBytes: number;
+}
+
+export const buildUploadTransferContract = (
+    videoId: string,
+    objectKey: string,
+    sizeBytes: number,
+): UploadTransferContract => ({ success: true, videoId, objectKey, sizeBytes });
+
 // ============================================
 // CROSS-PROCESS UPLOAD SERIALIZATION + ATOMIC FINALIZATION
 // ============================================
@@ -1594,12 +1607,7 @@ router.put('/upload/:videoId/content', authenticateToken, async (req: AuthReques
         switch (outcome.outcome) {
             case 'stored':
                 console.log(`[Videos] Received ${outcome.sizeBytes} bytes for video ${videoId}`);
-                return res.status(201).json({
-                    success: true,
-                    videoId: outcome.videoId,
-                    objectKey: outcome.objectKey,
-                    sizeBytes: outcome.sizeBytes,
-                });
+                return res.status(201).json(buildUploadTransferContract(outcome.videoId, outcome.objectKey, outcome.sizeBytes));
             case 'not_found':
                 return res.status(404).json({ error: 'Upload session not found' });
             case 'busy':
@@ -2373,6 +2381,67 @@ router.delete('/:videoId', authenticateToken, async (req: AuthRequest, res: Resp
     }
 });
 
+export interface VideoMetadataResponse {
+    id: string;
+    course_id: string | null;
+    lecture_id: string | null;
+    material_id: string | null;
+    title: string;
+    description: string | null;
+    duration_seconds: number | null;
+    status: string;
+    processing_progress: number | null;
+    qualities_available: unknown;
+    preview_status: string | null;
+    created_at: Date | string;
+    processed_at: Date | string | null;
+}
+
+export interface VideoMetadataUpdateDependencies {
+    execute: (sql: string, params?: unknown[]) => Promise<unknown>;
+    queryOne: <T>(sql: string, params?: unknown[]) => Promise<T | null>;
+}
+
+export const updateVideoMetadataForUploader = async (
+    videoId: string,
+    user: { id: string; tenantId?: string | null },
+    title: unknown,
+    description: unknown,
+    deps: VideoMetadataUpdateDependencies = { execute, queryOne },
+): Promise<VideoMetadataResponse | null> => {
+    if (!user.tenantId) return null;
+
+    await deps.execute(
+        'UPDATE videos SET title = ?, description = ? WHERE id = ? AND tenant_id = ? AND uploaded_by = ?',
+        [title, description || null, videoId, user.tenantId, user.id],
+    );
+
+    const video = await deps.queryOne<VideoMetadataResponse>(
+        `SELECT id, course_id, lecture_id, material_id, title, description, duration_seconds,
+                status, processing_progress, qualities_available, preview_status, created_at, processed_at
+         FROM videos
+         WHERE id = ? AND tenant_id = ? AND uploaded_by = ?`,
+        [videoId, user.tenantId, user.id],
+    );
+    if (!video) return null;
+
+    return {
+        id: video.id,
+        course_id: video.course_id,
+        lecture_id: video.lecture_id,
+        material_id: video.material_id,
+        title: video.title,
+        description: video.description,
+        duration_seconds: video.duration_seconds,
+        status: video.status,
+        processing_progress: video.processing_progress,
+        qualities_available: video.qualities_available,
+        preview_status: video.preview_status,
+        created_at: video.created_at,
+        processed_at: video.processed_at,
+    };
+};
+
 /**
  * Update video metadata
  */
@@ -2381,12 +2450,10 @@ router.put('/:videoId', authenticateToken, async (req: AuthRequest, res: Respons
         const { videoId } = req.params;
         const { title, description } = req.body;
 
-        await execute(
-            'UPDATE videos SET title = ?, description = ? WHERE id = ? AND uploaded_by=?',
-            [title, description || null, videoId, req.user!.id]
-        );
-
-        const video = await queryOne('SELECT * FROM videos WHERE id = ?', [videoId]);
+        const video = await updateVideoMetadataForUploader(videoId, req.user!, title, description);
+        if (!video) {
+            return res.status(404).json({ error: 'Video not found' });
+        }
 
         res.json(video);
 

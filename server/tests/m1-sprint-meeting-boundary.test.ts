@@ -192,11 +192,12 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[], throwOnSql?: (sql: s
         }
         if (sql.includes('m.is_active = 1')) {
             // Student self-service list. The handler binds the caller's
-            // server-derived group/grade; the fixture reproduces the SQL
-            // predicate so the returned rows are the real decision.
-            const [groupId, gradeId] = params as [string | null, string | null];
+            // server-derived group, grade, and instructor; the fixture
+            // reproduces the SQL predicate so the returned rows are the real decision.
+            const [groupId, gradeId, instructorId] = params as [string | null, string | null, string];
             return Object.values(f.meetings).filter((m) =>
                 m.is_active === 1
+                && m.created_by === instructorId
                 && ((m.group_id != null && m.group_id === groupId)
                     || (m.group_id == null && m.grade_id === gradeId)));
         }
@@ -463,8 +464,9 @@ test('student A sees only its group and grade-wide meetings; SQL binds server sc
     const listQuery = findExecuted(executed, 'm.is_active = 1');
     assert.ok(listQuery, 'student list query executed');
     // Decision-boundary: bindings come from the server-derived workspace.
-    assert.deepEqual(listQuery!.params, ['group-a', 'grade-a']);
+    assert.deepEqual(listQuery!.params, ['group-a', 'grade-a', 'instructor-a']);
     assert.ok(listQuery!.sql.includes('m.group_id = ? OR (m.group_id IS NULL AND m.grade_id = ?)'));
+    assert.ok(listQuery!.sql.includes('AND m.created_by = ?'));
 });
 
 test('student without a live workspace selection is denied with no data access', async () => {

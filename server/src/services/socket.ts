@@ -130,26 +130,41 @@ const productionNotify = async (event: SocketNotificationEvent): Promise<void> =
 const noopNotify = async (_event: SocketNotificationEvent): Promise<void> => undefined;
 
 /**
- * Approved origin policy, mirroring the Express CORS configuration in
- * src/index.ts: the fixed application origins, the deployment-configured
- * CORS_ORIGIN, and any localhost/loopback origin. Unknown origins are
- * rejected, so credentialed socket access is never broad.
+ * Socket CORS policy mirrors the exact-origin parsing used by Express.
+ * Loopback origins are development-only; deployments must configure their
+ * allowed origins explicitly.
  */
-const ALLOWED_ORIGINS = [
-    'http://localhost:8080',
-    'http://localhost:8081',
-    'http://localhost:3000',
-    'http://127.0.0.1:8080',
-    'http://127.0.0.1:8081',
-    'http://127.0.0.1:3000',
-    'https://elka2d.cloud',
-    'http://elka2d.cloud',
-    process.env.CORS_ORIGIN,
-    process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined,
-].filter(Boolean) as string[];
+function isAllowedSocketOrigin(
+    origin: string | undefined,
+    corsOrigin: string | undefined,
+    vercelUrl: string | undefined,
+    nodeEnv: string | undefined,
+): boolean {
+    if (!origin) return true;
+
+    let parsedOrigin: URL;
+    try {
+        parsedOrigin = new URL(origin);
+    } catch {
+        return false;
+    }
+
+    if (parsedOrigin.origin !== origin || (parsedOrigin.protocol !== 'http:' && parsedOrigin.protocol !== 'https:')) {
+        return false;
+    }
+
+    const configuredOrigins = [
+        corsOrigin,
+        vercelUrl ? `https://${vercelUrl}` : undefined,
+    ].filter((value): value is string => Boolean(value));
+    if (configuredOrigins.includes(origin)) return true;
+
+    if (nodeEnv === 'production') return false;
+    return parsedOrigin.hostname === 'localhost' || parsedOrigin.hostname === '127.0.0.1';
+}
 
 const corsOriginHandler = (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1') || ALLOWED_ORIGINS.includes(origin)) {
+    if (isAllowedSocketOrigin(origin, process.env.CORS_ORIGIN, process.env.VERCEL_URL, process.env.NODE_ENV)) {
         callback(null, true);
     } else {
         callback(new Error('Origin is not allowed by CORS'));
