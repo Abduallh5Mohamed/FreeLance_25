@@ -56,8 +56,10 @@ export default function InstructorHeader({ instructorName = 'Instructor', wallet
   }, [isCollapsed]);
 
   const handleLogout = () => {
+    // Canonical session teardown (supervisor/026): clearAuthToken removes
+    // authToken/currentUser/currentStudent and notifies same-document
+    // subscribers after the complete local mutation.
     clearAuthToken();
-    localStorage.removeItem('currentUser');
     navigate('/auth');
   };
 

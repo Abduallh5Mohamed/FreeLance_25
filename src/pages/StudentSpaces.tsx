@@ -4,6 +4,7 @@ import { Building2, GraduationCap } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { getCurrentStudentEnrollment, getStudentSpaces, selectStudentSpace, type StudentSpace } from '@/lib/api';
+import { notifySessionChange } from '@/lib/session-events';
 
 export default function StudentSpaces() {
   const navigate = useNavigate();
@@ -18,6 +19,10 @@ export default function StudentSpaces() {
       const student = await getCurrentStudentEnrollment();
       localStorage.setItem('currentStudent', JSON.stringify(student));
       localStorage.setItem('currentStudentSpace', JSON.stringify(space));
+      // Same-document scope change (supervisor/026): notify only after the
+      // complete identity/scope mutation, so subscribers cached for the
+      // previous space react before stale responses commit.
+      notifySessionChange('scope');
       navigate('/student');
     } catch (e) { setError(e instanceof Error ? e.message : 'تعذر فتح مساحة المدرس'); }
     finally { setBusy(''); }

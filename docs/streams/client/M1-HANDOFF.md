@@ -1,5 +1,7 @@
 # تسليم M1 للمطور البشري
 
+**حالة التسليم — 2026-10-17:** أُغلق نطاق واجهة M1 المتفق عليه وامتداد العقود الثلاثة الموافق عليه في [026](coordination/supervisor/026-human-approved-contract-closure-and-schedule-resume.md)، وفق [القبول النهائي 039](coordination/supervisor/039-final-m1-client-and-contract-acceptance.md). نجح الفحص المجمع المحدد في 421 اختبارًا؛ حدود التحقق وأخطاء الأنواع الخارجية موثقة بالتقرير. النص أدناه سجل النطاق والمراجعات التاريخية، وليس قائمة مهام جديدة أو تفويضًا لبدء M2. التعديلات محفوظة دون commit أو نشر، وجدولة هذه الدفعة أوقفت عند الإغلاق.
+
 مرجع الملكية: [خطة المطورين](../../20-two-developer-operating-plan-ar.md). إعداد بيئة عملك: [ربط WorkBuddy وCodex](../../21-developer-two-workbuddy-setup-ar.md).
 
 **تصحيح حاكم عند النقل:** الفرع هو codex/human-client؛ أي ذكر لتشغيل سابق أو claim/host/حصة على جهاز المطور 1 تاريخي ولا ينقل لجهازك. تعليمات WorkBuddy الحالية في tools/workbuddy-bridge/WORKER-PROMPT-CLIENT.md تحكم الربط الجديد، والملفات المحددة أدناه تحكم نطاق المهمة بعد موافقتك.

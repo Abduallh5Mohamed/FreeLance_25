@@ -58,9 +58,9 @@ const Auth = () => {
         if (result.user) {
           console.log('✅ Login successful, user:', result.user);
 
-          // Store user session in localStorage
-          localStorage.setItem('currentUser', JSON.stringify(result.user));
-          console.log('✅ User stored in localStorage');
+          // The canonical signIn mutation (api-http) already stored the
+          // identity and notified same-document subscribers; no second write
+          // here, so the notification can never precede a later mutation.
 
           // Redirect based on role
           if (result.user.role === 'admin' || result.user.admin_member) {

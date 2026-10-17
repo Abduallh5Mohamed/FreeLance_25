@@ -36,6 +36,37 @@ export const classifyReviewOutcome = (status: number): FetchOutcome => {
     return 'error';
 };
 
+/**
+ * Thrown when a protected request is attempted without a stored session token.
+ * Callers fail closed (redirect to /auth) instead of sending an unauthenticated
+ * request that the strict-auth backend rejects with 401.
+ */
+export class MissingAuthTokenError extends Error {
+    constructor() {
+        super('Missing auth token');
+        this.name = 'MissingAuthTokenError';
+    }
+}
+
+/**
+ * Performs a protected request with the canonical session bearer token attached,
+ * reading the same `authToken` localStorage key as the shared transport so the
+ * strict-auth backend accepts the request. Throws MissingAuthTokenError when no
+ * token is stored, so no unauthenticated request is ever fired.
+ */
+export const authedFetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    let token: string | null = null;
+    try {
+        token = localStorage.getItem('authToken');
+    } catch {
+        token = null;
+    }
+    if (!token) throw new MissingAuthTokenError();
+    const headers = new Headers(init.headers);
+    headers.set('Authorization', `Bearer ${token}`);
+    return fetch(url, { ...init, headers });
+};
+
 interface Question {
     id: string;
     question_text: string;
@@ -144,7 +175,16 @@ const ExamReview = () => {
 
             setStudentId(user.id);
 
-            const response = await fetch(`${API_BASE_URL}/exams/${examId}/review/${user.id}`);
+            let response: Response;
+            try {
+                response = await authedFetch(`${API_BASE_URL}/exams/${examId}/review/${user.id}`);
+            } catch (authErr) {
+                if (authErr instanceof MissingAuthTokenError) {
+                    navigate('/auth');
+                    return;
+                }
+                throw authErr;
+            }
 
             if (requestSeq !== loadSeqRef.current) return; // stale response
 

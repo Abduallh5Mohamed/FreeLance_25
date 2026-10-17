@@ -7,6 +7,7 @@ import {
     AuthRequest,
 } from '../middleware/auth';
 import { isSuperAdmin, getAdminPermissions } from '../security/admin-permissions';
+import { normalizeAttendanceDay, todayDayKey } from '../lib/attendance-calendar';
 
 /**
  * Attendance router.
@@ -72,6 +73,12 @@ export interface AttendanceRouterDeps {
     optionalAuthenticate: RequestHandler;
     notify: AttendanceNotificationService;
     hasVerifiedPlatformCapability: (userId: string) => Promise<boolean>;
+    /**
+     * Clock for the default attendance day. Production binds the real clock;
+     * hermetic tests inject explicit instants to pin the Africa/Cairo
+     * business day. Defaults to `new Date()`.
+     */
+    now?: () => Date;
 }
 
 /** Status values allowed by the `attendance.status` enum column. */
@@ -104,17 +111,13 @@ const isAttendanceMethod = (value: unknown): value is AttendanceMethod =>
 
 /**
  * Normalize a date input to the calendar day it denotes (YYYY-MM-DD), or null
- * when the value is not a usable date. Keeps the historical day extraction so
- * existing clients that send a Date or an ISO string keep working.
+ * when the value is not a usable date. Delegates to the shared
+ * Africa/Cairo attendance business-day calendar (supervisor/026): an explicit
+ * YYYY-MM-DD key is a calendar day and is preserved unchanged after strict
+ * validation, while a Date or ISO datetime converts to the Cairo calendar
+ * day it denotes — never the UTC or host-local day.
  */
-const normalizeDay = (value: unknown): string | null => {
-    if (value instanceof Date) return normalizeDay(value.toISOString());
-    if (typeof value !== 'string' || value === '') return null;
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return null;
-    const day = parsed.toISOString().slice(0, 10);
-    return DAY_PATTERN.test(day) ? day : null;
-};
+const normalizeDay = (value: unknown): string | null => normalizeAttendanceDay(value);
 
 const isDuplicateKeyError = (error: unknown): boolean =>
     typeof error === 'object' && error !== null
@@ -233,6 +236,7 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
     const router = Router();
     const { query, queryOne, execute } = deps.db;
     const hasVerifiedPlatformCapability = deps.hasVerifiedPlatformCapability;
+    const now = deps.now ?? (() => new Date());
     router.use(deps.optionalAuthenticate);
 
     /**
@@ -446,14 +450,14 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
                 }
             }
 
-            // An absent date defaults to today; a present-but-invalid date is
-            // rejected instead of being silently coerced to the current day
-            // (`null ?? new Date()` used to swallow the invalid case).
+            // An absent date defaults to the current Africa/Cairo business
+            // day (supervisor/026); a present-but-invalid date is rejected
+            // instead of being silently coerced to the current day.
             const requestedDay = readOptionalDay(attendance_date);
             if (requestedDay === null) {
                 return res.status(400).json({ error: 'Invalid attendance_date' });
             }
-            const day = requestedDay ?? normalizeDay(new Date());
+            const day = requestedDay ?? todayDayKey(now());
             if (!day) {
                 return res.status(400).json({ error: 'Invalid attendance_date' });
             }
@@ -785,4 +789,5 @@ export default createAttendanceRouter({
     optionalAuthenticate: optionalAuth,
     notify: { sendWhatsAppMessage },
     hasVerifiedPlatformCapability: verifiedPlatformCapability,
+    now: () => new Date(),
 });

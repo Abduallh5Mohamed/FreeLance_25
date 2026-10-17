@@ -29,6 +29,8 @@ import {
 import { useToast } from "@/components/ui/use-toast";
 import tabwebAcademyLogo from "@/assets/Tabweb_Academy_Logo.png";
 import { cn } from "@/lib/utils";
+import { clearAuthToken } from "@/lib/api-http";
+import { subscribeSessionChange } from "@/lib/session-events";
 import { canAccessRoute, type AccessProfile } from "@/auth/access-control";
 
 const Header = () => {
@@ -73,6 +75,34 @@ const Header = () => {
     }
   }, []);
 
+  // Same-document session change (supervisor/026): the header caches the
+  // stored identity for route gating, so an identity rewrite (e.g. the
+  // billing_only update) or a same-document login must refresh it, and a
+  // logout must clear it — never keep gating on a stale identity.
+  useEffect(() => {
+    const unsubscribe = subscribeSessionChange((event) => {
+      if (event.kind === "logout") {
+        setCurrentUser(null);
+        setUserName("");
+        return;
+      }
+      const userStr = localStorage.getItem("currentUser");
+      if (!userStr) {
+        setCurrentUser(null);
+        setUserName("");
+        return;
+      }
+      try {
+        const user = JSON.parse(userStr);
+        setCurrentUser(user);
+        setUserName(user.name || "");
+      } catch (e) {
+        console.error("Error parsing user:", e);
+      }
+    });
+    return unsubscribe;
+  }, []);
+
   // Auto-expand group containing active route
   useEffect(() => {
     for (const group of navGroups) {
@@ -89,11 +119,12 @@ const Header = () => {
 
   const handleLogout = async () => {
     try {
+      // Canonical session teardown (supervisor/026): clearAuthToken removes
+      // authToken/currentUser/currentStudent and notifies same-document
+      // subscribers after the complete local mutation.
       localStorage.removeItem("student_session");
-      localStorage.removeItem("authToken");
-      localStorage.removeItem("currentUser");
-      localStorage.removeItem("currentStudent");
       localStorage.removeItem("supabaseUser");
+      clearAuthToken();
       const { error } = await supabase.auth.signOut();
       if (error && error.message !== "No session found") throw error;
       toast({

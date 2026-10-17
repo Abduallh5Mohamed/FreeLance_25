@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -7,7 +7,8 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { getGrades, getGroups, getStudents, getAttendance, type Grade, type Group, type Student, type Attendance } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
-import { classifyAttendanceError } from '@/pages/QRAttendance';
+import { classifyAttendanceError, createResponseSequence, resolveGuardianPhone } from '@/pages/QRAttendance';
+import { instantToDayKey, todayDayKey } from '@/lib/attendance-calendar';
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, Search, Check, X, MessageCircle } from 'lucide-react';
 
 const AttendanceLog = () => {
@@ -21,8 +22,23 @@ const AttendanceLog = () => {
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
   const [searchTerm, setSearchTerm] = useState<string>('');
 
-  const [currentMonth, setCurrentMonth] = useState(new Date());
+  // The month grid opens on the current Africa/Cairo attendance business
+  // month (supervisor/026), not the host-local month, so the visible grid and
+  // the day keys fetched for it agree with the server's Cairo day keys.
+  const [currentMonth, setCurrentMonth] = useState(() => {
+    const cairoToday = todayDayKey();
+    return new Date(Number(cairoToday.slice(0, 4)), Number(cairoToday.slice(5, 7)) - 1, 1);
+  });
   const [loading, setLoading] = useState(false);
+  const [attendanceError, setAttendanceError] = useState<string | null>(null);
+
+  // Stale-response guard: a superseded fetch (student/month change) must not
+  // overwrite the state of the newer selection.
+  const attendanceSequence = useRef(createResponseSequence());
+  // Separate generations for the group and student list loaders so a stale
+  // list response cannot repopulate a scope that was already cleared.
+  const groupsSequence = useRef(createResponseSequence());
+  const studentsSequence = useRef(createResponseSequence());
 
   const { toast } = useToast();
 
@@ -34,17 +50,25 @@ const AttendanceLog = () => {
     if (selectedGradeId) {
       fetchGroups(selectedGradeId);
     } else {
+      // Grade cleared: invalidate any in-flight groups load so it cannot
+      // restore a list for a scope that is no longer selected.
+      groupsSequence.current.invalidate();
       setGroups([]);
       setSelectedGroupId('');
     }
   }, [selectedGradeId]);
 
   useEffect(() => {
+    // Scope changed: drop the previously selected student so its attendance is
+    // never shown under a different group (the selection effect then clears the
+    // stale records).
+    setSelectedStudentId('');
     if (selectedGroupId) {
       fetchStudents(selectedGroupId);
     } else {
+      // Group cleared: invalidate any in-flight student-list load.
+      studentsSequence.current.invalidate();
       setStudents([]);
-      setSelectedStudentId('');
     }
   }, [selectedGroupId]);
 
@@ -52,7 +76,13 @@ const AttendanceLog = () => {
     if (selectedStudentId) {
       fetchAttendance(selectedStudentId);
     } else {
+      // Deselection: invalidate the in-flight attendance fetch so a late
+      // completion cannot restore rows for a scope no longer selected, even
+      // when no replacement request is started.
+      attendanceSequence.current.invalidate();
       setAttendance([]);
+      setAttendanceError(null);
+      setLoading(false);
     }
   }, [selectedStudentId, currentMonth]);
 
@@ -71,11 +101,15 @@ const AttendanceLog = () => {
   };
 
   const fetchGroups = async (gradeId: string) => {
+    const token = groupsSequence.current.next();
     try {
       const allGroups = await getGroups();
+      // Ignore a stale list response belonging to a superseded/cleared grade.
+      if (!groupsSequence.current.isCurrent(token)) return;
       const filtered = allGroups.filter(g => g.grade_id === gradeId);
       setGroups(filtered);
     } catch (error) {
+      if (!groupsSequence.current.isCurrent(token)) return;
       console.error('Error fetching groups:', error);
       toast({
         title: 'خطأ',
@@ -86,11 +120,15 @@ const AttendanceLog = () => {
   };
 
   const fetchStudents = async (groupId: string) => {
+    const token = studentsSequence.current.next();
     try {
       const data = await getStudents();
+      // Ignore a stale list response belonging to a superseded/cleared group.
+      if (!studentsSequence.current.isCurrent(token)) return;
       const filtered = data.filter((s: any) => s.group_id === groupId);
       setStudents(filtered);
     } catch (error) {
+      if (!studentsSequence.current.isCurrent(token)) return;
       console.error('Error fetching students:', error);
       toast({
         title: 'خطأ',
@@ -101,8 +139,9 @@ const AttendanceLog = () => {
   };
 
   const fetchAttendance = async (studentId: string) => {
+    const token = attendanceSequence.current.next();
+    setLoading(true);
     try {
-      setLoading(true);
       const start = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1);
       const end = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0);
       const formatLocal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -115,16 +154,23 @@ const AttendanceLog = () => {
         end_date: endStr,
         order: 'asc'
       });
+      // Ignore a stale response belonging to a superseded student/month.
+      if (!attendanceSequence.current.isCurrent(token)) return;
       setAttendance(data || []);
+      setAttendanceError(null);
     } catch (error) {
+      if (!attendanceSequence.current.isCurrent(token)) return;
       console.error('Error fetching attendance:', error);
+      // Fail closed: never keep a previous selection's records on screen.
+      setAttendance([]);
+      setAttendanceError('فشل تحميل سجل الحضور');
       toast({
         title: 'خطأ',
         description: 'فشل تحميل سجل الحضور',
         variant: 'destructive'
       });
     } finally {
-      setLoading(false);
+      if (attendanceSequence.current.isCurrent(token)) setLoading(false);
     }
   };
 
@@ -186,10 +232,11 @@ const AttendanceLog = () => {
     const map: { [dateStr: string]: Attendance } = {};
     attendance.forEach(a => {
       if (!a.attendance_date) return;
-      // Avoid UTC shift: format using local date parts instead of toISOString
-      const d = new Date(a.attendance_date as any);
-      const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      map[dateStr] = a;
+      // Key rows by the Africa/Cairo business day the stored datetime
+      // denotes (supervisor/026) — the same day the grid renders and the
+      // server filters by — instead of host-local date parts.
+      const dateStr = instantToDayKey(a.attendance_date);
+      if (dateStr) map[dateStr] = a;
     });
     return map;
   }, [attendance]);
@@ -215,7 +262,7 @@ const AttendanceLog = () => {
     const student = students.find((s: any) => s.id === selectedStudentId);
     if (!student) return;
 
-    const guardianPhone = student.guardian_phone || student.parent_phone;
+    const guardianPhone = resolveGuardianPhone(student);
     if (!guardianPhone) {
       toast({
         title: 'خطأ',
@@ -324,6 +371,7 @@ const AttendanceLog = () => {
                     onChange={(e) => setSearchTerm(e.target.value)}
                     className="border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0"
                     disabled={!selectedGroupId}
+                    aria-label="البحث عن طالب بالاسم أو الهاتف"
                   />
                 </div>
               </div>
@@ -374,6 +422,13 @@ const AttendanceLog = () => {
             <CardContent>
               {loading ? (
                 <div className="text-center py-8 text-muted-foreground">جاري التحميل...</div>
+              ) : attendanceError ? (
+                <div className="text-center py-8 space-y-3">
+                  <p className="text-destructive font-medium">{attendanceError}</p>
+                  <Button variant="outline" size="sm" onClick={() => fetchAttendance(selectedStudentId)}>
+                    إعادة المحاولة
+                  </Button>
+                </div>
               ) : scheduledDates.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground">لا توجد أيام مجدولة لهذا الشهر</div>
               ) : (

@@ -21,18 +21,18 @@ const readApiBase = (): string => {
 
 const API_BASE_URL = readApiBase();
 
-interface Grade {
+export interface Grade {
     id: string;
     name: string;
 }
 
-interface Group {
+export interface Group {
     id: string;
     name: string;
     grade_id: string;
 }
 
-interface EssayQuestion {
+export interface EssayQuestion {
     id: string;
     question_text: string;
     points: number;
@@ -41,7 +41,7 @@ interface EssayQuestion {
     assigned_score?: number;
 }
 
-interface StudentAttempt {
+export interface StudentAttempt {
     student_id: string;
     student_name: string;
     exam_id: string;
@@ -87,6 +87,279 @@ export const calculateTotalScore = (student: StudentAttempt): number => {
     return autoScore + essayTotal;
 };
 
+/**
+ * Thrown when a protected request is attempted without a stored session token.
+ * Callers fail closed instead of sending an unauthenticated request that the
+ * strict-auth backend rejects with 401.
+ */
+export class MissingAuthTokenError extends Error {
+    constructor() {
+        super('Missing auth token');
+        this.name = 'MissingAuthTokenError';
+    }
+}
+
+/**
+ * Performs a protected request with the canonical session bearer token attached,
+ * reading the same `authToken` localStorage key as the shared transport so the
+ * strict-auth backend accepts the request. Throws MissingAuthTokenError when no
+ * token is stored, so no unauthenticated request is ever fired.
+ */
+export const authedFetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    let token: string | null = null;
+    try {
+        token = localStorage.getItem('authToken');
+    } catch {
+        token = null;
+    }
+    if (!token) throw new MissingAuthTokenError();
+    const headers = new Headers(init.headers);
+    headers.set('Authorization', `Bearer ${token}`);
+    return fetch(url, { ...init, headers });
+};
+
+export type SubmitOutcome = 'success' | 'unauthorized' | 'forbidden' | 'error';
+
+/**
+ * Classifies a submit response so only a 2xx clears the row. Any rejected submit
+ * (401/403/other) leaves the attempt in the list with its entered scores, so the
+ * grader can retry without losing input.
+ */
+export const classifySubmitOutcome = (status: number): SubmitOutcome => {
+    if (status >= 200 && status < 300) return 'success';
+    if (status === 401) return 'unauthorized';
+    if (status === 403) return 'forbidden';
+    return 'error';
+};
+
+// ---------------------------------------------------------------------------
+// Production request adapters (transport = the canonical `authedFetch` above).
+// These are the exact functions the page calls; tests drive them with a mocked
+// global fetch so the real request/decision paths are exercised.
+// ---------------------------------------------------------------------------
+
+export type LoadOutcome = 'ok' | 'unauthorized' | 'forbidden' | 'error';
+
+export interface LoadResult<T> {
+    outcome: LoadOutcome;
+    /** Decoded rows; only populated when outcome === 'ok' and malformed === false. */
+    rows: T[];
+    /** True when the response was 2xx but its body was not a JSON array. */
+    malformed: boolean;
+}
+
+export const classifyLoadOutcome = (status: number): LoadOutcome => {
+    if (status === 401) return 'unauthorized';
+    if (status === 403) return 'forbidden';
+    if (status >= 200 && status < 300) return 'ok';
+    return 'error';
+};
+
+/**
+ * Protected GET through the canonical bearer transport. It checks `response.ok`
+ * BEFORE decoding, so a non-2xx error body (e.g. a 401/403 JSON object) is never
+ * handed to array state, and a 2xx body that is not an array is reported as
+ * malformed with no rows. The result therefore can never carry a non-array.
+ */
+export async function loadArray<T>(url: string): Promise<LoadResult<T>> {
+    const response = await authedFetch(url);
+    const outcome = classifyLoadOutcome(response.status);
+    if (outcome !== 'ok') return { outcome, rows: [], malformed: false };
+    let data: unknown;
+    try {
+        data = await response.json();
+    } catch {
+        return { outcome: 'ok', rows: [], malformed: true };
+    }
+    if (!Array.isArray(data)) return { outcome: 'ok', rows: [], malformed: true };
+    return { outcome: 'ok', rows: data as T[], malformed: false };
+}
+
+const SESSION_EXPIRED_MESSAGE = 'انتهت الجلسة، يرجى تسجيل الدخول مرة أخرى';
+const SELECTORS_FORBIDDEN_MESSAGE = 'ليست لديك صلاحية عرض بيانات الصفوف والمجموعات';
+const SELECTORS_MALFORMED_MESSAGE = 'بيانات الصفوف والمجموعات غير صالحة';
+const SELECTORS_FAILED_MESSAGE = 'فشل تحميل بيانات الصفوف والمجموعات';
+const PENDING_MALFORMED_MESSAGE = 'استجابة غير صالحة لمحاولات التصحيح';
+
+export type SelectorLoadFailure =
+    | { outcome: LoadOutcome; malformed: boolean }
+    | { error: unknown };
+
+/**
+ * Maps a selector (grades/groups) load failure to a safe, user-facing message.
+ * Returns null ONLY for a well-formed 2xx array, so a 401/403/missing token/
+ * network failure or a non-array body can never be presented to the grader as
+ * "no grades" — the previous behaviour silently swallowed every non-ok outcome
+ * and left the selectors looking legitimately empty with no way to retry.
+ */
+export const describeSelectorLoadFailure = (failure: SelectorLoadFailure): string | null => {
+    if ('error' in failure) {
+        return failure.error instanceof MissingAuthTokenError
+            ? SESSION_EXPIRED_MESSAGE
+            : SELECTORS_FAILED_MESSAGE;
+    }
+    if (failure.outcome === 'ok' && !failure.malformed) return null;
+    if (failure.outcome === 'unauthorized') return SESSION_EXPIRED_MESSAGE;
+    if (failure.outcome === 'forbidden') return SELECTORS_FORBIDDEN_MESSAGE;
+    if (failure.malformed) return SELECTORS_MALFORMED_MESSAGE;
+    return SELECTORS_FAILED_MESSAGE;
+};
+
+/** Safe message for a failed pending-attempts load; never returns an empty-string "ok". */
+export const describePendingLoadFailure = (outcome: LoadOutcome, malformed: boolean): string => {
+    if (outcome === 'unauthorized') return SESSION_EXPIRED_MESSAGE;
+    if (outcome === 'forbidden') return 'ليست لديك صلاحية عرض محاولات التصحيح';
+    if (malformed) return PENDING_MALFORMED_MESSAGE;
+    return 'فشل تحميل محاولات الطلاب';
+};
+
+export const loadGrades = (): Promise<LoadResult<Grade>> =>
+    loadArray<Grade>(`${API_BASE_URL}/grades`);
+
+export const loadGroups = (): Promise<LoadResult<Group>> =>
+    loadArray<Group>(`${API_BASE_URL}/groups`);
+
+export const loadPendingAttempts = (
+    gradeId: string,
+    groupId: string,
+): Promise<LoadResult<StudentAttempt>> => {
+    const params = new URLSearchParams({ grade_id: gradeId });
+    if (groupId && groupId !== 'all') {
+        params.set('group_id', groupId);
+    }
+    return loadArray<StudentAttempt>(
+        `${API_BASE_URL}/manual-grading/pending?${params.toString()}`,
+    );
+};
+
+export interface SubmitResult {
+    outcome: SubmitOutcome;
+    status: number;
+}
+
+/**
+ * Protected grading POST through the canonical bearer transport. Returns the
+ * classified status so the caller can retain the row (and its entered scores)
+ * on any non-2xx response.
+ */
+export const submitGrading = async (student: StudentAttempt): Promise<SubmitResult> => {
+    const totalScore = calculateTotalScore(student);
+    const essayScores = student.essay_questions.reduce((acc, q) => {
+        acc[q.id] = q.assigned_score!;
+        return acc;
+    }, {} as Record<string, number>);
+
+    const response = await authedFetch(`${API_BASE_URL}/manual-grading/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            exam_id: student.exam_id,
+            student_id: student.student_id,
+            essay_scores: essayScores,
+            total_score: totalScore,
+        }),
+    });
+    return { outcome: classifySubmitOutcome(response.status), status: response.status };
+};
+
+export const attemptKey = (student: Pick<StudentAttempt, 'student_id' | 'exam_id'>): string =>
+    `${student.student_id}-${student.exam_id}`;
+
+export interface ScopeKey {
+    gradeId: string;
+    groupId: string;
+}
+
+/**
+ * Generation + scope guard for the pending-attempts load. `begin` invalidates
+ * every in-flight request and issues a ticket for the new scope (or null when
+ * the scope is empty). `isCurrent` is true only for the latest ticket that still
+ * matches the active scope, so a superseded, out-of-scope or post-clear response
+ * can never commit. `clear` invalidates in-flight requests when the selection is
+ * emptied.
+ */
+export const createLatestRequestGuard = () => {
+    let seq = 0;
+    let scope: ScopeKey = { gradeId: '', groupId: '' };
+    return {
+        begin(next: ScopeKey): number | null {
+            seq += 1;
+            scope = { ...next };
+            if (!next.gradeId) return null;
+            return seq;
+        },
+        clear(): void {
+            seq += 1;
+            scope = { gradeId: '', groupId: '' };
+        },
+        isCurrent(ticket: number, candidate: ScopeKey): boolean {
+            return ticket === seq
+                && scope.gradeId === candidate.gradeId
+                && scope.groupId === candidate.groupId;
+        },
+    };
+};
+
+export type SubmitLifecycleResult =
+    | { kind: 'success' }
+    | { kind: 'rejected'; result: SubmitResult }
+    | { kind: 'error'; error: unknown }
+    | { kind: 'duplicate' };
+
+export interface GradingSubmitterHooks {
+    /**
+     * Monotonic id of the active grade/group scope. It is bumped on EVERY scope
+     * change — including a return to a previously used pair — so a submit that
+     * started in an older scope can never be mistaken for a current one.
+     */
+    getScopeGeneration: () => number;
+    /** Called only when a 2xx submit completes within the generation it started in. */
+    onSubmitted?: (student: StudentAttempt) => void;
+}
+
+/**
+ * Owns synchronous duplicate suppression (a second submit for the same
+ * student/exam is rejected before React re-renders) and the failed-submit
+ * retention rule: a row is removed only on a 2xx response that resolves inside
+ * the SAME scope generation it started in.
+ *
+ * Completion is tied to the generation, not to grade/group string equality: on
+ * an A -> B -> A roundtrip a pending first-A submit would otherwise compare
+ * equal to the freshly reloaded A scope and delete the newly loaded/re-edited A
+ * row. Any rejection/error leaves the row (and its entered scores) intact.
+ */
+export const createGradingSubmitter = (
+    hooks: GradingSubmitterHooks,
+    submit: (student: StudentAttempt) => Promise<SubmitResult> = submitGrading,
+) => {
+    const inFlight = new Set<string>();
+    return {
+        isInFlight(student: StudentAttempt): boolean {
+            return inFlight.has(attemptKey(student));
+        },
+        async submit(student: StudentAttempt): Promise<SubmitLifecycleResult> {
+            const key = attemptKey(student);
+            if (inFlight.has(key)) return { kind: 'duplicate' };
+            inFlight.add(key);
+            const generationAtSubmit = hooks.getScopeGeneration();
+            try {
+                const result = await submit(student);
+                if (result.outcome === 'success') {
+                    if (hooks.getScopeGeneration() === generationAtSubmit) {
+                        hooks.onSubmitted?.(student);
+                    }
+                    return { kind: 'success' };
+                }
+                return { kind: 'rejected', result };
+            } catch (error) {
+                return { kind: 'error', error };
+            } finally {
+                inFlight.delete(key);
+            }
+        },
+    };
+};
+
 const ManualGrading = () => {
     const { toast } = useToast();
     const [grades, setGrades] = useState<Grade[]>([]);
@@ -96,10 +369,35 @@ const ManualGrading = () => {
     const [students, setStudents] = useState<StudentAttempt[]>([]);
     const [loading, setLoading] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
+    // Selector load failures are surfaced separately from the attempts table so
+    // a failed grades/groups request is never shown as an empty selector.
+    const [gradesError, setGradesError] = useState<string | null>(null);
+    const [groupsError, setGroupsError] = useState<string | null>(null);
     const [savingId, setSavingId] = useState<string | null>(null); // Track which student is being saved
-    // In-flight attempt keys, so a duplicate submit for the same student/exam
-    // cannot fire a second POST before React re-renders.
-    const inFlightRef = useRef<Set<string>>(new Set());
+
+    // Monotonic scope generation, read by the submitter so a success that
+    // resolves after the grader switched scope (including A -> B -> A) cannot
+    // delete rows from the newer scope.
+    const scopeGenerationRef = useRef(0);
+    const lastScopeRef = useRef<ScopeKey>({ gradeId: '', groupId: '' });
+
+    // Generation + scope guard for pending-attempts loads (superseded/out-of-scope
+    // responses and selection clears cannot commit).
+    const pendingGuardRef = useRef<ReturnType<typeof createLatestRequestGuard> | null>(null);
+    if (pendingGuardRef.current === null) {
+        pendingGuardRef.current = createLatestRequestGuard();
+    }
+
+    // Owns duplicate suppression + failed-submit retention across renders.
+    const submitterRef = useRef<ReturnType<typeof createGradingSubmitter> | null>(null);
+    if (submitterRef.current === null) {
+        submitterRef.current = createGradingSubmitter({
+            getScopeGeneration: () => scopeGenerationRef.current,
+            onSubmitted: (student) => setStudents(prev => prev.filter(s =>
+                !(s.student_id === student.student_id && s.exam_id === student.exam_id)
+            )),
+        });
+    }
 
     useEffect(() => {
         fetchGrades();
@@ -108,69 +406,111 @@ const ManualGrading = () => {
 
     const fetchGrades = async () => {
         try {
-            const response = await fetch(`${API_BASE_URL}/grades`);
-            const data = await response.json();
-            setGrades(data);
+            const result = await loadGrades();
+            const failure = describeSelectorLoadFailure(result);
+            if (failure) {
+                // A non-2xx error object or a non-array body is reported as a
+                // retryable error; it never reaches array state.
+                setGradesError(failure);
+                return;
+            }
+            setGradesError(null);
+            setGrades(result.rows);
         } catch (error) {
             console.error('Error fetching grades:', error);
+            setGradesError(describeSelectorLoadFailure({ error }));
         }
     };
 
     const fetchGroups = async () => {
         try {
-            const response = await fetch(`${API_BASE_URL}/groups`);
-            const data = await response.json();
-            setGroups(data);
+            const result = await loadGroups();
+            const failure = describeSelectorLoadFailure(result);
+            if (failure) {
+                setGroupsError(failure);
+                return;
+            }
+            setGroupsError(null);
+            setGroups(result.rows);
         } catch (error) {
             console.error('Error fetching groups:', error);
+            setGroupsError(describeSelectorLoadFailure({ error }));
         }
     };
 
+    const retrySelectors = () => {
+        void fetchGrades();
+        void fetchGroups();
+    };
+
     const fetchPendingAttempts = async () => {
-        if (!selectedGrade) return;
+        const scope: ScopeKey = { gradeId: selectedGrade, groupId: selectedGroup };
+        const guard = pendingGuardRef.current!;
+        const ticket = guard.begin(scope);
+        if (ticket === null) return; // empty scope — nothing to load
 
         setLoading(true);
         setLoadError(null);
         try {
-            const params = new URLSearchParams({ grade_id: selectedGrade });
-            if (selectedGroup && selectedGroup !== 'all') {
-                params.set('group_id', selectedGroup);
+            const result = await loadPendingAttempts(scope.gradeId, scope.groupId);
+
+            // A superseded or out-of-scope response must not commit.
+            if (!guard.isCurrent(ticket, scope)) return;
+
+            if (result.outcome === 'ok' && !result.malformed) {
+                setStudents(result.rows);
+                return;
             }
 
-            const response = await fetch(
-                `${API_BASE_URL}/manual-grading/pending?${params.toString()}`
-            );
-
-            if (!response.ok) {
-                throw new Error(`Failed to fetch pending attempts (${response.status})`);
-            }
-
-            const data = await response.json();
-
-            // تأكد إن الـ response array
-            if (Array.isArray(data)) {
-                setStudents(data);
-            } else {
-                setStudents([]);
-                console.error('Expected array but got:', data);
-            }
-        } catch (error) {
-            console.error('Error fetching pending attempts:', error);
-            setLoadError('فشل تحميل محاولات الطلاب');
+            // A non-2xx outcome OR a 2xx non-array body is an error state, never
+            // an empty list: an invalid payload must not look like "no pending
+            // attempts" and the grader must be able to retry.
+            const message = describePendingLoadFailure(result.outcome, result.malformed);
+            setLoadError(message);
             toast({
                 title: "خطأ",
-                description: "فشل تحميل محاولات الطلاب",
+                description: message,
+                variant: "destructive"
+            });
+        } catch (error) {
+            if (!guard.isCurrent(ticket, scope)) return;
+            console.error('Error fetching pending attempts:', error);
+            const message = error instanceof MissingAuthTokenError
+                ? SESSION_EXPIRED_MESSAGE
+                : 'فشل تحميل محاولات الطلاب';
+            setLoadError(message);
+            toast({
+                title: "خطأ",
+                description: message,
                 variant: "destructive"
             });
         } finally {
-            setLoading(false);
+            if (guard.isCurrent(ticket, scope)) setLoading(false);
         }
     };
 
     useEffect(() => {
+        const next: ScopeKey = { gradeId: selectedGrade, groupId: selectedGroup };
+        const previous = lastScopeRef.current;
+        if (previous.gradeId !== next.gradeId || previous.groupId !== next.groupId) {
+            // Issue a new generation for every real scope change. A return to a
+            // previously used grade/group pair therefore still gets a distinct
+            // generation, so a late submit from the first visit cannot delete a
+            // row produced by the newer visit.
+            lastScopeRef.current = next;
+            scopeGenerationRef.current += 1;
+        }
         if (selectedGrade && selectedGroup) {
             fetchPendingAttempts();
+        } else {
+            // Selection cleared: invalidate any in-flight load and drop stale
+            // rows so a superseded response cannot repopulate the table.
+            pendingGuardRef.current!.clear();
+            setStudents([]);
+            setLoadError(null);
+            setLoading(false);
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedGrade, selectedGroup]);
 
     const filteredGroups = groups.filter(g => g.grade_id === selectedGrade);
@@ -201,67 +541,48 @@ const ManualGrading = () => {
             return;
         }
 
-        const attemptKey = `${student.student_id}-${student.exam_id}`;
-        if (inFlightRef.current.has(attemptKey)) return; // duplicate submit guard
-        inFlightRef.current.add(attemptKey);
-        setSavingId(attemptKey);
+        const key = attemptKey(student);
+        setSavingId(key);
         try {
-            const totalScore = calculateTotalScore(student);
-            const essayScores = student.essay_questions.reduce((acc, q) => {
-                acc[q.id] = q.assigned_score!;
-                return acc;
-            }, {} as Record<string, number>);
+            const outcome = await submitterRef.current!.submit(student);
 
-            const response = await fetch(
-                `${API_BASE_URL}/manual-grading/submit`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        exam_id: student.exam_id,
-                        student_id: student.student_id,
-                        essay_scores: essayScores,
-                        total_score: totalScore
-                    })
-                }
-            );
-
-            if (response.ok) {
+            if (outcome.kind === 'success') {
                 toast({
                     title: "تم بنجاح",
                     description: "تم تسليم الدرجات بنجاح"
                 });
-                // Remove this specific attempt from list (student may have multiple exams)
-                setStudents(prev => prev.filter(s =>
-                    !(s.student_id === student.student_id && s.exam_id === student.exam_id)
-                ));
+                return;
+            }
+            if (outcome.kind === 'duplicate') return; // a submit is already in flight
+
+            if (outcome.kind === 'rejected') {
+                // A rejected submit must be surfaced; the row is kept so the
+                // grader can retry. 401/403 are reported distinctly.
+                const description = outcome.result.outcome === 'unauthorized'
+                    ? SESSION_EXPIRED_MESSAGE
+                    : outcome.result.outcome === 'forbidden'
+                        ? 'ليست لديك صلاحية تسليم الدرجات'
+                        : 'فشل تسليم الدرجات، حاول مرة أخرى';
+                toast({
+                    title: "خطأ",
+                    description,
+                    variant: "destructive"
+                });
                 return;
             }
 
-            // A rejected submit must be surfaced; the row is kept so the grader
-            // can retry. 401/403 are reported distinctly from other failures.
-            const description = response.status === 401
-                ? 'انتهت الجلسة، يرجى تسجيل الدخول مرة أخرى'
-                : response.status === 403
-                    ? 'ليست لديك صلاحية تسليم الدرجات'
-                    : 'فشل تسليم الدرجات، حاول مرة أخرى';
+            console.error('Error submitting grades:', outcome.error);
             toast({
                 title: "خطأ",
-                description,
-                variant: "destructive"
-            });
-        } catch (error) {
-            console.error('Error submitting grades:', error);
-            toast({
-                title: "خطأ",
-                description: "فشل تسليم الدرجات",
+                description: outcome.error instanceof MissingAuthTokenError
+                    ? SESSION_EXPIRED_MESSAGE
+                    : "فشل تسليم الدرجات",
                 variant: "destructive"
             });
         } finally {
-            inFlightRef.current.delete(attemptKey);
             // Only clear this attempt's marker; a concurrent save for a
             // different student must keep its own in-flight state.
-            setSavingId(prev => (prev === attemptKey ? null : prev));
+            setSavingId(prev => (prev === key ? null : prev));
         }
     };
 
@@ -317,6 +638,19 @@ const ManualGrading = () => {
                         </div>
                     </CardContent>
                 </Card>
+
+                {(gradesError || groupsError) && (
+                    <Card className="mb-6 border-destructive/40">
+                        <CardContent className="py-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                            <p role="alert" className="text-sm text-destructive">
+                                {gradesError || groupsError}
+                            </p>
+                            <Button variant="outline" size="sm" onClick={retrySelectors}>
+                                إعادة المحاولة
+                            </Button>
+                        </CardContent>
+                    </Card>
+                )}
 
                 {loading ? (
                     <div className="text-center py-12">

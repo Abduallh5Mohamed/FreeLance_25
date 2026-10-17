@@ -9,6 +9,7 @@ import { Video, ExternalLink, Trash2, Edit2, Calendar, Clock, Users } from "luci
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
 import axios from "axios";
+import { subscribeSessionChange } from "@/lib/session-events";
 
 // Helper to get API URL - same pattern as other pages.
 // Vite injects `import.meta.env` at build time; it is absent when this module
@@ -27,6 +28,236 @@ const getApiUrl = () => {
 };
 
 const API_URL = getApiUrl();
+
+/**
+ * Canonical auth token key. The shared transport (src/lib/api-http.ts) reads
+ * `authToken`; these pages previously read `token`, a key the auth flow never
+ * writes, so every protected request went out as `Bearer null`. Aligning the
+ * key is a correctness fix, not a style change.
+ *
+ * Mirrored in StudentMeetings.tsx; both copies are pinned by
+ * src/tests/m1-sprint-meeting-support-ui.test.ts.
+ */
+export const meetingAuthToken = (): string | null => localStorage.getItem("authToken");
+
+/**
+ * Authorization header for every protected meeting request. Returns an empty
+ * object when no token is present, so a missing session fails closed instead of
+ * sending `Bearer null` to the server.
+ *
+ * Mirrored in StudentMeetings.tsx; both copies are pinned by
+ * src/tests/m1-sprint-meeting-support-ui.test.ts.
+ */
+export const getMeetingAuthHeaders = (): Record<string, string> => {
+  const token = meetingAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
+const readStoredUserId = (): string | null => {
+  const raw = localStorage.getItem("currentUser");
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { id?: unknown } | null;
+    return typeof parsed?.id === "string" ? parsed.id : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Security scope a meetings load is issued under: the signed-in user id plus the
+ * current auth token. The load guard commits a settled response only while this
+ * scope is unchanged, so a response issued under a rotated or cleared token
+ * (re-authentication, tenant switch) is dropped instead of repopulating private
+ * links — even when the user id itself is unchanged.
+ *
+ * A token/tenant change AFTER a load has already committed cannot be observed
+ * from this file: the app exposes no reactive auth signal (no `storage` listener
+ * and no auth context — AuthGuard reads localStorage once on mount). Clearing
+ * already-committed links on such a change needs that missing upstream contract.
+ *
+ * Mirrored in StudentMeetings.tsx; both copies are pinned by
+ * src/tests/m1-sprint-meeting-support-ui.test.ts.
+ */
+export const meetingLoadScope = (): string | null => {
+  const userId = readStoredUserId();
+  const token = meetingAuthToken();
+  return userId && token ? `${userId}:${token}` : null;
+};
+
+/** Shown when a protected meetings request is refused because there is no
+ *  session scope at all (no user id or no token). */
+export const NO_MEETING_SCOPE_MESSAGE = "لا توجد جلسة صالحة. سجّل الدخول مرة أخرى لعرض الاجتماعات.";
+
+/**
+ * A meeting link is private (it carries the join credentials for a class), so
+ * joining/copying it is authorized against the scope the DISPLAYED list was
+ * loaded under - not against whatever localStorage says at click time.
+ */
+export type MeetingActionRefusal = 'no-session' | 'scope-changed' | 'not-in-list' | 'unsafe-url';
+
+export interface MeetingActionDecision {
+  ok: boolean;
+  reason?: MeetingActionRefusal;
+  url?: string;
+}
+
+const MEETING_ACTION_REFUSAL_MESSAGE: Record<MeetingActionRefusal, string> = {
+  'no-session': 'لا توجد جلسة صالحة. تم إخفاء الروابط، سجّل الدخول من جديد.',
+  'scope-changed': 'تغيّرت جلسة المستخدم. تم إخفاء الروابط، أعد تحميل الصفحة.',
+  'not-in-list': 'لم يعد هذا الرابط ضمن الاجتماعات المعروضة حالياً.',
+  'unsafe-url': 'رابط الاجتماع غير صالح أو غير متاح.',
+};
+
+export interface MeetingActionGateDeps {
+  /** Live canonical scope right now (user id + token); null = no session. */
+  readScope: () => string | null;
+  /** Is this link part of the list currently applied to the UI? */
+  isMember: (link: string) => boolean;
+  /** Drops the private links currently on screen. */
+  clearLinks: () => void;
+  /** Retires any in-flight load so a late response cannot repopulate them. */
+  invalidateLoad: () => void;
+  /** Injected side effects so the gate is testable without a browser. */
+  openLink?: (url: string) => void;
+  copyText?: (text: string) => Promise<void> | void;
+  onRefused?: (reason: MeetingActionRefusal, message: string) => void;
+}
+
+/**
+ * Action-time authorization for join / copy / open.
+ *
+ * Every path (the normal join, the copy button AND its non-secure-context
+ * clipboard fallback, since the fallback lives inside the injected copyText)
+ * must pass `authorize` first. The gate requires a NON-NULL live scope equal to
+ * the scope the displayed list was applied under, and current list membership.
+ * On a scope problem it clears the on-screen links and invalidates the loader,
+ * so a refused action can neither open nor copy a private link.
+ */
+export const createMeetingActionGate = (deps: MeetingActionGateDeps) => {
+  let appliedScope: string | null = null;
+  let hasAppliedList = false;
+
+  const refuse = (reason: MeetingActionRefusal): MeetingActionDecision => {
+    if (reason === 'no-session' || reason === 'scope-changed') {
+      // The links on screen are no longer trustworthy: drop them and retire any
+      // load that could bring them back.
+      deps.clearLinks();
+      deps.invalidateLoad();
+    }
+    deps.onRefused?.(reason, MEETING_ACTION_REFUSAL_MESSAGE[reason]);
+    return { ok: false, reason };
+  };
+
+  const authorize = (link: string): MeetingActionDecision => {
+    const liveScope = deps.readScope();
+    if (!liveScope) return refuse('no-session');
+    if (!hasAppliedList || liveScope !== appliedScope) return refuse('scope-changed');
+    if (!deps.isMember(link)) return refuse('not-in-list');
+    if (!isSafeMeetingUrl(link)) return refuse('unsafe-url');
+    return { ok: true, url: link.trim() };
+  };
+
+  return {
+    /** Records the scope of the list that was just applied to the UI. */
+    applied(scope: string | null): void {
+      appliedScope = scope;
+      hasAppliedList = true;
+    },
+    /** The list was cleared/invalidated: nothing on screen may be acted on. */
+    clear(): void {
+      appliedScope = null;
+      hasAppliedList = false;
+    },
+    authorize,
+    /** Join path: authorize first, then open the link in a new tab. */
+    join(link: string): MeetingActionDecision {
+      const decision = authorize(link);
+      if (decision.ok) deps.openLink?.(decision.url as string);
+      return decision;
+    },
+    /** Copy path: authorize BEFORE the clipboard (including the fallback). */
+    async copy(link: string): Promise<MeetingActionDecision> {
+      const decision = authorize(link);
+      if (decision.ok) await deps.copyText?.(decision.url as string);
+      return decision;
+    },
+  };
+};
+
+/** Session keys whose cross-tab change invalidates the displayed meetings. */
+const SESSION_STORAGE_KEYS = new Set(['authToken', 'currentUser']);
+
+export interface MeetingsScopeWatcherDeps {
+  /** Live canonical scope (user id + token). */
+  readScope: () => string | null;
+  /** Live scope changed (including sign-out): clear rows/errors and invalidate. */
+  onScopeChange: () => void;
+  /** Injectable targets so the behaviour is testable without a DOM. */
+  getWindow?: () => (Window & typeof globalThis) | null;
+  getDocument?: () => Document | null;
+}
+
+export interface MeetingsScopeWatcher {
+  start(): void;
+  stop(): void;
+  /** One comparison; true when a change was detected and handled. */
+  check(): boolean;
+}
+
+/**
+ * Detects a session/token change that happened AFTER the list was already on
+ * screen - the case a load-time guard cannot cover. Focus, visibility and
+ * cross-tab storage events are observed (no polling, no global monkeypatch);
+ * on a change the caller clears the rows, the error state and the action gate
+ * and invalidates any in-flight load.
+ *
+ * Limitation (documented, not silently claimed fixed): a same-document token
+ * mutation performed while the page stays focused emits NO event, so already
+ * rendered link text cannot be removed synchronously. Only the next event (or
+ * an action attempt, which the gate refuses) reveals it.
+ */
+export const createMeetingsScopeWatcher = (deps: MeetingsScopeWatcherDeps): MeetingsScopeWatcher => {
+  let lastScope: string | null = null;
+  let started = false;
+  const getWindow = () =>
+    deps.getWindow ? deps.getWindow() : typeof window === 'undefined' ? null : window;
+  const getDocument = () =>
+    deps.getDocument ? deps.getDocument() : typeof document === 'undefined' ? null : document;
+
+  const check = (): boolean => {
+    const current = deps.readScope();
+    if (current === lastScope) return false;
+    lastScope = current;
+    deps.onScopeChange();
+    return true;
+  };
+
+  const onEvent = () => { check(); };
+  const onStorage = (event: StorageEvent) => {
+    // Only session keys matter; ignore unrelated storage writes.
+    if (event.key === null || SESSION_STORAGE_KEYS.has(event.key)) check();
+  };
+
+  return {
+    start() {
+      if (started) return;
+      started = true;
+      lastScope = deps.readScope(); // baseline: starting is not a change
+      getWindow()?.addEventListener('focus', onEvent);
+      getWindow()?.addEventListener('storage', onStorage as EventListener);
+      getDocument()?.addEventListener('visibilitychange', onEvent);
+    },
+    stop() {
+      if (!started) return;
+      started = false;
+      getWindow()?.removeEventListener('focus', onEvent);
+      getWindow()?.removeEventListener('storage', onStorage as EventListener);
+      getDocument()?.removeEventListener('visibilitychange', onEvent);
+    },
+    check,
+  };
+};
 
 /**
  * Synchronous in-flight latch for async UI actions.
@@ -101,6 +332,144 @@ export const describeMeetingsLoadError = (error: unknown): string => {
   return "تعذر الاتصال بالخادم. تحقق من الشبكة وحاول مرة أخرى.";
 };
 
+/**
+ * Monotonic load token that also remembers the identity (user id) a load was
+ * issued for. A settled response may only commit when its token is still the
+ * latest AND the identity still matches, so:
+ *   - a slower older response can never repopulate private join links after a
+ *     newer load has already completed, and
+ *   - a response issued for a previous user can never land after the signed-in
+ *     user changed (or signed out).
+ * `invalidate()` retires every in-flight token (used on unmount / logout).
+ *
+ * Mirrored in StudentMeetings.tsx; the loader behaviour is pinned by
+ * src/tests/m1-sprint-meeting-support-ui.test.ts.
+ */
+interface MeetingsLoadGuard {
+  begin(identity: string | null): number;
+  isCurrent(token: number, identity: string | null): boolean;
+  invalidate(): void;
+}
+
+const createMeetingsLoadGuard = (): MeetingsLoadGuard => {
+  let latest = 0;
+  let latestIdentity: string | null = null;
+  return {
+    begin: (identity) => {
+      latest += 1;
+      latestIdentity = identity;
+      return latest;
+    },
+    isCurrent: (token, identity) => token === latest && identity === latestIdentity,
+    invalidate: () => {
+      latest += 1;
+      latestIdentity = null;
+    },
+  };
+};
+
+export interface MeetingsLoaderDeps<T> {
+  /** Performs the request for the identity captured when the load began. */
+  request: (identity: string | null) => Promise<T[]>;
+  /** Reads the current identity (user id) at the moment a load begins. */
+  readIdentity: () => string | null;
+  /**
+   * Optional full security scope (identity + token/tenant) the load is issued
+   * under. Defaults to `readIdentity`. Used only to decide whether a settled
+   * response is still relevant, so a token rotation for the same user is
+   * detected even though the request identity (user id) is unchanged.
+   */
+  readScope?: () => string | null;
+  /** Clears previously shown items before a new load, so stale links never persist. */
+  onClear: () => void;
+  onApply: (items: T[]) => void;
+  onError: (message: string) => void;
+  onLoadingChange?: (loading: boolean) => void;
+}
+
+export interface MeetingsLoader<T> {
+  load(): Promise<void>;
+  invalidate(): void;
+}
+
+export interface MeetingSessionGuardDeps {
+  /** The page's meetings loader (null before the first load began). */
+  getLoader: () => { invalidate: () => void } | null;
+  /**
+   * Clear the already-rendered private data and load state: the meeting
+   * list is server-authoritative per identity and must not survive a
+   * session change.
+   */
+  clearRenderedMeetings: () => void;
+}
+
+/**
+ * Same-document session-change guard (supervisor/026/029): on a logout,
+ * identity, token or scope change completed in this document, retire
+ * in-flight meeting loads (so a stale response can never commit private
+ * links) and clear the rendered private data. Returns the unsubscribe
+ * function the caller must call on unmount.
+ */
+export const createMeetingSessionGuard = (deps: MeetingSessionGuardDeps): (() => void) =>
+  subscribeSessionChange(() => {
+    deps.getLoader()?.invalidate();
+    deps.clearRenderedMeetings();
+  });
+
+/**
+ * Loader that guarantees only the latest, still-relevant response commits.
+ *
+ * Every `load()` clears the previous items, claims a fresh token for the
+ * identity read at that instant, then awaits the request. When the response
+ * settles it is dropped unless its token is still the latest for the same
+ * identity — so a reversed (out-of-order) completion, or a response for a user
+ * that changed mid-flight, can never overwrite data, loading or error state.
+ */
+export function createMeetingsLoader<T>(deps: MeetingsLoaderDeps<T>): MeetingsLoader<T> {
+  const guard = createMeetingsLoadGuard();
+  const readScope = () => (deps.readScope ? deps.readScope() : deps.readIdentity());
+  return {
+    async load() {
+      const identity = deps.readIdentity();
+      const scope = readScope();
+      const token = guard.begin(scope);
+      deps.onLoadingChange?.(true);
+      // Never show links from a previous user or scope while this one loads.
+      deps.onClear();
+      // No session scope at all: fail closed WITHOUT issuing a protected
+      // request (empty headers would otherwise still reach the server).
+      if (!scope) {
+        deps.onError(NO_MEETING_SCOPE_MESSAGE);
+        deps.onLoadingChange?.(false);
+        return;
+      }
+      let items: T[] = [];
+      let failure: unknown;
+      let failed = false;
+      try {
+        items = await deps.request(identity);
+      } catch (error) {
+        failed = true;
+        failure = error;
+      }
+      // A stale completion must not commit data, error or loading. Re-read the
+      // scope so a response issued for a user or token that has since changed
+      // (or signed out) is dropped too.
+      if (!guard.isCurrent(token, readScope())) return;
+      if (failed) {
+        // Clear any previously shown private links and report the failure honestly.
+        deps.onError(describeMeetingsLoadError(failure));
+      } else {
+        deps.onApply(items);
+      }
+      deps.onLoadingChange?.(false);
+    },
+    invalidate() {
+      guard.invalidate();
+    },
+  };
+}
+
 interface Grade {
   id: string;
   name: string;
@@ -135,6 +504,7 @@ const OnlineMeeting = () => {
   const [filteredGroups, setFilteredGroups] = useState<Group[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [meetingsError, setMeetingsError] = useState<string | null>(null);
+  const [meetingsLoading, setMeetingsLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
 
@@ -202,6 +572,31 @@ const OnlineMeeting = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // On unmount (e.g. logout) retire any in-flight load so a late response can
+  // never commit private links or state after the page is gone.
+  useEffect(() => {
+    return () => {
+      meetingsLoaderRef.current?.invalidate();
+    };
+  }, []);
+
+  // Same-document session change (supervisor/026): on a logout, identity,
+  // token or scope change completed in this document, retire in-flight
+  // meeting loads (so a stale response can never commit private links) and
+  // clear the already-rendered private data — the meeting list is
+  // server-authoritative per identity and must not survive the change.
+  useEffect(() => {
+    const unsubscribe = createMeetingSessionGuard({
+      getLoader: () => meetingsLoaderRef.current,
+      clearRenderedMeetings: () => {
+        setMeetings([]);
+        setMeetingsError(null);
+        setMeetingsLoading(false);
+      },
+    });
+    return unsubscribe;
+  }, []);
+
   // Filter groups when grade changes
   useEffect(() => {
     if (selectedGrade) {
@@ -213,7 +608,6 @@ const OnlineMeeting = () => {
     setSelectedGroup(""); // Reset group when grade changes
   }, [selectedGrade, groups]);
 
-  const getToken = () => localStorage.getItem('token');
   const getUser = () => {
     const userData = localStorage.getItem('currentUser');
     return userData ? JSON.parse(userData) : null;
@@ -222,7 +616,7 @@ const OnlineMeeting = () => {
   const fetchGrades = async () => {
     try {
       const res = await axios.get(`${API_URL}/grades`, {
-        headers: { Authorization: `Bearer ${getToken()}` }
+        headers: getMeetingAuthHeaders()
       });
       setGrades(res.data);
     } catch (error) {
@@ -233,7 +627,7 @@ const OnlineMeeting = () => {
   const fetchGroups = async () => {
     try {
       const res = await axios.get(`${API_URL}/groups`, {
-        headers: { Authorization: `Bearer ${getToken()}` }
+        headers: getMeetingAuthHeaders()
       });
       setGroups(res.data);
     } catch (error) {
@@ -241,31 +635,98 @@ const OnlineMeeting = () => {
     }
   };
 
-  const fetchMeetings = async () => {
-    try {
-      const res = await axios.get(`${API_URL}/meetings`, {
-        headers: { Authorization: `Bearer ${getToken()}` }
-      });
-      setMeetings(res.data);
-      setMeetingsError(null);
-    } catch (error) {
-      console.error('Error fetching meetings:', error);
-      setMeetingsError(describeMeetingsLoadError(error));
-    }
-  };
+  // Loader wires the request to component state. It keeps only the latest,
+  // still-relevant response and clears old links before every load and on
+  // failure, so a stale or previous-user response can never repopulate them.
+  const meetingsRef = useRef<Meeting[]>([]);
+  const meetingsLoaderRef = useRef<MeetingsLoader<Meeting> | null>(null);
+  const actionGateRef = useRef<ReturnType<typeof createMeetingActionGate> | null>(null);
 
-  const joinMeeting = (link: string) => {
-    if (!isSafeMeetingUrl(link)) {
+  meetingsLoaderRef.current ??= createMeetingsLoader<Meeting>({
+    request: async () => {
+      const res = await axios.get(`${API_URL}/meetings`, {
+        headers: getMeetingAuthHeaders()
+      });
+      return res.data;
+    },
+    readIdentity: () => getUser()?.id ?? null,
+    readScope: meetingLoadScope,
+    onClear: () => {
+      meetingsRef.current = [];
+      setMeetings([]);
+      setMeetingsError(null);
+      // Nothing on screen may be joined/copied while a load is in flight.
+      actionGateRef.current?.clear();
+    },
+    onApply: (list) => {
+      meetingsRef.current = list;
+      setMeetings(list);
+      // Record the scope this list was applied under; actions are authorized
+      // against it rather than against the storage read at click time.
+      actionGateRef.current?.applied(meetingLoadScope());
+    },
+    onError: (message) => {
+      meetingsRef.current = [];
+      setMeetings([]);
+      setMeetingsError(message);
+      actionGateRef.current?.clear();
+    },
+    onLoadingChange: (value) => setMeetingsLoading(value),
+  });
+
+  actionGateRef.current ??= createMeetingActionGate({
+    readScope: meetingLoadScope,
+    isMember: (link) => meetingsRef.current.some((meeting) => meeting.meeting_link === link),
+    clearLinks: () => {
+      meetingsRef.current = [];
+      setMeetings([]);
+      setMeetingsError(null);
+    },
+    invalidateLoad: () => meetingsLoaderRef.current?.invalidate(),
+    openLink: (url) => {
+      // noopener/noreferrer prevents the opened meeting tab from reaching back
+      // into this window (reverse tabnabbing).
+      window.open(url, "_blank", "noopener,noreferrer");
+    },
+    copyText: copyToClipboard,
+    onRefused: (reason, message) => {
       toast({
-        title: "خطأ",
-        description: "رابط الاجتماع غير صالح أو غير متاح",
+        title: reason === 'unsafe-url' ? "خطأ" : "تنبيه",
+        description: message,
         variant: "destructive"
       });
-      return;
-    }
-    // noopener/noreferrer prevents the opened meeting tab from reaching back
-    // into this window (reverse tabnabbing).
-    window.open(link.trim(), "_blank", "noopener,noreferrer");
+    },
+  });
+
+  // A session/token change that happens while the list is already on screen
+  // (another tab signs in/out, the window regains focus after re-auth) must
+  // clear the private links, the error state and the gate, and retire any
+  // in-flight load. Same-document mutation without an event cannot be caught
+  // synchronously - the action gate still refuses it on the next attempt.
+  const scopeWatcherRef = useRef<MeetingsScopeWatcher | null>(null);
+  scopeWatcherRef.current ??= createMeetingsScopeWatcher({
+    readScope: meetingLoadScope,
+    onScopeChange: () => {
+      meetingsRef.current = [];
+      setMeetings([]);
+      setMeetingsError(null);
+      setMeetingsLoading(false);
+      actionGateRef.current?.clear();
+      meetingsLoaderRef.current?.invalidate();
+    },
+  });
+
+  useEffect(() => {
+    scopeWatcherRef.current?.start();
+    return () => scopeWatcherRef.current?.stop();
+  }, []);
+
+  const fetchMeetings = () => meetingsLoaderRef.current!.load();
+
+  const joinMeeting = (link: string) => {
+    // Authorized against the applied list scope; the gate opens the link only
+    // when the session is unchanged and the link is still listed.
+    actionGateRef.current!.join(link);
   };
 
   const resetForm = () => {
@@ -330,12 +791,12 @@ const OnlineMeeting = () => {
 
       if (editingId) {
         await axios.put(`${API_URL}/meetings/${editingId}`, payload, {
-          headers: { Authorization: `Bearer ${getToken()}` }
+          headers: getMeetingAuthHeaders()
         });
         toast({ title: "تم التحديث", description: "تم تحديث الاجتماع بنجاح" });
       } else {
         await axios.post(`${API_URL}/meetings`, payload, {
-          headers: { Authorization: `Bearer ${getToken()}` }
+          headers: getMeetingAuthHeaders()
         });
         toast({ title: "تم الحفظ", description: "تم إنشاء الاجتماع بنجاح" });
       }
@@ -369,7 +830,7 @@ const OnlineMeeting = () => {
 
     try {
       await axios.delete(`${API_URL}/meetings/${id}`, {
-        headers: { Authorization: `Bearer ${getToken()}` }
+        headers: getMeetingAuthHeaders()
       });
       toast({ title: "تم الحذف", description: "تم حذف الاجتماع بنجاح" });
       fetchMeetings();
@@ -586,7 +1047,11 @@ const OnlineMeeting = () => {
             )}
             {meetings.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">
-                {meetingsError ? "تعذر عرض الاجتماعات الآن." : "لا توجد اجتماعات مجدولة حالياً"}
+                {meetingsError
+                  ? "تعذر عرض الاجتماعات الآن."
+                  : meetingsLoading
+                    ? "جاري تحميل الاجتماعات..."
+                    : "لا توجد اجتماعات مجدولة حالياً"}
               </div>
             ) : (
               <div className="space-y-4">
@@ -643,7 +1108,7 @@ const OnlineMeeting = () => {
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => copyToClipboard(meeting.meeting_link)}
+                          onClick={() => actionGateRef.current!.copy(meeting.meeting_link)}
                         >
                           نسخ الرابط
                         </Button>

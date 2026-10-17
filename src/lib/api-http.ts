@@ -3,10 +3,14 @@
  * Replaces the mock localStorage database with real HTTP requests
  */
 
+import { notifySessionChange } from './session-events';
+
 // Get API base URL from environment or use relative path
 const getApiBaseUrl = (): string => {
-    // If VITE_API_URL is defined, use it
-    const envApiUrl = import.meta.env.VITE_API_URL;
+    // If VITE_API_URL is defined, use it. The optional chain keeps this
+    // module importable outside Vite (hermetic tests exercise the real
+    // canonical writers); under Vite `import.meta.env` always exists.
+    const envApiUrl = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_URL;
     if (envApiUrl) {
         console.log('🔗 Using API URL from environment:', envApiUrl);
         return envApiUrl;
@@ -34,6 +38,10 @@ export const clearAuthToken = (): void => {
     localStorage.removeItem('authToken');
     localStorage.removeItem('currentUser');
     localStorage.removeItem('currentStudent');
+    // Same-document session teardown (supervisor/026): notify subscribers
+    // only after every session key is removed, so a same-document logout or
+    // revocation invalidates cached identity/links without a reload.
+    notifySessionChange('logout');
 };
 
 // Generic HTTP request helper
@@ -63,7 +71,12 @@ async function request<T>(
         if (response.status === 403 && error.code === 'BILLING_ONLY') {
             try {
                 const current = JSON.parse(localStorage.getItem('currentUser') || 'null');
-                if (current?.role === 'instructor') localStorage.setItem('currentUser', JSON.stringify({ ...current, billing_only: true }));
+                if (current?.role === 'instructor') {
+                    localStorage.setItem('currentUser', JSON.stringify({ ...current, billing_only: true }));
+                    // Same-document identity change (supervisor/026): notify
+                    // after the stored identity is rewritten.
+                    notifySessionChange('identity');
+                }
             } catch { /* malformed local session will be handled by the auth guard */ }
             if (!['/instructor-subscription', '/instructor-wallet', '/support'].includes(window.location.pathname)) {
                 window.location.assign('/instructor-subscription');
@@ -194,6 +207,9 @@ export const signIn = async (
         if (response.token) {
             setAuthToken(response.token);
             localStorage.setItem('currentUser', JSON.stringify(response.user));
+            // Notify only after the complete login mutation (token + stored
+            // identity), so same-document subscribers see the new session.
+            notifySessionChange('login');
             console.log('🔐 signIn: Token and user stored in localStorage');
         }
 
@@ -220,6 +236,8 @@ export const signUp = async (
         if (response.token) {
             setAuthToken(response.token);
             localStorage.setItem('currentUser', JSON.stringify(response.user));
+            // Notify only after the complete registration mutation.
+            notifySessionChange('login');
         }
 
         return { user: response.user, error: null, token: response.token };
@@ -2258,6 +2276,13 @@ export const selectStudentSpace = async (studentEnrollmentId: string) => {
         `/student-enrollment/spaces/${studentEnrollmentId}/select`, { method: 'POST' }
     );
     setAuthToken(result.token);
+    // Token-rotation writer (supervisor/029): the canonical token write IS
+    // this function's complete session mutation, so subscribers are notified
+    // here — after the write — even if the caller's identity update later
+    // fails. `setAuthToken` itself stays notification-free so login remains
+    // atomic (no subscriber ever sees a token without its identity). The
+    // page notifies 'scope' again after it persists the selected identity.
+    notifySessionChange('token');
     return result;
 };
 export const getCurrentStudentEnrollment = () => request<Student & { tenant_id: string; business_name: string }>('/students/me');

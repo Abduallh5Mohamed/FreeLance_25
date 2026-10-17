@@ -1,7 +1,8 @@
-import { useMemo } from "react";
+import { useEffect, useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { canAccessRoute, type AccessProfile, type LegacyRole } from "@/auth/access-control";
+import { subscribeSessionChange } from "@/lib/session-events";
 
 interface AuthGuardProps {
   children: React.ReactNode;
@@ -21,8 +22,20 @@ function readStoredUser(): { user: AccessProfile | null; invalid: boolean } {
 
 export const AuthGuard = ({ children }: AuthGuardProps) => {
   const location = useLocation();
-  const stored = useMemo(() => readStoredUser(), []);
-  const hasToken = Boolean(localStorage.getItem("authToken"));
+  const [stored, setStored] = useState(() => readStoredUser());
+  const [hasToken, setHasToken] = useState(() => Boolean(localStorage.getItem("authToken")));
+
+  // Same-document session change (supervisor/026): a logout or identity
+  // change completed in this document must re-derive the guard immediately
+  // instead of trusting the mount-time snapshot. The stored session is the
+  // authority, so re-read it on every notification.
+  useEffect(() => {
+    const unsubscribe = subscribeSessionChange(() => {
+      setStored(readStoredUser());
+      setHasToken(Boolean(localStorage.getItem("authToken")));
+    });
+    return unsubscribe;
+  }, []);
 
   if (stored.invalid) {
     localStorage.removeItem("currentUser");

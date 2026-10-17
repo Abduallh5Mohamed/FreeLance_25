@@ -47,7 +47,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
-import { getGrades, getGroups, createSubscriptionRequest, getSubscriptions, type Subscription } from "@/lib/api-http";
+import { getGrades, getGroups, createSubscriptionRequest, getSubscriptions, clearAuthToken, type Subscription } from "@/lib/api-http";
 import tabwebAcademyLogo from "@/assets/Tabweb_Academy_Logo.png";
 
 const StudentHeader = () => {
@@ -185,11 +185,9 @@ const StudentHeader = () => {
       const offlineSession = localStorage.getItem('offlineStudentSession');
       if (offlineSession) {
         localStorage.removeItem('offlineStudentSession');
-        // Clear all authentication data
-        localStorage.removeItem('authToken');
-        localStorage.removeItem('currentUser');
-        localStorage.removeItem('currentStudent');
-        localStorage.removeItem('supabaseUser');
+        // Canonical session teardown (supervisor/026): notifies
+        // same-document subscribers after the complete local mutation.
+        clearAuthToken();
         toast({
           title: "تم تسجيل الخروج بنجاح",
           description: "أراك لاحقاً!",
@@ -198,12 +196,12 @@ const StudentHeader = () => {
         return;
       }
 
-      // Clear student session and all authentication data
+      // Clear student session and all authentication data (canonical:
+      // clearAuthToken covers authToken/currentUser/currentStudent and
+      // notifies after every local session key is removed).
       localStorage.removeItem('student_session');
-      localStorage.removeItem('authToken');
-      localStorage.removeItem('currentUser');
-      localStorage.removeItem('currentStudent');
       localStorage.removeItem('supabaseUser');
+      clearAuthToken();
 
       // Sign out from Supabase (for online students and admin users)
       const { error } = await supabase.auth.signOut();

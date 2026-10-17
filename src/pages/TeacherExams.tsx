@@ -70,6 +70,97 @@ export function formatExamDateTime(value: string | null | undefined): string | n
   }
 }
 
+/** Canonical Authorization header for the scoped raw-fetch calls. Mirrors the
+ *  api-http transport (`Authorization: Bearer <authToken>` from localStorage);
+ *  the backend now requires auth on these exam routes, so omitting the header
+ *  turns a legitimate request into a 401. Omitted entirely when no token. */
+export function buildAuthHeaders(): Record<string, string> {
+  try {
+    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('authToken') : null;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
+/** RequestInit for the authenticated image upload. FormData must NOT set a
+ *  Content-Type header — the browser adds the multipart boundary itself. */
+export function buildImageUploadRequestInit(formData: FormData): RequestInit {
+  return { method: 'POST', headers: buildAuthHeaders(), body: formData };
+}
+
+/** An auth/permission rejection (401/403) must surface as a session error and
+ *  never be treated as success or as a generic failure. */
+export function isAuthFailure(status: number): boolean {
+  return status === 401 || status === 403;
+}
+
+/** Injectable fetch signature so the real production request calls below can
+ *  be exercised without a browser or network. */
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+/** JSON RequestInit for a protected authoring mutation. The Authorization
+ *  header is added only when a token exists; without one it is omitted
+ *  entirely so a request is never sent as `Bearer null` / `Bearer `. */
+export function buildJsonRequestInit(method: string, body: unknown): RequestInit {
+  return {
+    method,
+    headers: { 'Content-Type': 'application/json', ...buildAuthHeaders() },
+    body: JSON.stringify(body),
+  };
+}
+
+/** Read the current acting identity (user id + token) so a retained orphan can
+ *  be scoped to the session that created it and never leaks to another user. */
+export function readCurrentIdentity(): string | null {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const userStr = localStorage.getItem('currentUser');
+    const token = localStorage.getItem('authToken');
+    if (!userStr && !token) return null;
+    let userId = '';
+    if (userStr) {
+      try {
+        userId = String((JSON.parse(userStr) as { id?: unknown } | null)?.id ?? '');
+      } catch {
+        userId = '';
+      }
+    }
+    return `${userId}|${token ?? ''}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Build the production dependencies for the authoring controller. The fetch
+ *  implementation is injectable so the real request construction and the
+ *  rollback response handling can be tested without a live server. */
+export function createExamAuthoringDeps(fetchImpl: FetchLike = fetch): ExamAuthoringDeps {
+  return {
+    getIdentity: readCurrentIdentity,
+    createExam: async (payload) => {
+      const response = await fetchImpl(`${API_URL}/exams`, buildJsonRequestInit('POST', payload));
+      if (!response.ok) throw new Error('Failed to create exam');
+      return response.json();
+    },
+    addQuestion: async (examId, payload) => {
+      const response = await fetchImpl(`${API_URL}/exams/${examId}/questions`, buildJsonRequestInit('POST', payload));
+      if (!response.ok) throw new Error('Failed to add question');
+      return response.json();
+    },
+    deleteExam: async (examId) => {
+      const response = await fetchImpl(`${API_URL}/exams/${examId}`, {
+        method: 'DELETE',
+        headers: buildAuthHeaders(),
+      });
+      // The rollback DELETE must not report success on a rejected response, or a
+      // failed cleanup would silently leave an orphan exam behind.
+      if (!response.ok) throw new Error('Failed to delete exam');
+      return response.json().catch(() => ({}));
+    },
+  };
+}
+
 export interface TeacherExamPayloadInput {
   course_id: string;
   grade_id: string | null;
@@ -109,44 +200,124 @@ export interface ExamAuthoringDeps {
   createExam: (payload: unknown) => Promise<{ id: string }>;
   addQuestion: (examId: string, payload: unknown) => Promise<unknown>;
   deleteExam: (examId: string) => Promise<unknown>;
+  /** Current acting identity (user id + token). Used to scope a retained orphan
+   *  so it can never leak across a user/token change. Optional; when absent the
+   *  controller behaves as a single-session (identity `null`) flow. */
+  getIdentity?: () => string | null;
 }
 
 export type ExamAuthoringOutcome =
   | { status: 'blocked' }
+  | { status: 'orphan-pending'; examId: string }
+  /**
+   * The acting identity/token changed while the multi-step authoring operation
+   * was in flight. No later phase ran under the new session, nothing was
+   * deleted, and the outcome deliberately carries NO exam id: the retained
+   * exam (if any) is recoverable only by the identity that started the save.
+   */
+  | { status: 'identity-changed' }
   | { status: 'created'; examId: string; questionsAdded: number }
-  | { status: 'rolled-back'; examId: string; questionsAdded: number; error: Error };
+  | { status: 'rolled-back'; examId: string; questionsAdded: number; error: Error }
+  | { status: 'cleanup-failed'; examId: string; questionsAdded: number; error: Error; cleanupError: Error };
 
 /** Single-flight controller for "create exam + insert its questions".
  *  - blocks duplicate concurrent submits (deny);
+ *  - captures the INITIATING identity once, before the first request, and
+ *    re-checks it before every later phase (each question insert, the
+ *    compensating delete, and every outcome returned to the caller), so a
+ *    multi-step save can never continue — or report its result — under a
+ *    different user/token;
  *  - reports success only after the server accepted every question;
  *  - on a mid-way question failure it compensates by deleting the exam it
- *    just created, so a failed save never leaves an orphan exam behind. */
+ *    just created, so a failed save never leaves an orphan exam behind;
+ *  - if that compensating delete itself fails, the orphan exam id is retained
+ *    UNDER ITS ORIGINAL OWNER and further submits by that owner are refused
+ *    until acknowledged, so a failed save can never silently recreate a
+ *    duplicate exam, while another identity never sees the id. */
 export function createExamAuthoringController(deps: ExamAuthoringDeps) {
+  const identityOf = deps.getIdentity ?? (() => null);
   let inFlight = false;
+  let orphanExamId: string | null = null;
+  // Identity that owned the orphan, so it is only surfaced to the same session.
+  let orphanOwner: string | null = null;
+  const ownsOrphan = () => orphanExamId !== null && orphanOwner === identityOf();
   return {
     isBusy: () => inFlight,
+    /** The exam id left behind when a question failed AND its rollback delete
+     *  also failed, scoped to the current identity; null once acknowledged or
+     *  when the orphan belongs to a different user/token. */
+    orphanExamId: () => (ownsOrphan() ? orphanExamId : null),
+    /** Acknowledge the orphan so authoring is allowed again. Explicit only:
+     *  we never silently retry a destructive delete. */
+    clearOrphan: () => { orphanExamId = null; orphanOwner = null; },
     async submit(examPayload: unknown, questionPayloads: unknown[]): Promise<ExamAuthoringOutcome> {
       if (inFlight) return { status: 'blocked' };
+      // A previous save under the SAME identity left an exam we could not clean
+      // up; refuse to create a second one until the caller acknowledges. An
+      // orphan from a different identity must not block or leak into this one.
+      if (ownsOrphan()) return { status: 'orphan-pending', examId: orphanExamId as string };
+
+      // Capture the operation scope ONCE. Every later phase is attributed to
+      // this identity, not to whoever happens to be logged in at that moment.
+      const initiator = identityOf();
+      const stillInitiator = () => identityOf() === initiator;
+      const retainOrphan = (id: string) => {
+        orphanExamId = id;
+        orphanOwner = initiator; // the ORIGINAL owner, never the current session
+      };
+
       inFlight = true;
       try {
         const created = await deps.createExam(examPayload);
         const examId = created?.id;
         if (!examId) throw new Error('createExam returned no id');
 
+        // The session changed while create was pending: do not add questions,
+        // do not delete, and do not surface the id to the new session.
+        if (!stillInitiator()) {
+          retainOrphan(examId);
+          return { status: 'identity-changed' };
+        }
+
         let questionsAdded = 0;
         try {
           for (const payload of questionPayloads) {
+            // Re-check before each subsequent write.
+            if (!stillInitiator()) {
+              retainOrphan(examId);
+              return { status: 'identity-changed' };
+            }
             await deps.addQuestion(examId, payload);
             questionsAdded += 1;
           }
         } catch (err) {
           const error = err instanceof Error ? err : new Error(String(err));
+          // Destructive cleanup must never run under a different identity.
+          if (!stillInitiator()) {
+            retainOrphan(examId);
+            return { status: 'identity-changed' };
+          }
           try {
             await deps.deleteExam(examId);
-          } catch {
-            // rollback is best-effort; the original failure is what we report
+            if (!stillInitiator()) {
+              // The rollback did happen, so nothing is left behind; the outcome
+              // itself belongs to the initiating session only.
+              return { status: 'identity-changed' };
+            }
+            return { status: 'rolled-back', examId, questionsAdded, error };
+          } catch (cleanupErr) {
+            const cleanupError = cleanupErr instanceof Error ? cleanupErr : new Error(String(cleanupErr));
+            retainOrphan(examId);
+            if (!stillInitiator()) return { status: 'identity-changed' };
+            return { status: 'cleanup-failed', examId, questionsAdded, error, cleanupError };
           }
-          return { status: 'rolled-back', examId, questionsAdded, error };
+        }
+
+        // Final commit gate: a save that finished after the session changed is
+        // never reported as this session's success.
+        if (!stillInitiator()) {
+          retainOrphan(examId);
+          return { status: 'identity-changed' };
         }
 
         return { status: 'created', examId, questionsAdded };
@@ -157,40 +328,7 @@ export function createExamAuthoringController(deps: ExamAuthoringDeps) {
   };
 }
 
-const examAuthoringController = createExamAuthoringController({
-  createExam: async (payload) => {
-    const response = await fetch(`${API_URL}/exams`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
-      },
-      body: JSON.stringify(payload)
-    });
-    if (!response.ok) throw new Error('Failed to create exam');
-    return response.json();
-  },
-  addQuestion: async (examId, payload) => {
-    const response = await fetch(`${API_URL}/exams/${examId}/questions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
-      },
-      body: JSON.stringify(payload)
-    });
-    if (!response.ok) throw new Error('Failed to add question');
-    return response.json();
-  },
-  deleteExam: async (examId) => {
-    await fetch(`${API_URL}/exams/${examId}`, {
-      method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
-      }
-    });
-  },
-});
+const examAuthoringController = createExamAuthoringController(createExamAuthoringDeps());
 
 interface Question {
   question_text: string;
@@ -215,6 +353,8 @@ export default function TeacherExams() {
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [questions, setQuestions] = useState<Question[]>([]);
+  // Set when a failed save could not clean up its exam; blocks new creates.
+  const [orphanExamId, setOrphanExamId] = useState<string | null>(null);
 
   const [examData, setExamData] = useState({
     title: '',
@@ -435,6 +575,41 @@ export default function TeacherExams() {
 
       if (outcome.status === 'blocked') return; // duplicate submit ignored
 
+      if (outcome.status === 'orphan-pending') {
+        // A previous failed save still owns an uncleaned exam; refuse to create
+        // a second one and keep the user's form intact.
+        setOrphanExamId(outcome.examId);
+        toast({
+          title: 'خطأ',
+          description: `يوجد امتحان سابق لم يكتمل حذفه (المعرف: ${outcome.examId}). راجع الامتحانات ثم أكّد المتابعة.`,
+          variant: 'destructive'
+        });
+        return;
+      }
+
+      if (outcome.status === 'identity-changed') {
+        // The session/token changed while the save was running. Nothing was
+        // deleted and no id is reported: keep the form intact and tell the
+        // operator the save must be reviewed under the original session.
+        toast({
+          title: 'انتهت الجلسة',
+          description: 'تغيّرت جلسة المستخدم أثناء الحفظ، ولم تُنشأ أسئلة إضافية ولم يُحذف شيء. راجع الامتحانات ثم أعد المحاولة من الجلسة الصحيحة.',
+          variant: 'destructive'
+        });
+        return;
+      }
+
+      if (outcome.status === 'cleanup-failed') {
+        console.error('Error creating exam:', outcome.error);
+        setOrphanExamId(outcome.examId);
+        toast({
+          title: 'خطأ',
+          description: `فشل إنشاء الامتحان (تعذر إضافة السؤال ${outcome.questionsAdded + 1}) وبقي الامتحان بالمعرف ${outcome.examId} بدون حذف. لم تتم إعادة المحاولة تلقائياً.`,
+          variant: 'destructive'
+        });
+        return;
+      }
+
       if (outcome.status === 'rolled-back') {
         console.error('Error creating exam:', outcome.error);
         toast({
@@ -483,9 +658,7 @@ export default function TeacherExams() {
       // Delete exam via Backend API (should cascade delete questions)
       const response = await fetch(`${API_URL}/exams/${id}`, {
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
-        }
+        headers: buildAuthHeaders()
       });
 
       if (!response.ok) {
@@ -758,15 +931,19 @@ export default function TeacherExams() {
                                 formData.append('image', file);
 
                                 try {
-                                  const response = await fetch(`${API_URL}/exams/upload-question-image`, {
-                                    method: 'POST',
-                                    body: formData
-                                  });
+                                  const response = await fetch(`${API_URL}/exams/upload-question-image`, buildImageUploadRequestInit(formData));
 
-                                  const data = await response.json();
-                                  if (data.success) {
+                                  const data = await response.json().catch(() => null);
+                                  if (response.ok && data?.success) {
                                     setCurrentQuestion({ ...currentQuestion, question_image: data.imageUrl });
                                     toast({ title: 'تم رفع الصورة بنجاح' });
+                                  } else {
+                                    toast({
+                                      title: isAuthFailure(response.status)
+                                        ? 'انتهت الجلسة، يرجى تسجيل الدخول مجدداً'
+                                        : 'فشل رفع الصورة',
+                                      variant: 'destructive'
+                                    });
                                   }
                                 } catch (error) {
                                   toast({ title: 'فشل رفع الصورة', variant: 'destructive' });
@@ -928,9 +1105,28 @@ export default function TeacherExams() {
                     </div>
                   )}
 
+                  {orphanExamId && (
+                    <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-700 flex items-center justify-between gap-3">
+                      <span>
+                        يوجد امتحان غير مكتمل لم يُحذف (المعرف: {orphanExamId}). لن يتم إنشاء امتحان جديد حتى تأكيد المعالجة.
+                      </span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          examAuthoringController.clearOrphan();
+                          setOrphanExamId(null);
+                        }}
+                      >
+                        تأكيد المعالجة
+                      </Button>
+                    </div>
+                  )}
+
                   <Button
                     type="submit"
-                    disabled={loading || questions.length === 0}
+                    disabled={loading || questions.length === 0 || orphanExamId !== null}
                     className="w-full bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-700 hover:to-teal-700"
                   >
                     {loading ? 'جاري الإنشاء...' : (

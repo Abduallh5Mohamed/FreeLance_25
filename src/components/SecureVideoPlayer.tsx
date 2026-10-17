@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import Hls from 'hls.js';
 import { Loader2, X, Play, Pause, Volume2, VolumeX, Shield, AlertTriangle, RotateCcw, RotateCw, Maximize, Minimize } from 'lucide-react';
 import { VideoSecurityManager, SecurityViolation } from '@/utils/VideoSecurityManager';
+import { notifySessionChange, subscribeSessionChange } from '@/lib/session-events';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
@@ -81,6 +82,21 @@ export function SecureVideoPlayer({
     }, []);
 
     useEffect(() => unlockOrientation, [unlockOrientation]);
+
+    // Same-document session teardown (supervisor/026): this component's
+    // ownership is ONLY its token-clearing/logout event path — on any
+    // same-document logout the protected video source is released (pause,
+    // clear src, destroy HLS). Playback/protection behavior is untouched,
+    // and the app-level logout owns navigation.
+    useEffect(() => {
+        const unsubscribe = subscribeSessionChange((event) => {
+            if (event.kind !== 'logout') return;
+            videoRef.current?.pause();
+            if (videoRef.current) videoRef.current.src = '';
+            hlsRef.current?.destroy();
+        });
+        return unsubscribe;
+    }, []);
 
     // Keep the fullscreen state in sync with the browser (user can press Esc).
     useEffect(() => {
@@ -172,6 +188,9 @@ export function SecureVideoPlayer({
         localStorage.removeItem('auth_token');
         localStorage.removeItem('user_data');
         sessionStorage.clear();
+
+        // The session mutation is complete: notify same-document subscribers.
+        notifySessionChange('logout');
 
         // Navigate to auth after delay
         setTimeout(() => {

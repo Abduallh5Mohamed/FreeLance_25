@@ -5,6 +5,14 @@ import { getPool, query, queryOne, execute } from '../db';
 import { optionalAuth, instructorScopeId, AuthRequest, authenticateToken } from '../middleware/auth';
 import { requireTeachingWrite } from '../middleware/teaching-access';
 import { normalizeEgyptianPhone, phoneLookupCandidates } from '../security/phone';
+import {
+    applyOfflineCourseSelection,
+    createTransactionEnrollmentSeam,
+    lockOfflineCourseTarget,
+    runStudentWriteTransaction,
+    StudentWriteRefusal,
+    type CourseAuthorityCaller,
+} from '../lib/offline-student-courses';
 
 const router = Router();
 router.use(optionalAuth);
@@ -73,7 +81,12 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
                     FROM student_courses sc
                     INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
-                ) AS course_names
+                ) AS course_names,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT sc.course_id ORDER BY sc.course_id SEPARATOR ',')
+                    FROM student_courses sc
+                    WHERE sc.student_id = s.id
+                ) AS course_ids
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -124,7 +137,12 @@ router.get('/:id', authenticateToken, async (req: AuthRequest, res: Response) =>
                     FROM student_courses sc
                     INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
-                ) AS course_names
+                ) AS course_names,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT sc.course_id ORDER BY sc.course_id SEPARATOR ',')
+                    FROM student_courses sc
+                    WHERE sc.student_id = s.id
+                ) AS course_ids
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -158,7 +176,12 @@ router.get('/email/:email', authenticateToken, async (req: AuthRequest, res: Res
                     FROM student_courses sc
                     INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
-                ) AS course_names
+                ) AS course_names,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT sc.course_id ORDER BY sc.course_id SEPARATOR ',')
+                    FROM student_courses sc
+                    WHERE sc.student_id = s.id
+                ) AS course_ids
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -193,7 +216,12 @@ router.get('/phone/:phone', authenticateToken, async (req: AuthRequest, res: Res
                     FROM student_courses sc
                     INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
-                ) AS course_names
+                ) AS course_names,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT sc.course_id ORDER BY sc.course_id SEPARATOR ',')
+                    FROM student_courses sc
+                    WHERE sc.student_id = s.id
+                ) AS course_ids
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -227,7 +255,12 @@ router.get('/barcode/:barcode', authenticateToken, async (req: AuthRequest, res:
                     FROM student_courses sc
                     INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
-                ) AS course_names
+                ) AS course_names,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT sc.course_id ORDER BY sc.course_id SEPARATOR ',')
+                    FROM student_courses sc
+                    WHERE sc.student_id = s.id
+                ) AS course_ids
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -250,11 +283,29 @@ router.get('/barcode/:barcode', authenticateToken, async (req: AuthRequest, res:
 // (moved email & phone handlers above to avoid route conflicts)
 
 // Create new student
+/**
+ * Course-selection authority for the offline-student contract
+ * (supervisor/026): the caller's server-derived selected tenant, with the
+ * admin platform role unrestricted — the canonical `courseScope` rule from
+ * routes/courses.ts, never a body-supplied id.
+ */
+const courseAuthorityCaller = (req: AuthRequest): CourseAuthorityCaller => ({
+    tenantId: req.user?.tenantId ?? null,
+    isAdmin: req.user?.role === 'admin',
+});
+
 router.post('/', requireTeachingWrite('students'), async (req: AuthRequest, res: Response) => {
     try {
         const scopeId = instructorScopeId(req);
-        const { name, email, phone, guardian_phone, grade, grade_id, group_id, password, barcode: incomingBarcode, is_offline = false, approval_status = 'approved' } = req.body;
+        const { name, email, phone, guardian_phone, grade, grade_id, group_id, password, barcode: incomingBarcode, is_offline = false, approval_status = 'approved', course_ids } = req.body;
         const offline = is_offline === true || is_offline === 1 || is_offline === 'true';
+
+        // Server-enforced offline-only eligibility (supervisor/029): a course
+        // selection on a creation whose stored student would NOT be offline is
+        // refused here, never silently applied or ignored.
+        if (course_ids !== undefined && !offline) {
+            return res.status(400).json({ error: 'اختيار المقررات متاح لطلاب الأوفلاين فقط' });
+        }
 
         if (!String(name || '').trim()) {
             return res.status(400).json({ error: 'اسم الطالب مطلوب' });
@@ -288,47 +339,66 @@ router.post('/', requireTeachingWrite('students'), async (req: AuthRequest, res:
 
         const connection = await getPool().getConnection();
         try {
-            await connection.beginTransaction();
-            const [tenantRows] = scopeId ? await connection.execute<any[]>(
-                "SELECT id FROM tenants WHERE owner_user_id=? AND status='active' LIMIT 1", [scopeId]
-            ) : [[] as any];
-            const tenantId = tenantRows?.[0]?.id || null;
-            let linkedUserId: string | null = null;
-            let normalizedPhone = phone ? normalizeEgyptianPhone(phone) : null;
-            if (!offline) {
-                if (!normalizedPhone) { await connection.rollback(); return res.status(400).json({ error: 'Invalid Egyptian mobile number' }); }
-                const candidates = phoneLookupCandidates(normalizedPhone);
-                const [existingUsers] = await connection.execute<any[]>(
-                    `SELECT id FROM users WHERE role='student' AND phone IN (${candidates.map(() => '?').join(',')}) LIMIT 1`, candidates
-                );
-                linkedUserId = existingUsers?.[0]?.id || crypto.randomUUID();
-                if (tenantId) {
-                    const [membership] = await connection.execute<any[]>('SELECT id FROM students WHERE tenant_id=? AND user_id=? LIMIT 1', [tenantId, linkedUserId]);
-                    if (membership?.[0]) { await connection.rollback(); return res.status(409).json({ error: 'Student already belongs to this instructor' }); }
-                }
-                if (!existingUsers?.[0]) {
-                    const passwordHash = await bcrypt.hash(String(password), 12);
-                    await connection.execute(
-                        `INSERT INTO users (id,email,password_hash,role,phone,name,student_id,is_active)
-                         VALUES (?,?,?,'student',?,?,?,1)`,
-                        [linkedUserId, email || null, passwordHash, normalizedPhone, String(name).trim(), studentId]
+            await runStudentWriteTransaction(connection, async () => {
+                const [tenantRows] = scopeId ? await connection.execute<any[]>(
+                    "SELECT id FROM tenants WHERE owner_user_id=? AND status='active' LIMIT 1", [scopeId]
+                ) : [[] as any];
+                const tenantId = tenantRows?.[0]?.id || null;
+                let linkedUserId: string | null = null;
+                let normalizedPhone = phone ? normalizeEgyptianPhone(phone) : null;
+                if (!offline) {
+                    if (!normalizedPhone) throw new StudentWriteRefusal(400, 'Invalid Egyptian mobile number');
+                    const candidates = phoneLookupCandidates(normalizedPhone);
+                    const [existingUsers] = await connection.execute<any[]>(
+                        `SELECT id FROM users WHERE role='student' AND phone IN (${candidates.map(() => '?').join(',')}) LIMIT 1`, candidates
                     );
+                    linkedUserId = existingUsers?.[0]?.id || crypto.randomUUID();
+                    if (tenantId) {
+                        const [membership] = await connection.execute<any[]>('SELECT id FROM students WHERE tenant_id=? AND user_id=? LIMIT 1', [tenantId, linkedUserId]);
+                        if (membership?.[0]) throw new StudentWriteRefusal(409, 'Student already belongs to this instructor');
+                    }
+                    if (!existingUsers?.[0]) {
+                        const passwordHash = await bcrypt.hash(String(password), 12);
+                        await connection.execute(
+                            `INSERT INTO users (id,email,password_hash,role,phone,name,student_id,is_active)
+                             VALUES (?,?,?,'student',?,?,?,1)`,
+                            [linkedUserId, email || null, passwordHash, normalizedPhone, String(name).trim(), studentId]
+                        );
+                    }
                 }
-            }
-            await connection.execute(
-                `INSERT INTO students (id,user_id,tenant_id,name,email,phone,guardian_phone,grade,grade_id,group_id,instructor_id,barcode,is_offline,approval_status)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-                [studentId, linkedUserId, tenantId, String(name).trim(), email || null, normalizedPhone || phone || null,
-                    guardian_phone || null, grade || null, grade_id || null, finalGroupId, scopeId, barcodeToStore, offline ? 1 : 0, approval_status]
-            );
-            await connection.commit();
+                await connection.execute(
+                    `INSERT INTO students (id,user_id,tenant_id,name,email,phone,guardian_phone,grade,grade_id,group_id,instructor_id,barcode,is_offline,approval_status)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                    [studentId, linkedUserId, tenantId, String(name).trim(), email || null, normalizedPhone || phone || null,
+                        guardian_phone || null, grade || null, grade_id || null, finalGroupId, scopeId, barcodeToStore, offline ? 1 : 0, approval_status]
+                );
+
+                // Optional course selection (supervisor/026): validated and
+                // applied inside the SAME transaction as the student/user writes,
+                // so a rejected or failed selection can never leave an orphan
+                // student or a partially replaced enrollment. The whole
+                // transaction is owned by runStudentWriteTransaction: a refusal
+                // throws and the runner rolls back before any partial
+                // student/user write can commit (supervisor/035).
+                const courseResult = await applyOfflineCourseSelection(
+                    studentId,
+                    course_ids,
+                    createTransactionEnrollmentSeam(connection),
+                    courseAuthorityCaller(req),
+                );
+                if (!courseResult.ok) {
+                    throw new StudentWriteRefusal(courseResult.status, courseResult.error);
+                }
+            });
         } catch (transactionError: any) {
-            await connection.rollback();
+            if (transactionError instanceof StudentWriteRefusal) {
+                return res.status(transactionError.status).json({ error: transactionError.error });
+            }
             if (transactionError?.code === 'ER_DUP_ENTRY') {
                 return res.status(409).json({ error: 'رقم الهاتف أو البريد مستخدم بالفعل' });
             }
             throw transactionError;
-        } finally { connection.release(); }
+        }
 
         const newStudent = await queryOne(
             `SELECT
@@ -341,7 +411,12 @@ router.post('/', requireTeachingWrite('students'), async (req: AuthRequest, res:
                     FROM student_courses sc
                     INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
-                ) AS course_names
+                ) AS course_names,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT sc.course_id ORDER BY sc.course_id SEPARATOR ',')
+                    FROM student_courses sc
+                    WHERE sc.student_id = s.id
+                ) AS course_ids
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -414,7 +489,7 @@ router.put('/:id', requireTeachingWrite('students'), async (req: AuthRequest, re
         if (scopeId && !(await isStudentInScope(req.params.id, scopeId))) {
             return res.status(404).json({ error: 'Student not found' });
         }
-        const { name, email, phone, guardian_phone, grade, grade_id, group_id, barcode, password, notes } = req.body;
+        const { name, email, phone, guardian_phone, grade, grade_id, group_id, barcode, password, notes, course_ids } = req.body;
         if (scopeId && group_id !== undefined && group_id !== null && !(await isGroupInScope(group_id, scopeId))) {
             return res.status(403).json({ error: 'لا يمكن نقل الطالب لمجموعة لا تخصك' });
         }
@@ -471,39 +546,110 @@ router.put('/:id', requireTeachingWrite('students'), async (req: AuthRequest, re
             }
         }
 
-        if (fields.length === 0) {
+        // An absent course_ids preserves the existing enrollment untouched; a
+        // present value (including []) participates in the update.
+        const courseSelectionRequested = course_ids !== undefined;
+        if (fields.length === 0 && !courseSelectionRequested) {
             return res.status(400).json({ error: 'No fields provided for update' });
         }
 
-        fields.push('updated_at = CURRENT_TIMESTAMP');
+        if (courseSelectionRequested) {
+            // Transactional path (supervisor/026): the student (and linked
+            // user) update and the enrollment diff commit or roll back
+            // together, so a rejected or failed selection can never leave a
+            // half-applied update or a partially replaced enrollment.
+            const connection = await getPool().getConnection();
+            try {
+                await runStudentWriteTransaction(connection, async () => {
+                    // Lock and re-validate the target INSIDE the transaction
+                    // (supervisor/029): the stored offline predicate — never a
+                    // UI flag — decides eligibility, an instructor's authority
+                    // is re-checked under the lock, and FOR UPDATE serializes a
+                    // concurrent replacement on the same student.
+                    const lockResult = await lockOfflineCourseTarget(connection, req.params.id, scopeId);
+                    if (!lockResult.ok) {
+                        throw new StudentWriteRefusal(lockResult.status, lockResult.error);
+                    }
 
-        const result = await execute(
-            `UPDATE students SET ${fields.join(', ')} WHERE id = ?`,
-            [...params, req.params.id]
-        );
+                    if (fields.length > 0) {
+                        fields.push('updated_at = CURRENT_TIMESTAMP');
+                        const [result] = (await connection.execute(
+                            `UPDATE students SET ${fields.join(', ')} WHERE id = ?`,
+                            [...params, req.params.id]
+                        )) as [{ affectedRows: number }, unknown];
+                        if (result.affectedRows === 0) {
+                            throw new StudentWriteRefusal(404, 'Student not found');
+                        }
+                    }
 
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ error: 'Student not found' });
-        }
+                    // Also update users table if email exists (same rule as the
+                    // non-transactional path below).
+                    if (email) {
+                        const updateFields = ['name = ?', 'phone = ?'];
+                        const updateValues = [name, phone || null];
 
-        // Also update users table if email exists
-        if (email) {
-            const updateFields = ['name = ?', 'phone = ?'];
-            const updateValues = [name, phone || null];
+                        if (password) {
+                            // Hash the password before updating
+                            const passwordHash = await bcrypt.hash(password, 10);
+                            updateFields.push('password_hash = ?');
+                            updateValues.push(passwordHash);
+                        }
 
-            if (password) {
-                // Hash the password before updating
-                const passwordHash = await bcrypt.hash(password, 10);
-                updateFields.push('password_hash = ?');
-                updateValues.push(passwordHash);
+                        updateValues.push(email);
+
+                        await connection.execute(
+                            `UPDATE users SET ${updateFields.join(', ')} WHERE email = ? AND role = 'student'`,
+                            updateValues
+                        );
+                    }
+
+                    const courseResult = await applyOfflineCourseSelection(
+                        req.params.id,
+                        course_ids,
+                        createTransactionEnrollmentSeam(connection),
+                        courseAuthorityCaller(req),
+                    );
+                    if (!courseResult.ok) {
+                        throw new StudentWriteRefusal(courseResult.status, courseResult.error);
+                    }
+                });
+            } catch (transactionError) {
+                if (transactionError instanceof StudentWriteRefusal) {
+                    return res.status(transactionError.status).json({ error: transactionError.error });
+                }
+                throw transactionError;
+            }
+        } else {
+            fields.push('updated_at = CURRENT_TIMESTAMP');
+
+            const result = await execute(
+                `UPDATE students SET ${fields.join(', ')} WHERE id = ?`,
+                [...params, req.params.id]
+            );
+
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ error: 'Student not found' });
             }
 
-            updateValues.push(email);
+            // Also update users table if email exists
+            if (email) {
+                const updateFields = ['name = ?', 'phone = ?'];
+                const updateValues = [name, phone || null];
 
-            await execute(
-                `UPDATE users SET ${updateFields.join(', ')} WHERE email = ? AND role = 'student'`,
-                updateValues
-            );
+                if (password) {
+                    // Hash the password before updating
+                    const passwordHash = await bcrypt.hash(password, 10);
+                    updateFields.push('password_hash = ?');
+                    updateValues.push(passwordHash);
+                }
+
+                updateValues.push(email);
+
+                await execute(
+                    `UPDATE users SET ${updateFields.join(', ')} WHERE email = ? AND role = 'student'`,
+                    updateValues
+                );
+            }
         }
 
         const updatedStudent = await queryOne(
@@ -517,7 +663,12 @@ router.put('/:id', requireTeachingWrite('students'), async (req: AuthRequest, re
                     FROM student_courses sc
                     INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
-                ) AS course_names
+                ) AS course_names,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT sc.course_id ORDER BY sc.course_id SEPARATOR ',')
+                    FROM student_courses sc
+                    WHERE sc.student_id = s.id
+                ) AS course_ids
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id

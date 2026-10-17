@@ -25,23 +25,31 @@ const methodText: Record<string, string> = { bank_transfer: 'تحويل بنكي
  * money errors, e.g. an exactly-sufficient balance comparing less than the
  * charge and wrongly blocking a valid renewal. Display keeps the established
  * ar-EG two-decimal format.
+ *
+ * A value that is not a well-formed amount is reported as `null`, never as a
+ * fabricated `0`. "Unknown/invalid" must stay distinguishable from a real zero
+ * so an unparseable authoritative balance/charge cannot be presented as valid
+ * money or silently hidden behind a zero. Callers fail closed and surface the
+ * problem instead.
  */
-export function parseMinorUnits(value: string | number | null | undefined): number {
+export function parseMinorUnits(value: string | number | null | undefined): number | null {
   if (typeof value === 'number') {
-    if (!Number.isFinite(value)) return 0;
+    if (!Number.isFinite(value)) return null;
     // Fixed two-decimal string first so float artifacts never reach the parse.
     return parseMinorUnits(value.toFixed(2));
   }
-  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(String(value ?? '').trim());
-  if (!match) return 0;
+  if (value === null || value === undefined) return null;
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(String(value).trim());
+  if (!match) return null;
   const minor = Number(match[1]) * 100 + Number((match[2] ?? '').padEnd(2, '0'));
-  return Number.isSafeInteger(minor) ? minor : 0;
+  return Number.isSafeInteger(minor) ? minor : null;
 }
 
-export function formatMinorUnits(minor: number): string {
-  const safe = Number.isSafeInteger(minor) && minor >= 0 ? minor : 0;
-  const pounds = Math.floor(safe / 100);
-  const piastres = safe % 100;
+export function formatMinorUnits(minor: number | null | undefined): string {
+  // Unknown / non-finite / negative amounts must not render as a real amount.
+  if (minor === null || minor === undefined || !Number.isSafeInteger(minor) || minor < 0) return '—';
+  const pounds = Math.floor(minor / 100);
+  const piastres = minor % 100;
   const text = `${pounds}.${String(piastres).padStart(2, '0')}`;
   return `${Number(text).toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ج.م`;
 }
@@ -53,34 +61,46 @@ const money = (value: string | number | null | undefined) => formatMinorUnits(pa
  * never from local UI state.
  */
 export function deriveRenewalState(data: InstructorBillingData | null): {
-  chargeMinor: number;
-  balanceMinor: number;
-  shortfallMinor: number;
+  chargeMinor: number | null;
+  balanceMinor: number | null;
+  shortfallMinor: number | null;
   inGrace: boolean;
   canRenewManually: boolean;
 } {
   const chargeMinor = parseMinorUnits(data?.subscription?.charge_amount);
   const balanceMinor = parseMinorUnits(data?.wallet?.balance);
+  const moneyKnown = chargeMinor !== null && balanceMinor !== null;
   return {
     chargeMinor,
     balanceMinor,
-    shortfallMinor: Math.max(0, chargeMinor - balanceMinor),
+    shortfallMinor: moneyKnown ? Math.max(0, chargeMinor - balanceMinor) : null,
     inGrace: Boolean(data?.subscription && Number(data.subscription.grace_seconds_remaining) > 0),
-    canRenewManually: Boolean(data?.subscription && !data.renewal_intent && chargeMinor > 0 && balanceMinor >= chargeMinor),
+    // Fail closed: an unparseable charge or balance can never authorize renewal.
+    canRenewManually: Boolean(data?.subscription && !data.renewal_intent && moneyKnown && chargeMinor > 0 && balanceMinor >= chargeMinor),
   };
 }
 
 /**
- * Grace countdown anchor: the response's `server_now` is the authoritative
- * clock; the local clock is only a fallback when it is missing or
- * unparseable, so client clock skew cannot distort the displayed time left.
+ * Grace countdown anchor. The billing response reports the grace window as an
+ * authoritative *duration* (`grace_seconds_remaining`) whose origin is the
+ * server clock. The deadline is that duration anchored to the local clock at
+ * the instant the response is received, so the countdown is measured with a
+ * single clock and never subtracts two clocks that have different origins.
+ * Client clock skew (and a skewed or unparseable `server_now`) therefore cannot
+ * shrink, stretch or prematurely expire the displayed time left. The server
+ * stays authoritative: this countdown is display-only and never grants access.
  */
-export function resolveGraceDeadlineMs(serverNow: string | null | undefined, graceSeconds: number, fallbackNowMs: number): number {
+export function resolveGraceDeadlineMs(graceSeconds: number, receivedAtMs: number): number {
   const seconds = Number(graceSeconds);
   if (!Number.isFinite(seconds) || seconds <= 0) return 0;
-  const anchorMs = serverNow ? new Date(serverNow).getTime() : Number.NaN;
-  const base = Number.isFinite(anchorMs) ? anchorMs : fallbackNowMs;
-  return base + seconds * 1000;
+  if (!Number.isFinite(receivedAtMs)) return 0;
+  return receivedAtMs + seconds * 1000;
+}
+
+/** Seconds left until `deadlineMs` on the same clock, clamped at 0. */
+export function remainingGraceSeconds(deadlineMs: number, nowMs: number): number {
+  if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) return 0;
+  return Math.max(0, Math.ceil((deadlineMs - nowMs) / 1000));
 }
 
 /** Sequence guard: only the newest billing response may update page state. */
@@ -134,7 +154,7 @@ export default function InstructorSubscription() {
       setData(value);
       const seconds = Number(value.subscription?.grace_seconds_remaining || 0);
       setGraceLeft(seconds);
-      setGraceDeadline(resolveGraceDeadlineMs(value.server_now, seconds, Date.now()));
+      setGraceDeadline(resolveGraceDeadlineMs(seconds, performance.now()));
       setAmount(current => current || (value.subscription?.charge_amount ? String(value.subscription.charge_amount) : ''));
     } catch (cause) {
       if (!loadSeq.current.isLatest(token)) return;
@@ -145,7 +165,7 @@ export default function InstructorSubscription() {
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     if (graceDeadline <= 0) return;
-    const tick = () => setGraceLeft(Math.max(0, Math.ceil((graceDeadline - Date.now()) / 1000)));
+    const tick = () => setGraceLeft(remainingGraceSeconds(graceDeadline, performance.now()));
     tick();
     const timer = window.setInterval(tick, 1000);
     return () => window.clearInterval(timer);
@@ -200,12 +220,13 @@ export default function InstructorSubscription() {
     {!data && !error && <div className="flex items-center justify-center p-16 text-slate-500"><Loader2 className="ml-2 h-5 w-5 animate-spin" />جاري تحميل بيانات الفوترة...</div>}
     {data && <>
       {data.billing_only && <div className="rounded-2xl border border-red-300 bg-red-50 p-5"><h2 className="flex items-center gap-2 font-bold text-red-900"><ShieldCheck className="h-5 w-5" />وضع الدفع والدعم فقط</h2><p className="mt-2 text-sm leading-7 text-red-800">انتهت مهلة التجديد؛ أدوات التدريس متوقفة مؤقتًا، لكن حسابك وبياناتك لم تُحذف. اشحن الرصيد أو استخدم الرصيد الكافي للتجديد، ويمكنك التواصل مع الدعم.</p></div>}
+      {(chargeMinor === null || balanceMinor === null) && <div role="alert" className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-4 text-amber-900"><AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />تعذر قراءة مبالغ الفوترة من الخادم بشكل موثوق؛ لم يُعرض أي مبلغ تقديري بدلًا منها، والتجديد معطّل. حدّث الصفحة أو تواصل مع الدعم.</div>}
       {inGrace && <Card className="border-red-300 bg-red-50/60"><CardHeader><CardTitle className="flex items-center gap-2 text-red-900"><Clock3 />مهلة التجديد تنتهي خلال</CardTitle><p className="text-sm text-red-800">أمامك أربعة أيام كاملة من وقت انتهاء الاشتراك. عند اكتمال الرصيد ومع وجود إذن، يحاول النظام التجديد فورًا.</p></CardHeader><CardContent><Countdown seconds={graceLeft} /></CardContent></Card>}
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card><CardContent className="p-5"><CreditCard className="mb-4 h-6 w-6 text-indigo-600" /><p className="text-sm text-slate-500">الخطة الحالية</p><p className="mt-1 text-xl font-bold">{data.subscription?.plan_name || 'لا توجد خطة'}</p><Badge className="mt-3" variant="outline">{statusText[data.subscription?.status || ''] || data.subscription?.status || 'غير مفعّل'}</Badge></CardContent></Card>
         <Card><CardContent className="p-5"><WalletCards className="mb-4 h-6 w-6 text-emerald-600" /><p className="text-sm text-slate-500">رصيد الخدمات المتاح</p><p className="mt-1 text-2xl font-black text-emerald-700">{formatMinorUnits(balanceMinor)}</p><p className="mt-2 text-xs text-slate-500">يبقى كاملًا حتى يحين موعد الخصم.</p></CardContent></Card>
         <Card><CardContent className="p-5"><CalendarClock className="mb-4 h-6 w-6 text-amber-600" /><p className="text-sm text-slate-500">الخصم القادم</p><p className="mt-1 text-2xl font-black">{formatMinorUnits(chargeMinor)}</p><p className="mt-2 text-xs text-slate-500">موعد الانتهاء: {dateTime(data.subscription?.period_ends_at)}</p></CardContent></Card>
-        <Card><CardContent className="p-5"><AlertCircle className={`mb-4 h-6 w-6 ${shortfallMinor ? 'text-red-600' : 'text-emerald-600'}`} /><p className="text-sm text-slate-500">المبلغ الناقص للتجديد</p><p className={`mt-1 text-2xl font-black ${shortfallMinor ? 'text-red-700' : 'text-emerald-700'}`}>{formatMinorUnits(shortfallMinor)}</p><p className="mt-2 text-xs text-slate-500">لا يوجد خصم جزئي.</p></CardContent></Card>
+        <Card><CardContent className="p-5"><AlertCircle className={`mb-4 h-6 w-6 ${shortfallMinor === null ? 'text-slate-400' : shortfallMinor ? 'text-red-600' : 'text-emerald-600'}`} /><p className="text-sm text-slate-500">المبلغ الناقص للتجديد</p><p className={`mt-1 text-2xl font-black ${shortfallMinor === null ? 'text-slate-400' : shortfallMinor ? 'text-red-700' : 'text-emerald-700'}`}>{formatMinorUnits(shortfallMinor)}</p><p className="mt-2 text-xs text-slate-500">لا يوجد خصم جزئي.</p></CardContent></Card>
       </section>
       <Card className={data.renewal_intent ? 'border-indigo-300' : ''}><CardHeader><CardTitle>إذن التجديد</CardTitle></CardHeader><CardContent>{data.renewal_intent ? <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center"><div><p className="font-semibold text-indigo-900">يوجد إذن واحد منتظر بقيمة {money(data.renewal_intent.charge_amount)}</p><p className="mt-1 text-sm text-slate-600">سيُستخدم مرة واحدة فقط عند انتهاء الفترة ثم يُغلق. الشحنات الإضافية لا تضيف شهورًا تلقائيًا.</p></div><Button variant="outline" disabled={busy} onClick={() => { if (confirm('إلغاء الإذن لن يسحب أي مبلغ وسيظل رصيدك كاملًا. هل تريد الإلغاء؟')) void run(() => cancelRenewalIntent(data.renewal_intent!.id), 'تم إلغاء إذن التجديد وبقي الرصيد كما هو.'); }}><XCircle className="ml-2 h-4 w-4" />إلغاء الإذن</Button></div> : <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center"><div><p className="font-semibold">لا يوجد إذن تجديد منتظر</p><p className="mt-1 text-sm text-slate-600">إذا كانت الفترة سارية سينتظر النظام موعد انتهائها، وإذا كانت منتهية يبدأ من وقت طلبك.</p></div><Button disabled={busy || !canRenewManually} onClick={() => { if (confirm(`تأكيد إنشاء إذن واحد لخصم ${formatMinorUnits(chargeMinor)}؟`)) void run(requestManualRenewal, 'تم إنشاء إذن التجديد وتنفيذه إذا كان الاشتراك مستحقًا.'); }}>تجديد الآن من الرصيد</Button></div>}</CardContent></Card>
       <div className="grid gap-6 lg:grid-cols-[1.15fr_.85fr]">

@@ -55,6 +55,91 @@ export function createSubmitGuard(): SubmitGuard {
   };
 }
 
+/**
+ * Monotonic request token for ticket-detail loads. Each `openTicket` claims a
+ * token; only the latest token may commit its result. A slower older response
+ * (the user opened another ticket meanwhile) is therefore ignored instead of
+ * overwriting the current selection, replies or the details spinner.
+ *
+ * Pinned by src/tests/m1-sprint-meeting-support-ui.test.ts.
+ */
+export interface LatestRequestGuard {
+  begin(): number;
+  isLatest(token: number): boolean;
+}
+
+export function createLatestRequestGuard(): LatestRequestGuard {
+  let latest = 0;
+  return {
+    begin: () => {
+      latest += 1;
+      return latest;
+    },
+    isLatest: (token) => token === latest,
+  };
+}
+
+/**
+ * Production controller for the ticket-detail panel. `open()` is the exact path
+ * the UI runs when a user opens a ticket:
+ *   - it shows the chosen ticket header and clears the previous ticket's replies
+ *     at once, so a different ticket's conversation is never shown under the new
+ *     header while it loads — or after it fails;
+ *   - only the latest `open()` may commit, so a slower response for a ticket the
+ *     user has since replaced is dropped;
+ *   - `invalidate()` retires in-flight opens (used on unmount / identity change).
+ *
+ * Pinned by src/tests/m1-sprint-meeting-support-ui.test.ts.
+ */
+export interface TicketDetailsControllerDeps {
+  request: (ticketId: string) => Promise<{ ticket: SupportTicket; replies: SupportReply[] }>;
+  onSelect: (ticket: SupportTicket) => void;
+  onClearReplies: () => void;
+  onApply: (ticket: SupportTicket, replies: SupportReply[]) => void;
+  onError: (message: string) => void;
+  onLoadingChange?: (loading: boolean) => void;
+}
+
+export interface TicketDetailsController {
+  open(ticket: SupportTicket): Promise<void>;
+  invalidate(): void;
+}
+
+export function createTicketDetailsController(deps: TicketDetailsControllerDeps): TicketDetailsController {
+  const guard = createLatestRequestGuard();
+  return {
+    async open(ticket) {
+      const token = guard.begin();
+      // Show the chosen ticket and drop the previous ticket's replies at once: a
+      // different ticket's conversation must never linger under this header.
+      deps.onSelect(ticket);
+      deps.onClearReplies();
+      deps.onLoadingChange?.(true);
+      let details: { ticket: SupportTicket; replies: SupportReply[] } | null = null;
+      let failure: unknown;
+      let failed = false;
+      try {
+        details = await deps.request(ticket.id);
+      } catch (error) {
+        failed = true;
+        failure = error;
+      }
+      // A newer open (or an invalidate) superseded this one: commit nothing.
+      if (!guard.isLatest(token)) return;
+      if (failed) {
+        // Replies were already cleared; report the failure for the chosen ticket.
+        deps.onError(failure instanceof Error ? failure.message : "حاول مرة أخرى");
+      } else if (details) {
+        deps.onApply(details.ticket, details.replies);
+      }
+      deps.onLoadingChange?.(false);
+    },
+    invalidate() {
+      guard.begin();
+    },
+  };
+}
+
 const categoryLabels: Record<SupportCategory, string> = {
   technical: "مشكلة تقنية",
   account: "الحساب وتسجيل الدخول",
@@ -107,6 +192,22 @@ export default function Support() {
   const submitGuardRef = useRef<SubmitGuard | null>(null);
   submitGuardRef.current ??= createSubmitGuard();
 
+  // Owns the ticket-detail open lifecycle: clears the previous ticket's replies
+  // before loading, commits only the latest response, and can retire in-flight
+  // opens on unmount / identity change.
+  const detailsControllerRef = useRef<TicketDetailsController | null>(null);
+  detailsControllerRef.current ??= createTicketDetailsController({
+    request: (ticketId) => getSupportTicket(ticketId),
+    onSelect: (ticket) => setSelected(ticket),
+    onClearReplies: () => setReplies([]),
+    onApply: (ticket, nextReplies) => {
+      setSelected(ticket);
+      setReplies(nextReplies);
+    },
+    onError: (message) => toast({ variant: "destructive", title: "تعذر فتح التذكرة", description: message }),
+    onLoadingChange: (value) => setDetailsLoading(value),
+  });
+
   const loadTickets = useCallback(async () => {
     setLoading(true);
     try {
@@ -120,19 +221,11 @@ export default function Support() {
 
   useEffect(() => { loadTickets(); }, [loadTickets]);
 
-  const openTicket = async (ticket: SupportTicket) => {
-    setSelected(ticket);
-    setDetailsLoading(true);
-    try {
-      const details = await getSupportTicket(ticket.id);
-      setSelected(details.ticket);
-      setReplies(details.replies);
-    } catch (error) {
-      toast({ variant: "destructive", title: "تعذر فتح التذكرة", description: error instanceof Error ? error.message : "حاول مرة أخرى" });
-    } finally {
-      setDetailsLoading(false);
-    }
-  };
+  // On unmount (e.g. logout) retire any in-flight detail load so a late response
+  // can never commit a previous user's ticket or replies.
+  useEffect(() => () => { detailsControllerRef.current?.invalidate(); }, []);
+
+  const openTicket = (ticket: SupportTicket) => detailsControllerRef.current!.open(ticket);
 
   const submitTicket = async (event: FormEvent) => {
     event.preventDefault();
