@@ -1575,7 +1575,15 @@ test('defect queue: the pending-job loader reads committed and crashed rows with
     // the lease horizon and the batch size are bound parameters, not interpolated
     assert.match(seenSql, /DATE_SUB\(NOW\(\), INTERVAL \? MINUTE\)/);
     assert.match(seenSql, /LIMIT \?/);
-    assert.deepEqual(seenParams, [DEFAULT_PROCESSING_LEASE_MINUTES, DEFAULT_VIDEO_QUEUE_BATCH_SIZE]);
+    assert.deepEqual(seenParams, [DEFAULT_PROCESSING_LEASE_MINUTES, String(DEFAULT_VIDEO_QUEUE_BATCH_SIZE)]);
+});
+
+test('pending queue loader refuses invalid LIMIT before executing SQL', async () => {
+    for (const batchSize of [0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+        let calls = 0;
+        await assert.rejects(createPendingVideoJobLoader(async () => { calls += 1; return []; }, { batchSize }), RangeError);
+        assert.equal(calls, 0);
+    }
 });
 
 test('defect wiring: the lock pool is a separate, smaller pool — never the request pool', () => {

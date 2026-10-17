@@ -39,6 +39,7 @@ import { createRequireTeachingWrite, type TeachingAccessRepository } from '../sr
 import { createRequireAdminPermission } from '../src/security/admin-permissions';
 import type { PrincipalRepository } from '../src/security/principal-repository';
 import { createAttendanceRouter } from '../src/routes/attendance';
+import { tenantScopeBranchDeps } from './helpers/tenant-scope-branch-deps';
 import { createGradesRouter } from '../src/routes/grades';
 
 process.env.JWT_SECRET ??= 'hermetic-attendance-test-jwt-secret-not-a-real-key';
@@ -151,6 +152,10 @@ const runSelect = (sql: string, params: unknown[]): Row[] => {
   }
 
   // --- groups -------------------------------------------------------------
+  if (q.includes('SELECT branch_id, branch_scope FROM `groups` WHERE id = ?')) {
+    const group = state.groups.find((g) => g.id === params[0]);
+    return group ? [{ branch_id: null, branch_scope: 'tenant' }] : [];
+  }
   if (q.includes('FROM `groups` g') && q.includes('gc.tenant_id = ?')) {
     const group = state.groups.find((g) => g.id === params[0]);
     if (!group) return [];
@@ -388,6 +393,14 @@ const buildApp = (): express.Express => {
     optionalAuthenticate,
     notify: fakeNotify,
     hasVerifiedPlatformCapability: async (userId) => state.platformUsers.has(userId),
+    branchAccess: tenantScopeBranchDeps((type, id) => {
+      if (type !== 'attendance') return null;
+      const row = state.attendance.find((item) => item.id === id);
+      if (!row) return null;
+      const course = row.course_id ? state.courses.find((item) => item.id === row.course_id) : null;
+      const student = state.students.find((item) => item.id === row.student_id);
+      return course?.tenant_id ?? student?.tenant_id ?? null;
+    }),
   }));
   app.use('/api/grades', createGradesRouter({
     db: fakeDb as never,
@@ -565,7 +578,11 @@ test('an instructor lists only attendance of their own students inside the selec
     const listSql = state.executed.find((e) => e.sql.includes('FROM attendance a'))!;
     assert.match(listSql.sql, /sc\.tenant_id = \?/);
     assert.match(listSql.sql, /sc\.instructor_id = \?/);
-    assert.deepEqual(listSql.params, [TENANT_A, 'instr-1', 'instr-1']);
+    assert.deepEqual(listSql.params.slice(0, 3), [TENANT_A, 'instr-1', 'instr-1']);
+    // The resource-derived branch predicate appends the caller's membership
+    // and owner probes; it never replaces the tenant/instructor scope.
+    assert.match(listSql.sql, /branch_scope = 'branch'/);
+    assert.deepEqual(listSql.params.slice(3), ['instr-1', TENANT_A, 'instr-1']);
   });
 });
 

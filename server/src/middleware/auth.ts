@@ -16,6 +16,7 @@ import {
     selectActiveTenantScope,
     selectStudentWorkspaceScope,
 } from '../security/identity-scope';
+import { normalizeBranchId } from '../security/branch-access';
 
 export const getJwtSecret = (): Secret => {
     const secret = process.env.JWT_SECRET;
@@ -42,6 +43,10 @@ export interface AuthRequest extends Request {
         gradeId?: string;
         tokenVersion?: number;
         identitySource?: 'users' | 'staff';
+        /** Live branch context bound to a branch-scoped token. */
+        branchId?: string;
+        branchMembershipVersion?: number;
+        branchRole?: string;
     };
     sessionId?: string;
     authResolved?: boolean;
@@ -92,6 +97,8 @@ interface TokenClaims {
     instructor_id?: string | null;
     group_id?: string | null;
     grade_id?: string | null;
+    branch_id?: string | null;
+    branch_membership_version?: number | null;
 }
 
 interface PrincipalFailure {
@@ -111,8 +118,7 @@ const revoked = (error: string, code = 'SESSION_REVOKED'): PrincipalFailure => (
  * - users-table identities (every role, including admins) are live only while
  *   active, not under an active time-bound suspension, and their token
  *   version still matches, so revocation applies uniformly;
- * - staff-table identities have no token_version/suspension columns, so their
- *   row's is_active flag is the revocation signal (no schema invention);
+ * - staff-table identities must be active and their token version must match;
  * - a missing, stale, or forged workspace selection yields no scope, and a
  *   selection that no longer resolves fails the request. Authentication never
  *   depends on having exactly one membership.
@@ -132,7 +138,7 @@ async function resolvePrincipal(claims: TokenClaims, req: Request, repository: P
         liveRole = identity.role ?? claims.role;
     } else if (claims.role === 'staff') {
         const staffIdentity = await repository.findStaffIdentity(claims.id);
-        if (!isStaffIdentityLive(staffIdentity)) {
+        if (!isStaffIdentityLive(staffIdentity, Number(claims.tv || 0))) {
             return { ok: false, failure: revoked('Session revoked') };
         }
         liveRole = 'staff';
@@ -180,6 +186,54 @@ async function resolvePrincipal(claims: TokenClaims, req: Request, repository: P
     }
     // Roles without an active scope carry no membership-derived fields at all.
 
+    /**
+     * A branch-scoped session is re-validated live on EVERY request. The
+     * branch row and the caller's membership row are read again here (never
+     * from a cross-request cache), so a branch suspension, membership
+     * revocation or version bump denies the next request even though the JWT
+     * itself is still cryptographically valid. The token's branch claim is a
+     * selector bound to these rows, never authority on its own.
+     */
+    let branchId: string | undefined;
+    let branchMembershipVersion: number | undefined;
+    let branchRole: string | undefined;
+    if (typeof claims.branch_id === 'string' && claims.branch_id.length > 0) {
+        const normalizedBranchId = normalizeBranchId(claims.branch_id);
+        if (normalizedBranchId === null) {
+            return { ok: false, failure: revoked('Session revoked', 'BRANCH_REVOKED') };
+        }
+        const session = await repository.findBranchSession(normalizedBranchId, claims.id);
+        if (!session) {
+            return { ok: false, failure: revoked('Branch session is no longer active', 'BRANCH_REVOKED') };
+        }
+        if (session.branch_status !== 'active') {
+            return { ok: false, failure: revoked('Branch is no longer active', 'BRANCH_REVOKED') };
+        }
+        if (tenantId !== undefined && tenantId !== session.branch_tenant_id) {
+            return { ok: false, failure: revoked('Branch session is no longer active', 'BRANCH_REVOKED') };
+        }
+        // A branch-scoped token proves its tenant through the branch row when
+        // the role path did not resolve one (the branch row is server-side).
+        if (tenantId === undefined && liveRole !== 'admin') {
+            tenantId = session.branch_tenant_id;
+        }
+        const owner = await repository.isTenantOwner(claims.id, session.branch_tenant_id);
+        if (!owner) {
+            if (session.membership_status !== 'active') {
+                return { ok: false, failure: revoked('Branch membership is no longer active', 'BRANCH_REVOKED') };
+            }
+            const claimedVersion = Number(claims.branch_membership_version ?? 0);
+            if (claimedVersion !== Number(session.membership_version ?? 0)) {
+                return { ok: false, failure: revoked('Branch membership version changed', 'BRANCH_REVOKED') };
+            }
+        } else if (session.membership_status !== null && session.membership_status !== 'active') {
+            return { ok: false, failure: revoked('Branch membership is no longer active', 'BRANCH_REVOKED') };
+        }
+        branchId = normalizedBranchId;
+        branchMembershipVersion = Number(session.membership_version ?? session.branch_version ?? 0);
+        branchRole = owner ? 'owner' : (session.membership_role ?? undefined);
+    }
+
     return {
         ok: true,
         user: {
@@ -195,6 +249,9 @@ async function resolvePrincipal(claims: TokenClaims, req: Request, repository: P
             gradeId,
             tokenVersion: Number(claims.tv || 0),
             identitySource,
+            branchId,
+            branchMembershipVersion,
+            branchRole,
         },
     };
 }

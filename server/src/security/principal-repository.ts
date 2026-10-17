@@ -39,6 +39,7 @@ export interface UsersIdentityRow {
 
 export interface StaffIdentityRow {
     is_active: boolean | number;
+    token_version?: number | null;
 }
 
 export interface InstructorAccountRow {
@@ -47,10 +48,25 @@ export interface InstructorAccountRow {
     allowed: number;
 }
 
+/**
+ * Live branch + membership state for a branch-scoped session. Read on every
+ * protected request so a branch suspension, membership revocation or version
+ * bump denies the NEXT request; no cross-request cache is consulted.
+ */
+export interface BranchSessionRow {
+    branch_id: string;
+    branch_tenant_id: string;
+    branch_status: string;
+    branch_version: number;
+    membership_status: string | null;
+    membership_version: number | null;
+    membership_role: string | null;
+}
+
 export interface PrincipalRepository {
     /** users-table identity for liveness/revocation checks. */
     findUsersIdentity(id: string): Promise<UsersIdentityRow | null>;
-    /** staff-table identity (no token_version/suspension columns exist). */
+    /** Staff-table identity and its session revocation version. */
     findStaffIdentity(id: string): Promise<StaffIdentityRow | null>;
     /** Active tenant ownership/subscription state for instructor billing gating. */
     findInstructorAccount(userId: string): Promise<InstructorAccountRow | null>;
@@ -58,7 +74,18 @@ export interface PrincipalRepository {
     findStudentEnrollments(userId: string): Promise<StudentEnrollmentRow[]>;
     /** Active memberships across active tenants (non-student roles). */
     findActiveTenantMemberships(userId: string): Promise<TenantMembershipRow[]>;
+    /** Live branch and membership state for a branch-scoped token. */
+    findBranchSession(branchId: string, userId: string): Promise<BranchSessionRow | null>;
+    /** True when the user is the active owner of exactly this tenant. */
+    isTenantOwner(userId: string, tenantId: string): Promise<boolean>;
 }
+
+const isMissingStaffTokenVersion = (error: unknown): boolean => {
+    if (!error || typeof error !== 'object') return false;
+    const candidate = error as { code?: unknown; message?: unknown };
+    return candidate.code === 'ER_BAD_FIELD_ERROR' &&
+        typeof candidate.message === 'string' && /token_version/i.test(candidate.message);
+};
 
 export const defaultPrincipalRepository: PrincipalRepository = {
     findUsersIdentity: async (id) => {
@@ -73,10 +100,17 @@ export const defaultPrincipalRepository: PrincipalRepository = {
 
     findStaffIdentity: async (id) => {
         const { queryOne } = await loadDb();
-        return queryOne<StaffIdentityRow>(
-            'SELECT is_active FROM staff WHERE id=? LIMIT 1',
-            [id]
-        );
+        try {
+            return await queryOne<StaffIdentityRow>(
+                'SELECT is_active, token_version FROM staff WHERE id=? LIMIT 1', [id]
+            );
+        } catch (error) {
+            if (!isMissingStaffTokenVersion(error)) throw error;
+            const legacyRow = await queryOne<{ is_active: boolean | number }>(
+                'SELECT is_active FROM staff WHERE id=? LIMIT 1', [id]
+            );
+            return legacyRow ? { ...legacyRow, token_version: 0 } : null;
+        }
     },
 
     findInstructorAccount: async (userId) => {
@@ -105,7 +139,10 @@ export const defaultPrincipalRepository: PrincipalRepository = {
         return query<StudentEnrollmentRow>(
             `SELECT s.id,s.user_id,s.tenant_id,s.instructor_id,s.group_id,s.grade_id
              FROM students s INNER JOIN tenants t ON t.id=s.tenant_id
-             WHERE s.user_id=? AND s.is_active=1 AND s.approval_status='approved' AND t.status='active'`,
+             WHERE s.user_id=? AND s.is_active=1 AND s.approval_status='approved' AND t.status='active'
+               AND (s.enrollment_status IS NULL OR s.enrollment_status='active')
+               AND (s.enrollment_start_date IS NULL OR s.enrollment_start_date<=UTC_TIMESTAMP())
+               AND (s.enrollment_end_date IS NULL OR s.enrollment_end_date>UTC_TIMESTAMP())`,
             [userId]
         );
     },
@@ -118,5 +155,31 @@ export const defaultPrincipalRepository: PrincipalRepository = {
              WHERE m.user_id=? AND m.status='active' AND t.status='active'`,
             [userId]
         );
+    },
+
+    findBranchSession: async (branchId, userId) => {
+        const { queryOne } = await loadDb();
+        return queryOne<BranchSessionRow>(
+            `SELECT b.id AS branch_id,
+                    b.tenant_id AS branch_tenant_id,
+                    b.status AS branch_status,
+                    b.version AS branch_version,
+                    m.status AS membership_status,
+                    m.version AS membership_version,
+                    m.role AS membership_role
+             FROM branches b
+             LEFT JOIN branch_memberships m ON m.branch_id=b.id AND m.user_id=?
+             WHERE b.id=? LIMIT 1`,
+            [userId, branchId]
+        );
+    },
+
+    isTenantOwner: async (userId, tenantId) => {
+        const { queryOne } = await loadDb();
+        const row = await queryOne<{ id: string }>(
+            "SELECT id FROM tenants WHERE id=? AND owner_user_id=? AND status='active' LIMIT 1",
+            [tenantId, userId]
+        );
+        return Boolean(row);
     },
 };

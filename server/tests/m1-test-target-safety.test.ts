@@ -7,6 +7,7 @@ import {
     M1_TEST_API_PORT,
     M1TargetGuardError,
     assertSafeM1TestTarget,
+    resolveM1EnvPath,
     resolveM1EnvPathFromIntegrationDir,
 } from './m1-test-target-safety';
 
@@ -224,4 +225,16 @@ test('ignores ambient process.env: validation depends only on injected values', 
     } finally {
         process.env = saved;
     }
+});
+
+test('resolves an explicit private env file without falling back to workspace config', () => {
+    const privateEnv = path.resolve('C:/Users/test/WorkBuddySupervisorBridge/handoff/m1-isolated-run_123/.env.m1');
+    assert.equal(resolveM1EnvPath('C:/repo/server/tests/integration', privateEnv), privateEnv);
+    assert.throws(() => resolveM1EnvPath('C:/repo/server/tests/integration', 'C:/repo/.env.m1'), /handoff\/m1-isolated/);
+    assert.throws(() => resolveM1EnvPath('C:/repo/server/tests/integration', 'relative/.env.m1'), /absolute path/);
+    assert.throws(() => resolveM1EnvPath('C:/repo/server/tests/integration', ''), /non-empty absolute path/);
+    assert.equal(
+        resolveM1EnvPath('C:/repo/server/tests/integration'),
+        resolveM1EnvPathFromIntegrationDir('C:/repo/server/tests/integration')
+    );
 });

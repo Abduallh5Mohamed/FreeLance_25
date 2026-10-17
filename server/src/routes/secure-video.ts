@@ -28,6 +28,12 @@ import {
     getUserVideoRestrictions,
     inspectDeliveryRequest
 } from '../services/video-security';
+import {
+    getResourceBranchDeps,
+    principalFromAuthUser,
+    resolveResourceBranchAccess,
+    resourceBranchDenial,
+} from '../security/resource-branch';
 import { getThumbnailUrl, getObjectBuffer, getObjectStream, BUCKETS } from '../services/minio';
 import { createNotification } from '../utils/notifications';
 import { isSuperAdmin, getAdminPermissions } from '../security/admin-permissions';
@@ -77,6 +83,55 @@ router.post('/consent', authenticateToken, async (req: AuthRequest, res: Respons
 // ═══════════════════════════════════════
 // SESSION CREATION (Requires Auth)
 // ═══════════════════════════════════════
+
+/**
+ * Resource-derived branch check for a video. The branch comes from the
+ * video's lecture/material parent chain; a video with no branch-owned parent
+ * remains tenant-level under the existing access policy.
+ */
+async function enforceVideoBranch(
+    req: AuthRequest,
+    res: Response,
+    videoId: string,
+    requestedBranchId?: unknown,
+): Promise<boolean> {
+    if (!req.user) {
+        res.status(401).json({ error: 'Authentication required' });
+        return false;
+    }
+    const decision = await resolveResourceBranchAccess(
+        getResourceBranchDeps(),
+        principalFromAuthUser(req.user),
+        { resourceType: 'video', resourceId: videoId, requestedBranchId },
+    );
+    if (decision.kind !== 'allowed') {
+        const denial = resourceBranchDenial(decision);
+        res.status(denial.status).json(denial.body);
+        return false;
+    }
+    return true;
+}
+
+/**
+ * The same resource-derived branch decision for token-bound media delivery,
+ * where no auth header is present. The session carries the server-derived
+ * user and tenant captured at issuance; a branch-owned video still requires
+ * a live membership on every manifest/segment/key/heartbeat request, and an
+ * ambiguous parent chain denies. Existing delivery policy is checked
+ * separately and is never replaced by this helper.
+ */
+const sessionVideoBranchAllowed = async (
+    session: { userId: string; tenantId?: string } | null,
+    videoId: string,
+): Promise<boolean> => {
+    if (!session) return false;
+    const decision = await resolveResourceBranchAccess(
+        getResourceBranchDeps(),
+        { userId: session.userId, tenantId: session.tenantId ?? null, role: 'student' },
+        { resourceType: 'video', resourceId: videoId },
+    );
+    return decision.kind === 'allowed';
+};
 
 /**
  * POST /api/secure-video/session
@@ -147,6 +202,7 @@ router.post('/session', authenticateToken, async (req: AuthRequest, res: Respons
         if (!video || access === 'video_not_found') {
             return res.status(404).json({ error: 'Video not found or not ready' });
         }
+        if (!(await enforceVideoBranch(req, res, videoId, req.body?.branch_id))) return;
         if (access === 'preview_unavailable') {
             return res.status(403).json({ error: 'Preview offer is not available' });
         }
@@ -302,6 +358,7 @@ router.post('/refresh-token', authenticateToken, async (req: AuthRequest, res: R
             await killSession(sessionId, 'access_revoked');
             return res.status(403).json({ error: 'Video access was revoked' });
         }
+        if (!(await enforceVideoBranch(req, res, session.videoId))) return;
 
         const ip = getClientIp(req);
         const userAgent = req.headers['user-agent'] || '';
@@ -401,6 +458,12 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
                 studentEnrollmentId: session.studentEnrollmentId,
             });
         if (!stillAllowed) {
+            await killSession(sessionId, 'access_revoked');
+            return res.status(403).json({ error: 'Video access was revoked' });
+        }
+        // Branch ownership is re-derived on every heartbeat too, so a revoked
+        // membership or a newly ambiguous parent chain ends the session.
+        if (!(await sessionVideoBranchAllowed(session, session.videoId))) {
             await killSession(sessionId, 'access_revoked');
             return res.status(403).json({ error: 'Video access was revoked' });
         }
@@ -614,6 +677,13 @@ router.get('/manifest/:videoId/*', async (req: Request, res: Response) => {
         await killSession(auth.sessionId, 'access_revoked');
         return res.status(403).json({ error: 'Video access was revoked' });
     }
+    // The parent-derived branch decision is part of delivery authorization,
+    // not just session issuance: a branch-owned asset is never served on a
+    // tenant/exact-resource grant alone, and an ambiguous chain denies.
+    if (!(await sessionVideoBranchAllowed(auth.session, videoId))) {
+        await killSession(auth.sessionId, 'access_revoked');
+        return res.status(403).json({ error: 'Video access was revoked' });
+    }
     const delivery = await rejectSuspiciousDelivery(req, res, videoId, auth, 'manifest');
     if (!delivery) return;
     if (auth.previewOnly && !relativePath.startsWith('preview/')) return res.status(403).json({ error: 'Preview session cannot access full media' });
@@ -674,6 +744,13 @@ router.get('/media/:videoId', async (req: Request, res: Response) => {
         await killSession(auth.sessionId, 'access_revoked');
         return res.status(403).json({ error: 'Video access was revoked' });
     }
+    // The parent-derived branch decision is part of delivery authorization,
+    // not just session issuance: a branch-owned asset is never served on a
+    // tenant/exact-resource grant alone, and an ambiguous chain denies.
+    if (!(await sessionVideoBranchAllowed(auth.session, videoId))) {
+        await killSession(auth.sessionId, 'access_revoked');
+        return res.status(403).json({ error: 'Video access was revoked' });
+    }
     const delivery = await rejectSuspiciousDelivery(req, res, videoId, auth, 'segment');
     if (!delivery) return;
     if (auth.previewOnly && !relativePath.startsWith('preview/')) return res.status(403).json({ error: 'Preview session cannot access full media' });
@@ -721,6 +798,10 @@ router.get('/key/:videoId', async (req: Request, res: Response) => {
         // Recheck the SAME production authorization that issued the session
         // before the encryption key leaves the server.
         if (!(await evaluateDeliveryAccess(session, deliveryAccessDeps))) {
+            await killSession(sessionId, 'access_revoked');
+            return res.status(403).json({ error: 'Video access was revoked' });
+        }
+        if (!(await sessionVideoBranchAllowed(session, videoId))) {
             await killSession(sessionId, 'access_revoked');
             return res.status(403).json({ error: 'Video access was revoked' });
         }

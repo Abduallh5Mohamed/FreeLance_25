@@ -58,6 +58,8 @@ const parseMessageId = (value: unknown): number | null => {
     return parsed;
 };
 
+const isValidGeneratedMessageId = (value: number): boolean => Number.isSafeInteger(value) && value > 0;
+
 export const createMessagesRouter = (deps: MessagesRouterDeps): Router => {
     const router = Router();
     const executor = toExecutor(deps.db);
@@ -366,6 +368,9 @@ export const createMessagesRouter = (deps: MessagesRouterDeps): Router => {
                 VALUES (?, ?, ?, ?)
             `, [senderId, receiverId, content, messageType]);
             const messageId = result.insertId;
+            if (!isValidGeneratedMessageId(messageId)) {
+                return res.status(500).json({ error: 'Failed to send message' });
+            }
 
             await deps.db.execute(`
                 INSERT INTO message_status (message_id, is_delivered, delivered_at)
@@ -482,6 +487,9 @@ export const createMessagesRouter = (deps: MessagesRouterDeps): Router => {
                 VALUES (?, ?, 'image', ?)
             `, [senderId, receiverId, imageUrl]);
             const messageId = result.insertId;
+            if (!isValidGeneratedMessageId(messageId)) {
+                return res.status(500).json({ error: 'Failed to send message' });
+            }
 
             await deps.db.execute(`
                 INSERT INTO message_status (message_id, is_delivered, delivered_at)

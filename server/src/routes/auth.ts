@@ -57,6 +57,19 @@ export function resolveJwtLifetimeSeconds(raw: string | undefined): number {
  * comparison just like a wrong password, so response timing does not reveal
  * whether the account exists.
  */
+/**
+ * A pre-migration database may lack staff.token_version (added by
+ * migrations/20261017_05_staff_token_version.sql). That specific "unknown
+ * column" failure is the only case that falls back to a legacy SELECT; every
+ * other database failure propagates so login fails closed.
+ */
+const isMissingStaffTokenVersion = (error: unknown): boolean => {
+    if (!error || typeof error !== 'object') return false;
+    const candidate = error as { code?: unknown; message?: unknown };
+    return candidate.code === 'ER_BAD_FIELD_ERROR' &&
+        typeof candidate.message === 'string' && /token_version/i.test(candidate.message);
+};
+
 const DUMMY_PASSWORD_HASH = '$2b$10$vGfr4/IEfyDXElhFZsbRXuF7FuiF./Z6SuVTLjJGdcfQy4cmvbMma';
 
 /**
@@ -113,6 +126,7 @@ interface Staff {
     role: string;
     accessible_pages: string | string[];
     is_active: boolean;
+    token_version?: number | null;
 }
 
 // Login endpoint - checks both users and staff tables.
@@ -232,11 +246,26 @@ export const createLoginHandler = (deps: LoginHandlerDeps) =>
             const staffWhere = staffCandidates.length
                 ? `phone IN (${staffCandidates.map(() => '?').join(',')})`
                 : 'phone = ?';
-            const staff = await deps.queryOne<Staff>(
-                `SELECT id, name, email, phone, password_hash, role, accessible_pages, is_active
-                 FROM staff WHERE ${staffWhere}`,
-                staffCandidates.length ? staffCandidates : [identifier]
-            );
+            // The staff lookup loads the server-side token_version so this
+            // path mints the same revocation version as /api/staff/login; the
+            // legacy fallback covers a pre-migration column and treats a
+            // missing version as 0, matching the request-time repository.
+            // Any other database failure propagates (fail closed).
+            let staff: Staff | null;
+            try {
+                staff = await deps.queryOne<Staff>(
+                    `SELECT id, name, email, phone, password_hash, role, accessible_pages, is_active, token_version
+                     FROM staff WHERE ${staffWhere}`,
+                    staffCandidates.length ? staffCandidates : [identifier]
+                );
+            } catch (error) {
+                if (!isMissingStaffTokenVersion(error)) throw error;
+                staff = await deps.queryOne<Staff>(
+                    `SELECT id, name, email, phone, password_hash, role, accessible_pages, is_active
+                     FROM staff WHERE ${staffWhere}`,
+                    staffCandidates.length ? staffCandidates : [identifier]
+                );
+            }
 
             if (staff && staff.password_hash) {
                 const isValidPassword = await deps.comparePassword(password, staff.password_hash);
@@ -249,13 +278,16 @@ export const createLoginHandler = (deps: LoginHandlerDeps) =>
                     // Parse accessible_pages
                     const accessiblePages = parseAccessiblePages(staff.accessible_pages);
 
-                    // Generate JWT token
+                    // Generate JWT token. tv carries the live staff
+                    // token_version so /api/auth/login sessions are revoked
+                    // by the same version bump as /api/staff/login sessions.
                     const jwtSecret: Secret = getJwtSecret();
                     const token = jwt.sign(
                         {
                             id: staff.id,
                             phone: staff.phone,
                             role: 'staff',
+                            tv: Number(staff.token_version || 0),
                             accessible_pages: accessiblePages
                         },
                         jwtSecret,

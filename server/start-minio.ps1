@@ -44,8 +44,18 @@ if (!(Test-Path $minioData)) {
 }
 
 # Set environment variables and start MinIO
-$env:MINIO_ROOT_USER = "minioadmin"
-$env:MINIO_ROOT_PASSWORD = "minioadmin123"
+$minioRootUser = $env:MINIO_ROOT_USER
+if ([string]::IsNullOrWhiteSpace($minioRootUser)) {
+    Write-Error "MINIO_ROOT_USER is required"
+    exit 1
+}
+$minioRootPassword = $env:MINIO_ROOT_PASSWORD
+if ([string]::IsNullOrWhiteSpace($minioRootPassword)) {
+    Write-Error "MINIO_ROOT_PASSWORD is required"
+    exit 1
+}
+$env:MINIO_ROOT_USER = $minioRootUser
+$env:MINIO_ROOT_PASSWORD = $minioRootPassword
 
 Set-Location $minioDir
 
@@ -64,8 +74,6 @@ if ($minioProcess) {
     Write-Host "✅ MinIO started successfully!" -ForegroundColor Green
     Write-Host "   API: http://127.0.0.1:9000" -ForegroundColor Cyan
     Write-Host "   Console: http://127.0.0.1:9001" -ForegroundColor Cyan
-    Write-Host "   User: minioadmin" -ForegroundColor Gray
-    Write-Host "   Pass: minioadmin123" -ForegroundColor Gray
 } else {
     Write-Host "❌ Failed to start MinIO" -ForegroundColor Red
     exit 1

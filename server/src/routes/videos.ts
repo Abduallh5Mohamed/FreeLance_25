@@ -17,6 +17,12 @@ import { processVideo, deleteVideoFiles } from '../services/video-processor';
 import { AuthRequest, authenticateToken } from '../middleware/auth';
 import { isSuperAdmin, getAdminPermissions, requireAdminPermission } from '../security/admin-permissions';
 import {
+    getResourceBranchDeps,
+    principalFromAuthUser,
+    resolveResourceBranchAccess,
+    resourceBranchDenial,
+} from '../security/resource-branch';
+import {
     createSqlVideoAccessRepository,
     evaluateVideoAccess,
     type VideoAccessRepository,
@@ -154,6 +160,47 @@ export const canViewVideoAnalytics = async (
     // no management surface (fail closed).
     if (!video.course_id) return false;
     return canManageCourse(user, video.course_id, reader);
+};
+
+/**
+ * Resource-derived branch decision for a video. The branch comes from the
+ * trusted lecture/material/course parent chain; a course-only video is
+ * explicitly tenant-level. Ambiguous ownership and dangling parents deny.
+ */
+const enforceVideoBranch = async (
+    req: AuthRequest,
+    res: Response,
+    videoId: string,
+    requestedBranchId?: unknown,
+): Promise<boolean> => {
+    if (!req.user) {
+        res.status(401).json({ error: 'Authentication required' });
+        return false;
+    }
+    const decision = await resolveResourceBranchAccess(
+        getResourceBranchDeps(),
+        principalFromAuthUser(req.user),
+        { resourceType: 'video', resourceId: videoId, requestedBranchId },
+    );
+    if (decision.kind !== 'allowed') {
+        const denial = resourceBranchDenial(decision);
+        res.status(denial.status).json(denial.body);
+        return false;
+    }
+    return true;
+};
+
+/** Boolean form used to filter a list; never widens the existing policy. */
+const videoBranchAllowed = async (
+    user: NonNullable<AuthRequest['user']>,
+    videoId: string,
+): Promise<boolean> => {
+    const decision = await resolveResourceBranchAccess(
+        getResourceBranchDeps(),
+        principalFromAuthUser(user),
+        { resourceType: 'video', resourceId: videoId },
+    );
+    return decision.kind === 'allowed';
 };
 
 /**
@@ -1906,6 +1953,9 @@ export const createPendingVideoJobLoader = (
 ) => async (): Promise<PendingVideoJob[]> => {
     const leaseMinutes = options.leaseMinutes ?? processingLeaseMinutes();
     const batchSize = options.batchSize ?? videoQueueBatchSize();
+    if (!Number.isSafeInteger(batchSize) || batchSize <= 0) {
+        throw new RangeError('Video queue batch size must be a positive safe integer');
+    }
     const rows = await run(
         `SELECT q.video_id, q.tenant_id
          FROM video_processing_queue q
@@ -1919,7 +1969,10 @@ export const createPendingVideoJobLoader = (
            AND (q.status = 'pending' OR q.started_at IS NULL OR q.started_at < DATE_SUB(NOW(), INTERVAL ? MINUTE))
          ORDER BY q.created_at
          LIMIT ?`,
-        [leaseMinutes, batchSize],
+        // mysql2 binds JavaScript numbers as DOUBLE; MySQL 8 rejects that
+        // parameter type in LIMIT. A validated decimal string stays bound
+        // and is accepted as the integer LIMIT value by the server.
+        [leaseMinutes, String(batchSize)],
     );
     return rows.map((row) => ({ videoId: row.video_id, tenantId: row.tenant_id ?? '' }));
 };
@@ -2276,7 +2329,7 @@ router.get('/course/:courseId', authenticateToken, async (req: AuthRequest, res:
             return res.status(403).json({ error: 'No access to this course' });
         }
 
-        const videos = await query(
+        const courseVideos = await query(
             `SELECT id, title, description, duration_seconds, status,
                     processing_progress, qualities_available,
                     created_at, processed_at
@@ -2285,6 +2338,14 @@ router.get('/course/:courseId', authenticateToken, async (req: AuthRequest, res:
              ORDER BY created_at DESC`,
             [courseId]
         );
+
+        // Course management is tenant-level, but an individual video may be
+        // branch-owned. Filter each row through the same central decision so
+        // this list never becomes a branch-side channel.
+        const videos = [];
+        for (const video of courseVideos) {
+            if (await videoBranchAllowed(req.user!, video.id)) videos.push(video);
+        }
 
         // Add thumbnail URLs
         for (const video of videos) {
@@ -2328,6 +2389,7 @@ router.get('/:videoId', authenticateToken, async (req: AuthRequest, res: Respons
         if (!(await canViewVideo(req.user!, videoId))) {
             return res.status(403).json({ error: 'No access to this video' });
         }
+        if (!(await enforceVideoBranch(req, res, videoId, req.query?.branch_id))) return;
 
         if (video.status === 'ready') {
             video.thumbnailUrl = await getThumbnailUrl(videoId);
@@ -2354,6 +2416,7 @@ router.delete('/:videoId', authenticateToken, async (req: AuthRequest, res: Resp
         if (!video) {
             return res.status(404).json({ error: 'Video not found' });
         }
+        if (!(await enforceVideoBranch(req, res, videoId, req.body?.branch_id))) return;
 
         const referenced = await queryOne(`SELECT 1 referenced FROM lectures l
           WHERE l.video_url=CONCAT('video://',?) AND (
@@ -2450,6 +2513,8 @@ router.put('/:videoId', authenticateToken, async (req: AuthRequest, res: Respons
         const { videoId } = req.params;
         const { title, description } = req.body;
 
+        if (!(await enforceVideoBranch(req, res, videoId, req.body?.branch_id))) return;
+
         const video = await updateVideoMetadataForUploader(videoId, req.user!, title, description);
         if (!video) {
             return res.status(404).json({ error: 'Video not found' });
@@ -2480,6 +2545,7 @@ router.post('/:videoId/retry', authenticateToken, async (req: AuthRequest, res: 
                 error: 'Video not found or not in failed state'
             });
         }
+        if (!(await enforceVideoBranch(req, res, videoId, req.body?.branch_id))) return;
 
         // Re-arm the video and re-open its job row: the protected run
         // requires a committed job row and a 'processing' video, and it
@@ -2524,6 +2590,7 @@ router.post('/:videoId/reprocess', authenticateToken, async (req: AuthRequest, r
         if (!video) {
             return res.status(404).json({ error: 'Video not found' });
         }
+        if (!(await enforceVideoBranch(req, res, videoId, req.body?.branch_id))) return;
 
         if (video.delivery_provider === 'vdocipher') {
             return res.status(409).json({ error: 'Managed DRM videos are re-encoded by the provider and cannot be locally reprocessed' });
@@ -2596,6 +2663,7 @@ router.get('/:videoId/analytics', authenticateToken, async (req: AuthRequest, re
         if (!(await canViewVideoAnalytics(req.user!, video))) {
             return res.status(403).json({ error: 'No access to this video' });
         }
+        if (!(await enforceVideoBranch(req, res, videoId, req.query?.branch_id))) return;
 
         const stats = await queryOne(
             `SELECT

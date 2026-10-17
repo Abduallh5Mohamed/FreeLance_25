@@ -7,6 +7,13 @@ import {
     AuthRequest,
 } from '../middleware/auth';
 import { isSuperAdmin, getAdminPermissions } from '../security/admin-permissions';
+import {
+    getResourceBranchDeps,
+    principalFromAuthUser,
+    resolveResourceBranchAccess,
+    resourceBranchDenial,
+    type ResourceBranchDeps,
+} from '../security/resource-branch';
 
 /**
  * Attendance router.
@@ -72,6 +79,8 @@ export interface AttendanceRouterDeps {
     optionalAuthenticate: RequestHandler;
     notify: AttendanceNotificationService;
     hasVerifiedPlatformCapability: (userId: string) => Promise<boolean>;
+    /** Resource-derived branch authority; defaults to the production SQL deps. */
+    branchAccess?: ResourceBranchDeps;
 }
 
 /** Status values allowed by the `attendance.status` enum column. */
@@ -164,6 +173,17 @@ interface StudentRefRow {
     group_id: string | null;
 }
 
+interface AbsentStudentRow {
+    id: string;
+    name: string;
+    phone: string | null;
+    guardian_phone: string | null;
+}
+
+interface AttendedStudentRow {
+    student_id: string;
+}
+
 /**
  * Attendance authority of the resolved principal.
  *
@@ -247,7 +267,9 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
         if (scope.instructorId) {
             return {
                 sql: ` AND sc.tenant_id = ? AND (sc.instructor_id = ?
-                        OR sc.group_id IN (SELECT id FROM \`groups\` WHERE instructor_id = ?))`,
+                        OR sc.group_id IN (SELECT g.id FROM \`groups\` g
+                            INNER JOIN courses c ON c.id = g.course_id
+                            WHERE g.instructor_id = ? AND c.tenant_id = sc.tenant_id))`,
                 params: [tenantId, scope.instructorId, scope.instructorId],
             };
         }
@@ -261,6 +283,15 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
             [studentId, ...scopeSql.params],
         );
         return !!row;
+    };
+
+    const attendanceMutationScope = (scope: AttendanceScope): { sql: string; params: unknown[] } => {
+        if (scope.platform) return { sql: '', params: [] };
+        const studentScope = studentScopeSql(scope);
+        return {
+            sql: ` AND student_id IN (SELECT sc.id FROM students sc WHERE 1=1${studentScope.sql})`,
+            params: studentScope.params,
+        };
     };
 
     /**
@@ -309,9 +340,72 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
         return !!row;
     };
 
+    /**
+     * Resource-derived branch check for an existing attendance row. The branch
+     * comes from the row's group (or the student's group); a group-less row is
+     * tenant-level under the existing tenant scope.
+     */
+    const enforceAttendanceBranch = async (
+        req: AuthRequest,
+        res: Response,
+        attendanceId: string,
+        requestedBranchId?: unknown,
+    ): Promise<boolean> => {
+        if (!req.user) {
+            res.status(401).json({ error: 'Authentication required' });
+            return false;
+        }
+        const decision = await resolveResourceBranchAccess(
+            deps.branchAccess ?? getResourceBranchDeps(),
+            principalFromAuthUser(req.user),
+            { resourceType: 'attendance', resourceId: attendanceId, requestedBranchId },
+        );
+        if (decision.kind !== 'allowed') {
+            const denial = resourceBranchDenial(decision);
+            res.status(denial.status).json(denial.body);
+            return false;
+        }
+        return true;
+    };
+
+    /** Validate the branch of the student's group before an attendance write. */
+    const validateGroupBranchForWrite = async (
+        user: NonNullable<AuthRequest['user']>,
+        groupId: string | null,
+    ): Promise<{ ok: true } | { ok: false; status: number; error: string }> => {
+        if (!groupId) return { ok: true };
+        const group = await queryOne<{ branch_id: string | null; branch_scope: string | null }>(
+            'SELECT branch_id, branch_scope FROM `groups` WHERE id = ?',
+            [groupId],
+        );
+        if (!group) return { ok: false, status: 404, error: 'Group not found' };
+        if (group.branch_scope !== 'branch') return { ok: true };
+        if (!group.branch_id) return { ok: false, status: 403, error: 'Branch context is ambiguous' };
+        const tenantId = user.tenantId;
+        if (!tenantId) return { ok: false, status: 403, error: 'Workspace access required' };
+        const branch = await queryOne<{ tenant_id: string; status: string }>(
+            'SELECT tenant_id, status FROM branches WHERE id = ?',
+            [group.branch_id],
+        );
+        if (!branch || branch.tenant_id !== tenantId || branch.status !== 'active') {
+            return { ok: false, status: 403, error: 'Branch is outside your teaching scope' };
+        }
+        const owner = await queryOne<{ id: string }>(
+            "SELECT id FROM tenants WHERE id = ? AND owner_user_id = ? AND status = 'active'",
+            [tenantId, user.id],
+        );
+        if (!owner) {
+            const membership = await queryOne<{ id: string }>(
+                "SELECT id FROM branch_memberships WHERE branch_id = ? AND user_id = ? AND status = 'active'",
+                [group.branch_id, user.id],
+            );
+            if (!membership) return { ok: false, status: 403, error: 'Branch membership required' };
+        }
+        return { ok: true };
+    };
+
     /** Duplicate guard for one attendance record per student and calendar day. */
-    const findDuplicate = async (studentId: string, day: string, exceptId?: string) =>
-        queryOne(
+    const findDuplicate = async (studentId: string, day: string, exceptId?: string) =>        queryOne(
             `SELECT id FROM attendance
              WHERE student_id = ? AND DATE(attendance_date) = ?${exceptId ? ' AND id <> ?' : ''}`,
             exceptId ? [studentId, day, exceptId] : [studentId, day],
@@ -387,6 +481,33 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
                 params.push(...studentScope.params);
             }
 
+            // Branch-owned attendance rows are visible only to a live member
+            // of the derived branch or the tenant owner. Group-less rows stay
+            // tenant-level under the existing student scope.
+            if (!scope.platform && req.user) {
+                sql += ` AND (COALESCE(a.group_id, s.group_id) IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM \`groups\` bg
+                    WHERE bg.id = COALESCE(a.group_id, s.group_id) AND bg.branch_scope = 'branch'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM branch_memberships bm
+                        WHERE bm.branch_id = bg.branch_id AND bm.user_id = ? AND bm.status = 'active'
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM tenants owner_t
+                        WHERE owner_t.id = ? AND owner_t.owner_user_id = ? AND owner_t.status = 'active'
+                      )
+                ))`;
+                params.push(req.user.id, req.user.tenantId ?? null, req.user.id);
+                if (req.user.branchId) {
+                    sql += ` AND (COALESCE(a.group_id, s.group_id) IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM \`groups\` bg2
+                        WHERE bg2.id = COALESCE(a.group_id, s.group_id)
+                          AND bg2.branch_scope = 'branch' AND bg2.branch_id <> ?
+                    ))`;
+                    params.push(req.user.branchId);
+                }
+            }
+
             sql += ` ORDER BY a.attendance_date ${order === 'asc' ? 'ASC' : 'DESC'}, a.created_at DESC`;
 
             if (limit) {
@@ -421,6 +542,7 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
             if (!(await studentInScope(attendance.student_id, scope))) {
                 return res.status(404).json({ error: 'Attendance record not found' });
             }
+            if (!(await enforceAttendanceBranch(req, res, req.params.id, req.query?.branch_id))) return;
 
             res.json(attendance);
         } catch (error) {
@@ -505,6 +627,10 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
             if (groupIdValue !== undefined && groupIdValue !== String(resolvedGroupId ?? '')) {
                 return res.status(400).json({ error: 'group_id does not match the student group' });
             }
+            const groupBranch = await validateGroupBranchForWrite(req.user!, resolvedGroupId);
+            if (!groupBranch.ok) {
+                return res.status(groupBranch.status).json({ error: groupBranch.error });
+            }
 
             let resolvedCourseId: string | null = null;
             const courseIdValue = readOptionalText(course_id);
@@ -522,11 +648,17 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
             }
 
             try {
-                await execute(
+                const writeScope = studentScopeSql(scope);
+                const inserted = await execute(
                     `INSERT INTO attendance (id, student_id, course_id, group_id, attendance_date, attendance_time, status, notes, method, created_at)
-                     VALUES (UUID(), ?, ?, ?, ?, CURTIME(), ?, ?, 'barcode', NOW())`,
-                    [student.id, resolvedCourseId, resolvedGroupId, day, status ?? 'present', notes ?? null]
+                     SELECT UUID(), ?, ?, ?, ?, CURTIME(), ?, ?, 'barcode', NOW()
+                     FROM students sc WHERE sc.id = ? AND sc.group_id <=> ?${writeScope.sql}`,
+                    [student.id, resolvedCourseId, resolvedGroupId, day, status ?? 'present', notes ?? null,
+                        student.id, resolvedGroupId, ...writeScope.params]
                 );
+                if (inserted.affectedRows === 0) {
+                    return res.status(404).json({ error: 'Student not found' });
+                }
             } catch (error) {
                 // Two concurrent marks for the same student and day both pass
                 // the read check; the loser must be a 409, not a 500.
@@ -564,6 +696,7 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
             if (!attendance || !(await studentInScope(attendance.student_id, scope))) {
                 return res.status(404).json({ error: 'Attendance record not found' });
             }
+            if (!(await enforceAttendanceBranch(req, res, req.params.id, req.body?.branch_id))) return;
 
             const { status, notes, attendance_date } = req.body ?? {};
 
@@ -589,13 +722,14 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
                 }
             }
 
+            const mutationScope = attendanceMutationScope(scope);
             const result = await execute(
                 `UPDATE attendance
                  SET status = COALESCE(?, status),
                      notes = COALESCE(?, notes),
                      attendance_date = COALESCE(?, attendance_date)
-                 WHERE id = ?`,
-                [status ?? null, notes ?? null, nextDay ?? null, req.params.id]
+                 WHERE id = ?${mutationScope.sql}`,
+                [status ?? null, notes ?? null, nextDay ?? null, req.params.id, ...mutationScope.params]
             );
 
             if (result.affectedRows === 0) {
@@ -603,8 +737,8 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
             }
 
             const updatedAttendance = await queryOne<Attendance>(
-                'SELECT * FROM attendance WHERE id = ?',
-                [req.params.id]
+                `SELECT * FROM attendance WHERE id = ?${mutationScope.sql}`,
+                [req.params.id, ...mutationScope.params]
             );
 
             res.json(updatedAttendance);
@@ -625,10 +759,12 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
             if (!attendance || !(await studentInScope(attendance.student_id, scope))) {
                 return res.status(404).json({ error: 'Attendance record not found' });
             }
+            if (!(await enforceAttendanceBranch(req, res, req.params.id))) return;
 
+            const mutationScope = attendanceMutationScope(scope);
             const result = await execute(
-                'DELETE FROM attendance WHERE id = ?',
-                [req.params.id]
+                `DELETE FROM attendance WHERE id = ?${mutationScope.sql}`,
+                [req.params.id, ...mutationScope.params]
             );
 
             if (result.affectedRows === 0) {
@@ -650,9 +786,10 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
 
             const { group_id, date } = req.body ?? {};
 
-            if (!group_id || !date) {
+            if (typeof group_id !== 'string' || group_id.trim() === '' || !date) {
                 return res.status(400).json({ error: 'group_id and date are required' });
             }
+            const groupId = group_id.trim();
 
             const day = normalizeDay(date);
             if (!day) {
@@ -660,44 +797,43 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
             }
 
             // Only a group inside the caller's scope may trigger notifications.
-            if (!(await groupInScope(group_id, scope))) {
+            if (!(await groupInScope(groupId, scope))) {
                 return res.status(403).json({ error: 'لا يمكن إرسال تنبيهات لمجموعة لا تتبعك' });
             }
 
-            // Get all students in the group
-            const allStudents = await query(
-                `SELECT id, name, phone, guardian_phone, barcode
+            // Keep both the enrollment list and attendance lookup inside the
+            // verified group and selected tenant, even if stored references are
+            // inconsistent across tenants.
+            const tenantClause = scope.platform ? '' : ' AND tenant_id = ?';
+            const tenantParams = scope.platform ? [] : [scope.tenantId as string];
+            const allStudents = await query<AbsentStudentRow>(
+                `SELECT id, name, phone, guardian_phone
                  FROM students
-                 WHERE group_id = ? AND is_active = TRUE`,
-                [group_id]
+                 WHERE group_id = ? AND is_active = TRUE${tenantClause}`,
+                [groupId, ...tenantParams]
             );
 
-            if (!Array.isArray(allStudents) || allStudents.length === 0) {
+            if (allStudents.length === 0) {
                 return res.status(404).json({ error: 'No students found in this group' });
             }
 
-            // Get students who attended today
-            const attendedStudents = await query(
-                `SELECT student_id
+            const attendedStudents = await query<AttendedStudentRow>(
+                `SELECT DISTINCT student_id
                  FROM attendance
-                 WHERE DATE(attendance_date) = ? AND status = 'present'`,
-                [day]
+                 WHERE DATE(attendance_date) = ? AND status = 'present'
+                   AND student_id IN (
+                       SELECT id FROM students WHERE group_id = ?${tenantClause}
+                   )`,
+                [day, groupId, ...tenantParams]
             );
-
-            const attendedIds = Array.isArray(attendedStudents)
-                ? attendedStudents.map((a: any) => a.student_id)
-                : [];
-
-            // Find absent students
-            const absentStudents = allStudents.filter((student: any) =>
-                !attendedIds.includes(student.id)
-            );
+            const attendedIds = new Set(attendedStudents.map(({ student_id }) => student_id));
+            const absentStudents = allStudents.filter((student) => !attendedIds.has(student.id));
 
             if (absentStudents.length === 0) {
                 return res.json({
                     message: 'No absent students found',
                     total_students: allStudents.length,
-                    attended: attendedIds.length,
+                    attended: attendedIds.size,
                     absent: 0,
                     notifications_sent: 0,
                     whatsapp_links: []
@@ -705,8 +841,14 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
             }
 
             // Send WhatsApp notifications
-            const results = [];
-            const whatsappLinks = [];
+            const results: Array<{
+                student_name: string;
+                success: boolean;
+                error?: string;
+                phone?: string;
+                whatsapp_link?: string;
+            }> = [];
+            const whatsappLinks: Array<{ student_name: string; phone: string; link: string }> = [];
 
             for (const student of absentStudents) {
                 const phone = student.guardian_phone || student.phone;
@@ -760,7 +902,7 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
             res.json({
                 message: `WhatsApp links generated for ${successCount} absent students`,
                 total_students: allStudents.length,
-                attended: attendedIds.length,
+                attended: attendedIds.size,
                 absent: absentStudents.length,
                 notifications_sent: successCount,
                 results: results,

@@ -5,6 +5,7 @@ import type { NextFunction, RequestHandler, Response } from 'express';
 import { AuthRequest, createAuthenticateToken, createOptionalAuth } from '../src/middleware/auth';
 import type { PrincipalRepository } from '../src/security/principal-repository';
 import { createExamRouter, ExamDataAccess } from '../src/routes/exams';
+import { tenantScopeBranchDeps } from './helpers/tenant-scope-branch-deps';
 import { createExamResultsRouter } from '../src/routes/exam-results';
 import { createManualGradingRouter } from '../src/routes/manual-grading';
 
@@ -189,6 +190,11 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[]) => {
             const direct = rows?.[0]?.id ?? (typeof params[0] === 'string' ? f.studentsById[params[0]]?.id : undefined);
             return direct ? [{ id: direct }] : [];
         }
+        if (sql.includes('SELECT id FROM students WHERE user_id = ? AND tenant_id = ? AND is_active = 1')) {
+            const rows = f.enrollments[String(params[0])] ?? [];
+            const row = rows.find((candidate) => candidate.tenant_id === params[1]);
+            return row ? [{ id: row.id }] : [];
+        }
         if (sql.includes('SELECT group_id, grade_id FROM students WHERE phone = ?')) {
             const id = f.studentsByPhone[String(params[0])];
             const row = id ? f.studentsById[id] : undefined;
@@ -286,10 +292,12 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[]) => {
             return Object.values(f.exams).map((e) => ({ ...e }));
         }
         // --- exam_results / attempts joins ---
-        if (sql.includes('LEFT JOIN exam_results er ON er.exam_id = e.id')) {
+        if (sql.includes('FROM exam_results er') && sql.includes('UNION ALL')) {
             // GET /exam-results/student/:studentId
             const studentId = String(params[0]);
-            const attempts = Object.values(f.examAttempts).filter((a) => a.student_id === studentId);
+            const enrollments = f.enrollments[studentId] ?? Object.values(f.enrollments).flat().filter((row) => row.id === studentId);
+            const allowedEnrollmentIds = new Set(enrollments.map((row) => row.id));
+            const attempts = Object.values(f.examAttempts).filter((a) => allowedEnrollmentIds.has(a.student_id));
             return attempts.map((a) => ({
                 id: a.id, exam_id: a.exam_id, exam_title: f.exams[a.exam_id]?.title ?? null,
                 student_id: a.student_id, score: a.score, total_marks: f.exams[a.exam_id]?.total_marks ?? 0,
@@ -424,9 +432,30 @@ const makeHarness = (fixtures: Fixtures = makeFixtures()) => {
         authenticate: createAuthenticateToken(repository) as RequestHandler,
     };
     return {
-        examRouter: createExamRouter({ ...authDeps, requireTeachingWriteAccess: teachingWriteStandIn }),
+        examRouter: createExamRouter({
+            ...authDeps,
+            requireTeachingWriteAccess: teachingWriteStandIn,
+            branchAccess: tenantScopeBranchDeps((type, id) => {
+                if (type !== 'exam') return null;
+                const link = fixtures.examGroups.find((row) => row.exam_id === id);
+                if (!link) return null;
+                const group = fixtures.groups[link.group_id];
+                if (group?.instructor_id === 'instructor-b') return 'tenant-b';
+                return 'tenant-a';
+            }),
+        }),
         resultsRouter: createExamResultsRouter(authDeps),
-        gradingRouter: createManualGradingRouter(authDeps),
+        gradingRouter: createManualGradingRouter({
+            ...authDeps,
+            db: {
+                ...db,
+                // Explicit fixture transaction seam: this in-memory adapter
+                // applies writes synchronously and never touches a live DB.
+                withTransaction: async (work) => work(db),
+            },
+            hasActiveInstructorMembership: async (userId, tenantId) =>
+                Boolean(fixtures.memberships[userId]?.some((membership) => membership.tenant_id === tenantId)),
+        }),
         executed,
         fixtures,
     };
@@ -615,6 +644,7 @@ test('student A reads its own exam list (200)', async () => {
     const response = await invoke(examRouter, { method: 'GET', url: '/student/student-a', token: STUDENT_A });
     assert.equal(response.statusCode, 200);
 });
+
 
 test('student A cannot start an attempt for student B (403, no attempt created)', async () => {
     const { examRouter, executed } = makeHarness();

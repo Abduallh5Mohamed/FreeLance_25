@@ -1,6 +1,7 @@
 import { Router, Request, Response, RequestHandler } from 'express';
 import { query, queryOne } from '../db';
 import { optionalAuth, authenticateToken, instructorScopeId, AuthRequest } from '../middleware/auth';
+import { isSuperAdmin } from '../security/admin-permissions';
 
 /**
  * Data-access seam for the exam-results router. Production binds ../db;
@@ -21,6 +22,8 @@ export interface ExamResultsRouterDeps {
     db: ExamResultsDataAccess;
     optionalAuthenticate: RequestHandler;
     authenticate: RequestHandler;
+    isPlatformAdmin?: (userId: string) => Promise<boolean>;
+    hasActiveInstructorMembership?: (userId: string, tenantId: string) => Promise<boolean>;
 }
 
 interface ExamResult {
@@ -47,21 +50,49 @@ export const createExamResultsRouter = (deps: ExamResultsRouterDeps): Router => 
 
     router.use(deps.optionalAuthenticate);
 
-    const isAdmin = (req: AuthRequest): boolean => req.user?.role === 'admin';
-    const isStudentSelf = (req: AuthRequest, id: unknown): boolean =>
-        req.user?.role === 'student' && String(req.user.id) === String(id);
+    const isPlatformAdmin = deps.isPlatformAdmin ?? isSuperAdmin;
+    const isAdmin = async (req: AuthRequest): Promise<boolean> => {
+        const user = req.user;
+        if (!user || user.role !== 'admin' || !user.tenantId) return false;
+        const owner = await queryOne(
+            `SELECT t.id FROM tenants t
+             INNER JOIN users u ON u.id = t.owner_user_id
+             WHERE t.id = ? AND t.owner_user_id = ? AND t.status = 'active'
+               AND u.is_active = 1 AND u.role = 'admin'`,
+            [user.tenantId, user.id],
+        );
+        return !!owner;
+    };
+    const hasActiveInstructorMembership = deps.hasActiveInstructorMembership
+        ?? (async (userId: string, tenantId: string) => !!(await queryOne(
+            `SELECT m.user_id FROM tenant_memberships m
+             INNER JOIN tenants t ON t.id = m.tenant_id AND t.status = 'active'
+             INNER JOIN users u ON u.id = m.user_id AND u.is_active = 1
+             WHERE m.user_id = ? AND m.tenant_id = ? AND m.status = 'active'
+               AND m.role_key IN ('owner','instructor')`,
+            [userId, tenantId],
+        )));
+    // Schema binds exam_results.student_id to students.id (enrollment ID).
+    // Never guess a student row by matching either users.id or phone.
+    const studentJoinSql = 'INNER JOIN students s ON s.id = er.student_id';
 
     // Get all exam results with filters
     router.get('/', deps.authenticate, async (req: AuthRequest, res: Response) => {
         try {
             const { exam_id, student_id } = req.query;
             const scopeId = instructorScopeId(req);
+            const user = req.user;
+            const platformAdmin = user?.role === 'admin' ? await isPlatformAdmin(user.id) : false;
+            const admin = platformAdmin || await isAdmin(req);
 
-            // Teacher/admin listing: a bare student (or any other principal that
-            // is neither an owning instructor nor an admin) is denied instead
-            // of receiving an unscoped cross-tenant view.
-            if (!scopeId && !isAdmin(req)) {
+            if ((!scopeId && !admin) || (!platformAdmin && !user?.tenantId)) {
                 return res.status(403).json({ error: 'Forbidden' });
+            }
+            if (scopeId && !platformAdmin) {
+                const tenantId = user?.tenantId;
+                if (!user || !tenantId || !(await hasActiveInstructorMembership(user.id, tenantId))) {
+                    return res.status(403).json({ error: 'Instructor workspace access required' });
+                }
             }
 
             let sql = `
@@ -70,7 +101,7 @@ export const createExamResultsRouter = (deps: ExamResultsRouterDeps): Router => 
                     er.exam_id,
                     e.title AS exam_title,
                     er.student_id,
-                    COALESCE(u.name, 'طالب غير معروف') AS student_name,
+                    COALESCE(u.name, s.name, 'طالب غير معروف') AS student_name,
                     s.grade_id,
                     s.group_id,
                     gr.name AS grade_name,
@@ -83,14 +114,19 @@ export const createExamResultsRouter = (deps: ExamResultsRouterDeps): Router => 
                     er.graded_at
                 FROM exam_results er
                 INNER JOIN exams e ON e.id = er.exam_id
-                LEFT JOIN users u ON u.id = er.student_id AND u.role = 'student'
-                /* Match student by phone since users table doesn't have student_id */
-                LEFT JOIN students s ON s.phone = u.phone
+                LEFT JOIN users u ON u.id = s.user_id AND u.role = 'student'
+                ${studentJoinSql}
                 LEFT JOIN grades gr ON gr.id = s.grade_id
                 LEFT JOIN \`groups\` grp ON grp.id = s.group_id
                 WHERE 1=1
             `;
             const params: string[] = [];
+            if (!platformAdmin) {
+                const selectedTenantId = user?.tenantId;
+                if (!selectedTenantId) return res.status(403).json({ error: 'Forbidden' });
+                sql += ' AND s.tenant_id = ?';
+                params.push(selectedTenantId);
+            }
 
             if (exam_id) {
                 sql += ' AND er.exam_id = ?';
@@ -102,21 +138,28 @@ export const createExamResultsRouter = (deps: ExamResultsRouterDeps): Router => 
                 params.push(student_id as string);
             }
 
-            if (scopeId) {
-                // Instructors only see results of their students / their own exams
+            if (scopeId && !platformAdmin) {
+                const selectedTenantId = user?.tenantId;
+                if (!selectedTenantId) return res.status(403).json({ error: 'Forbidden' });
                 sql += ` AND (s.instructor_id = ?
-                          OR s.group_id IN (SELECT id FROM \`groups\` WHERE instructor_id = ?)
-                          OR er.exam_id IN (SELECT eg.exam_id FROM exam_groups eg INNER JOIN \`groups\` g2 ON eg.group_id = g2.id WHERE g2.instructor_id = ?))`;
-                params.push(scopeId, scopeId, scopeId);
+                          OR s.group_id IN (SELECT g.id FROM \`groups\` g
+                              INNER JOIN courses c ON c.id = g.course_id
+                              WHERE g.instructor_id = ? AND c.tenant_id = ?)
+                          OR EXISTS (SELECT 1 FROM exam_groups eg
+                              INNER JOIN \`groups\` g2 ON eg.group_id = g2.id
+                              INNER JOIN courses c2 ON c2.id = g2.course_id
+                              WHERE eg.exam_id = er.exam_id AND g2.id = s.group_id
+                                AND g2.instructor_id = ? AND c2.tenant_id = ?))`;
+                params.push(scopeId, scopeId, selectedTenantId, scopeId, selectedTenantId);
             }
 
             sql += ' ORDER BY er.submitted_at DESC';
 
             const results = await query<ExamResult>(sql, params);
             res.json(results);
-        } catch (error) {
-            console.error('Get exam results error:', error);
-            res.status(500).json({ error: 'Failed to fetch exam results', details: error instanceof Error ? error.message : 'Unknown error' });
+        } catch {
+            console.error('Get exam results failed');
+            res.status(500).json({ error: 'Failed to fetch exam results' });
         }
     });
 
@@ -125,56 +168,108 @@ export const createExamResultsRouter = (deps: ExamResultsRouterDeps): Router => 
         try {
             const { studentId } = req.params;
 
-            // Own-workspace access only: the student may read their own
-            // results; a platform admin is trusted. Any other principal is
-            // denied before any data access (no forged studentId enumeration).
-            if (!isStudentSelf(req, studentId) && !isAdmin(req)) {
+            const platformAdmin = req.user?.role === 'admin' ? await isPlatformAdmin(req.user.id) : false;
+            const admin = platformAdmin || await isAdmin(req);
+            const studentSelf = req.user?.role === 'student';
+            if (!studentSelf && !admin) {
                 return res.status(403).json({ error: 'Student workspace access required' });
             }
+            const tenantId = admin && !platformAdmin ? req.user?.tenantId : undefined;
+            if (admin && !platformAdmin && !tenantId) {
+                return res.status(403).json({ error: 'Workspace access required' });
+            }
+            const selectedTenantId = studentSelf ? req.user?.tenantId : tenantId;
+            if (studentSelf && !selectedTenantId) return res.status(404).json({ error: 'Student not found' });
 
-            console.log('📊 Fetching exam results for student:', studentId);
+            let enrollmentIds: string[];
+            if (studentSelf) {
+                const userId = req.user?.id as string;
+                const rows = studentId === userId
+                    ? await query<{ id: string }>(
+                        `SELECT id FROM students WHERE user_id = ? AND tenant_id = ? AND is_active = 1`,
+                        [userId, selectedTenantId],
+                    )
+                    : await query<{ id: string }>(
+                        `SELECT id FROM students WHERE id = ? AND user_id = ? AND tenant_id = ? AND is_active = 1`,
+                        [studentId, userId, selectedTenantId],
+                    );
+                enrollmentIds = rows.map(({ id }) => id);
+                if (enrollmentIds.length === 0 && studentId !== userId) {
+                    return res.status(403).json({ error: 'Student workspace access required' });
+                }
+                if (studentId === userId && enrollmentIds.length > 1) {
+                    return res.status(404).json({ error: 'Student enrollment is ambiguous' });
+                }
+            } else {
+                const idRows = await query<{ id: string }>(
+                    `SELECT id FROM students WHERE id = ?${tenantId ? ' AND tenant_id = ?' : ''}`,
+                    tenantId ? [studentId, tenantId] : [studentId],
+                );
+                const userRows = await query<{ id: string }>(
+                    `SELECT id FROM students WHERE user_id = ?${tenantId ? ' AND tenant_id = ?' : ''}`,
+                    tenantId ? [studentId, tenantId] : [studentId],
+                );
+                if (idRows.length && userRows.some(({ id }) => idRows[0].id !== id)) {
+                    return res.status(404).json({ error: 'Student not found' });
+                }
+                enrollmentIds = idRows.length ? [idRows[0].id] : userRows.map(({ id }) => id);
+            }
+            if (enrollmentIds.length === 0) return res.status(404).json({ error: 'Student not found' });
+            const enrollmentSelector = `s.id IN (${enrollmentIds.map(() => '?').join(', ')})`;
+            const tenantClause = selectedTenantId ? ' AND s.tenant_id = ?' : '';
+            const params: unknown[] = [...enrollmentIds];
+            if (selectedTenantId) params.push(selectedTenantId);
+            params.push(...enrollmentIds);
+            if (selectedTenantId) params.push(selectedTenantId);
 
-            // Get results from BOTH exam_results AND exam_attempts
+            // Map both sources through their FK enrollment, then to its user.
+            // A user may have multiple valid enrollments, so return each exact
+            // enrollment row instead of selecting an arbitrary LIMIT 1 match.
             const sql = `
                 SELECT
-                    COALESCE(er.id, ea.id) AS id,
-                    COALESCE(er.exam_id, ea.exam_id) AS exam_id,
+                    er.id AS id,
+                    er.exam_id AS exam_id,
                     e.title AS exam_title,
-                    COALESCE(er.student_id, ea.student_id) AS student_id,
-                    COALESCE(er.marks_obtained, ea.score) AS score,
-                    COALESCE(er.total_marks, e.total_marks) AS total_marks,
+                    s.user_id AS student_id,
+                    er.marks_obtained AS score,
+                    er.total_marks AS total_marks,
                     e.passing_marks,
-                    COALESCE(ea.status,
-                        CASE
-                            WHEN COALESCE(er.marks_obtained, ea.score) >= e.passing_marks THEN 'passed'
-                            ELSE 'failed'
-                        END
-                    ) AS status,
-                    COALESCE(er.submitted_at, ea.completed_at, ea.created_at) AS submitted_at,
-                    COALESCE(er.graded_at, ea.completed_at) AS graded_at,
+                    'graded' AS status,
+                    er.submitted_at AS submitted_at,
+                    er.graded_at AS graded_at,
                     er.remarks AS feedback,
-                    CASE WHEN er.id IS NOT NULL THEN 'exam_results' ELSE 'exam_attempts' END AS source
-                FROM exams e
-                LEFT JOIN exam_results er ON er.exam_id = e.id AND er.student_id = ?
-                LEFT JOIN exam_attempts ea ON ea.exam_id = e.id AND ea.student_id = ? AND ea.status IN ('completed', 'passed', 'failed', 'pending_review')
-                WHERE (er.id IS NOT NULL OR ea.id IS NOT NULL)
-                ORDER BY COALESCE(er.submitted_at, ea.completed_at, ea.created_at) DESC
+                    'exam_results' AS source
+                FROM exam_results er
+                INNER JOIN students s ON s.id = er.student_id
+                INNER JOIN exams e ON e.id = er.exam_id
+                WHERE ${enrollmentSelector}${tenantClause}
+                UNION ALL
+                SELECT
+                    ea.id AS id,
+                    ea.exam_id AS exam_id,
+                    e.title AS exam_title,
+                    s.user_id AS student_id,
+                    ea.score AS score,
+                    e.total_marks AS total_marks,
+                    e.passing_marks,
+                    ea.status AS status,
+                    COALESCE(ea.completed_at, ea.created_at) AS submitted_at,
+                    ea.completed_at AS graded_at,
+                    NULL AS feedback,
+                    'exam_attempts' AS source
+                FROM exam_attempts ea
+                INNER JOIN students s ON s.id = ea.student_id
+                INNER JOIN exams e ON e.id = ea.exam_id
+                WHERE ea.status IN ('completed', 'passed', 'failed', 'pending_review')
+                  AND ${enrollmentSelector}${tenantClause}
+                ORDER BY submitted_at DESC
             `;
 
-            const results = await query<any>(sql, [studentId, studentId]);
-
-            console.log(`📊 Found ${results.length} exam results (from both tables)`);
-            console.log('Results:', results.map((r: any) => ({
-                exam_title: r.exam_title,
-                score: r.score,
-                status: r.status,
-                source: r.source
-            })));
-
+            const results = await query<Record<string, unknown>>(sql, params);
             res.json(results);
-        } catch (error) {
-            console.error('Get student exam results error:', error);
-            res.status(500).json({ error: 'Failed to fetch student exam results', details: error instanceof Error ? error.message : 'Unknown error' });
+        } catch {
+            console.error('Get student exam results failed');
+            res.status(500).json({ error: 'Failed to fetch student exam results' });
         }
     });
 
@@ -183,6 +278,19 @@ export const createExamResultsRouter = (deps: ExamResultsRouterDeps): Router => 
         try {
             const { id } = req.params;
             const scopeId = instructorScopeId(req);
+            const user = req.user;
+            const platformAdmin = user?.role === 'admin' ? await isPlatformAdmin(user.id) : false;
+            const admin = platformAdmin || await isAdmin(req);
+            const studentSelf = user?.role === 'student';
+            if (!scopeId && !admin && !studentSelf) {
+                return res.status(403).json({ error: 'Forbidden' });
+            }
+            if (scopeId && !platformAdmin) {
+                const tenantId = user?.tenantId;
+                if (!user || !tenantId || !(await hasActiveInstructorMembership(user.id, tenantId))) {
+                    return res.status(403).json({ error: 'Instructor workspace access required' });
+                }
+            }
 
             const sql = `
                 SELECT
@@ -190,7 +298,7 @@ export const createExamResultsRouter = (deps: ExamResultsRouterDeps): Router => 
                     er.exam_id,
                     e.title AS exam_title,
                     er.student_id,
-                    COALESCE(u.name, 'طالب غير معروف') AS student_name,
+                    COALESCE(u.name, s.name, 'طالب غير معروف') AS student_name,
                     s.grade_id,
                     s.group_id,
                     gr.name AS grade_name,
@@ -206,45 +314,45 @@ export const createExamResultsRouter = (deps: ExamResultsRouterDeps): Router => 
                     er.remarks AS feedback
                 FROM exam_results er
                 INNER JOIN exams e ON e.id = er.exam_id
-                LEFT JOIN users u ON u.id = er.student_id AND u.role = 'student'
-                LEFT JOIN students s ON s.phone = u.phone
+                LEFT JOIN users u ON u.id = s.user_id AND u.role = 'student'
+                ${studentJoinSql}
                 LEFT JOIN grades gr ON gr.id = s.grade_id
                 LEFT JOIN \`groups\` grp ON grp.id = s.group_id
                 WHERE er.id = ?
             `;
+            const params: unknown[] = [id];
+            let scopedSql = sql;
+            if (!platformAdmin) {
+                const tenantId = user?.tenantId;
+                if (!tenantId) return res.status(403).json({ error: 'Workspace access required' });
+                scopedSql += ' AND s.tenant_id = ?';
+                params.push(tenantId);
+                if (scopeId) {
+                    scopedSql += ` AND (s.instructor_id = ?
+                        OR EXISTS (SELECT 1 FROM \`groups\` g
+                            INNER JOIN courses c ON c.id = g.course_id
+                            WHERE g.id = s.group_id AND g.instructor_id = ? AND c.tenant_id = ?)
+                        OR EXISTS (SELECT 1 FROM exam_groups eg
+                            INNER JOIN \`groups\` g2 ON eg.group_id = g2.id
+                            INNER JOIN courses c2 ON c2.id = g2.course_id
+                            WHERE eg.exam_id = er.exam_id AND g2.id = s.group_id
+                              AND g2.instructor_id = ? AND c2.tenant_id = ?))`;
+                    params.push(scopeId, scopeId, tenantId, scopeId, tenantId);
+                } else if (studentSelf) {
+                    scopedSql += ' AND (er.student_id = ? OR s.user_id = ?)';
+                    params.push(user?.id, user?.id);
+                }
+            }
 
-            const results = await query<any>(sql, [id]);
+            const results = await query<Record<string, unknown>>(scopedSql, params);
             if (results.length === 0) {
                 return res.status(404).json({ error: 'Exam result not found' });
             }
-            if (scopeId) {
-                const r = results[0];
-                // Results join users by er.student_id; resolve the user's phone to
-                // check the student belongs to the instructor
-                const userRow = await queryOne('SELECT phone FROM users WHERE id = ?', [r.student_id]);
-                const own = await queryOne(
-                    `SELECT s.id FROM students s LEFT JOIN \`groups\` g ON s.group_id = g.id
-                     WHERE s.phone = ? AND (s.instructor_id = ? OR g.instructor_id = ?)`,
-                    [userRow?.phone ?? null, scopeId, scopeId]
-                );
-                const ownExam = await queryOne(
-                    `SELECT eg.exam_id FROM exam_groups eg INNER JOIN \`groups\` g2 ON eg.group_id = g2.id
-                     WHERE eg.exam_id = ? AND g2.instructor_id = ? LIMIT 1`,
-                    [r.exam_id, scopeId]
-                );
-                if (!own && !ownExam) {
-                    return res.status(404).json({ error: 'Exam result not found' });
-                }
-            } else if (!isAdmin(req)) {
-                // Non-instructor, non-admin principals get no cross-tenant
-                // result detail (fail closed).
-                return res.status(403).json({ error: 'Forbidden' });
-            }
 
             res.json(results[0]);
-        } catch (error) {
-            console.error('Get exam result error:', error);
-            res.status(500).json({ error: 'Failed to fetch exam result', details: error instanceof Error ? error.message : 'Unknown error' });
+        } catch {
+            console.error('Get exam result failed');
+            res.status(500).json({ error: 'Failed to fetch exam result' });
         }
     });
 

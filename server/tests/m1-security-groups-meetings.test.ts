@@ -6,6 +6,7 @@ import { createOptionalAuth } from '../src/middleware/auth';
 import { createRequireTeachingWrite, TeachingAccessRepository } from '../src/middleware/teaching-access';
 import type { PrincipalRepository } from '../src/security/principal-repository';
 import { createGroupsRouter, GroupsDataAccess, GroupsRouterDeps } from '../src/routes/groups';
+import { tenantScopeBranchDeps } from './helpers/tenant-scope-branch-deps';
 import { createMeetingsRouter, MeetingsDataAccess, MeetingsRouterDeps } from '../src/routes/meetings';
 
 const TEST_SECRET = 'test-only-secret-with-sufficient-length';
@@ -256,6 +257,12 @@ const makeHarness = (options: { failGroups?: boolean; failMeetings?: boolean; fa
             if (options.failCapability) throw new Error('capability lookup failed');
             return false;
         },
+        branchAccess: tenantScopeBranchDeps((type, id) => {
+            if (type !== 'group') return null;
+            if (id === 'group-b') return 'tenant-b';
+            if (id === 'group-orphan') return null;
+            return 'tenant-a';
+        }),
     };
     const meetingDeps: MeetingsRouterDeps = {
         db: makeMeetingsDb(state, options.failMeetings),
@@ -299,7 +306,8 @@ test('groups list for a teacher is limited to the selected tenant owner and tena
     assert.deepEqual((response.body as TestGroup[]).map((group) => group.id).sort(), ['group-a', 'group-a-legacy', 'group-a-owner']);
     const list = state.executed.find((call) => call.sql.includes('ORDER BY g.name'));
     assert.ok(list?.sql.includes('t.id = ?'));
-    assert.deepEqual(list?.params, ['tenant-a']);
+    assert.deepEqual(list?.params.slice(0, 1), ['tenant-a']);
+    assert.match(list?.sql ?? '', /g\.branch_scope/);
 });
 
 test('teacher cannot read or mutate another tenant group; mutation SQL is owner-scoped', async () => {

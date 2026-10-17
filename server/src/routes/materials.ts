@@ -6,6 +6,14 @@ import crypto from 'crypto';
 import { authenticateToken, optionalAuth, instructorScopeId, AuthRequest } from '../middleware/auth';
 import { requireTeachingWrite } from '../middleware/teaching-access';
 import { isSuperAdmin, getAdminPermissions } from '../security/admin-permissions';
+import {
+    getResourceBranchDeps,
+    principalFromAuthUser,
+    resolveResourceBranchAccess,
+    resourceBranchDenial,
+    type ResourceBranchDeps,
+} from '../security/resource-branch';
+import { recordAudit, snapshotRow } from '../security/audit';
 
 /**
  * Data-access seam for the materials router. Production binds ../db; hermetic
@@ -31,6 +39,8 @@ export interface MaterialsRouterDeps {
     optionalAuthenticate: RequestHandler;
     requireTeachingWriteAccess: RequestHandler;
     hasVerifiedPlatformCapability: (userId: string) => Promise<boolean>;
+    /** Resource-derived branch authority; defaults to the production SQL deps. */
+    branchAccess?: ResourceBranchDeps;
 }
 
 /**
@@ -104,6 +114,90 @@ export const createMaterialsRouter = (deps: MaterialsRouterDeps): Router => {
         tenantId: string | undefined,
     ): boolean =>
         Boolean(tenantId) && course.tenant_id != null && String(course.tenant_id) === String(tenantId);
+
+    /**
+     * Resource-derived branch check for an existing material. The branch comes
+     * from material_groups -> groups, never from the request. A branch-owned
+     * material requires a live membership in exactly that branch; conflicting
+     * parent links are ambiguous and denied.
+     */
+    const enforceMaterialBranch = async (
+        req: AuthRequest,
+        res: Response,
+        materialId: string,
+        requestedBranchId?: unknown,
+    ): Promise<boolean> => {
+        if (!req.user) {
+            res.status(401).json({ error: 'Authentication required' });
+            return false;
+        }
+        const decision = await resolveResourceBranchAccess(
+            deps.branchAccess ?? getResourceBranchDeps(),
+            principalFromAuthUser(req.user),
+            { resourceType: 'material', resourceId: materialId, requestedBranchId },
+        );
+        if (decision.kind !== 'allowed') {
+            const denial = resourceBranchDenial(decision);
+            res.status(denial.status).json(denial.body);
+            return false;
+        }
+        return true;
+    };
+
+    /**
+     * Validate the group links of a new material: every group must exist, all
+     * branch-owned links must name the same branch, and the caller must be
+     * authorized for that branch. A conflict is rejected before any insert.
+     */
+    const validateMaterialGroupsBranch = async (
+        user: NonNullable<AuthRequest['user']>,
+        groupIds: unknown,
+    ): Promise<{ ok: true } | { ok: false; status: number; error: string }> => {
+        if (!Array.isArray(groupIds) || groupIds.length === 0) return { ok: true };
+        const rows = await query<{
+            id: string; branch_id: string | null; branch_scope: string | null;
+        }>(
+            `SELECT id, branch_id, branch_scope FROM \`groups\`
+             WHERE id IN (${groupIds.map(() => '?').join(',')})`,
+            groupIds,
+        );
+        if (rows.length !== groupIds.length) {
+            return { ok: false, status: 404, error: 'Group not found' };
+        }
+        const branches = new Set<string>();
+        for (const row of rows) {
+            if (row.branch_scope === 'branch') {
+                if (!row.branch_id) return { ok: false, status: 403, error: 'Branch context is ambiguous' };
+                branches.add(row.branch_id);
+            }
+        }
+        if (branches.size > 1) {
+            return { ok: false, status: 400, error: 'All groups of a material must belong to one branch' };
+        }
+        if (branches.size === 0) return { ok: true };
+        const branchId = [...branches][0];
+        const tenantId = user.tenantId;
+        if (!tenantId) return { ok: false, status: 403, error: 'Workspace access required' };
+        const branch = await queryOne<{ tenant_id: string; status: string }>(
+            'SELECT tenant_id, status FROM branches WHERE id = ?',
+            [branchId],
+        );
+        if (!branch || branch.tenant_id !== tenantId || branch.status !== 'active') {
+            return { ok: false, status: 403, error: 'Branch is outside your teaching scope' };
+        }
+        const owner = await queryOne<{ id: string }>(
+            "SELECT id FROM tenants WHERE id = ? AND owner_user_id = ? AND status = 'active'",
+            [tenantId, user.id],
+        );
+        if (!owner) {
+            const membership = await queryOne<{ id: string }>(
+                "SELECT id FROM branch_memberships WHERE branch_id = ? AND user_id = ? AND status = 'active'",
+                [branchId, user.id],
+            );
+            if (!membership) return { ok: false, status: 403, error: 'Branch membership required' };
+        }
+        return { ok: true };
+    };
 
     /**
      * Write ownership for an existing material. The material's course tenant
@@ -224,6 +318,36 @@ export const createMaterialsRouter = (deps: MaterialsRouterDeps): Router => {
                 }
             }
 
+            // Branch-owned materials are visible only to a live member of the
+            // derived branch (or the tenant owner). Tenant-level and legacy
+            // unassigned materials keep their existing exact-resource scope.
+            const platformReader = req.user?.role === 'admin'
+                && await deps.hasVerifiedPlatformCapability(req.user.id);
+            if (!platformReader) {
+                sql += ` AND NOT EXISTS (
+                    SELECT 1 FROM material_groups bmg
+                    INNER JOIN \`groups\` bg ON bg.id = bmg.group_id
+                    WHERE bmg.material_id = cm.id AND bg.branch_scope = 'branch'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM branch_memberships bm
+                        WHERE bm.branch_id = bg.branch_id AND bm.user_id = ? AND bm.status = 'active'
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM tenants owner_t
+                        WHERE owner_t.id = ? AND owner_t.owner_user_id = ? AND owner_t.status = 'active'
+                      )
+                )`;
+                params.push(req.user!.id, req.user!.tenantId ?? null, req.user!.id);
+                if (req.user!.branchId) {
+                    sql += ` AND NOT EXISTS (
+                        SELECT 1 FROM material_groups bmg2
+                        INNER JOIN \`groups\` bg2 ON bg2.id = bmg2.group_id
+                        WHERE bmg2.material_id = cm.id AND bg2.branch_scope = 'branch' AND bg2.branch_id <> ?
+                    )`;
+                    params.push(req.user!.branchId);
+                }
+            }
+
             sql += ' ORDER BY cm.display_order ASC, cm.created_at DESC';
 
             const materials = await query(sql, params);
@@ -321,6 +445,7 @@ export const createMaterialsRouter = (deps: MaterialsRouterDeps): Router => {
             if (!material) {
                 return res.status(404).json({ error: 'Material not found' });
             }
+            if (!(await enforceMaterialBranch(req, res, req.params.id, req.query?.branch_id))) return;
             if (scopeId) {
                 // Instructor boundary: the material's course tenant must equal
                 // the selected tenant (a course with no provable tenant fails
@@ -391,6 +516,19 @@ export const createMaterialsRouter = (deps: MaterialsRouterDeps): Router => {
             // inside their selected tenant.
             if (scopeId && !(await areGroupsInScope(group_ids, scopeId, selectedTenantId!))) {
                 return res.status(403).json({ error: 'يجب ربط المادة بمجموعة من مجموعاتك فقط' });
+            }
+
+            // Branch links must agree and must be authorized before the write.
+            const branchValidation = await validateMaterialGroupsBranch(req.user!, group_ids);
+            if (!branchValidation.ok) {
+                return res.status(branchValidation.status).json({ error: branchValidation.error });
+            }
+            if (req.body.branch_id !== undefined && req.body.branch_id !== null && req.body.branch_id !== '') {
+                // A material's branch is derived from its groups; a bare
+                // selector is not a way to assign one.
+                if (!Array.isArray(group_ids) || group_ids.length === 0) {
+                    return res.status(403).json({ error: 'Branch is derived from the linked groups' });
+                }
             }
 
             // The write target course must resolve to the caller's selected
@@ -464,6 +602,18 @@ export const createMaterialsRouter = (deps: MaterialsRouterDeps): Router => {
                 [materialId]
             );
 
+            await recordAudit(execute, {
+                actorUserId: req.user?.id ?? null,
+                tenantId: selectedTenantId ?? null,
+                action: 'material.create',
+                resourceType: 'material',
+                resourceId: materialId,
+                newValue: snapshotRow({
+                    course_id, title, description, material_type, file_url, file_size,
+                    duration_minutes, display_order, is_free, is_published,
+                }),
+            }).catch((auditError) => console.error('Material create audit failed:', auditError));
+
             // Add grade_id and group_ids to response
             const materialWithGroups = {
                 ...newMaterial,
@@ -490,6 +640,7 @@ export const createMaterialsRouter = (deps: MaterialsRouterDeps): Router => {
     // Update material
     router.put('/:id', deps.requireTeachingWriteAccess, async (req: AuthRequest, res: Response) => {
         try {
+            if (!(await enforceMaterialBranch(req, res, req.params.id, req.body?.branch_id))) return;
             if (await denyMaterialWrite(req.params.id, req, res)) return;
             const {
                 title,
@@ -541,6 +692,19 @@ export const createMaterialsRouter = (deps: MaterialsRouterDeps): Router => {
                 return res.status(404).json({ error: 'Material not found' });
             }
 
+            await recordAudit(execute, {
+                actorUserId: req.user?.id ?? null,
+                tenantId: req.user?.tenantId ?? null,
+                action: 'material.update',
+                resourceType: 'material',
+                resourceId: req.params.id,
+                oldValue: snapshotRow(existingMaterial),
+                newValue: snapshotRow({
+                    title, description, material_type, file_url, file_size,
+                    duration_minutes, display_order, is_free, is_published,
+                }),
+            }).catch((auditError) => console.error('Material update audit failed:', auditError));
+
             const updatedMaterial = await queryOne(
                 'SELECT * FROM course_materials WHERE id = ?',
                 [req.params.id]
@@ -556,6 +720,7 @@ export const createMaterialsRouter = (deps: MaterialsRouterDeps): Router => {
     // Delete material (soft delete by unpublishing)
     router.delete('/:id', deps.requireTeachingWriteAccess, async (req: AuthRequest, res: Response) => {
         try {
+            if (!(await enforceMaterialBranch(req, res, req.params.id))) return;
             if (await denyMaterialWrite(req.params.id, req, res)) return;
             const result = await execute(
                 'UPDATE course_materials SET is_published = FALSE WHERE id = ?',
@@ -565,6 +730,15 @@ export const createMaterialsRouter = (deps: MaterialsRouterDeps): Router => {
             if (result.affectedRows === 0) {
                 return res.status(404).json({ error: 'Material not found' });
             }
+
+            await recordAudit(execute, {
+                actorUserId: req.user?.id ?? null,
+                tenantId: req.user?.tenantId ?? null,
+                action: 'material.archive',
+                resourceType: 'material',
+                resourceId: req.params.id,
+                newValue: { is_published: false },
+            }).catch((auditError) => console.error('Material archive audit failed:', auditError));
 
             res.json({ message: 'Material deleted successfully' });
         } catch (error) {

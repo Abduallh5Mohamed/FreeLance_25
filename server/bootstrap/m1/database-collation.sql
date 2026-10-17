@@ -1,0 +1,35 @@
+-- Reviewed M1 fresh-install database-default prelude.
+--
+-- Root cause of the fresh-bootstrap failure: MySQL 8.0's server default
+-- collation is utf8mb4_0900_ai_ci. The legacy baseline creates tables
+-- without an explicit character set, so users(id) is utf8mb4_0900_ai_ci,
+-- while later migrations create tables with an explicit
+-- COLLATE=utf8mb4_unicode_ci and foreign keys that reference users(id).
+-- MySQL treats the two collations as incompatible for foreign keys and
+-- aborts the fresh bootstrap with ERROR 3780; the first observed failure
+-- was at 20260920_05_instructor_system.sql line 19 on
+-- instructor_wallets.instructor_id -> users(id).
+--
+-- Converting the already-created legacy tables is not an option: every
+-- baseline foreign key references users(id), and MySQL refuses
+-- ALTER TABLE ... CONVERT TO CHARACTER SET on either side of an
+-- incompatible pair (verified empirically: converting users fails with
+-- ERROR 3780 on user_roles_ibfk_1 while user_roles keeps the old
+-- collation). Disabling foreign-key checks is prohibited by the task
+-- scope, so this file never touches them.
+--
+-- This file therefore sets the database default character set and
+-- collation before any table is created. Every table without an explicit
+-- charset - including the entire legacy baseline and every later
+-- migration that omits one - is then created as utf8mb4_unicode_ci,
+-- matching the explicit utf8mb4_unicode_ci tables and their foreign keys.
+-- No historical migration is edited and no foreign-key check is disabled.
+--
+-- The database name is the fixed isolated M1 test database; this staging
+-- plan is only ever applied to it (MYSQL_DATABASE=tabweb_m1_test in the
+-- private compose and the M1 target guard refuse any other target). A
+-- dynamic statement is impossible: MySQL does not support ALTER DATABASE
+-- through the prepared-statement protocol (ERROR 1295), so the literal
+-- name is used and any mismatch fails loudly rather than silently
+-- altering some other database's defaults.
+ALTER DATABASE `tabweb_m1_test` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

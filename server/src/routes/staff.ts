@@ -15,6 +15,7 @@ interface Staff {
     role: string;
     accessible_pages: string[];
     is_active: boolean;
+    token_version?: number | null;
     created_at?: string;
     updated_at?: string;
 }
@@ -52,6 +53,13 @@ export const STAFF_PASSWORD_MIN_LENGTH = 8;
 export const STAFF_PASSWORD_MAX_LENGTH = 128;
 export const STAFF_ACCESSIBLE_PAGES_MAX = 50;
 export const STAFF_PAGE_KEY_MAX_LENGTH = 64;
+
+const isMissingStaffTokenVersion = (error: unknown): boolean => {
+    if (!error || typeof error !== 'object') return false;
+    const candidate = error as { code?: unknown; message?: unknown };
+    return candidate.code === 'ER_BAD_FIELD_ERROR' &&
+        typeof candidate.message === 'string' && /token_version/i.test(candidate.message);
+};
 
 export const validateStaffCreate = (body: Record<string, unknown>): { ok: true; value: { name: string; phone: string; password: string; accessiblePages: string[] } } | { ok: false; error: string } => {
     const name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -275,6 +283,7 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
                 const passwordHash = await bcrypt.hash(passwordRaw, 10);
                 updateFields.push('password_hash = ?');
                 updateValues.push(passwordHash);
+                updateFields.push('token_version = COALESCE(token_version, 0) + 1');
             }
             if (accessiblePagesRaw !== undefined) {
                 updateFields.push('accessible_pages = ?');
@@ -288,10 +297,14 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
             updateFields.push('updated_at = NOW()');
             updateValues.push(id);
 
-            await deps.execute(
-                `UPDATE staff SET ${updateFields.join(', ')} WHERE id = ?`,
-                updateValues
-            );
+            try {
+                await deps.execute(`UPDATE staff SET ${updateFields.join(', ')} WHERE id = ?`, updateValues);
+            } catch (error) {
+                if (!passwordRaw || !isMissingStaffTokenVersion(error)) throw error;
+                // Older installations remain usable until the additive migration is applied.
+                const compatibleFields = updateFields.filter((field) => !field.startsWith('token_version ='));
+                await deps.execute(`UPDATE staff SET ${compatibleFields.join(', ')} WHERE id = ?`, updateValues);
+            }
 
             // Fetch updated staff
             const updatedStaff = await deps.queryOne<Staff>(
@@ -357,11 +370,19 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
                 return res.status(401).json({ error: 'Invalid credentials' });
             }
 
-            const staff = await deps.queryOne<Staff>(
-                `SELECT id, name, email, phone, password_hash, role, accessible_pages, is_active
-                 FROM staff WHERE phone = ?`,
-                [phone]
-            );
+            let staff: Staff | null;
+            try {
+                staff = await deps.queryOne<Staff>(
+                    `SELECT id, name, email, phone, password_hash, role, accessible_pages, is_active, token_version
+                     FROM staff WHERE phone = ?`, [phone]
+                );
+            } catch (error) {
+                if (!isMissingStaffTokenVersion(error)) throw error;
+                staff = await deps.queryOne<Staff>(
+                    `SELECT id, name, email, phone, password_hash, role, accessible_pages, is_active
+                     FROM staff WHERE phone = ?`, [phone]
+                );
+            }
 
             if (!staff || !staff.password_hash) {
                 return res.status(401).json({ error: 'Invalid credentials' });
@@ -386,14 +407,13 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
 
             // Generate JWT token
             const jwtSecret: Secret = getJwtSecret();
-            // Bound the exposure window even though the current schema has no
-            // staff token_version column for immediate password-change revocation.
             const jwtExpiry = resolveJwtLifetimeSeconds(process.env.JWT_EXPIRES_IN);
             const token = jwt.sign(
                 {
                     id: staff.id,
                     phone: staff.phone,
                     role: 'staff',
+                    tv: Number(staff.token_version || 0),
                     accessible_pages: accessiblePages
                 },
                 jwtSecret,

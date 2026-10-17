@@ -9,6 +9,7 @@ import {
     MaterialsDataAccess,
     MaterialsRouterDeps,
 } from '../src/routes/materials';
+import { tenantScopeBranchDeps } from './helpers/tenant-scope-branch-deps';
 
 /**
  * M1 materials boundary regression suite (behavioral, hermetic).
@@ -183,6 +184,13 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[]) => {
         // Fragment order matters: the list SQL also contains `c.name as
         // course_name` and `WHERE cm.is_published = TRUE`, so the more
         // specific shapes are matched first.
+        if (sql.includes('SELECT id, branch_id, branch_scope FROM `groups`')) {
+            // Branch validation for the group links of a new material.
+            const ids = params as string[];
+            return ids
+                .filter((id) => Boolean(f.groups[id]))
+                .map((id) => ({ id, branch_id: null, branch_scope: 'tenant' }));
+        }
         if (sql.includes('SELECT c.tenant_id')) {
             // denyMaterialWrite: course tenant of an existing material
             const material = materialById(params[0]);
@@ -312,6 +320,11 @@ const makeHarness = (fixtures: Fixtures = makeFixtures()) => {
         requireTeachingWriteAccess: teachingWriteStandIn,
         hasVerifiedPlatformCapability: async (userId: string) =>
             fixtures.platformCapabilities.includes(userId),
+        branchAccess: tenantScopeBranchDeps((type, id) => {
+            if (type !== 'material') return null;
+            const material = fixtures.materials[id];
+            return material ? fixtures.courses[material.course_id]?.tenant_id ?? 'tenant-a' : 'tenant-a';
+        }),
     };
     return { router: createMaterialsRouter(deps), executed, fixtures };
 };
@@ -498,7 +511,8 @@ test('instructor list visibility is bounded by the selected tenant, never by cro
     assert.match(list.sql, /c\.tenant_id = \?/);
     assert.match(list.sql, /g2\.instructor_id = \?/);
     assert.match(list.sql, /gc2\.tenant_id = \?/);
-    assert.deepEqual(list.params.slice(-3), ['tenant-a', 'instructor-a', 'tenant-a']);
+    assert.deepEqual(list.params.slice(0, 3), ['tenant-a', 'instructor-a', 'tenant-a']);
+    assert.match(list.sql, /branch_scope = 'branch'/);
     // Regression pins: the ownership clauses that ignored the selected tenant
     // (leaking an instructor's own groups/courses in other tenants) must not
     // return, and the old inert null-tenant fallback is gone.

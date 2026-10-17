@@ -47,7 +47,12 @@ export const createAdminApprovalsRouter = (deps: AdminApprovalsRouterDeps): Rout
 
   router.get('/', deps.approvalRead, async (req: AuthRequest, res: Response) => {
     try {
-      const status = req.query.status === 'approved' || req.query.status === 'rejected' ? req.query.status : 'pending';
+      const statusValue = req.query.status;
+      const allowedStatuses = ['pending', 'approved', 'rejected'];
+      if (statusValue !== undefined && (typeof statusValue !== 'string' || !allowedStatuses.includes(statusValue))) {
+        return res.status(400).json({ error: 'Invalid approval status' });
+      }
+      const status = typeof statusValue === 'string' ? statusValue : 'pending';
       return res.json(await query(
         `SELECT a.id,a.action_key,a.resource_type,a.resource_id,a.requested_value,a.reason,a.status,
                 a.requested_by,a.decided_by,a.created_at,a.decided_at
@@ -113,11 +118,19 @@ export const createAdminApprovalsRouter = (deps: AdminApprovalsRouterDeps): Rout
       if (approval.resource_type !== 'instructor' || !['service_credit.credit', 'service_credit.debit'].includes(approval.action_key)) {
         await connection.rollback(); return res.status(400).json({ error: 'Unsupported approval action' });
       }
-      const value = typeof approval.requested_value === 'string' ? JSON.parse(approval.requested_value) : approval.requested_value;
+      const decodedValue: unknown = typeof approval.requested_value === 'string'
+        ? JSON.parse(approval.requested_value)
+        : approval.requested_value;
+      if (typeof decodedValue !== 'object' || decodedValue === null || !('amount' in decodedValue) ||
+          typeof decodedValue.amount !== 'string' ||
+          !/^(?:0|[1-9]\d{0,9})(?:\.\d{1,2})?$/.test(decodedValue.amount) || Number(decodedValue.amount) <= 0) {
+        await connection.rollback();
+        return res.status(409).json({ error: 'Approval contains an invalid adjustment amount' });
+      }
       const newBalance = await postServiceCreditAdjustment(connection, {
         instructorId: approval.resource_id, actorId: req.user!.id,
         type: approval.action_key === 'service_credit.credit' ? 'credit' : 'debit',
-        amount: value.amount, reason: approval.reason,
+        amount: decodedValue.amount, reason: approval.reason,
       });
       await connection.execute(
         `UPDATE admin_approval_requests SET status='approved',decided_by=?,decided_at=UTC_TIMESTAMP() WHERE id=?`,

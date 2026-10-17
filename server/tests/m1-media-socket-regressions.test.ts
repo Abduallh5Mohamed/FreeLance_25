@@ -210,6 +210,7 @@ test('suspension lookup: a reader failure fails CLOSED (never grants playback)',
 import { createServer } from 'node:http';
 import jwt from 'jsonwebtoken';
 import { createPremiumLectureRouter, type PremiumLectureRouterDeps } from '../src/routes/premium-lectures';
+import { tenantScopeBranchDeps } from './helpers/tenant-scope-branch-deps';
 import { createSocketIO, createSocketPrincipalResolver, type SocketDeps } from '../src/services/socket';
 import type { PrincipalRepository } from '../src/security/principal-repository';
 
@@ -286,6 +287,10 @@ const makePremiumDeps = (fixtures: PremiumFixtures = {}) => {
             if (sql.includes('FROM students s') && sql.includes('t.owner_user_id = ?')) {
                 return (fixtures.ownedStudents?.includes(String(params?.[0])) ? { id: params?.[0] } : null) as never;
             }
+            // Branch validation for the target group (tenant-level fixture).
+            if (sql.includes('SELECT id, branch_id, branch_scope FROM `groups` WHERE id = ?')) {
+                return ({ id: String(params?.[0]), branch_id: null, branch_scope: 'tenant' }) as never;
+            }
             // Group ownership on create: params [groupId, callerId]
             if (sql.includes('FROM `groups` g') && sql.includes('t.owner_user_id = ?')) {
                 return (fixtures.ownedGroups?.includes(String(params?.[0])) ? { id: params?.[0] } : null) as never;
@@ -301,6 +306,8 @@ const makePremiumDeps = (fixtures: PremiumFixtures = {}) => {
         },
         authenticate: premiumAuthenticate as PremiumLectureRouterDeps['authenticate'],
         hasPlatformCapability: async (userId: string) => (fixtures.platformAdmins ?? []).includes(userId),
+        branchAccess: tenantScopeBranchDeps((type, id) =>
+            type === 'premium_lecture' ? 'tenant-a' : null),
     };
     return { deps, executed };
 };
@@ -480,14 +487,20 @@ const makeFakeSocket = (id: string): FakeSocket => ({
     emit(event: string, payload?: unknown) { this.emitted.push({ event, payload }); },
 });
 
-const setupSocket = (options: { relationExists: boolean; related: string[] }) => {
+const setupSocket = (options: { relationExists: boolean; related: string[]; messageInsertId?: number }) => {
     const httpServer = createServer();
     const executed: string[] = [];
+    const insertedMessageReferences: unknown[] = [];
+    const dependentMessageWrites: string[] = [];
     const targetedRooms: string[] = [];
     const deps: SocketDeps = {
         query: async (sql: string, params?: unknown[]) => {
-            if (sql.includes('UUID()')) return [[{ uuid: 'msg-uuid-1' }]] as never;
-            if (sql.includes('INSERT INTO messages')) { executed.push('insert-message'); return [[]] as never; }
+            if (sql.includes('INSERT INTO messages')) { executed.push('insert-message'); return [{ insertId: options.messageInsertId ?? 417 }] as never; }
+            if (sql.includes('INSERT INTO message_status') || sql.includes('INSERT INTO conversations')) {
+                dependentMessageWrites.push(sql.includes('message_status') ? 'status' : 'conversation');
+                insertedMessageReferences.push(...(params ?? []).filter((value) => value === 417));
+                return [[]] as never;
+            }
             if (sql.includes('user_online_status')) { executed.push('insert-presence'); return [[]] as never; }
             // RELATED_USERS_SQL carries the caller id four times.
             if (Array.isArray(params) && params.length === 4 && params.every((p) => p === params[0])) {
@@ -515,7 +528,7 @@ const setupSocket = (options: { relationExists: boolean; related: string[] }) =>
         socket.userId = 'user-1'; // handshake middleware already resolved identity
         return socket;
     };
-    return { io, httpServer, executed, targetedRooms, connect };
+    return { io, httpServer, executed, targetedRooms, insertedMessageReferences, dependentMessageWrites, connect };
 };
 
 test('socket messaging: a receiver outside the workspace network is denied before any write', async () => {
@@ -531,15 +544,35 @@ test('socket messaging: a receiver outside the workspace network is denied befor
 });
 
 test('socket messaging: a related receiver gets the message (the write happens)', async () => {
-    const { io, httpServer, executed, targetedRooms, connect } = setupSocket({ relationExists: true, related: ['related-1'] });
+    const { io, httpServer, executed, targetedRooms, insertedMessageReferences, dependentMessageWrites, connect } = setupSocket({ relationExists: true, related: ['related-1'] });
     const socket = connect();
     await socket.handlers.get('message:send')!({
         senderId: 'user-1', receiverId: 'related-1', content: 'x', messageType: 'text',
     });
     assert.ok(executed.includes('insert-message'));
+    assert.deepEqual(dependentMessageWrites, ['status', 'conversation']);
+    assert.deepEqual(insertedMessageReferences, [417, 417, 417], 'generated numeric ID is reused by message status and both conversation references');
     assert.ok(targetedRooms.includes('user:related-1'));
     io.close();
     httpServer.close();
+});
+
+test('socket messaging: invalid generated IDs stop dependent writes and do not emit a sent event', async () => {
+    for (const invalidId of [0, -1, Number.MAX_SAFE_INTEGER + 1, Number.NaN]) {
+        const { io, httpServer, dependentMessageWrites, connect } = setupSocket({
+            relationExists: true,
+            related: ['related-1'],
+            messageInsertId: invalidId,
+        });
+        const socket = connect();
+        await socket.handlers.get('message:send')!({
+            senderId: 'forged-sender', receiverId: 'related-1', content: 'x', messageType: 'text',
+        });
+        assert.deepEqual(dependentMessageWrites, [], `invalid insertId ${String(invalidId)} must not be used as a foreign key`);
+        assert.deepEqual(socket.emitted.map((entry) => entry.event), ['message:error']);
+        io.close();
+        httpServer.close();
+    }
 });
 
 test('socket presence: status is broadcast only to related users, never globally', async () => {

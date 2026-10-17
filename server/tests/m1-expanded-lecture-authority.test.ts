@@ -9,6 +9,7 @@ import {
     LectureDataAccess,
     LectureRouterDeps,
 } from '../src/routes/lectures';
+import { tenantScopeBranchDeps } from './helpers/tenant-scope-branch-deps';
 
 /**
  * M1 expanded lecture-authority regression suite (behavioral, hermetic).
@@ -57,6 +58,7 @@ interface LectureRow {
     id: string; course_id: string; grade_id: string | null; group_id: string | null;
     instructor_id: string | null; title: string; video_url: string;
     price: number | null; is_free: number; is_published: number; display_order: number;
+    archived_at?: string | null;
 }
 interface CourseRow { id: string; tenant_id: string | null; instructor_id: string | null; name?: string }
 
@@ -71,6 +73,7 @@ interface Fixtures {
     studentsByPhone: Record<string, {
         id: string; name: string; phone: string;
         group_id: string | null; grade_id: string | null; instructor_id: string | null;
+        approval_status: 'approved'; enrollment_status: 'active'; enrollment_end_date: null;
     }>;
     tenantsByOwner: Record<string, { id: string; status: string }>;
     courses: Record<string, CourseRow>;
@@ -110,10 +113,12 @@ const makeFixtures = (): Fixtures => ({
         '0100000001': {
             id: 'enrollment-a', name: 'Student A', phone: '0100000001',
             group_id: 'group-a', grade_id: 'grade-a', instructor_id: 'instructor-a',
+            approval_status: 'approved', enrollment_status: 'active', enrollment_end_date: null,
         },
         '0100000002': {
             id: 'enrollment-b', name: 'Student B', phone: '0100000002',
             group_id: 'group-b', grade_id: 'grade-b', instructor_id: 'instructor-b',
+            approval_status: 'approved', enrollment_status: 'active', enrollment_end_date: null,
         },
     },
     tenantsByOwner: {
@@ -129,17 +134,17 @@ const makeFixtures = (): Fixtures => ({
         'lecture-a-pub': {
             id: 'lecture-a-pub', course_id: 'course-a', grade_id: 'grade-a', group_id: 'group-a',
             instructor_id: 'instructor-a', title: 'Lecture A public', video_url: 'video://video-a',
-            price: 10, is_free: 0, is_published: 1, display_order: 0,
+            price: 10, is_free: 0, is_published: 1, display_order: 0, archived_at: null,
         },
         'lecture-a-draft': {
             id: 'lecture-a-draft', course_id: 'course-a', grade_id: 'grade-a', group_id: 'group-a',
             instructor_id: 'instructor-a', title: 'Lecture A draft', video_url: 'video://video-a-draft',
-            price: 10, is_free: 0, is_published: 0, display_order: 1,
+            price: 10, is_free: 0, is_published: 0, display_order: 1, archived_at: null,
         },
         'lecture-b-pub': {
             id: 'lecture-b-pub', course_id: 'course-b', grade_id: 'grade-b', group_id: 'group-b',
             instructor_id: 'instructor-b', title: 'Lecture B public', video_url: 'video://video-b',
-            price: 20, is_free: 0, is_published: 1, display_order: 0,
+            price: 20, is_free: 0, is_published: 1, display_order: 0, archived_at: null,
         },
     },
     sharedLectures: {},
@@ -175,7 +180,7 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[], throwOnSql?: (sql: s
             const row = f.users[String(params[0])];
             return row ? [{ id: params[0], phone: row.phone, role: 'student' }] : [];
         }
-        if (sql.includes('FROM students WHERE phone = ?')) {
+            if (sql.includes('FROM students') && sql.includes('WHERE phone = ?')) {
             const row = f.studentsByPhone[String(params[0])];
             return row ? [{ ...row }] : [];
         }
@@ -195,6 +200,12 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[], throwOnSql?: (sql: s
                 l.is_published === 1
                 && (l.instructor_id === null || l.instructor_id === instructorId)
                 && (l.grade_id === gradeId || l.group_id === groupId));
+        }
+        if (sql.includes('SELECT id, branch_id, branch_scope FROM `groups` WHERE id = ?')) {
+            // Legacy fixtures do not model groups for this route; the branch
+            // validator sees an explicit tenant-level group, preserving the
+            // pre-branch behavior under test.
+            return [{ id: params[0], branch_id: null, branch_scope: 'tenant' }];
         }
         if (sql.includes('FROM lectures l') && sql.includes('WHERE l.id = ?')) {
             // Single reads and mutation preflights apply owner or tenant scope
@@ -240,7 +251,7 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[], throwOnSql?: (sql: s
                 params as [string, string, string | null, string | null, string | null, string, null, string, null, number | null, number, number, number];
             f.lectures[id] = {
                 id, course_id, grade_id, group_id, instructor_id, title, video_url,
-                price, display_order, is_free, is_published,
+                price, display_order, is_free, is_published, archived_at: null,
             };
             return [];
         }
@@ -320,6 +331,12 @@ const makeHarness = (options: { fixtures?: Fixtures; throwOnSql?: (sql: string) 
         optionalAuthenticate: createOptionalAuth(repository) as RequestHandler,
         authenticate: createAuthenticateToken(repository) as RequestHandler,
         requireTeachingWriteAccess: teachingWriteStandIn,
+        transaction: <T>(fn: (tx: LectureDataAccess) => Promise<T>) => fn(db),
+        branchAccess: tenantScopeBranchDeps((type, id) => {
+            if (type !== 'lecture') return null;
+            const lecture = fixtures.lectures[id];
+            return lecture ? fixtures.courses[lecture.course_id]?.tenant_id ?? null : null;
+        }),
     };
     return { router: createLectureRouter(deps), executed, fixtures };
 };
@@ -396,8 +413,9 @@ const makeMultiTenantFixtures = (): Fixtures => {
 
 const assertNoWrite = (executed: ExecutedStatement[]) => {
     for (const statement of executed) {
-        assert.ok(!/\bINSERT\b/i.test(statement.sql), `unexpected INSERT: ${statement.sql}`);
-        assert.ok(!/\bUPDATE\b/i.test(statement.sql), `unexpected UPDATE: ${statement.sql}`);
+        // Decision queries may contain locking clauses/subqueries while still
+        // being read-only. Reject only statements whose top-level verb writes.
+        assert.ok(!/^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/i.test(statement.sql), `unexpected write: ${statement.sql}`);
     }
 };
 
@@ -816,7 +834,8 @@ test('instructor list scopes to its own lectures with the published filter', asy
     const listQuery = executed.find((e) => e.sql.includes('WHERE l.is_published = TRUE'));
     assert.ok(listQuery, 'list query executed');
     assert.ok(listQuery!.sql.includes('AND l.instructor_id = ?'), 'instructor scoping applied in SQL');
-    assert.deepEqual(listQuery!.params, ['instructor-a']);
+    assert.deepEqual(listQuery!.params.slice(0, 1), ['instructor-a']);
+    assert.match(listQuery!.sql, /branch_scope = 'branch'/);
 });
 
 test('anonymous list keeps the pre-existing published-only public contract', async () => {
@@ -838,7 +857,8 @@ test('authenticated non-instructor list is scoped to its selected tenant', async
     const listQuery = executed.find((e) => e.sql.includes('WHERE l.is_published = TRUE'));
     assert.ok(listQuery);
     assert.ok(listQuery!.sql.includes('AND c.tenant_id = ?'));
-    assert.deepEqual(listQuery!.params, ['tenant-a']);
+    assert.deepEqual(listQuery!.params.slice(0, 1), ['tenant-a']);
+    assert.match(listQuery!.sql, /branch_scope = 'branch'/);
 });
 
 test('authenticated non-instructor without a selected tenant gets an empty list without querying', async () => {

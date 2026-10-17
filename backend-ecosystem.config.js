@@ -1,3 +1,13 @@
+// Secrets are never committed or defaulted. A missing value fails the PM2
+// config load immediately instead of starting the app with a guessable key.
+const requiredEnv = (name) => {
+  const value = process.env[name];
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`${name} is required`);
+  }
+  return value;
+};
+
 module.exports = {
   apps: [{
     name: 'alqaed-api',
@@ -12,10 +22,10 @@ module.exports = {
       PORT: 3001,
       DB_HOST: 'localhost',
       DB_USER: 'root',
-      DB_PASSWORD: '123580',
+      DB_PASSWORD: requiredEnv('DB_PASSWORD'),
       DB_NAME: 'Freelance',
       DB_PORT: 3306,
-      JWT_SECRET: 'your-super-secret-jwt-key-change-this-in-production',
+      JWT_SECRET: requiredEnv('JWT_SECRET'),
       JWT_EXPIRES_IN: '7d',
       CORS_ORIGIN: 'http://localhost:8081',
       TWILIO_ACCOUNT_SID: 'your_twilio_account_sid_here',

@@ -9,6 +9,7 @@ import { createSubscriptionsRouter } from '../src/routes/subscriptions';
 import { createSubscriptionPlansRouter } from '../src/routes/subscription-plans';
 import { createSubscriptionRequestsRouter } from '../src/routes/subscription-requests';
 import { createPremiumLectureRouter } from '../src/routes/premium-lectures';
+import { tenantScopeBranchDeps } from './helpers/tenant-scope-branch-deps';
 import { createImportsRouter } from '../src/routes/imports';
 import { createFeesRouter } from '../src/routes/fees';
 
@@ -488,6 +489,12 @@ const makeHarness = (fixtures: Fixtures = makeFixtures()) => {
             withTransaction: db.withTransaction,
             authenticate,
             hasPlatformCapability: async (userId) => (fixtures.adminRoles[userId] ?? []).includes('super_admin'),
+            branchAccess: tenantScopeBranchDeps((type, id) => {
+                if (type !== 'premium_lecture') return null;
+                const lecture = fixtures.premiumLectures.find((row) => row.id === id);
+                if (!lecture?.group_id) return null;
+                return lecture.group_id === 'group-b' ? 'tenant-b' : 'tenant-a';
+            }),
         }),
         imports: createImportsRouter({ db, authenticate, authorize, hasVerifiedPlatformFinanceAccess, loadActiveTenantAuthority }),
         fees: createFeesRouter({ db, authenticate, authorize, hasVerifiedPlatformFinanceAccess, loadActiveTenantAuthority }),

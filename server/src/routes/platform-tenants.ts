@@ -60,6 +60,17 @@ const money = (value: unknown): string | null => {
   return /^(?:0|[1-9]\d{0,9})(?:\.\d{1,2})?$/.test(text) && Number(text) > 0 ? text : null;
 };
 
+const parsePagination = (pageValue: unknown, limitValue: unknown) => {
+  const pageText = pageValue ?? '1';
+  const limitText = limitValue ?? '25';
+  if (typeof pageText !== 'string' || !/^[1-9]\d{0,4}$/.test(pageText) ||
+      typeof limitText !== 'string' || !/^[1-9]\d{0,2}$/.test(limitText)) return null;
+  const page = Number(pageText);
+  const limit = Number(limitText);
+  if (page > 10000 || limit > 100) return null;
+  return { page, limit, offset: (page - 1) * limit };
+};
+
 router.get('/plans', requireAdminPermission('subscription.read'), async (req: AuthRequest, res: Response) => {
   try {
     const rows = await query('SELECT id,code,name,duration_months,duration_days,price,currency,is_active FROM platform_plans ORDER BY duration_months,duration_days');
@@ -106,8 +117,9 @@ router.post('/plans', requireAdminPermission('subscription.create'), async (req:
 
 router.get('/tenants', requireAdminPermission('instructor.read'), async (req: AuthRequest, res: Response) => {
   try {
-    const page = Math.max(1, Number.parseInt(String(req.query.page ?? '1'), 10) || 1);
-    const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit ?? '25'), 10) || 25));
+    const pagination = parsePagination(req.query.page, req.query.limit);
+    if (!pagination) return res.status(400).json({ error: 'Invalid pagination' });
+    const { page, limit, offset } = pagination;
     const rows = await query(
       `SELECT t.id,t.business_name,t.subject_type,t.status,t.legacy_compat,t.owner_user_id,
               u.name AS owner_name,u.phone AS owner_phone,
@@ -116,7 +128,7 @@ router.get('/tenants', requireAdminPermission('instructor.read'), async (req: Au
        FROM tenants t INNER JOIN users u ON u.id=t.owner_user_id
        LEFT JOIN tenant_subscriptions s ON s.id=(
          SELECT s2.id FROM tenant_subscriptions s2 WHERE s2.tenant_id=t.id ORDER BY s2.created_at DESC LIMIT 1)
-       ORDER BY t.created_at DESC LIMIT ${limit} OFFSET ${(page - 1) * limit}`
+       ORDER BY t.created_at DESC LIMIT ${limit} OFFSET ${offset}`
     );
     const permissions = await getAdminPermissions(req.user!.id);
     const mayReadPrices = permissions.includes('finance.read') || permissions.includes('platform_payment.submit');
@@ -130,15 +142,16 @@ router.get('/tenants', requireAdminPermission('instructor.read'), async (req: Au
 
 router.get('/payments', requireAdminPermission('platform_payment.read'), async (req: AuthRequest, res: Response) => {
   try {
-    const page = Math.max(1, Number.parseInt(String(req.query.page ?? '1'), 10) || 1);
-    const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit ?? '25'), 10) || 25));
+    const pagination = parsePagination(req.query.page, req.query.limit);
+    if (!pagination) return res.status(400).json({ error: 'Invalid pagination' });
+    const { page, limit, offset } = pagination;
     const rows = await query(
       `SELECT p.id,p.subscription_id,p.amount,p.method,p.reference_number,p.status,p.submitted_by,p.created_at,
               s.tenant_id,t.business_name
        FROM platform_payment_attempts p
        INNER JOIN tenant_subscriptions s ON s.id=p.subscription_id
        INNER JOIN tenants t ON t.id=s.tenant_id
-       ORDER BY p.created_at DESC LIMIT ${limit} OFFSET ${(page - 1) * limit}`
+       ORDER BY p.created_at DESC LIMIT ${limit} OFFSET ${offset}`
     );
     const permissions = await getAdminPermissions(req.user!.id);
     const mayReadPaymentDetails = permissions.includes('finance.read') || permissions.includes('platform_payment.verify');
@@ -258,6 +271,8 @@ router.get('/instructors/:ownerUserId/account', requireAdminPermission('instruct
     const remainingDays = endAt ? Math.ceil((endAt.getTime() - Date.now()) / 86400000) : null;
     const canViewAmounts = has('finance.read');
     const canViewPaymentDetails = has('platform_payment.verify') || has('finance.read');
+    const canViewInstructorDetails = has('instructor.detail.read');
+    const canViewBillingProfile = has('billing_profile.manage') || canViewAmounts;
     const totalContract = billable.reduce((sum: number, row: any) => sum + row.amount_due, 0);
     const totalPaid = billable.reduce((sum: number, row: any) => sum + row.verified_paid, 0);
     const totalPending = billable.reduce((sum: number, row: any) => sum + row.pending_paid, 0);
@@ -277,6 +292,11 @@ router.get('/instructors/:ownerUserId/account', requireAdminPermission('instruct
       duration_months: Number(row.duration_months),
     });
 
+    await execute(
+      `INSERT INTO audit_events (id,actor_user_id,tenant_id,action,resource_type,resource_id,reason)
+       VALUES (?,?,?,?,?,?,?)`,
+      [randomUUID(), req.user!.id, account.tenant_id || null, 'tenant.account_statement.viewed', 'instructor', account.owner_user_id, 'Sensitive instructor account statement accessed']
+    );
     return res.json({
       generated_at: new Date().toISOString(),
       permissions: {
@@ -292,24 +312,24 @@ router.get('/instructors/:ownerUserId/account', requireAdminPermission('instruct
       },
       instructor: {
         owner_user_id: account.owner_user_id, owner_name: account.owner_name,
-        owner_phone: account.owner_phone, owner_email: account.owner_email,
+        ...(canViewInstructorDetails ? { owner_phone: account.owner_phone, owner_email: account.owner_email } : {}),
         login_active: Boolean(account.login_active), account_created_at: account.account_created_at,
       },
       tenant: account.tenant_id ? {
         id: account.tenant_id, business_name: account.business_name, subject_type: account.subject_type, status: account.tenant_status,
         legacy_compat: Boolean(account.legacy_compat), created_at: account.tenant_created_at,
       } : null,
-      billing_profile: account.tenant_id ? {
+      billing_profile: account.tenant_id && canViewBillingProfile ? {
         billing_cycle_day: Number(account.billing_cycle_day || 1),
         reminder_days_before: Number(account.reminder_days_before ?? 7),
         collection_status: account.collection_status || 'good_standing',
         next_followup_at: account.next_followup_at || null,
         updated_at: account.billing_updated_at || null,
       } : null,
-      teaching: {
+      teaching: canViewInstructorDetails ? {
         students: Number(teaching?.students || 0), online_students: Number(teaching?.online_students || 0),
         offline_students: Number(teaching?.offline_students || 0), lectures: Number(teaching?.lectures || 0),
-      },
+      } : null,
       summary: {
         subscription_periods: normalizedSubscriptions.length,
         paid_periods: paid.length,
@@ -332,7 +352,7 @@ router.get('/instructors/:ownerUserId/account', requireAdminPermission('instruct
       },
       subscriptions: visibleSubscriptions,
       payments: visiblePayments,
-      notes,
+      notes: canViewInstructorDetails ? notes : [],
       audit,
       warnings: [
         ...(!account.tenant_id ? ['لا يوجد كيان منصة مرتبط بهذا الحساب القديم؛ يلزم استكمال الترحيل قبل إنشاء تجديد جديد.'] : []),
@@ -479,7 +499,7 @@ router.post('/tenants/:id/renewals', requireAdminPermission('subscription.create
     );
     const tenant = (tenantRows as Array<{ id: string; status: string; legacy_compat: number }>)[0];
     if (!tenant) { await connection.rollback(); return res.status(404).json({ error: 'Tenant not found' }); }
-    if (tenant.status === 'archived' || tenant.status === 'pending' || tenant.legacy_compat) {
+    if (tenant.status !== 'active' || tenant.legacy_compat) {
       await connection.rollback(); return res.status(409).json({ error: 'Tenant is not eligible for renewal' });
     }
     const [planRows] = await connection.execute(
@@ -586,8 +606,8 @@ router.post('/payments/:id/verify', requireAdminPermission('platform_payment.ver
     if (payment.status !== 'submitted' || payment.subscription_status !== 'pending') {
       await connection.rollback(); return res.status(409).json({ error: 'Payment or subscription already processed' });
     }
-    if (payment.tenant_status === 'archived') {
-      await connection.rollback(); return res.status(409).json({ error: 'Archived tenant cannot be renewed' });
+    if (payment.tenant_status !== 'pending' && payment.tenant_status !== 'active') {
+      await connection.rollback(); return res.status(409).json({ error: 'Tenant is not eligible for payment verification' });
     }
     if (payment.submitted_by === req.user!.id && !(await isSuperAdmin(req.user!.id))) {
       await connection.rollback(); return res.status(403).json({ error: 'A different administrator must verify this payment' });
@@ -641,10 +661,20 @@ router.post('/payments/:id/verify', requireAdminPermission('platform_payment.ver
 
 router.get('/topups', requireAdminPermission('platform_payment.read'), async (req: AuthRequest, res: Response) => {
   try {
-    const page = Math.max(1, Number.parseInt(String(req.query.page ?? '1'), 10) || 1);
-    const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit ?? '25'), 10) || 25));
-    const status = ['submitted','verified','rejected','cancelled'].includes(String(req.query.status)) ? String(req.query.status) : '';
-    const q = String(req.query.q ?? '').trim().slice(0, 100);
+    const pagination = parsePagination(req.query.page, req.query.limit);
+    if (!pagination) return res.status(400).json({ error: 'Invalid pagination' });
+    const { page, limit, offset } = pagination;
+    const statusValue = req.query.status;
+    const allowedStatuses = ['submitted','verified','rejected','cancelled'];
+    if (statusValue !== undefined && (typeof statusValue !== 'string' || !allowedStatuses.includes(statusValue))) {
+      return res.status(400).json({ error: 'Invalid top-up status' });
+    }
+    const status = typeof statusValue === 'string' ? statusValue : '';
+    const queryValue = req.query.q;
+    if (queryValue !== undefined && (typeof queryValue !== 'string' || queryValue.length > 100)) {
+      return res.status(400).json({ error: 'Invalid top-up search query' });
+    }
+    const q = typeof queryValue === 'string' ? queryValue.trim() : '';
     const filters: string[] = [];
     const params: unknown[] = [];
     if (status) { filters.push('r.status=?'); params.push(status); }
@@ -657,7 +687,7 @@ router.get('/topups', requireAdminPermission('platform_payment.read'), async (re
        FROM instructor_topup_requests r INNER JOIN tenants t ON t.id=r.tenant_id
        INNER JOIN users u ON u.id=r.instructor_id LEFT JOIN users reviewer ON reviewer.id=r.reviewed_by
        ${where} ORDER BY CASE WHEN r.status='submitted' THEN 0 ELSE 1 END,r.created_at DESC
-       LIMIT ${limit} OFFSET ${(page - 1) * limit}`, params
+       LIMIT ${limit} OFFSET ${offset}`, params
     );
     const permissions = await getAdminPermissions(req.user!.id);
     const sensitive = (await isSuperAdmin(req.user!.id)) || permissions.includes('finance.read') || permissions.includes('platform_payment.verify');
@@ -670,8 +700,15 @@ router.get('/topups/:id/proof-url', requireAdminPermission('platform_payment.rea
   try {
     const permissions = await getAdminPermissions(req.user!.id);
     if (!(await isSuperAdmin(req.user!.id)) && !permissions.includes('platform_payment.verify') && !permissions.includes('finance.read')) return res.status(403).json({ error: 'Forbidden' });
-    const row = await queryOne<any>('SELECT proof_object_key FROM instructor_topup_requests WHERE id=?', [req.params.id]);
+    const row = await queryOne<{ proof_object_key: string }>(
+      'SELECT proof_object_key FROM instructor_topup_requests WHERE id=?', [req.params.id]
+    );
     if (!row) return res.status(404).json({ error: 'Top-up request not found' });
+    await execute(
+      `INSERT INTO audit_events (id,actor_user_id,action,resource_type,resource_id,reason)
+       VALUES (?,?,?,?,?,?)`,
+      [randomUUID(), req.user!.id, 'instructor_topup.proof_accessed', 'instructor_topup', req.params.id, 'Sensitive payment proof accessed']
+    );
     return res.json({ url: await getPrivateObjectUrl(BUCKETS.PAYMENT_PROOFS, row.proof_object_key, 300), expires_in: 300 });
   } catch (error) { console.error('Get top-up proof URL error:', error); return res.status(500).json({ error: 'Failed to open proof' }); }
 });

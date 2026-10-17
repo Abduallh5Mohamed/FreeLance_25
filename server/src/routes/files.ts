@@ -3,6 +3,13 @@ import path from 'path';
 import { promises as fs } from 'fs';
 import { queryOne } from '../db';
 import { AuthRequest, authenticateToken } from '../middleware/auth';
+import {
+    getResourceBranchDeps,
+    principalFromAuthUser,
+    resolveResourceBranchAccess,
+    resourceBranchDenial,
+    type ResourceBranchDeps,
+} from '../security/resource-branch';
 
 /**
  * Media row reachable only through the authority predicate below: the
@@ -104,6 +111,8 @@ export interface FilesRouterDeps {
     authenticate: RequestHandler;
     /** Canonical upload root; every served path must resolve inside it. */
     storageRoot: string;
+    /** Resource-derived branch authority; defaults to the production SQL deps. */
+    branchAccess?: ResourceBranchDeps;
 }
 
 const DEFAULT_MIME_TYPE = 'application/octet-stream';
@@ -261,6 +270,23 @@ export const createFilesRouter = (deps: FilesRouterDeps): Router => {
                 [req.params.fileId, tenantId, callerId, callerId, callerId, callerId, callerId, callerId],
             );
             if (!file) return res.status(404).json({ error: 'File not found' });
+
+            // Branch-owned parents (exam question image, premium receipt)
+            // restrict the file to a live member of the derived branch. A
+            // tenant-level file keeps its existing exact-resource audience.
+            const branchDecision = await resolveResourceBranchAccess(
+                deps.branchAccess ?? getResourceBranchDeps(),
+                principalFromAuthUser(req.user!),
+                {
+                    resourceType: 'file',
+                    resourceId: req.params.fileId,
+                    requestedBranchId: req.query?.branch_id,
+                },
+            );
+            if (branchDecision.kind !== 'allowed') {
+                const denial = resourceBranchDenial(branchDecision);
+                return res.status(denial.status).json(denial.body);
+            }
 
             const absolutePath = await resolveWithinStorageRoot(deps.storageRoot, file.storage_path);
             if (!absolutePath) return res.status(404).json({ error: 'File not found' });

@@ -5,6 +5,13 @@ import path from 'path';
 import fs from 'fs';
 import { AuthRequest, authenticateToken } from '../middleware/auth';
 import { isSuperAdmin, getAdminPermissions } from '../security/admin-permissions';
+import {
+    getResourceBranchDeps,
+    principalFromAuthUser,
+    resolveResourceBranchAccess,
+    resourceBranchDenial,
+    type ResourceBranchDeps,
+} from '../security/resource-branch';
 
 // Configure multer for receipt image uploads
 const storage = multer.diskStorage({
@@ -115,6 +122,8 @@ export interface PremiumLectureRouterDeps {
      * tenants' lectures.
      */
     hasPlatformCapability: (userId: string, permission: string) => Promise<boolean>;
+    /** Resource-derived branch authority; defaults to the production SQL deps. */
+    branchAccess?: ResourceBranchDeps;
 }
 
 /**
@@ -176,6 +185,69 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
 
     const isStudentOnly = (user: NonNullable<AuthRequest['user']>): boolean =>
         user.role === 'student' && !user.instructorId && !user.tenantId;
+
+    /**
+     * Resource-derived branch check for a premium lecture. Its branch comes
+     * from premium_lectures.group_id -> groups; the caller selector is never
+     * authority.
+     */
+    const enforcePremiumBranch = async (
+        req: AuthRequest,
+        res: Response,
+        lectureId: string,
+        requestedBranchId?: unknown,
+    ): Promise<boolean> => {
+        if (!req.user) {
+            res.status(401).json({ error: 'Authentication required' });
+            return false;
+        }
+        const decision = await resolveResourceBranchAccess(
+            deps.branchAccess ?? getResourceBranchDeps(),
+            principalFromAuthUser(req.user),
+            { resourceType: 'premium_lecture', resourceId: lectureId, requestedBranchId },
+        );
+        if (decision.kind !== 'allowed') {
+            const denial = resourceBranchDenial(decision);
+            res.status(denial.status).json(denial.body);
+            return false;
+        }
+        return true;
+    };
+
+    /** Validate the target group's branch before create/move. */
+    const validatePremiumGroupBranch = async (
+        user: NonNullable<AuthRequest['user']>,
+        groupId: unknown,
+    ): Promise<{ ok: true } | { ok: false; status: number; error: string }> => {
+        if (groupId === undefined || groupId === null || groupId === '') return { ok: true };
+        if (typeof groupId !== 'string') return { ok: false, status: 400, error: 'Invalid group' };
+        const group = await deps.queryOne<{ id: string; branch_id: string | null; branch_scope: string | null }>(
+            'SELECT id, branch_id, branch_scope FROM `groups` WHERE id = ?', [groupId],
+        );
+        if (!group) return { ok: false, status: 404, error: 'Group not found' };
+        if (group.branch_scope !== 'branch') return { ok: true };
+        if (!group.branch_id) return { ok: false, status: 403, error: 'Branch context is ambiguous' };
+        const tenantId = user.tenantId;
+        if (!tenantId) return { ok: false, status: 403, error: 'Workspace access required' };
+        const branch = await deps.queryOne<{ tenant_id: string; status: string }>(
+            'SELECT tenant_id, status FROM branches WHERE id = ?', [group.branch_id],
+        );
+        if (!branch || branch.tenant_id !== tenantId || branch.status !== 'active') {
+            return { ok: false, status: 403, error: 'Branch is outside your teaching scope' };
+        }
+        const owner = await deps.queryOne<{ id: string }>(
+            "SELECT id FROM tenants WHERE id = ? AND owner_user_id = ? AND status = 'active'",
+            [tenantId, user.id],
+        );
+        if (!owner) {
+            const membership = await deps.queryOne<{ id: string }>(
+                "SELECT id FROM branch_memberships WHERE branch_id = ? AND user_id = ? AND status = 'active'",
+                [group.branch_id, user.id],
+            );
+            if (!membership) return { ok: false, status: 403, error: 'Branch membership required' };
+        }
+        return { ok: true };
+    };
 
     // ===============================
     // PAYMENT REQUESTS (before /:id routes)
@@ -300,6 +372,7 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
                  WHERE pl.id=? AND t.id=? AND t.status='active'`, [premium_lecture_id, tenantId]
             );
             if (!lecture) return res.status(404).json({ error: 'الحصة غير موجودة في مساحتك' });
+            if (!(await enforcePremiumBranch(req, res, premium_lecture_id))) return;
 
             if (amount !== undefined && amount !== null && amount !== '' && toDecimalMoney(amount) === null) {
                 return res.status(400).json({ error: 'المبلغ يجب أن يكون موجبًا وبدقتين عشريتين كحد أقصى' });
@@ -364,6 +437,14 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
                 if (!(await canManageLecture(req.user!, payment.premium_lecture_id))) {
                     return { status: 403 as const, body: { error: 'ليست لديك صلاحية على هذه الحصة' } };
                 }
+                const branchDecision = await resolveResourceBranchAccess(
+                    deps.branchAccess ?? getResourceBranchDeps(),
+                    principalFromAuthUser(req.user!),
+                    { resourceType: 'premium_lecture', resourceId: payment.premium_lecture_id },
+                );
+                if (branchDecision.kind !== 'allowed') {
+                    return { status: 403 as const, body: { error: 'Forbidden' } };
+                }
 
                 // Guarded flip FIRST: the loser of a concurrent approval
                 // affects zero rows and grants no access.
@@ -413,6 +494,7 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
             if (!(await canManageLecture(req.user!, payment.premium_lecture_id))) {
                 return res.status(403).json({ error: 'ليست لديك صلاحية على هذه الحصة' });
             }
+            if (!(await enforcePremiumBranch(req, res, payment.premium_lecture_id))) return;
 
             const transition = await deps.execute(`
                 UPDATE premium_lecture_payments
@@ -569,6 +651,26 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
                 }
                 sql += ` AND ${TEACHER_LECTURE_SCOPE_SQL}`;
                 params.push(user.id);
+                sql += ` AND (pl.group_id IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM \`groups\` bg
+                    WHERE bg.id = pl.group_id AND bg.branch_scope = 'branch'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM branch_memberships bm
+                        WHERE bm.branch_id = bg.branch_id AND bm.user_id = ? AND bm.status = 'active'
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM tenants owner_t
+                        WHERE owner_t.id = ? AND owner_t.owner_user_id = ? AND owner_t.status = 'active'
+                      )
+                ))`;
+                params.push(user.id, user.tenantId ?? null, user.id);
+                if (user.branchId) {
+                    sql += ` AND (pl.group_id IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM \`groups\` bg2
+                        WHERE bg2.id = pl.group_id AND bg2.branch_scope = 'branch' AND bg2.branch_id <> ?
+                    ))`;
+                    params.push(user.branchId);
+                }
             }
 
             sql += ' ORDER BY pl.created_at DESC';
@@ -601,6 +703,7 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
             if (!lecture) {
                 return res.status(404).json({ error: 'الحصة غير موجودة' });
             }
+            if (!(await enforcePremiumBranch(req, res, id, req.query?.branch_id))) return;
 
             if (await canManageLecture(user, id)) {
                 return res.json(lecture);
@@ -656,6 +759,14 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
             }
 
             const id = uuidv4();
+
+            // A premium lecture's branch is derived from its group; the
+            // caller cannot assign an unauthorized branch.
+            const groupBranch = await validatePremiumGroupBranch(user, group_id);
+            if (!groupBranch.ok) {
+                return res.status(groupBranch.status).json({ error: groupBranch.error });
+            }
+
             await deps.execute(`
                 INSERT INTO premium_lectures (id, title, description, video_url, thumbnail_url, duration_minutes, price, grade_id, group_id, is_published, created_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -677,6 +788,11 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
 
             if (!(await canManageLecture(req.user!, id))) {
                 return res.status(403).json({ error: 'ليست لديك صلاحية على هذه الحصة' });
+            }
+            if (!(await enforcePremiumBranch(req, res, id, req.body?.branch_id))) return;
+            const targetGroupBranch = await validatePremiumGroupBranch(req.user!, group_id);
+            if (!targetGroupBranch.ok) {
+                return res.status(targetGroupBranch.status).json({ error: targetGroupBranch.error });
             }
 
             if (price !== undefined && toDecimalMoney(price) === null) {
@@ -705,6 +821,7 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
             if (!(await canManageLecture(req.user!, id))) {
                 return res.status(403).json({ error: 'ليست لديك صلاحية على هذه الحصة' });
             }
+            if (!(await enforcePremiumBranch(req, res, id))) return;
 
             await deps.execute('DELETE FROM premium_lectures WHERE id = ?', [id]);
             res.json({ success: true, message: 'تم حذف الحصة بنجاح' });

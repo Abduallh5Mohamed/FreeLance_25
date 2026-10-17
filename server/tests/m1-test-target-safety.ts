@@ -57,6 +57,26 @@ export function resolveM1EnvPathFromIntegrationDir(integrationDir: string): stri
     return path.resolve(integrationDir, '..', '..', '..', M1_ENV_FILE_NAME);
 }
 
+/**
+ * Resolve an optional private env file. Explicit paths are accepted only when
+ * absolute and under a run-specific m1-isolated-* directory in handoff/; in
+ * particular they can never silently fall back to the workspace .env.m1.
+ */
+export function resolveM1EnvPath(integrationDir: string, explicitPath?: string): string {
+    if (explicitPath === undefined || explicitPath.trim() === '') {
+        if (explicitPath !== undefined) throw new Error('M1_TEST_ENV_FILE must be a non-empty absolute path');
+        return resolveM1EnvPathFromIntegrationDir(integrationDir);
+    }
+    if (!path.isAbsolute(explicitPath)) throw new Error('M1_TEST_ENV_FILE must be an absolute path');
+    const resolved = path.resolve(explicitPath);
+    const parent = path.basename(path.dirname(resolved));
+    const handoff = path.basename(path.dirname(path.dirname(resolved)));
+    if (path.basename(resolved) !== M1_ENV_FILE_NAME || !/^m1-isolated-[A-Za-z0-9_-]+$/.test(parent) || handoff !== 'handoff') {
+        throw new Error('M1_TEST_ENV_FILE must be .env.m1 inside handoff/m1-isolated-<run>/');
+    }
+    return resolved;
+}
+
 /** Raw, untrusted configuration values as read from a caller/source. */
 export interface M1TestTargetInput {
     dbName?: string | undefined;

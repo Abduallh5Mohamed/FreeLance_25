@@ -32,6 +32,25 @@ export interface PaymentRequestsDataAccess {
  * lookups. Tests inject fixtures through this boundary instead of bypassing
  * production authorization.
  */
+interface MoneyValue {
+  minorUnits: number;
+  decimal: string;
+}
+
+const parseMoney = (value: unknown): MoneyValue | null => {
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  const text = String(value).trim();
+  if (!/^\d+(?:\.\d{1,2})?$/.test(text)) return null;
+  const [whole, fraction = ''] = text.split('.');
+  const normalizedWhole = whole.replace(/^0+(?=\d)/, '');
+  const minorUnits = Number(`${normalizedWhole}${fraction.padEnd(2, '0')}`);
+  if (!Number.isSafeInteger(minorUnits) || minorUnits <= 0) return null;
+  return {
+    minorUnits,
+    decimal: `${normalizedWhole}.${fraction.padEnd(2, '0')}`,
+  };
+};
+
 export interface PaymentRequestsRouterDeps {
   db: PaymentRequestsDataAccess;
   authenticate: RequestHandler;
@@ -109,8 +128,8 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
     }
     try {
       return await hasVerifiedPlatformFinanceAccess(user.id);
-    } catch (error) {
-      console.error('Finance permission lookup failed:', error);
+    } catch {
+      console.error('Finance permission lookup failed');
       res.status(503).json({ error: 'Finance permissions unavailable' });
       return null;
     }
@@ -140,8 +159,8 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
     let authorityRow: { authority: string } | null;
     try {
       authorityRow = await loadActiveTenantAuthority(user.id, tenantId);
-    } catch (error) {
-      console.error('Tenant authority lookup failed:', error);
+    } catch {
+      console.error('Tenant authority lookup failed');
       res.status(503).json({ error: 'Tenant authority unavailable' });
       return null;
     }
@@ -182,17 +201,20 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
       if (!scope) return;
       const { status, student_id } = req.query;
       const clause = readClause(scope);
-      let sql = `SELECT pr.*,s.name AS student_name,s.phone AS student_phone,g.name AS grade_name,gr.name AS group_name
+      let sql = `SELECT pr.*,s.name AS student_name,s.phone AS student_phone,g.name AS grade_name,
+      CASE WHEN gc.id IS NOT NULL THEN gr.name END AS group_name
       FROM payment_requests pr LEFT JOIN students s ON pr.student_id=s.id AND s.tenant_id=pr.tenant_id
-      LEFT JOIN grades g ON pr.grade_id=g.id LEFT JOIN \`groups\` gr ON pr.group_id=gr.id
+      LEFT JOIN grades g ON pr.grade_id=g.id AND g.id=s.grade_id
+      LEFT JOIN \`groups\` gr ON pr.group_id=gr.id AND gr.id=s.group_id
+      LEFT JOIN courses gc ON gc.id=gr.course_id AND gc.tenant_id=pr.tenant_id
       WHERE 1=1${clause.sql}`;
       const params: unknown[] = [...clause.params];
       if (status) { sql += ' AND pr.status=?'; params.push(status); }
       if (student_id) { sql += ' AND pr.student_id=?'; params.push(student_id); }
       sql += ' ORDER BY pr.created_at DESC';
       res.json(await query(sql, params));
-    } catch (error) {
-      console.error('Get payment requests error:', error);
+    } catch {
+      console.error('Get payment requests failed');
       res.status(500).json({ error: 'Failed to fetch payment requests' });
     }
   });
@@ -203,7 +225,8 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
       if (!scope) return;
       const tenantId = scope.tenantId as string;
       const { student_id, grade_id, group_id, amount, payment_method = 'cash', receipt_image, notes } = req.body;
-      if (!student_id || !grade_id || !group_id || !Number.isFinite(Number(amount)) || Number(amount) <= 0) {
+      const paymentAmount = parseMoney(amount);
+      if (!student_id || !grade_id || !group_id || !paymentAmount) {
         return res.status(400).json({ error: 'Missing or invalid payment fields' });
       }
       const student = await queryOne<any>('SELECT id,user_id,name,phone,email,grade_id,group_id FROM students WHERE id=? AND tenant_id=? AND is_active=1', [student_id, tenantId]);
@@ -212,8 +235,10 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
       const group = await queryOne<any>(
         `SELECT g.id,g.name FROM \`groups\` g
        INNER JOIN tenant_memberships m ON m.user_id=g.instructor_id AND m.tenant_id=? AND m.status='active'
-       INNER JOIN tenants t ON t.id=m.tenant_id
-       WHERE g.id=? AND t.status='active'`, [tenantId, group_id]
+       INNER JOIN tenants t ON t.id=m.tenant_id AND t.status='active'
+       INNER JOIN courses c ON c.id=g.course_id AND c.tenant_id=t.id
+       INNER JOIN users u ON u.id=g.instructor_id AND u.is_active=1
+       WHERE g.id=? AND m.role_key IN ('owner','instructor')`, [tenantId, group_id]
       );
       if (!grade || !group || String(student.grade_id) !== String(grade_id) || String(student.group_id) !== String(group_id)) {
         return res.status(404).json({ error: 'Student, grade, or group is outside the authenticated tenant' });
@@ -222,7 +247,7 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
       await execute(
         `INSERT INTO payment_requests (id,tenant_id,student_id,student_name,phone,email,grade_id,grade_name,group_id,group_name,amount,payment_method,receipt_image_url,notes,status)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending')`,
-        [id, tenantId, student.id, student.name, student.phone, student.email, grade.id, grade.name, group.id, group.name, Number(amount), payment_method, receipt_image || null, notes || null]
+        [id, tenantId, student.id, student.name, student.phone, student.email, grade.id, grade.name, group.id, group.name, paymentAmount.decimal, payment_method, receipt_image || null, notes || null]
       );
       // Notify the PROVEN tenant owner of this request's tenant — never an
       // arbitrary global admin. The recipient relationship is server-verified
@@ -239,8 +264,8 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
         );
       }
       res.status(201).json({ message: 'Payment request created successfully', id });
-    } catch (error) {
-      console.error('Create payment request error:', error);
+    } catch {
+      console.error('Create payment request failed');
       res.status(500).json({ error: 'Failed to create payment request' });
     }
   });
@@ -261,11 +286,21 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
         );
         if (!request) return { status: 404, body: { error: 'Payment request not found' } };
         if (request.status !== 'pending') return { status: 400, body: { error: 'Request already processed' } };
+        const paymentAmount = parseMoney(request.amount);
+        if (!paymentAmount) return { status: 409, body: { error: 'Payment request amount is invalid' } };
         const enrollment = await tx.queryOne<any>(
-          'SELECT id,user_id,name,phone,guardian_phone,barcode FROM students WHERE id=? AND tenant_id=? AND is_active=1',
+          `SELECT s.id,s.user_id,s.name,s.phone,s.guardian_phone,s.barcode,s.grade_id,s.group_id
+           FROM students s
+           INNER JOIN \`groups\` g ON g.id=s.group_id
+           INNER JOIN courses c ON c.id=g.course_id AND c.tenant_id=s.tenant_id
+           WHERE s.id=? AND s.tenant_id=? AND s.is_active=1`,
           [request.student_id, tenantId]
         );
         if (!enrollment) return { status: 409, body: { error: 'Student enrollment is no longer active' } };
+        if (String(enrollment.grade_id) !== String(request.grade_id)
+          || String(enrollment.group_id) !== String(request.group_id)) {
+          return { status: 409, body: { error: 'Student enrollment no longer matches the payment request' } };
+        }
         // Guarded flip FIRST: exactly one caller can move the request out of
         // 'pending'. If another transaction already won, this affects zero rows
         // and the handler returns before writing any fee/revenue row, so the
@@ -279,11 +314,11 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
         await tx.execute(
           `INSERT INTO student_fees (tenant_id,student_id,student_name,phone,guardian_phone,grade_id,grade_name,group_id,group_name,amount,paid_amount,status,payment_method,is_offline,payment_date,payment_year,payment_month,notes)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,'paid',?,FALSE,CURDATE(),YEAR(CURDATE()),MONTH(CURDATE()),?)`,
-          [request.tenant_id, request.student_id, enrollment.name, enrollment.phone, enrollment.guardian_phone, request.grade_id, request.grade_name, request.group_id, request.group_name, request.amount, request.amount, request.payment_method, request.notes || 'تم الدفع عبر النظام أونلاين']
+          [request.tenant_id, request.student_id, enrollment.name, enrollment.phone, enrollment.guardian_phone, request.grade_id, request.grade_name, request.group_id, request.group_name, paymentAmount.decimal, paymentAmount.decimal, request.payment_method, request.notes || 'تم الدفع عبر النظام أونلاين']
         );
         await tx.execute(
           `INSERT INTO revenues (tenant_id,amount,source,description,date) VALUES (?,?,'student_fees','مصروفات طالب - دفع أونلاين',CURDATE())`,
-          [request.tenant_id, request.amount]
+          [request.tenant_id, paymentAmount.decimal]
         );
         if (enrollment.user_id) await tx.execute(
           `INSERT INTO notifications (user_id,user_type,title,message,type) VALUES (?,'student','تم قبول طلب الدفع','تم قبول طلب الدفع الخاص بك وإضافة المصروفات','payment_approved')`, [enrollment.user_id]
@@ -291,8 +326,8 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
         return { status: 200, body: { message: 'Payment request approved successfully' } };
       });
       res.status(outcome.status).json(outcome.body);
-    } catch (error) {
-      console.error('Approve payment request error:', error);
+    } catch {
+      console.error('Approve payment request failed');
       res.status(500).json({ error: 'Failed to approve payment request' });
     }
   });
@@ -302,23 +337,39 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
       const scope = await resolveWriteScope(req, res);
       if (!scope) return;
       const tenantId = scope.tenantId as string;
-      const { rejection_reason } = req.body;
-      if (!rejection_reason) return res.status(400).json({ error: 'Rejection reason is required' });
-      const request = await queryOne<any>(`SELECT * FROM payment_requests WHERE id=? AND tenant_id=?`, [req.params.id, tenantId]);
-      if (!request) return res.status(404).json({ error: 'Payment request not found' });
-      if (request.status !== 'pending') return res.status(400).json({ error: 'Request already processed' });
-      const transition = await execute(`UPDATE payment_requests SET status='rejected',rejection_reason=?,updated_at=NOW() WHERE id=? AND tenant_id=? AND status='pending'`, [rejection_reason, request.id, tenantId]);
-      // A concurrent rejection already consumed the transition: do not send a
-      // second notification for a request this call did not reject.
-      if (transition.affectedRows === 0) return res.status(400).json({ error: 'Request already processed' });
-      const enrollment = await queryOne<any>('SELECT user_id FROM students WHERE id=? AND tenant_id=?', [request.student_id, tenantId]);
-      if (enrollment?.user_id) await execute(
-        `INSERT INTO notifications (user_id,user_type,title,message,type) VALUES (?,'student','تم رفض طلب الدفع',?,'payment_rejected')`,
-        [enrollment.user_id, `تم رفض طلب الدفع. السبب: ${rejection_reason}`]
-      );
-      res.json({ message: 'Payment request rejected successfully' });
-    } catch (error) {
-      console.error('Reject payment request error:', error);
+      const rejectionReason = req.body?.rejection_reason;
+      if (typeof rejectionReason !== 'string' || rejectionReason.trim() === '' || rejectionReason.length > 2000) {
+        return res.status(400).json({ error: 'Rejection reason is required' });
+      }
+      const outcome = await withTransaction(async (tx) => {
+        const request = await tx.queryOne<any>(
+          `SELECT * FROM payment_requests WHERE id=? AND tenant_id=? FOR UPDATE`,
+          [req.params.id, tenantId],
+        );
+        if (!request) return { status: 404, body: { error: 'Payment request not found' } };
+        if (request.status !== 'pending') return { status: 400, body: { error: 'Request already processed' } };
+        const enrollment = await tx.queryOne<any>(
+          'SELECT user_id FROM students WHERE id=? AND tenant_id=?',
+          [request.student_id, tenantId],
+        );
+        const transition = await tx.execute(
+          `UPDATE payment_requests SET status='rejected',rejection_reason=?,updated_at=NOW()
+           WHERE id=? AND tenant_id=? AND status='pending'`,
+          [rejectionReason.trim(), request.id, tenantId],
+        );
+        if (transition.affectedRows === 0) {
+          return { status: 400, body: { error: 'Request already processed' } };
+        }
+        if (enrollment?.user_id) await tx.execute(
+          `INSERT INTO notifications (user_id,user_type,title,message,type)
+           VALUES (?,'student','تم رفض طلب الدفع',?,'payment_rejected')`,
+          [enrollment.user_id, `تم رفض طلب الدفع. السبب: ${rejectionReason.trim()}`],
+        );
+        return { status: 200, body: { message: 'Payment request rejected successfully' } };
+      });
+      res.status(outcome.status).json(outcome.body);
+    } catch {
+      console.error('Reject payment request failed');
       res.status(500).json({ error: 'Failed to reject payment request' });
     }
   });
@@ -335,8 +386,8 @@ export const createPaymentRequestsRouter = (deps: PaymentRequestsRouterDeps): Ro
         params
       );
       res.json(rows[0] || {});
-    } catch (error) {
-      console.error('Payment request stats error:', error);
+    } catch {
+      console.error('Payment request stats failed');
       res.status(500).json({ error: 'Failed to fetch statistics' });
     }
   });

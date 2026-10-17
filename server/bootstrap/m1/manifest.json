@@ -1,0 +1,88 @@
+{
+  "format": 2,
+  "purpose": "Reviewed, reproducible fresh M1 schema staging plan. This file describes transformations; the generator emits a destination-specific manifest with exact source hashes.",
+  "generator": "scripts/build-m1-bootstrap.mjs",
+  "source": "server/migrations/*.sql",
+  "policy": {
+    "sourceFilesImmutable": true,
+    "destinationMustNotExist": true,
+    "noSqlExecution": true,
+    "rejectUnknownTransformMismatch": true,
+    "sourceHashes": "SHA-256 for every selected migration is written to generated manifest.json",
+    "databaseCollationSha256": "SHA-256 of server/bootstrap/m1/database-collation.sql; the generator refuses to stage if it differs"
+  },
+  "stagingOrder": [
+    "20260920_00_a_m1_database_collation.sql, then all tracked server/migrations/YYYYMMDD_*.sql and 20260920_00z_m1_prelude.sql in lexical filename order"
+  ],
+  "transforms": [
+    {
+      "source": "server/bootstrap/m1/database-collation.sql",
+      "issue": "Fresh bootstrap failed with ERROR 3780 at 20260920_05_instructor_system.sql line 19: MySQL 8.0's server default collation (utf8mb4_0900_ai_ci) makes the legacy baseline's users(id) incompatible with the explicit utf8mb4_unicode_ci columns and tables of later migrations that reference it. Converting already-created tables is impossible without disabling foreign-key checks (ALTER TABLE ... CONVERT TO CHARACTER SET fails on either side of an incompatible FK pair).",
+      "resolution": "Stage as 20260920_00_a_m1_database_collation.sql before the legacy baseline; it sets the database default to utf8mb4/utf8mb4_unicode_ci so every table created without an explicit charset - baseline and later migrations alike - is utf8mb4_unicode_ci and all foreign keys are compatible. No historical migration is edited; no foreign-key check is disabled."
+    },
+    {
+      "source": "server/migrations/20260920_05_instructor_system.sql",
+      "issue": "References lectures before any tracked migration creates it.",
+      "resolution": "Prelude creates the minimum compatible lectures shape without price, archived_at, or instructor_id; the source migration then adds instructor_id unchanged."
+    },
+    {
+      "source": "server/migrations/20260924_instructor_video_exchange.sql",
+      "issue": "Adds lectures.price and lectures.archived_at.",
+      "resolution": "These columns are deliberately absent from the prelude and remain owned by this unchanged source migration."
+    },
+    {
+      "source": "server/migrations/20260928_runtime_schema_replacement.sql",
+      "issue": "Adds groups.instructor_id after 20260925_01_student_tenant_enrollment.sql uses it.",
+      "resolution": "Move only the exact reviewed groups ALTER to 20260920_00z_m1_prelude.sql after legacy baseline creates groups and before 20260925 enrollment dependency; retain all other source bytes and fail if the exact statement differs."
+    },
+    {
+      "source": "server/migrations/20261017_02_missing_core_tables.sql",
+      "issue": "Contains dynamic CREATE TABLE lectures fallback.",
+      "resolution": "Copied unchanged. Its INFORMATION_SCHEMA guard makes the reviewed prelude-created table skip the fallback."
+    }
+  ],
+  "unresolved": [
+    "No MySQL execution has been performed by this generator. A fresh-database run must validate the complete staged order; any additional failure requires an explicit reviewed repair.",
+    "M2 lifecycle migration 20261018_01 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval."
+  ],
+  "databaseCollationSha256": "60c1bf0c55f3bbb1f76cfdcd8d52b3c532be9616952b85f26a8b9caed1925929",
+  "sourceSha256": {
+    "20260920_00_legacy_baseline.sql": "2a7f70d22e2c4a86b0b880067f9c1109846924dc968a7431889b3c13e31a13c0",
+    "20260920_01_expand_user_roles.sql": "fe9ccb6ebbaa7a62800209ae4b5d6cb5c8869c110b5619c5a7980f0406941338",
+    "20260920_03_guardian_phone_students.sql": "c0eb48109bb698dd8260c3b10da01dd53aa8fcecf67305fb307facb28048d47d",
+    "20260920_05_instructor_system.sql": "203f3c00cc9822234760f66977465559088624a744586fc77beeff600eecb479",
+    "20260920_07_exam_attempts.sql": "42ddc435a8083d4b6faa64e72be8427517b0e11e621a75282d676c94d52d28d5",
+    "20260920_08_exam_question_images.sql": "8a673cd8544f4ec765a9b66258eece89708fa1f884a31c796d74ee258fed2d87",
+    "20260920_09_staff_auth_columns.sql": "2210c266f471bfa6c30c890c7cd73af79de729a1ddfa3e50f0bb61f075102389",
+    "20260920_10_premium_lecture_tables.sql": "647de54295a77859c25059bf0d70db6cc45214304f7d645e7fd84a623d2dac09",
+    "20260920_11_video_system.sql": "812277aeb4190c0f5decd9a8cc0076d01da04b07bd95cd40a836fd19c004bb53",
+    "20260921_saas_foundation.sql": "6793fe14428b2e8ff734ab9a66e72aa2b425eb6e17b080277f064dc0e5a3409f",
+    "20260921_support_tickets.sql": "4a6ff2eead676c35d2182af40ec29c9c45b9ad49f78b7c0b811d888c266dbd3f",
+    "20260922_00_tenant_media_and_subscription_requests.sql": "88dc0b0238d2d4986803bcac539f15de2023a1bd2ace3f3d87c625c3584d44ec",
+    "20260923_admin_scope_hardening.sql": "5e360a7648c921e18b102a72b7564fc0a98001df8f1396debec683a66d4ec9e0",
+    "20260923_platform_subscription_duration_and_grace.sql": "94a7824b726c3f8bf343aaa27c7458562ba4c1ab6916c814e6a4dd3b8e4044e3",
+    "20260924_billing_notifications.sql": "1202f34e39dc4ce24904939a5db91eb4ca0e65063240bc2bbd2e4a6cf4dc1ae0",
+    "20260924_instructor_topups_auto_renewal.sql": "9c3d5a92080d2b0a261ca77ceec214880dfc063b78069d2dfaa55b420d738138",
+    "20260924_instructor_video_exchange.sql": "f9d9753bd1bfac8b5924b83593f12c504da6de8ba16f12ad6d02a5f69861e06f",
+    "20260925_01_student_tenant_enrollment.sql": "5e529626346a1fc0bc651e5b6612fc320eb9935c63ca196395ea588b3181f425",
+    "20260925_02_student_enrollment_backfill_review.sql": "5329a2f4232be551fae597662ac388d663b1ade2aca3119c118842807c507c66",
+    "20260925_03_free_video_security.sql": "6d7ce8ecbe0ab59666f0948f18a201fc493d10d8fc647dd38f4257441cc28e1c",
+    "20260925_04_web_multidrm.sql": "12b81cb4ef95dcdaefe5fdfaae5c7916871acf6eb36ed3ed574d43ae466db4ba",
+    "20260925_05_web_multidrm_preview.sql": "83caa6e296dedf69cc3586c79d13088d42441b818adf828743a6330f096c1668",
+    "20260926_student_auth_revocation.sql": "e3225957499612b559215f8167c8f2db231b83399c671b720474b8d7aa9daa9d",
+    "20260926_video_deterrence_controls.sql": "e88c53e60ed2de4d95b5390e1193e9602123cacfb12749c102c99f43133c52e1",
+    "20260927_course_tenant_ownership_and_instructor_subject.sql": "ed026b66c72ae3fbdb355e3191adcd1ec38735ed2c31bd7d794f9a0de20acb5c",
+    "20260928_runtime_schema_replacement.sql": "8bda34c56251b61b7d9f2413d4f32240f46516730728455ff2de8da4ab8c359e",
+    "20260929_payment_requests_tenant.sql": "34cbf89d0fe743ad8a09d3a172a112a2b074b8cc8ea09f6eb7ee440b869ac61a",
+    "20260930_notification_preferences.sql": "d2d2c0869c2952b9f22269d18d1fd4a0a488f6377dae88e095cee84d491e5260",
+    "20261017_01_grades_tenant_scope.sql": "15d995a58363c754265e3ee7b536435f6082b9ae77fa74c2d7bdda712278e9b3",
+    "20261017_02_missing_core_tables.sql": "c0a0a681b2057bb029d51db6484eaa44b568380b81521e0d792a578e4d34cdc4",
+    "20261017_03_missing_columns_enums.sql": "b14bef8a3370e9be88c118e05620fc880afc43a82b6bb7f1497a944248b0af04",
+    "20261017_04_tenant_columns_backfill.sql": "2f506919395ea5cc7b0cdc444b9628c765cf1d4079c447a2b3f79d730d8a5144",
+    "20261017_05_staff_token_version.sql": "45d7036581d11ef733f01930c063835a3650b831c3fc322263722dfb014494d4",
+    "20261017_06_branch_membership.sql": "9dcc079a56712a2b6f93254634c2335d0b9fb2852eec63ec63be451a20e557fc",
+    "20261017_07_identity_otp.sql": "66554fc9a6974204f2e1f27147436cddfadac080671bbba1b4eb6f1451776afd",
+    "20261017_08_resource_branch_scope.sql": "b7bdc154fb5f53865dd32107e338152a0a5ce4c84c7d5baa339e428c88819e39",
+    "20261018_01_m2_identity_catalog_enrollment.sql": "7bf35e84a1e302190a4446c4039e7d360ed74d933bec034671a1288873a2f4b6"
+  }
+}

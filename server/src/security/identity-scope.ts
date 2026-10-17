@@ -50,17 +50,15 @@ export function isUsersIdentityLive(
 }
 
 /**
- * Session liveness for identities stored in the `staff` table. The staff table
- * has no `token_version` or suspension columns (adding them would require a
- * migration), so revocation is expressed by flipping `is_active`; absence of
- * the row means the identity no longer exists. Password changes on staff
- * accounts therefore cannot revoke outstanding sessions; that gap stays
- * blocked until an authorized schema design lands.
+ * Session liveness for staff identities. A missing version represents a
+ * pre-migration database/token and is treated as zero for compatibility.
  */
 export function isStaffIdentityLive(
-    state: { is_active: boolean | number } | null | undefined,
+    state: { is_active: boolean | number; token_version?: number | null } | null | undefined,
+    claimedTokenVersion: number | null | undefined = 0,
 ): boolean {
-    return isIssuableIdentity(state);
+    if (!isIssuableIdentity(state)) return false;
+    return Number(claimedTokenVersion || 0) === Number(state!.token_version || 0);
 }
 
 export interface TenantMembershipRow {

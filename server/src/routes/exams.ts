@@ -6,6 +6,13 @@ import fs from 'fs';
 import { randomUUID } from 'crypto';
 import { optionalAuth, authenticateToken, instructorScopeId, AuthRequest } from '../middleware/auth';
 import { requireTeachingWrite } from '../middleware/teaching-access';
+import {
+    getResourceBranchDeps,
+    principalFromAuthUser,
+    resolveResourceBranchAccess,
+    resourceBranchDenial,
+    type ResourceBranchDeps,
+} from '../security/resource-branch';
 
 /**
  * Data-access seam for the exams router. Production binds ../db; hermetic
@@ -29,6 +36,8 @@ export interface ExamRouterDeps {
     optionalAuthenticate: RequestHandler;
     authenticate: RequestHandler;
     requireTeachingWriteAccess: RequestHandler;
+    /** Resource-derived branch authority; defaults to the production SQL deps. */
+    branchAccess?: ResourceBranchDeps;
 }
 
 // Setup multer for question image uploads (module level: no DB, no env).
@@ -269,6 +278,82 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
     const denyStatus = (res: Response, status: number): Response =>
         res.status(status).json({ error: status === 404 ? 'Exam not found' : 'Forbidden' });
 
+    /**
+     * Resource-derived branch check for an existing exam. The branch comes
+     * from exam_groups -> groups; conflicting links are ambiguous and denied.
+     */
+    const enforceExamBranch = async (
+        req: AuthRequest,
+        res: Response,
+        examId: string,
+        requestedBranchId?: unknown,
+    ): Promise<boolean> => {
+        if (!req.user) {
+            res.status(401).json({ error: 'Authentication required' });
+            return false;
+        }
+        const decision = await resolveResourceBranchAccess(
+            deps.branchAccess ?? getResourceBranchDeps(),
+            principalFromAuthUser(req.user),
+            { resourceType: 'exam', resourceId: examId, requestedBranchId },
+        );
+        if (decision.kind !== 'allowed') {
+            const denial = resourceBranchDenial(decision);
+            res.status(denial.status).json(denial.body);
+            return false;
+        }
+        return true;
+    };
+
+    /**
+     * Validate the group links of an exam before create/update. All
+     * branch-owned links must agree and the caller must be authorized.
+     */
+    const validateExamGroupsBranch = async (
+        user: NonNullable<AuthRequest['user']>,
+        groupIds: unknown,
+    ): Promise<{ ok: true } | { ok: false; status: number; error: string }> => {
+        if (!Array.isArray(groupIds) || groupIds.length === 0) return { ok: true };
+        const rows = await query<{ id: string; branch_id: string | null; branch_scope: string | null }>(
+            `SELECT id, branch_id, branch_scope FROM \`groups\`
+             WHERE id IN (${groupIds.map(() => '?').join(',')})`,
+            groupIds,
+        );
+        if (rows.length !== groupIds.length) return { ok: false, status: 404, error: 'Group not found' };
+        const branches = new Set<string>();
+        for (const row of rows) {
+            if (row.branch_scope === 'branch') {
+                if (!row.branch_id) return { ok: false, status: 403, error: 'Branch context is ambiguous' };
+                branches.add(row.branch_id);
+            }
+        }
+        if (branches.size > 1) {
+            return { ok: false, status: 400, error: 'All groups of an exam must belong to one branch' };
+        }
+        if (branches.size === 0) return { ok: true };
+        const branchId = [...branches][0];
+        const tenantId = user.tenantId;
+        if (!tenantId) return { ok: false, status: 403, error: 'Workspace access required' };
+        const branch = await queryOne<{ tenant_id: string; status: string }>(
+            'SELECT tenant_id, status FROM branches WHERE id = ?', [branchId],
+        );
+        if (!branch || branch.tenant_id !== tenantId || branch.status !== 'active') {
+            return { ok: false, status: 403, error: 'Branch is outside your teaching scope' };
+        }
+        const owner = await queryOne<{ id: string }>(
+            "SELECT id FROM tenants WHERE id = ? AND owner_user_id = ? AND status = 'active'",
+            [tenantId, user.id],
+        );
+        if (!owner) {
+            const membership = await queryOne<{ id: string }>(
+                "SELECT id FROM branch_memberships WHERE branch_id = ? AND user_id = ? AND status = 'active'",
+                [branchId, user.id],
+            );
+            if (!membership) return { ok: false, status: 403, error: 'Branch membership required' };
+        }
+        return { ok: true };
+    };
+
     // ✅ Get exams for a specific student based on their group
     router.get('/student/:userId', deps.authenticate, async (req: AuthRequest, res: Response) => {
         try {
@@ -414,6 +499,34 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
                 params.push(scopeId);
             }
 
+            // Branch-owned exams are visible only to a live member of the
+            // derived branch or the tenant owner; tenant-level exams stay
+            // under the existing course/instructor scope.
+            if (req.user && req.user.role !== 'admin') {
+                sql += ` AND NOT EXISTS (
+                    SELECT 1 FROM exam_groups beg
+                    INNER JOIN \`groups\` bg ON bg.id = beg.group_id
+                    WHERE beg.exam_id = e.id AND bg.branch_scope = 'branch'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM branch_memberships bm
+                        WHERE bm.branch_id = bg.branch_id AND bm.user_id = ? AND bm.status = 'active'
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM tenants owner_t
+                        WHERE owner_t.id = ? AND owner_t.owner_user_id = ? AND owner_t.status = 'active'
+                      )
+                )`;
+                params.push(req.user.id, req.user.tenantId ?? null, req.user.id);
+                if (req.user.branchId) {
+                    sql += ` AND NOT EXISTS (
+                        SELECT 1 FROM exam_groups beg2
+                        INNER JOIN \`groups\` bg2 ON bg2.id = beg2.group_id
+                        WHERE beg2.exam_id = e.id AND bg2.branch_scope = 'branch' AND bg2.branch_id <> ?
+                    )`;
+                    params.push(req.user.branchId);
+                }
+            }
+
             sql += ' ORDER BY created_at DESC';
 
             let exams = await query<any>(sql, params);
@@ -464,6 +577,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             if (denied) {
                 return denyStatus(res, denied);
             }
+            if (!(await enforceExamBranch(req, res, req.params.id, req.query?.branch_id))) return;
 
             // Also fetch group_id from exam_groups junction table
             const examGroups = await query<any>(
@@ -506,6 +620,16 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
 
             if (scopeId && !(await areGroupsInScope(group_ids, scopeId))) {
                 return res.status(403).json({ error: 'يجب ربط الامتحان بمجموعة من مجموعاتك فقط' });
+            }
+
+            // Branch links must agree and must be authorized before the write.
+            const groupBranch = await validateExamGroupsBranch(req.user!, group_ids);
+            if (!groupBranch.ok) {
+                return res.status(groupBranch.status).json({ error: groupBranch.error });
+            }
+            if (req.body.branch_id !== undefined && req.body.branch_id !== null && req.body.branch_id !== ''
+                && (!Array.isArray(group_ids) || group_ids.length === 0)) {
+                return res.status(403).json({ error: 'Branch is derived from the exam groups' });
             }
 
             // ✅ Use start_date/end_date if start_time/end_time not provided (store as provided, no UTC conversion)
@@ -595,6 +719,15 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             const scopeId = instructorScopeId(req);
             if (scopeId && !(await isExamInScope(req.params.id, scopeId))) {
                 return res.status(404).json({ error: 'Exam not found' });
+            }
+            if (!(await enforceExamBranch(req, res, req.params.id, req.body?.branch_id))) return;
+            const targetGroupBranch = await validateExamGroupsBranch(
+                req.user!,
+                Array.isArray(req.body?.group_ids) ? req.body.group_ids
+                    : (req.body?.group_id ? [req.body.group_id] : []),
+            );
+            if (!targetGroupBranch.ok) {
+                return res.status(targetGroupBranch.status).json({ error: targetGroupBranch.error });
             }
             const {
                 title,
@@ -807,6 +940,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             if (scopeId && !(await isExamInScope(req.params.id, scopeId))) {
                 return res.status(404).json({ error: 'Exam not found' });
             }
+            if (!(await enforceExamBranch(req, res, req.params.id))) return;
             const result = await execute(
                 'UPDATE exams SET is_active = FALSE WHERE id = ?',
                 [req.params.id]
@@ -1070,6 +1204,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             if (denied) {
                 return denyStatus(res, denied);
             }
+            if (!(await enforceExamBranch(req, res, examId))) return;
 
             // Attempts are keyed by enrollment (students.id): a user id and an
             // enrollment id that differ resolve to the same attempt row.
@@ -1228,6 +1363,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             if (denied) {
                 return denyStatus(res, denied);
             }
+            if (!(await enforceExamBranch(req, res, examId))) return;
 
             // Attempts are keyed by enrollment (students.id).
             const enrollmentId = await resolveAttemptStudentId(req, studentId);
@@ -1344,6 +1480,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             if (denied) {
                 return denyStatus(res, denied);
             }
+            if (!(await enforceExamBranch(req, res, examId))) return;
 
             // Attempts are keyed by enrollment (students.id).
             const enrollmentId = await resolveAttemptStudentId(req, studentId);
@@ -1418,6 +1555,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             if (denied) {
                 return denyStatus(res, denied);
             }
+            if (!(await enforceExamBranch(req, res, examId))) return;
 
             // Attempts, answers and results are all keyed by enrollment
             // (students.id). The client-supplied score is never trusted; the
@@ -1906,6 +2044,7 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
             if (denied) {
                 return denyStatus(res, denied);
             }
+            if (!(await enforceExamBranch(req, res, examId))) return;
 
             console.log('📖 Fetching exam review for:', { examId, studentId });
 

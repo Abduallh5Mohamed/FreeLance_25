@@ -6,14 +6,14 @@ import path from 'node:path';
 import test, { before, after } from 'node:test';
 import jwt from 'jsonwebtoken';
 import mysql from 'mysql2/promise';
-import { assertSafeM1TestTarget, resolveM1EnvPathFromIntegrationDir } from '../m1-test-target-safety';
+import { assertSafeM1TestTarget, resolveM1EnvPath } from '../m1-test-target-safety';
 
 // Resolved from this file's location through the shared root-relative
 // resolver, not the process working directory and not a hand-written chain:
 // two levels up from server/tests/integration lands in server/, while the
 // isolated .env.m1 is generated at the repository root. Pure path math —
 // no environment file is read here.
-dotenv.config({ path: resolveM1EnvPathFromIntegrationDir(__dirname), override: true });
+dotenv.config({ path: resolveM1EnvPath(__dirname, process.env.M1_TEST_ENV_FILE), override: true });
 
 // Refuse missing, ambiguous or non-isolated targets (production database
 // names, non-compose ports, non-loopback hosts or API endpoints) before any
@@ -46,7 +46,7 @@ let paymentRequestB = '';
 let fileDiskPath = '';
 
 function token(userId: string, tenantId: string) {
-    return jwt.sign({ id: userId, role: 'teacher', tenant_id: tenantId }, secret, { expiresIn: '5m' });
+    return jwt.sign({ id: userId, role: 'instructor', tenant_id: tenantId }, secret, { expiresIn: '5m' });
 }
 
 async function api(method: string, route: string, jwtToken?: string, body?: unknown) {
@@ -93,6 +93,13 @@ after(async () => {
     if (paymentRequestB) await pool.execute('DELETE FROM payment_requests WHERE id=? AND tenant_id=?', [paymentRequestB, tenantB]);
     if (fileDiskPath) await rm(fileDiskPath, { force: true });
     await pool.end();
+    // The video-processor import (test 3) lazily creates the application's
+    // singleton keep-alive DB pool through src/db.ts. A long-running server
+    // never closes it, but this test process must: the open keep-alive
+    // socket otherwise keeps the event loop alive forever and the runner's
+    // strict exit-code wait times out. Same module instance, closed here.
+    const appDb = await import('../../src/db');
+    await appDb.closePool();
 });
 
 test('API read/write endpoints keep Tenant A from Tenant B records and ignore supplied selectors', async () => {
@@ -156,7 +163,14 @@ test('video session token issuance and background processing reject another tena
     const session = await api('POST', '/api/secure-video/session', token(apiUserA, tenantA), {
         videoId: videoB, fingerprint: 'm1-device', screenRes: '1920x1080',
     });
-    assert.equal(session.status, 404);
+    // The hardened session route deliberately distinguishes outcomes: the
+    // video row is fetched without a tenant-only filter so an exact verified
+    // license may cross the tenant boundary, and an authenticated caller
+    // with no verified grant receives a strict no_access (403) denial
+    // instead of a 404 (the hermetic suite locks this mapping). Tenant A is
+    // still rejected from Tenant B's video: no session, no token, and no
+    // manifest access is issued.
+    assert.equal(session.status, 403);
     const { processVideo } = await import('../../src/services/video-processor');
     await assert.rejects(processVideo(videoB, tenantA), /outside the requested tenant/);
 });

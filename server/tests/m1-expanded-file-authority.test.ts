@@ -53,6 +53,7 @@ import {
     FilesRouterDeps,
     TenantMediaFileRow,
 } from '../src/routes/files';
+import { tenantScopeBranchDeps } from './helpers/tenant-scope-branch-deps';
 import { AuthRequest, createAuthenticateToken } from '../src/middleware/auth';
 import type { PrincipalRepository } from '../src/security/principal-repository';
 
@@ -434,6 +435,8 @@ const makeHarness = (fixtures: Fixtures = makeFixtures()) => {
         db: makeDb(fixtures, executed),
         authenticate: createAuthenticateToken(makeRepository(fixtures)) as RequestHandler,
         storageRoot: uploadsRoot(),
+        branchAccess: tenantScopeBranchDeps((type, id) =>
+            type === 'file' ? fixtures.files[id]?.tenant_id ?? null : null),
     };
     return { router: createFilesRouter(deps), executed, fixtures };
 };

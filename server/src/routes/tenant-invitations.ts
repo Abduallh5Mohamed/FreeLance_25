@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import bcrypt from 'bcryptjs';
 import { Router, Request, Response } from 'express';
 import { getPool } from '../db';
+import type { ResultSetHeader } from 'mysql2';
 import { rateLimit } from '../middleware/rate-limit';
 import { ACTIVE_SUSPENSION_PREDICATE_SQL } from '../security/suspension-predicate';
 
@@ -52,11 +53,23 @@ export const consumeInvitationTransaction = async (
         const invitation = (rows as InvitationRow[])[0];
         if (!invitation) { await connection.rollback(); return 'invalid'; }
         if (invitation.suspension_active) { await connection.rollback(); return 'suspended'; }
-        await connection.execute(
+        const [userUpdate] = await connection.execute<ResultSetHeader>(
             'UPDATE users SET password_hash=?,is_active=1,token_version=COALESCE(token_version,0)+1 WHERE id=?',
             [passwordHash, invitation.user_id]
         );
-        await connection.execute('UPDATE tenant_invitations SET used_at=UTC_TIMESTAMP() WHERE id=?', [invitation.id]);
+        if (userUpdate.affectedRows !== 1) {
+            await connection.rollback();
+            return 'invalid';
+        }
+        const [invitationUpdate] = await connection.execute<ResultSetHeader>(
+            `UPDATE tenant_invitations SET used_at=UTC_TIMESTAMP()
+             WHERE id=? AND tenant_id=? AND user_id=? AND used_at IS NULL AND expires_at>UTC_TIMESTAMP()`,
+            [invitation.id, invitation.tenant_id, invitation.user_id]
+        );
+        if (invitationUpdate.affectedRows !== 1) {
+            await connection.rollback();
+            return 'invalid';
+        }
         await connection.commit();
         return 'redeemed';
     } catch (error) {
@@ -69,8 +82,11 @@ export const consumeInvitationTransaction = async (
 
 export const createRedeemHandler = (deps: InvitationRedeemDeps) =>
     async (req: Request, res: Response) => {
-        const token = String(req.body.token ?? '').trim();
-        const password = String(req.body.password ?? '');
+        const body = typeof req.body === 'object' && req.body !== null && !Array.isArray(req.body)
+            ? req.body as Record<string, unknown>
+            : {};
+        const token = typeof body['token'] === 'string' ? body['token'].trim() : '';
+        const password = typeof body['password'] === 'string' ? body['password'] : '';
         if (!INVITATION_TOKEN_PATTERN.test(token) ||
             password.length < INVITATION_PASSWORD_MIN_LENGTH ||
             password.length > INVITATION_PASSWORD_MAX_LENGTH) {

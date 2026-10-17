@@ -9,9 +9,11 @@ const router = Router();
 router.use(authenticateToken);
 
 const allowedMonths = new Set([3, 6, 12, 24]);
-const reportMonths = (value: unknown) => {
-  const parsed = Number.parseInt(String(value ?? '12'), 10);
-  return allowedMonths.has(parsed) ? parsed : 12;
+const reportMonths = (value: unknown): number | null => {
+  if (value === undefined) return 12;
+  if (typeof value !== 'string' || !/^(3|6|12|24)$/.test(value)) return null;
+  const parsed = Number(value);
+  return allowedMonths.has(parsed) ? parsed : null;
 };
 const number = (value: unknown) => Number(value || 0);
 const percent = (numerator: number, denominator: number) => denominator > 0 ? Number(((numerator / denominator) * 100).toFixed(1)) : null;
@@ -197,7 +199,9 @@ router.get('/finance', requireAdminPermission('finance.read'), async (req: AuthR
       isSuperAdmin(req.user!.id),
     ]);
     const has = (permission: string) => superAdmin || permissions.includes(permission);
-    const data = await loadFinanceAnalytics(reportMonths(req.query.months), has('platform_payment.read'));
+    const months = reportMonths(req.query.months);
+    if (months === null) return res.status(400).json({ error: 'Invalid report period' });
+    const data = await loadFinanceAnalytics(months, has('platform_payment.read'));
     return res.json({
       ...data,
       can_export: has('finance.export'),
@@ -210,9 +214,9 @@ router.get('/finance', requireAdminPermission('finance.read'), async (req: AuthR
   }
 });
 
-const csvCell = (value: unknown) => {
+export const escapeCsvCell = (value: unknown) => {
   let valueText = String(value ?? '');
-  if (/^[=+\-@]/.test(valueText)) valueText = `'${valueText}`;
+  if (/^[\s\u0000-\u001f\u007f-\u009f\uFEFF]*[=+\-@]/u.test(valueText)) valueText = `'${valueText}`;
   return `"${valueText.replace(/"/g, '""')}"`;
 };
 
@@ -236,7 +240,9 @@ const summaryCsvLabels: Record<string, string> = {
 router.get('/finance/export', requireAdminPermission('finance.export'), async (req: AuthRequest, res: Response) => {
   try {
     const permissions = await getAdminPermissions(req.user!.id);
-    const data = await loadFinanceAnalytics(reportMonths(req.query.months), permissions.includes('platform_payment.read'));
+    const months = reportMonths(req.query.months);
+    if (months === null) return res.status(400).json({ error: 'Invalid report period' });
+    const data = await loadFinanceAnalytics(months, permissions.includes('platform_payment.read'));
     const rows: unknown[][] = [
       ['تقرير تحليلات المنصة'], ['وقت الإنشاء UTC', data.generated_at], ['الفترة بالشهور', data.months], [],
       ['المؤشر', 'القيمة'], ...Object.entries(data.summary).map(([key, value]) => [summaryCsvLabels[key] || key, value]), [],
@@ -261,7 +267,7 @@ router.get('/finance/export', requireAdminPermission('finance.export'), async (r
       rows.push([], ['تفاصيل الدفعات - متاحة للمالية فقط'], ['النشاط', 'المبلغ', 'الوسيلة', 'المرجع', 'تاريخ التحقق']);
       for (const item of data.recent as any[]) rows.push([item.business_name, item.amount, item.method, item.reference_number, item.reviewed_at]);
     }
-    const csv = `\uFEFF${rows.map(row => row.map(csvCell).join(',')).join('\r\n')}`;
+    const csv = `\uFEFF${rows.map(row => row.map(escapeCsvCell).join(',')).join('\r\n')}`;
     await execute(
       `INSERT INTO audit_events (id,actor_user_id,action,resource_type,resource_id,new_value,reason)
        VALUES (?,?,?,?,?,?,?)`,
@@ -357,7 +363,10 @@ router.delete('/finance/calculations/:id', requireAdminPermission('analytics.cal
 router.post('/finance/pdf-export-event', requireAdminPermission('analytics.export_pdf'), async (req: AuthRequest, res: Response) => {
   try {
     const months = reportMonths(req.body.months);
-    const calculationCount = Math.min(100, Math.max(0, Number(req.body.calculation_count) || 0));
+    const calculationCount = req.body.calculation_count === undefined ? 0 : Number(req.body.calculation_count);
+    if (months === null || !Number.isInteger(calculationCount) || calculationCount < 0 || calculationCount > 100) {
+      return res.status(400).json({ error: 'Invalid PDF export details' });
+    }
     await execute(
       `INSERT INTO audit_events (id,actor_user_id,action,resource_type,resource_id,new_value,reason)
        VALUES (?,?,?,?,?,?,?)`,
@@ -373,7 +382,11 @@ router.post('/finance/pdf-export-event', requireAdminPermission('analytics.expor
 
 router.get('/security', requireAdminPermission('security.read'), async (req: AuthRequest, res: Response) => {
   try {
-    const page = Math.max(1, Number.parseInt(String(req.query.page ?? '1'), 10) || 1);
+    const pageValue = req.query.page ?? '1';
+    if (typeof pageValue !== 'string' || !/^[1-9]\d{0,3}$/.test(pageValue) || Number(pageValue) > 1000) {
+      return res.status(400).json({ error: 'Invalid page number' });
+    }
+    const page = Number(pageValue);
     const limit = 50;
     const summary = await queryOne<{ events_24h: number; admin_changes_24h: number; financial_changes_24h: number }>(
       `SELECT COUNT(*) AS events_24h,

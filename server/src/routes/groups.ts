@@ -3,6 +3,13 @@ import { randomUUID } from 'crypto';
 import { optionalAuth, AuthRequest, authenticateToken } from '../middleware/auth';
 import { requireTeachingWrite } from '../middleware/teaching-access';
 import { hasVerifiedPlatformPermission } from '../security/admin-permissions';
+import {
+    getResourceBranchDeps,
+    principalFromAuthUser,
+    resolveResourceBranchAccess,
+    resourceBranchDenial,
+    type ResourceBranchDeps,
+} from '../security/resource-branch';
 
 interface Group {
     id: string;
@@ -15,6 +22,8 @@ interface Group {
     is_active: boolean;
     schedule_days?: string | null;
     schedule_time?: string | null;
+    branch_id?: string | null;
+    branch_scope?: string | null;
 }
 
 export interface GroupsDataAccess {
@@ -29,6 +38,8 @@ export interface GroupsRouterDeps {
     authenticate: RequestHandler;
     requireTeachingWrite: RequestHandler;
     hasVerifiedPlatformCapability: (userId: string) => Promise<boolean>;
+    /** Resource-derived branch authority; defaults to the production SQL deps. */
+    branchAccess?: ResourceBranchDeps;
 }
 
 interface GroupScope {
@@ -47,6 +58,16 @@ const TENANT_GROUP_SCOPE = `EXISTS (
       ))
       AND (g.instructor_id IS NOT NULL OR g.course_id IS NOT NULL)
 )`;
+
+/**
+ * A row is listable only when its classification is internally consistent:
+ * explicit tenant with no branch, or explicit branch with a branch id.
+ * Legacy/NULL/unknown scopes and contradictory combinations are ambiguous,
+ * denied for normal access, and visible only through the audited quarantine
+ * report.
+ */
+const CLASSIFIED_GROUP_SCOPE = `((g.branch_scope = 'tenant' AND g.branch_id IS NULL)
+    OR (g.branch_scope = 'branch' AND g.branch_id IS NOT NULL))`;
 
 const groupScopeFor = (user: NonNullable<AuthRequest['user']>): GroupScope | null => {
     if (user.role === 'instructor') {
@@ -68,6 +89,98 @@ export const createGroupsRouter = (deps: GroupsRouterDeps): Router => {
     const router = Router();
     router.use(deps.optionalAuthenticate);
 
+    /**
+     * Resource-derived branch check for an existing group. The group's own
+     * branch row is authoritative; a caller selector must match it and a
+     * branch-owned group requires a live membership (or the narrow owner /
+     * verified-platform path). An unclassified legacy/unknown group is
+     * ambiguous and denied for every principal — the quarantine report is the
+     * only listing surface, and appearing there never grants content access.
+     */
+    const enforceGroupBranch = async (
+        req: AuthRequest,
+        res: Response,
+        groupId: string,
+    ): Promise<boolean> => {
+        if (!req.user) {
+            res.status(401).json({ error: 'Authentication required' });
+            return false;
+        }
+        const decision = await resolveResourceBranchAccess(
+            deps.branchAccess ?? getResourceBranchDeps(),
+            principalFromAuthUser(req.user),
+            {
+                resourceType: 'group',
+                resourceId: groupId,
+                requestedBranchId: (req.body ?? {}).branch_id ?? req.query?.branch_id,
+            },
+        );
+        if (decision.kind !== 'allowed') {
+            const denial = resourceBranchDenial(decision);
+            res.status(denial.status).json(denial.body);
+            return false;
+        }
+        return true;
+    };
+
+    /**
+     * SQL visibility predicate for classified groups. Branch-owned groups are
+     * visible only to an active member of that branch or the tenant owner;
+     * explicitly tenant-level groups are unchanged. Unclassified/ambiguous
+     * rows are excluded for every list caller.
+     */
+    const branchVisibility = (user: NonNullable<AuthRequest['user']>): { sql: string; params: unknown[] } => {
+        if (user.role === 'admin') return { sql: '', params: [] };
+        const params: unknown[] = [user.id, user.tenantId, user.id];
+        let sql = ` AND ${CLASSIFIED_GROUP_SCOPE}
+            AND (g.branch_scope <> 'branch'
+            OR EXISTS (SELECT 1 FROM branch_memberships bm
+                       WHERE bm.branch_id = g.branch_id AND bm.user_id = ? AND bm.status = 'active')
+            OR EXISTS (SELECT 1 FROM tenants owner_t
+                       WHERE owner_t.id = ? AND owner_t.owner_user_id = ? AND owner_t.status = 'active'))`;
+        if (user.branchId) {
+            sql += ' AND (g.branch_scope <> \'branch\' OR g.branch_id = ?)';
+            params.push(user.branchId);
+        }
+        return { sql, params };
+    };
+
+    /**
+     * Validate an explicitly requested branch assignment before a create or
+     * move. Never trusts the selector: the branch row must be active in the
+     * caller's tenant, and the caller must be an active member (or the owner).
+     */
+    const validateBranchAssignment = async (
+        user: NonNullable<AuthRequest['user']>,
+        rawBranchId: unknown,
+    ): Promise<{ ok: true; branchId: string } | { ok: false; status: number; error: string }> => {
+        const branchId = typeof rawBranchId === 'string' ? rawBranchId.trim() : '';
+        if (!branchId || !/^[A-Za-z0-9_-]+$/.test(branchId) || branchId.length > 64) {
+            return { ok: false, status: 400, error: 'Invalid branch' };
+        }
+        const tenantId = user.tenantId;
+        if (!tenantId) return { ok: false, status: 403, error: 'Workspace access required' };
+        const branch = await queryOne<{ id: string; tenant_id: string; status: string }>(
+            'SELECT id, tenant_id, status FROM branches WHERE id = ?',
+            [branchId],
+        );
+        if (!branch || branch.tenant_id !== tenantId || branch.status !== 'active') {
+            return { ok: false, status: 403, error: 'Branch is outside your teaching scope' };
+        }
+        const owner = await queryOne<{ id: string }>(
+            "SELECT id FROM tenants WHERE id = ? AND owner_user_id = ? AND status = 'active'",
+            [tenantId, user.id],
+        );
+        if (!owner) {
+            const membership = await queryOne<{ id: string }>(
+                "SELECT id FROM branch_memberships WHERE branch_id = ? AND user_id = ? AND status = 'active'",
+                [branchId, user.id],
+            );
+            if (!membership) return { ok: false, status: 403, error: 'Branch membership required' };
+        }
+        return { ok: true, branchId };
+    };
+
     router.get('/', deps.authenticate, async (req: AuthRequest, res: Response) => {
         try {
             const user = req.user;
@@ -78,7 +191,7 @@ export const createGroupsRouter = (deps: GroupsRouterDeps): Router => {
                     return res.status(403).json({ error: 'Forbidden' });
                 }
                 const groups = await query<Group>(
-                    'SELECT g.id, g.name, g.description, g.course_id, g.grade_id, g.max_students, g.current_students, g.is_active, g.schedule_days, g.schedule_time, g.instructor_id FROM `groups` g WHERE g.is_active = TRUE ORDER BY g.name',
+                    `SELECT g.id, g.name, g.description, g.course_id, g.grade_id, g.max_students, g.current_students, g.is_active, g.schedule_days, g.schedule_time, g.instructor_id, g.branch_id, g.branch_scope FROM \`groups\` g WHERE g.is_active = TRUE AND ${CLASSIFIED_GROUP_SCOPE} ORDER BY g.name`,
                     []
                 );
                 return res.json(groups);
@@ -86,12 +199,13 @@ export const createGroupsRouter = (deps: GroupsRouterDeps): Router => {
 
             const scope = groupScopeFor(user);
             if (!scope) return res.status(403).json({ error: 'Forbidden' });
+            const branch = branchVisibility(user);
             const groups = await query<Group>(
-                `SELECT g.id, g.name, g.description, g.course_id, g.grade_id, g.max_students, g.current_students, g.is_active, g.schedule_days, g.schedule_time, g.instructor_id
+                `SELECT g.id, g.name, g.description, g.course_id, g.grade_id, g.max_students, g.current_students, g.is_active, g.schedule_days, g.schedule_time, g.instructor_id, g.branch_id, g.branch_scope
                  FROM \`groups\` g
-                 WHERE g.is_active = TRUE AND ${scope.sql}
+                 WHERE g.is_active = TRUE AND ${scope.sql}${branch.sql}
                  ORDER BY g.name`,
-                scope.params
+                [...scope.params, ...branch.params]
             );
             res.json(groups);
         } catch (error) {
@@ -124,6 +238,7 @@ export const createGroupsRouter = (deps: GroupsRouterDeps): Router => {
             }
 
             if (!group) return res.status(404).json({ error: 'Group not found' });
+            if (!(await enforceGroupBranch(req, res, req.params.id))) return;
             res.json(group);
         } catch (error) {
             console.error('Get group error:', error);
@@ -191,9 +306,27 @@ export const createGroupsRouter = (deps: GroupsRouterDeps): Router => {
             }
 
             const newId = randomUUID();
+
+            // Creation never invents a branch. A supplied branch is validated
+            // against the server-side branch/membership model before the
+            // insert; a caller cannot create a group in an unauthorized
+            // branch, and an explicitly branch-scoped group without a branch
+            // is rejected instead of defaulting to tenant scope.
+            const requestedBranchId = (req.body ?? {}).branch_id;
+            let branchId: string | null = null;
+            let branchScope = 'tenant';
+            if (requestedBranchId !== undefined && requestedBranchId !== null && requestedBranchId !== '') {
+                const validated = await validateBranchAssignment(user, requestedBranchId);
+                if (!validated.ok) return res.status(validated.status).json({ error: validated.error });
+                branchId = validated.branchId;
+                branchScope = 'branch';
+            } else if ((req.body ?? {}).branch_scope === 'branch') {
+                return res.status(400).json({ error: 'A branch is required for a branch-scoped group' });
+            }
+
             await execute(
-                'INSERT INTO `groups` (id, name, description, course_id, grade_id, instructor_id, max_students, is_active, schedule_days, schedule_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [newId, name, description || null, course_id, finalGradeId, ownerId, max_students || 30, is_active, schedule_days, schedule_time ?? null]
+                'INSERT INTO `groups` (id, name, description, course_id, grade_id, instructor_id, max_students, is_active, schedule_days, schedule_time, branch_id, branch_scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [newId, name, description || null, course_id, finalGradeId, ownerId, max_students || 30, is_active, schedule_days, schedule_time ?? null, branchId, branchScope]
             );
 
             const scope = groupScopeFor(user);
@@ -223,7 +356,7 @@ export const createGroupsRouter = (deps: GroupsRouterDeps): Router => {
                 [req.params.id, ...scope.params]
             );
             if (!existing) return res.status(404).json({ error: 'Group not found' });
-
+            if (!(await enforceGroupBranch(req, res, req.params.id))) return;
             const { name, description, max_students, is_active, grade_id } = req.body;
             let course_id = (req.body && req.body.course_id) ?? null;
             let schedule_days = (req.body && (req.body.schedule_days ?? null)) as unknown;
@@ -311,6 +444,7 @@ export const createGroupsRouter = (deps: GroupsRouterDeps): Router => {
             }
             const scope = groupScopeFor(user);
             if (!scope) return res.status(403).json({ error: 'Forbidden' });
+            if (!(await enforceGroupBranch(req, res, req.params.id))) return;
             const result = await execute(
                 `DELETE g FROM \`groups\` g WHERE g.id = ? AND ${scope.sql}`,
                 [req.params.id, ...scope.params]

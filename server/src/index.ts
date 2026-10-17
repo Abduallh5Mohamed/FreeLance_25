@@ -5,6 +5,7 @@ import { testConnection } from './db';
 import { createServer } from 'http';
 import { setupSocketIO } from './services/socket';
 import studentEnrollmentRoutes, { cleanupEnrollmentPrivacyData } from './routes/student-enrollment';
+import branchesRoutes from './routes/branches';
 
 // Import routes
 import authRoutes from './routes/auth';
@@ -42,6 +43,7 @@ import premiumLecturesRoutes from './routes/premium-lectures';
 import aiChatRoutes from './routes/ai-chat';
 import meetingsRoutes from './routes/meetings';
 import instructorsRoutes from './routes/instructors';
+import publicIdentityRoutes from './routes/public-identity';
 import instructorWalletRoutes from './routes/instructor-wallet';
 import instructorVideoRequestsRoutes from './routes/instructor-video-requests';
 import supportTicketsRoutes from './routes/support-tickets';
@@ -142,6 +144,7 @@ app.use('/api/groups', groupsRoutes);
 app.use('/api/grades', gradesRoutes);
 app.use('/api/students', studentsRoutes);
 app.use('/api/courses', coursesRoutes);
+app.use('/api/public', publicIdentityRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/exams', examsRoutes);
 app.use('/api/exam-results', examResultsRoutes);
@@ -178,6 +181,7 @@ app.use('/api/admin/approvals', adminApprovalsRoutes);
 app.use('/api/admin/dashboard', adminDashboardRoutes);
 app.use('/api/admin/insights', adminInsightsRoutes);
 app.use('/api/student-enrollment', studentEnrollmentRoutes);
+app.use('/api/branches', branchesRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {

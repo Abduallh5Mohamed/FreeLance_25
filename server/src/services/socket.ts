@@ -1,7 +1,7 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { Server as HTTPServer } from 'http';
 import { getPool } from '../db';
-import { RowDataPacket } from 'mysql2';
+import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { notifyAdminNewMessage, notifyStudentMessageResponse } from '../utils/notifications';
 import jwt from 'jsonwebtoken';
 import { getJwtSecret, AuthRequest, createAuthenticateToken } from '../middleware/auth';
@@ -336,13 +336,15 @@ export const createSocketIO = (deps: SocketDeps) =>
                         return;
                     }
 
-                    const [uuidResult] = await deps.query<RowDataPacket[]>('SELECT UUID() as uuid');
-                    const messageId = uuidResult[0].uuid;
-
-                    await deps.query(`
-                        INSERT INTO messages (id, sender_id, receiver_id, content, message_type, image_url)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    `, [messageId, senderId, receiverId, content || null, messageType, imageUrl || null]);
+                    const [insertResult] = await deps.query<ResultSetHeader>(`
+                        INSERT INTO messages (sender_id, receiver_id, content, message_type, image_url)
+                        VALUES (?, ?, ?, ?, ?)
+                    `, [senderId, receiverId, content || null, messageType, imageUrl || null]);
+                    const messageId = insertResult.insertId;
+                    if (!Number.isSafeInteger(messageId) || messageId <= 0) {
+                        socket.emit('message:error', { error: 'Message could not be saved' });
+                        return;
+                    }
 
                     await deps.query(`
                         INSERT INTO message_status (message_id, is_delivered, delivered_at)

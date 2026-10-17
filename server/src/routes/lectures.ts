@@ -1,8 +1,16 @@
 import { Router, Response, RequestHandler } from 'express';
-import { query, queryOne, execute } from '../db';
+import { query, queryOne, execute, getPool } from '../db';
 import { v4 as uuidv4 } from 'uuid';
 import { optionalAuth, instructorScopeId, authenticateToken, AuthRequest } from '../middleware/auth';
 import { requireTeachingWrite } from '../middleware/teaching-access';
+import {
+    getResourceBranchDeps,
+    principalFromAuthUser,
+    resolveResourceBranchAccess,
+    resourceBranchDenial,
+    type ResourceBranchDeps,
+} from '../security/resource-branch';
+import { recordAudit, snapshotRow } from '../security/audit';
 
 interface Lecture {
     id: string;
@@ -42,6 +50,15 @@ export interface LectureRouterDeps {
     optionalAuthenticate: RequestHandler;
     authenticate: RequestHandler;
     requireTeachingWriteAccess: RequestHandler;
+    /** Resource-derived branch authority; defaults to the production SQL deps. */
+    branchAccess?: ResourceBranchDeps;
+    /**
+     * Run `fn` inside a single DB transaction. Production wires this to a real
+     * pool connection; hermetic tests inject a no-op that just invokes `fn`
+     * with the same injected data access so reorder/atomic writes stay testable
+     * without a live database.
+     */
+    transaction?: <T>(fn: (tx: LectureDataAccess) => Promise<T>) => Promise<T>;
 }
 
 /**
@@ -50,6 +67,47 @@ export interface LectureRouterDeps {
  * middleware and the real teaching-entitlement guard; hermetic tests pass
  * the same middleware over injected fixture repositories.
  */
+/**
+ * Pure reorder planner: validates an ordered list of lecture ids against the
+ * set that currently exists in the caller's course. Rejects duplicates, ids that
+ * are not part of the course (conflicting/forged), and lists that omit a current
+ * lecture (stale/partial). Returns 1-based display_order assignments. No I/O, so
+ * it is fully unit-testable independent of a database.
+ */
+export type LectureReorderPlan =
+    | { ok: true; assignments: { id: string; display_order: number }[] }
+    | { ok: false; status: number; error: string };
+
+export function planLectureReorder(
+    existing: ReadonlyArray<{ id: string }>,
+    orderedIds: unknown,
+): LectureReorderPlan {
+    if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+        return { ok: false, status: 400, error: 'An ordered list of lecture ids is required' };
+    }
+    const existingIds = new Set(existing.map((row) => row.id));
+    const seen = new Set<string>();
+    for (const rawId of orderedIds) {
+        if (typeof rawId !== 'string' || rawId.length === 0) {
+            return { ok: false, status: 400, error: 'Each lecture id must be a non-empty string' };
+        }
+        if (seen.has(rawId)) {
+            return { ok: false, status: 409, error: 'Duplicate lecture id in reorder list' };
+        }
+        seen.add(rawId);
+        if (!existingIds.has(rawId)) {
+            return { ok: false, status: 409, error: 'Lecture id is not part of this course' };
+        }
+    }
+    if (seen.size !== existingIds.size) {
+        return { ok: false, status: 409, error: 'Reorder list must include every lecture in the course' };
+    }
+    return {
+        ok: true,
+        assignments: orderedIds.map((id, index) => ({ id, display_order: index + 1 })),
+    };
+}
+
 export const createLectureRouter = (deps: LectureRouterDeps): Router => {
     const router = Router();
     const { query, queryOne, execute } = deps.db;
@@ -74,6 +132,71 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             };
         }
         return null;
+    };
+
+    /**
+     * Resource-derived branch check for an existing lecture. The branch comes
+     * from lectures.group_id -> groups; a group-less lecture is explicitly
+     * tenant-level (its course tenant is enforced by the existing scope).
+     */
+    const enforceLectureBranch = async (
+        req: AuthRequest,
+        res: Response,
+        lectureId: string,
+        requestedBranchId?: unknown,
+    ): Promise<boolean> => {
+        // Public marketplace reads are anonymous by design; there is no
+        // principal to bind to a branch. Authenticated reads are enforced.
+        if (!req.user) return true;
+        const decision = await resolveResourceBranchAccess(
+            deps.branchAccess ?? getResourceBranchDeps(),
+            principalFromAuthUser(req.user),
+            { resourceType: 'lecture', resourceId: lectureId, requestedBranchId },
+        );
+        if (decision.kind !== 'allowed') {
+            const denial = resourceBranchDenial(decision);
+            res.status(denial.status).json(denial.body);
+            return false;
+        }
+        return true;
+    };
+
+    /**
+     * A lecture may only be created into a group whose branch the caller may
+     * actually use. No selector is accepted as authority.
+     */
+    const validateLectureGroupBranch = async (
+        user: NonNullable<AuthRequest['user']>,
+        groupId: unknown,
+    ): Promise<{ ok: true } | { ok: false; status: number; error: string }> => {
+        if (groupId === undefined || groupId === null || groupId === '') return { ok: true };
+        if (typeof groupId !== 'string') return { ok: false, status: 400, error: 'Invalid group' };
+        const group = await queryOne<{
+            id: string; branch_id: string | null; branch_scope: string | null;
+        }>('SELECT id, branch_id, branch_scope FROM `groups` WHERE id = ?', [groupId]);
+        if (!group) return { ok: false, status: 404, error: 'Group not found' };
+        if (group.branch_scope !== 'branch') return { ok: true };
+        if (!group.branch_id) return { ok: false, status: 403, error: 'Branch context is ambiguous' };
+        const tenantId = user.tenantId;
+        if (!tenantId) return { ok: false, status: 403, error: 'Workspace access required' };
+        const branch = await queryOne<{ tenant_id: string; status: string }>(
+            'SELECT tenant_id, status FROM branches WHERE id = ?', [group.branch_id],
+        );
+        if (!branch || branch.tenant_id !== tenantId || branch.status !== 'active') {
+            return { ok: false, status: 403, error: 'Branch is outside your teaching scope' };
+        }
+        const owner = await queryOne<{ id: string }>(
+            "SELECT id FROM tenants WHERE id = ? AND owner_user_id = ? AND status = 'active'",
+            [tenantId, user.id],
+        );
+        if (!owner) {
+            const membership = await queryOne<{ id: string }>(
+                "SELECT id FROM branch_memberships WHERE branch_id = ? AND user_id = ? AND status = 'active'",
+                [group.branch_id, user.id],
+            );
+            if (!membership) return { ok: false, status: 403, error: 'Branch membership required' };
+        }
+        return { ok: true };
     };
 
     router.use(optionalAuthenticate);
@@ -139,6 +262,32 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 params.push(group_id);
             }
 
+            // Branch-owned lectures are visible only to a live member of the
+            // derived branch or the tenant owner; group-less lectures stay
+            // tenant-level under the existing course-tenant scope.
+            if (req.user && req.user.role !== 'admin') {
+                sql += ` AND (l.group_id IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM \`groups\` bg
+                    WHERE bg.id = l.group_id AND bg.branch_scope = 'branch'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM branch_memberships bm
+                        WHERE bm.branch_id = bg.branch_id AND bm.user_id = ? AND bm.status = 'active'
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM tenants owner_t
+                        WHERE owner_t.id = ? AND owner_t.owner_user_id = ? AND owner_t.status = 'active'
+                      )
+                ))`;
+                params.push(req.user.id, req.user.tenantId ?? null, req.user.id);
+                if (req.user.branchId) {
+                    sql += ` AND (l.group_id IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM \`groups\` bg2
+                        WHERE bg2.id = l.group_id AND bg2.branch_scope = 'branch' AND bg2.branch_id <> ?
+                    ))`;
+                    params.push(req.user.branchId);
+                }
+            }
+
             sql += ' ORDER BY l.display_order ASC, l.created_at DESC';
 
             const lectures = await query(sql, params);
@@ -187,9 +336,17 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
 
             console.log(`[Lectures] Found user with phone: ${userRecord.phone}`);
 
-            // Find student by phone (students table has phone directly)
+            // Find student by phone (students table has phone directly). Defense in
+            // depth: only an approved, currently-active enrollment (not revoked or
+            // past its end date) may read protected lecture content, independent of
+            // any stale JWT the caller may still carry.
             const student = await queryOne(
-                'SELECT id, name, phone, group_id, grade_id, instructor_id FROM students WHERE phone = ? AND is_active = TRUE',
+                `SELECT id, name, phone, group_id, grade_id, instructor_id
+                 FROM students
+                 WHERE phone = ? AND is_active = TRUE
+                   AND approval_status = 'approved'
+                   AND (enrollment_status IS NULL OR enrollment_status = 'active')
+                   AND (enrollment_end_date IS NULL OR enrollment_end_date > UTC_TIMESTAMP())`,
                 [userRecord.phone]
             );
 
@@ -297,6 +454,7 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             if (!lecture.is_published && !isOwner) {
                 return res.status(404).json({ error: 'Lecture not found' });
             }
+            if (!(await enforceLectureBranch(req, res, req.params.id, req.query?.branch_id))) return;
 
             res.json(lecture);
         } catch (error) {
@@ -392,10 +550,24 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 });
             }
 
+            // A lecture's branch is derived from its group; a caller cannot
+            // assign an unauthorized branch and a bare selector is not
+            // authority.
+            const groupBranchValidation = await validateLectureGroupBranch(req.user!, group_id);
+            if (!groupBranchValidation.ok) {
+                return res.status(groupBranchValidation.status).json({ error: groupBranchValidation.error });
+            }
+            if (req.body.branch_id !== undefined && req.body.branch_id !== null && req.body.branch_id !== ''
+                && !group_id) {
+                return res.status(403).json({ error: 'Branch is derived from the lecture group' });
+            }
+
             console.log('[Lectures] Creating lecture:', { course_id: actualCourseId, grade_id, group_id, instructor_id: ownerId, title, video_url });
 
             const lectureId = uuidv4();
-            const result = await execute(
+            if (!deps.transaction) throw new Error('Lecture creation requires transactional data access');
+            await deps.transaction(async (tx) => {
+                await tx.execute(
                 `INSERT INTO lectures
                 (id, course_id, grade_id, group_id, instructor_id, title, description, video_url, duration_minutes, price, display_order, is_free, is_published)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -414,7 +586,20 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                     is_free,
                     is_published
                 ]
-            );
+                );
+
+                await recordAudit(tx.execute, {
+                    actorUserId: req.user?.id ?? null,
+                    tenantId: req.user?.tenantId ?? null,
+                    action: 'lecture.create',
+                    resourceType: 'lecture',
+                    resourceId: lectureId,
+                    newValue: snapshotRow({
+                        course_id: actualCourseId, grade_id, group_id, instructor_id: ownerId,
+                        title, description, video_url, duration_minutes, price, display_order, is_free, is_published,
+                    }),
+                });
+            });
 
             const newLecture = await queryOne(
                 'SELECT * FROM lectures WHERE id = ?',
@@ -429,6 +614,80 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
         }
     });
 
+    // Reorder lectures within a course. Registered before PUT /:id so the static
+    // segment is not captured by the :id param route.
+    router.put('/reorder', requireTeachingWriteAccess, async (req: AuthRequest, res: Response) => {
+        try {
+            const scopeId = instructorScopeId(req);
+            const tenantId = req.user?.tenantId;
+            const courseId = typeof req.body?.course_id === 'string' ? req.body.course_id : '';
+            const orderedIds = Array.isArray(req.body?.ordered_ids) ? req.body.ordered_ids : [];
+            if (!courseId) return res.status(400).json({ error: 'course_id is required' });
+
+            // Course and lecture set must be read under the same transaction as
+            // writes. Otherwise a concurrent create/archive can make the list
+            // stale after validation and leave a partial order behind.
+            if (!deps.transaction) throw new Error('Lecture reorder requires transactional data access');
+            const outcome = await deps.transaction(async (tx) => {
+                const course = await tx.queryOne<{ id: string }>(
+                    scopeId
+                        ? 'SELECT id FROM courses WHERE id=? AND instructor_id=? FOR UPDATE'
+                        : 'SELECT id FROM courses WHERE id=? AND tenant_id=? FOR UPDATE',
+                    scopeId ? [courseId, scopeId] : [courseId, tenantId ?? '']
+                );
+                if (!course) return { kind: 'missing' as const };
+
+                const existing = await tx.query<{ id: string }>(
+                    scopeId
+                        ? 'SELECT id FROM lectures WHERE course_id=? AND instructor_id=? AND archived_at IS NULL ORDER BY id FOR UPDATE'
+                        : 'SELECT id FROM lectures WHERE course_id=? AND EXISTS (SELECT 1 FROM courses c WHERE c.id=lectures.course_id AND c.tenant_id=?) AND archived_at IS NULL ORDER BY id FOR UPDATE',
+                    scopeId ? [courseId, scopeId] : [courseId, tenantId ?? '']
+                );
+                const plan = planLectureReorder(existing, orderedIds);
+                if (!plan.ok) return { kind: 'conflict' as const, plan };
+
+                // A reorder is a course-level mutation. Every included lecture
+                // must independently resolve to an authorized tenant/branch;
+                // tenant membership alone cannot reorder another branch's rows.
+                for (const { id } of existing) {
+                    if (!(await enforceLectureBranch(req, res, id))) {
+                        return { kind: 'denied' as const };
+                    }
+                }
+
+                let count = 0;
+                for (const assignment of plan.assignments) {
+                    const result = await tx.execute(
+                        'UPDATE lectures SET display_order=? WHERE id=? AND course_id=? AND archived_at IS NULL',
+                        [assignment.display_order, assignment.id, courseId]
+                    );
+                    if (result.affectedRows) count += 1;
+                }
+                if (count !== plan.assignments.length) {
+                    throw new Error('Lecture set changed while applying reorder');
+                }
+                await recordAudit(tx.execute, {
+                    actorUserId: req.user?.id ?? null,
+                    tenantId: tenantId ?? null,
+                    action: 'lecture.reorder',
+                    resourceType: 'course',
+                    resourceId: courseId,
+                    newValue: { ordered_ids: plan.assignments.map((a) => a.id) },
+                });
+                return { kind: 'updated' as const, updated: count, plan };
+            });
+
+            if (outcome.kind === 'missing') return res.status(404).json({ error: 'Course not found in your workspace' });
+            if (outcome.kind === 'conflict') return res.status(outcome.plan.status).json({ error: outcome.plan.error });
+            if (outcome.kind === 'denied') return;
+
+            res.json({ ok: true, updated: outcome.updated });
+        } catch (error) {
+            console.error('Reorder lectures error:', error);
+            res.status(500).json({ error: 'Failed to reorder lectures' });
+        }
+    });
+
     // Update lecture
     router.put('/:id', requireTeachingWriteAccess, async (req: AuthRequest, res: Response) => {
         try {
@@ -437,8 +696,10 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             if (!mutationScope) {
                 return res.status(404).json({ error: 'Lecture not found' });
             }
-            const existing = await queryOne<{ id: string; instructor_id: string | null; video_url: string }>(
-                `SELECT l.id, l.instructor_id, l.video_url
+            const existing = await queryOne<{
+                id: string; instructor_id: string | null; video_url: string; archived_at: Date | string | null;
+            }>(
+                `SELECT l.id, l.instructor_id, l.video_url, l.archived_at
                  FROM lectures l
                  INNER JOIN courses c ON c.id = l.course_id
                  WHERE l.id = ? AND ${mutationScope.readPredicate}`,
@@ -447,6 +708,10 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             if (!existing) {
                 return res.status(404).json({ error: 'Lecture not found' });
             }
+            if (existing.archived_at) {
+                return res.status(410).json({ error: 'Archived lectures cannot be changed or republished' });
+            }
+            if (!(await enforceLectureBranch(req, res, req.params.id, req.body?.branch_id))) return;
             const {
                 title,
                 description,
@@ -471,8 +736,21 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 }
             }
 
-            const result = await execute(
-                `UPDATE lectures
+            if (!deps.transaction) throw new Error('Lecture update requires transactional data access');
+            const outcome = await deps.transaction(async (tx) => {
+                const current = await tx.queryOne<{
+                    id: string; instructor_id: string | null; video_url: string; archived_at: Date | string | null;
+                }>(
+                    `SELECT l.id, l.instructor_id, l.video_url, l.archived_at
+                     FROM lectures l
+                     INNER JOIN courses c ON c.id = l.course_id
+                     WHERE l.id = ? AND ${mutationScope.readPredicate} FOR UPDATE`,
+                    [req.params.id, mutationScope.value]
+                );
+                if (!current) return { kind: 'missing' as const };
+                if (current.archived_at) return { kind: 'archived' as const };
+                const update = await tx.execute(
+                    `UPDATE lectures
                  SET title = COALESCE(?, title),
                      description = COALESCE(?, description),
                      video_url = COALESCE(?, video_url),
@@ -494,12 +772,28 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                     is_published ?? null,
                     req.params.id,
                     mutationScope.value
-                ]
-            );
+                    ]
+                );
 
-            if (result.affectedRows === 0) {
-                return res.status(404).json({ error: 'Lecture not found' });
-            }
+                if (update.affectedRows > 0) {
+                    await recordAudit(tx.execute, {
+                        actorUserId: req.user?.id ?? null,
+                        tenantId: req.user?.tenantId ?? null,
+                        action: 'lecture.update',
+                        resourceType: 'lecture',
+                        resourceId: req.params.id,
+                        oldValue: snapshotRow(current),
+                        newValue: snapshotRow({
+                            title, description, video_url, duration_minutes, price, display_order, is_free, is_published,
+                        }),
+                    });
+                }
+                return { kind: 'updated' as const, affectedRows: update.affectedRows };
+            });
+
+            if (outcome.kind === 'missing') return res.status(404).json({ error: 'Lecture not found' });
+            if (outcome.kind === 'archived') return res.status(410).json({ error: 'Archived lectures cannot be changed or republished' });
+            if (outcome.affectedRows === 0) return res.status(404).json({ error: 'Lecture not found' });
 
             const updatedLecture = await queryOne(
                 `SELECT l.*
@@ -526,26 +820,39 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             if (!mutationScope) {
                 return res.status(404).json({ error: 'Lecture not found' });
             }
-            const existing = await queryOne<{ id: string }>(
-                `SELECT l.id
-                 FROM lectures l
-                 INNER JOIN courses c ON c.id = l.course_id
-                 WHERE l.id = ? AND ${mutationScope.readPredicate}`,
-                [req.params.id, mutationScope.value]
-            );
-            if (!existing) {
-                return res.status(404).json({ error: 'Lecture not found' });
-            }
-            const result = await execute(
-                `UPDATE lectures SET is_published = FALSE, archived_at = CURRENT_TIMESTAMP
-                 WHERE id = ? AND ${mutationScope.writePredicate}`,
-                [req.params.id, mutationScope.value]
-            );
+            if (!deps.transaction) throw new Error('Lecture archive requires transactional data access');
+            const outcome = await deps.transaction(async (tx) => {
+                const existing = await tx.queryOne<{ id: string; archived_at: Date | string | null }>(
+                    `SELECT l.id, l.archived_at
+                     FROM lectures l
+                     INNER JOIN courses c ON c.id = l.course_id
+                     WHERE l.id = ? AND ${mutationScope.readPredicate} FOR UPDATE`,
+                    [req.params.id, mutationScope.value]
+                );
+                if (!existing) return { kind: 'missing' as const };
+                if (existing.archived_at) return { kind: 'archived' as const };
+                if (!(await enforceLectureBranch(req, res, req.params.id))) return { kind: 'denied' as const };
+                const result = await tx.execute(
+                    `UPDATE lectures SET is_published = FALSE, archived_at = CURRENT_TIMESTAMP
+                     WHERE id = ? AND ${mutationScope.writePredicate} AND archived_at IS NULL`,
+                    [req.params.id, mutationScope.value]
+                );
+                if (result.affectedRows === 0) return { kind: 'missing' as const };
+                await recordAudit(tx.execute, {
+                    actorUserId: req.user?.id ?? null,
+                    tenantId: req.user?.tenantId ?? null,
+                    action: 'lecture.archive',
+                    resourceType: 'lecture',
+                    resourceId: req.params.id,
+                    oldValue: snapshotRow(existing),
+                    newValue: { is_published: false, archived: true },
+                });
+                return { kind: 'archived' as const, changed: true };
+            });
 
-            if (result.affectedRows === 0) {
-                return res.status(404).json({ error: 'Lecture not found' });
-            }
-
+            if (outcome.kind === 'missing') return res.status(404).json({ error: 'Lecture not found' });
+            if (outcome.kind === 'denied') return;
+            if (!('changed' in outcome)) return res.status(410).json({ error: 'Lecture is already archived' });
             console.log('[Lectures] Deleted lecture:', req.params.id);
             res.json({ message: 'Lecture deleted successfully' });
         } catch (error) {
@@ -554,6 +861,9 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
         }
     });
 
+    // Reorder lectures within a course atomically. The caller supplies the full
+    // ordered id list; the planner rejects duplicates/conflicts/stale partials so
+    // the write is all-or-nothing (no partial success).
     return router;
 };
 
@@ -563,4 +873,38 @@ export default createLectureRouter({
     optionalAuthenticate: optionalAuth,
     authenticate: authenticateToken,
     requireTeachingWriteAccess: requireTeachingWrite('lectures'),
+    transaction: async <T>(fn: (tx: LectureDataAccess) => Promise<T>): Promise<T> => {
+        const pool = getPool();
+        const connection = await pool.getConnection();
+        try {
+            await connection.beginTransaction();
+            const txDb: LectureDataAccess = {
+                query: <T = any>(sql: string, params?: unknown[]): Promise<T[]> =>
+                    (connection.query as unknown as (s: string, p?: unknown[]) => Promise<[unknown[], unknown]>)(
+                        sql, params,
+                    ).then((res) => res[0] as T[]),
+                queryOne: async <T = any>(sql: string, params?: unknown[]): Promise<T | null> => {
+                    const [rows] = await (connection.query as unknown as (s: string, p?: unknown[]) => Promise<[unknown[], unknown]>)(
+                        sql, params,
+                    );
+                    return ((rows as unknown[])[0] as T) ?? null;
+                },
+                execute: (sql: string, params?: unknown[]) =>
+                    (connection.execute as unknown as (s: string, p?: unknown[]) => Promise<[unknown, unknown]>)(
+                        sql, params,
+                    ).then((res) => {
+                        const header = res[0] as { insertId?: number; affectedRows?: number };
+                        return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+                    }),
+            };
+            const result = await fn(txDb);
+            await connection.commit();
+            return result;
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            connection.release();
+        }
+    },
 });
