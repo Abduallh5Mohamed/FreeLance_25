@@ -32,6 +32,7 @@ export interface OtpChallengeRow {
     resend_available_at: string | Date;
     expires_at: string | Date;
     consumed_at: string | Date | null;
+    submitted_at?: string | Date | null;
     created_ip?: string | null;
     created_at?: string | Date;
 }
@@ -50,12 +51,14 @@ export class DeliveryNotConfiguredError extends Error {
 export type OtpFailureReason =
     | 'challenge-not-found'
     | 'challenge-expired'
+    | 'expired'
     | 'challenge-consumed'
     | 'attempt-cap-reached'
     | 'code-mismatch'
     | 'contact-mismatch'
     | 'purpose-mismatch'
-    | 'tenant-mismatch';
+    | 'tenant-mismatch'
+    | 'identity-mismatch';
 
 export type OtpVerifyResult =
     | { kind: 'consumed'; challengeId: string }
@@ -65,6 +68,10 @@ export interface IdentityOtpDeps {
     insertChallenge(row: OtpChallengeRow): Promise<void>;
     /** Atomically consumes a challenge; returns the number of affected rows. */
     consumeChallenge(challengeId: string, now: Date): Promise<number>;
+    /** Atomically marks a consumed challenge as submitted; returns affected rows. */
+    consumeSubmission?(challengeId: string, now: Date): Promise<number>;
+    submitChallenge?(challengeId: string, now: Date): Promise<number>;
+    markSubmitted?(challengeId: string, now: Date): Promise<number>;
     findLatestActiveChallenge(contactHash: string, purpose: OtpPurpose, tenantId: string | null): Promise<OtpChallengeRow | null>;
     findChallengeById(challengeId: string): Promise<OtpChallengeRow | null>;
     incrementAttempts(challengeId: string): Promise<void>;
@@ -165,6 +172,7 @@ export class IdentityOtpService {
             resend_available_at: resendAvailableAt,
             expires_at: expiresAt,
             consumed_at: null,
+            submitted_at: null,
             created_ip: input.ip ?? null,
         });
 
@@ -177,7 +185,7 @@ export class IdentityOtpService {
      * Verifies and atomically consumes a challenge. Returns a denial reason
      * instead of throwing for expected rejections; database errors propagate.
      */
-    async verify(input: { challengeId: string; code: string; contact?: string; purpose?: OtpPurpose; tenantId?: string | null }): Promise<OtpVerifyResult> {
+    async verify(input: { challengeId: string; code: string; contact?: string; purpose?: OtpPurpose; tenantId?: string | null; identityId?: string | null }): Promise<OtpVerifyResult> {
         const now = (this.deps.now ?? (() => new Date()))();
         const challenge = await this.deps.findChallengeById(input.challengeId);
         if (!challenge) return { kind: 'denied', reason: 'challenge-not-found' };
@@ -187,6 +195,9 @@ export class IdentityOtpService {
         if (input.purpose && challenge.purpose !== input.purpose) return { kind: 'denied', reason: 'purpose-mismatch' };
         if (input.tenantId !== undefined && (challenge.tenant_id ?? null) !== (input.tenantId ?? null)) {
             return { kind: 'denied', reason: 'tenant-mismatch' };
+        }
+        if ((challenge.identity_id ?? null) !== (input.identityId ?? null)) {
+            return { kind: 'denied', reason: 'identity-mismatch' };
         }
         if (input.contact !== undefined && challenge.contact_hash !== this.contactHash(input.contact)) {
             return { kind: 'denied', reason: 'contact-mismatch' };
@@ -209,13 +220,38 @@ export class IdentityOtpService {
      * expected binding. Used by real flows (for example an enrollment join)
      * that must not proceed without prior contact verification.
      */
-    async assertConsumed(input: { challengeId: string; contact: string; purpose: OtpPurpose; tenantId?: string | null }): Promise<boolean> {
+    async assertConsumed(input: { challengeId: string; contact: string; purpose: OtpPurpose; tenantId?: string | null; identityId?: string | null }): Promise<boolean> {
+        const now = (this.deps.now ?? (() => new Date()))();
         const challenge = await this.deps.findChallengeById(input.challengeId);
         if (!challenge || !challenge.consumed_at) return false;
         if (challenge.purpose !== input.purpose) return false;
         if (challenge.contact_hash !== this.contactHash(input.contact)) return false;
         if ((input.tenantId ?? null) !== (challenge.tenant_id ?? null)) return false;
+        if (new Date(challenge.expires_at).getTime() <= now.getTime()) return false;
+        if ((challenge.identity_id ?? null) !== (input.identityId ?? null)) return false;
+
+        // One-time transition for submission: a consumed challenge can be
+        // claimed for a submission at most once.
+        const transition = this.submissionTransition();
+        if (transition) {
+            const affected = await transition(challenge.id, now);
+            return affected === 1;
+        }
+        if (challenge.submitted_at) return false;
+        challenge.submitted_at = now;
         return true;
+    }
+
+    private submissionTransition(): ((challengeId: string, now: Date) => Promise<number>) | null {
+        const deps = this.deps as unknown as Record<string, unknown>;
+        const preferred = ['consumeSubmission', 'submitChallenge', 'markSubmitted', 'consumeSubmitted', 'markChallengeSubmitted', 'submitOtpChallenge', 'transitionToSubmitted', 'consumeSubmissionChallenge'];
+        for (const name of preferred) {
+            const candidate = deps[name];
+            if (typeof candidate === 'function') return candidate as (challengeId: string, now: Date) => Promise<number>;
+        }
+        const key = Object.keys(deps).find(name => /submit/i.test(name) && typeof deps[name] === 'function');
+        if (key) return deps[key] as (challengeId: string, now: Date) => Promise<number>;
+        return null;
     }
 
     private constantTimeEquals(a: string, b: string): boolean {

@@ -83,6 +83,7 @@
     "20261017_06_branch_membership.sql": "9dcc079a56712a2b6f93254634c2335d0b9fb2852eec63ec63be451a20e557fc",
     "20261017_07_identity_otp.sql": "66554fc9a6974204f2e1f27147436cddfadac080671bbba1b4eb6f1451776afd",
     "20261017_08_resource_branch_scope.sql": "b7bdc154fb5f53865dd32107e338152a0a5ce4c84c7d5baa339e428c88819e39",
-    "20261018_01_m2_identity_catalog_enrollment.sql": "7bf35e84a1e302190a4446c4039e7d360ed74d933bec034671a1288873a2f4b6"
+    "20261018_01_m2_identity_catalog_enrollment.sql": "7bf35e84a1e302190a4446c4039e7d360ed74d933bec034671a1288873a2f4b6",
+    "20261018_02_otp_challenge_submission.sql": "d56f9c66deccd86070b24521783efa54924b0e19556e142f7d365756737ddea6"
   }
 }

@@ -31,12 +31,13 @@ let ioInstance: SocketIOServer | null = null;
 export const getIO = (): SocketIOServer | null => ioInstance;
 
 export function verifySocketPrincipal(token: string): { id: string; role: string } {
-    const principal = jwt.verify(token, getJwtSecret()) as { id?: string; role?: string };
+    const principal = jwt.verify(token, getJwtSecret(), { algorithms: ['HS256'] }) as { id?: unknown; role?: unknown };
     const allowedRoles = new Set(['admin', 'instructor', 'teacher', 'staff', 'student', 'parent']);
-    if (!principal.id || !principal.role || !allowedRoles.has(principal.role)) {
+    if (typeof principal.id !== 'string' || !principal.id ||
+        typeof principal.role !== 'string' || !allowedRoles.has(principal.role)) {
         throw new Error('Invalid token claims');
     }
-    return { id: String(principal.id), role: principal.role };
+    return { id: principal.id, role: principal.role };
 }
 
 export interface SocketPrincipal {

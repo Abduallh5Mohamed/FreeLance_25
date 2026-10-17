@@ -1909,7 +1909,7 @@ test('delivery recheck: the recheck uses the scope captured at session creation,
 
 test('media binding: a token minted for one asset never serves another (real JWT round-trip)', () => {
     process.env.JWT_SECRET = 'test-jwt-secret-for-media-binding';
-    const req = { headers: {}, ip: '10.0.0.1' } as never;
+    const req = { headers: { 'x-video-fingerprint': 'fp-1', 'x-screen-resolution': '1920x1080' }, ip: '10.0.0.1' } as never;
     const session = { sessionId: 'sess-1', userId: 'buyer-1', videoId: 'video-1' };
     const token = generateVideoSessionToken({
         userId: 'buyer-1', videoId: 'video-1', sessionId: 'sess-1',

@@ -275,18 +275,18 @@ const otpServiceDeps = {
     insertChallenge: async (row: OtpChallengeRow) => {
         await execute(
             `INSERT INTO identity_otp_challenges
-             (id,contact_hash,purpose,tenant_id,identity_id,code_hash,attempts,max_attempts,resend_available_at,expires_at,consumed_at,created_ip)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+             (id,contact_hash,purpose,tenant_id,identity_id,code_hash,attempts,max_attempts,resend_available_at,expires_at,consumed_at,submitted_at,created_ip)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
             [row.id, row.contact_hash, row.purpose, row.tenant_id, row.identity_id, row.code_hash,
-                row.attempts, row.max_attempts, row.resend_available_at, row.expires_at, row.consumed_at, row.created_ip]
+                row.attempts, row.max_attempts, row.resend_available_at, row.expires_at, row.consumed_at, row.submitted_at ?? null, row.created_ip]
         );
     },
     findChallengeById: async (id: string) => queryOne<OtpChallengeRow>(
-        `SELECT id,contact_hash,purpose,tenant_id,identity_id,code_hash,attempts,max_attempts,resend_available_at,expires_at,consumed_at
+        `SELECT id,contact_hash,purpose,tenant_id,identity_id,code_hash,attempts,max_attempts,resend_available_at,expires_at,consumed_at,submitted_at
          FROM identity_otp_challenges WHERE id=?`, [id]
     ),
     findLatestActiveChallenge: async (contactHash: string, purpose: string, tenantId: string | null) => queryOne<OtpChallengeRow>(
-        `SELECT id,contact_hash,purpose,tenant_id,identity_id,code_hash,attempts,max_attempts,resend_available_at,expires_at,consumed_at
+        `SELECT id,contact_hash,purpose,tenant_id,identity_id,code_hash,attempts,max_attempts,resend_available_at,expires_at,consumed_at,submitted_at
          FROM identity_otp_challenges
          WHERE contact_hash=? AND purpose=? AND (tenant_id <=> ?) AND consumed_at IS NULL AND expires_at>UTC_TIMESTAMP()
          ORDER BY created_at DESC LIMIT 1`,
@@ -298,6 +298,11 @@ const otpServiceDeps = {
     consumeChallenge: async (id: string, now: Date) => {
         const result = await execute(
             'UPDATE identity_otp_challenges SET consumed_at=? WHERE id=? AND consumed_at IS NULL', [now, id]);
+        return Number(result.affectedRows || 0);
+    },
+    consumeSubmission: async (id: string, now: Date) => {
+        const result = await execute(
+            'UPDATE identity_otp_challenges SET submitted_at=? WHERE id=? AND consumed_at IS NOT NULL AND submitted_at IS NULL', [now, id]);
         return Number(result.affectedRows || 0);
     },
     countRecentChallenges: async (contactHash: string, purpose: string, since: Date) => {
@@ -314,9 +319,9 @@ const otpServiceDeps = {
  * missing key must fail closed at request time (503) instead of throwing at
  * module load and taking the whole router down.
  */
-function getOtpService(): IdentityOtpService | null {
-    const key = process.env.OTP_HMAC_SECRET || process.env.JWT_SECRET || '';
-    if (key.length < 16) return null;
+export function getOtpService(): IdentityOtpService | null {
+    const key = process.env.OTP_HMAC_SECRET;
+    if (!key || Buffer.byteLength(key, 'utf8') < 32) return null;
     return new IdentityOtpService(otpServiceDeps, key, null);
 }
 

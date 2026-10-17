@@ -443,11 +443,15 @@ export function verifyVideoSessionToken(token: string, req: Request): {
 
         const fingerprint = String(req.headers['x-video-fingerprint'] || '');
         const screenResolution = String(req.headers['x-screen-resolution'] || '');
-        if (fingerprint && decoded.fp !== fingerprint) {
-            return { valid: false, reason: 'Device fingerprint mismatch', decoded };
+        if (decoded.fp) {
+            if (!fingerprint || decoded.fp !== fingerprint) {
+                return { valid: false, reason: 'Device fingerprint mismatch', decoded };
+            }
         }
-        if (screenResolution && decoded.sr !== screenResolution) {
-            return { valid: false, reason: 'Screen binding mismatch', decoded };
+        if (decoded.sr) {
+            if (!screenResolution || decoded.sr !== screenResolution) {
+                return { valid: false, reason: 'Screen binding mismatch', decoded };
+            }
         }
 
         return { valid: true, decoded };

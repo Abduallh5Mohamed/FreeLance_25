@@ -192,7 +192,7 @@ test('video session tokens retain their user, video, and session binding', () =>
             screenRes: '1920x1080',
         });
         const request = {
-            headers: { 'user-agent': 'test-agent', 'x-forwarded-for': '127.0.0.1' },
+            headers: { 'user-agent': 'test-agent', 'x-forwarded-for': '127.0.0.1', 'x-video-fingerprint': 'fingerprint-1', 'x-screen-resolution': '1920x1080' },
             ip: '127.0.0.1',
         } as unknown as AuthRequest;
 
