@@ -84,6 +84,9 @@
     "20261017_07_identity_otp.sql": "66554fc9a6974204f2e1f27147436cddfadac080671bbba1b4eb6f1451776afd",
     "20261017_08_resource_branch_scope.sql": "b7bdc154fb5f53865dd32107e338152a0a5ce4c84c7d5baa339e428c88819e39",
     "20261018_01_m2_identity_catalog_enrollment.sql": "7bf35e84a1e302190a4446c4039e7d360ed74d933bec034671a1288873a2f4b6",
-    "20261018_02_otp_challenge_submission.sql": "d56f9c66deccd86070b24521783efa54924b0e19556e142f7d365756737ddea6"
+    "20261018_02_otp_challenge_submission.sql": "d56f9c66deccd86070b24521783efa54924b0e19556e142f7d365756737ddea6",
+    "20261018_03_content_release_progress.sql": "7141df1388fb4f1c5c5046f6c0c761ebd57af1c3545dfc1688818cb218071644",
+    "20261018_04_tenant_branding_domains.sql": "1feb3ed7f3f2154327a12e737100fac9f5662268ed183171b349cdc103a0a415",
+    "20261018_05_announcements_import.sql": "2cb61f3f7fa06593fc244bb54a4a66c587ae4918bd9bff3205576d10c24057ff"
   }
 }
