@@ -6,6 +6,13 @@ import { createServer } from 'http';
 import { setupSocketIO } from './services/socket';
 import studentEnrollmentRoutes, { cleanupEnrollmentPrivacyData } from './routes/student-enrollment';
 import branchesRoutes from './routes/branches';
+import contentAccessRoutes from './routes/content-access';
+import tenantBrandingRoutes from './routes/tenant-branding';
+import tenantDomainsRoutes from './routes/tenant-domains';
+import announcementsRoutes from './routes/announcements';
+import studentImportRoutes from './routes/student-import';
+import videoAssetsRoutes from './routes/video-assets';
+import playbackSessionsRoutes from './routes/playback-sessions';
 
 // Import routes
 import authRoutes from './routes/auth';
@@ -182,6 +189,17 @@ app.use('/api/admin/dashboard', adminDashboardRoutes);
 app.use('/api/admin/insights', adminInsightsRoutes);
 app.use('/api/student-enrollment', studentEnrollmentRoutes);
 app.use('/api/branches', branchesRoutes);
+
+// M2/M3 surfaces. Every mount below sits behind the /api guards above, so a
+// supplied credential is resolved to a verified principal before any handler
+// and an anonymous caller is denied at the router's own authenticate step.
+app.use('/api/content', contentAccessRoutes);
+app.use('/api/tenant/branding', tenantBrandingRoutes);
+app.use('/api/tenant/domains', tenantDomainsRoutes);
+app.use('/api/announcements', announcementsRoutes);
+app.use('/api/student-import', studentImportRoutes);
+app.use('/api/video-assets', videoAssetsRoutes);
+app.use('/api/playback', playbackSessionsRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {

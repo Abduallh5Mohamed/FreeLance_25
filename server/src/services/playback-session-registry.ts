@@ -102,6 +102,7 @@ export interface PlaybackSessionRegistry {
     listSessions(tenantId: string, userId?: string, status?: string): PlaybackSlot[];
     activeSlotCount(tenantId: string, userId: string): number;
     isSessionActive(sessionId: string): boolean;
+    getSession(sessionId: string): PlaybackSlot | null;
 }
 
 export function createPlaybackSessionRegistry(deps: PlaybackSessionRegistryDeps = {}): PlaybackSessionRegistry {
@@ -189,6 +190,8 @@ export function createPlaybackSessionRegistry(deps: PlaybackSessionRegistryDeps 
     const revokeDevice = (input: { deviceId: string; actorId: string; reason?: string; support?: boolean }): RevokeResult => {
         const device = devices.get(input.deviceId);
         if (!device) return { revoked: false, reason: 'device_not_found' };
+        if (device.status === 'revoked') return { revoked: true, reason: 'already_revoked' };
+        if (!input.support && input.actorId !== device.userId) return { revoked: false, reason: 'not_owner' };
         const policy = getPolicy(device.tenantId);
         if (input.support && !policy.supportRevokeAllowed) return { revoked: false, reason: 'support_revoke_not_allowed' };
         if (!input.support && !policy.selfRevokeAllowed) return { revoked: false, reason: 'self_revoke_not_allowed' };
@@ -223,6 +226,7 @@ export function createPlaybackSessionRegistry(deps: PlaybackSessionRegistryDeps 
         // Synchronous critical section starts here.
         const device = devices.get(input.deviceId);
         if (!device) return { acquired: false, slot: null, reason: 'device_not_found', warning: false, activeSlots: 0 };
+        if (device.tenantId !== input.tenantId || device.userId !== input.userId) return { acquired: false, slot: null, reason: 'device_not_found', warning: false, activeSlots: activeSlotCount(input.tenantId, input.userId) };
         if (device.status !== 'active') return { acquired: false, slot: null, reason: 'device_revoked', warning: false, activeSlots: activeSlotCount(input.tenantId, input.userId) };
         if (slots.has(input.sessionId)) return { acquired: false, slot: slots.get(input.sessionId) ?? null, reason: 'duplicate_session', warning: false, activeSlots: activeSlotCount(input.tenantId, input.userId) };
 
@@ -280,22 +284,24 @@ export function createPlaybackSessionRegistry(deps: PlaybackSessionRegistryDeps 
         const slot = slots.get(input.sessionId);
         if (!slot) return { revoked: false, reason: 'session_not_found' };
         const policy = getPolicy(slot.tenantId);
-        const isSelf = input.actorType !== 'support' && !input.support && slot.userId === input.actorId;
-        if (isSelf && !policy.selfRevokeAllowed) return { revoked: false, reason: 'self_revoke_not_allowed' };
-        if (!isSelf && !policy.supportRevokeAllowed) return { revoked: false, reason: 'support_revoke_not_allowed' };
+        const isOwner = slot.userId === input.actorId;
+        const isSupport = input.support === true || input.actorType === 'support';
+        if (!isOwner && !isSupport) return { revoked: false, reason: 'not_authorized' };
+        if (isOwner && !isSupport && !policy.selfRevokeAllowed) return { revoked: false, reason: 'self_revoke_not_allowed' };
+        if (isSupport && !policy.supportRevokeAllowed) return { revoked: false, reason: 'support_revoke_not_allowed' };
         if (slot.status !== 'active') return { revoked: false, reason: 'already_ended' };
         slot.status = 'revoked';
         slot.endedAt = nowIso();
-        slot.endedReason = input.reason ?? (isSelf ? 'self_revoke' : 'support_revoke');
+        slot.endedReason = input.reason ?? (isOwner && !isSupport ? 'self_revoke' : 'support_revoke');
         const set = slotsByUser.get(userKey(slot.tenantId, slot.userId));
         if (set) set.delete(input.sessionId);
         audit({
-            action: isSelf ? 'playback.session.self_revoke' : 'playback.session.support_revoke',
+            action: isOwner && !isSupport ? 'playback.session.self_revoke' : 'playback.session.support_revoke',
             tenantId: slot.tenantId,
             userId: slot.userId,
             sessionId: input.sessionId,
             actorId: input.actorId,
-            actorType: isSelf ? 'self' : 'support',
+            actorType: isOwner && !isSupport ? 'self' : 'support',
             reason: slot.endedReason,
         });
         return { revoked: true, reason: 'ok' };
@@ -308,6 +314,8 @@ export function createPlaybackSessionRegistry(deps: PlaybackSessionRegistryDeps 
         const slot = slots.get(sessionId);
         return Boolean(slot && slot.status === 'active');
     };
+
+    const getSession = (sessionId: string): PlaybackSlot | null => slots.get(sessionId) ?? null;
 
     return {
         getPolicy,
@@ -322,6 +330,7 @@ export function createPlaybackSessionRegistry(deps: PlaybackSessionRegistryDeps 
         listSessions,
         activeSlotCount,
         isSessionActive,
+        getSession,
     };
 }
 

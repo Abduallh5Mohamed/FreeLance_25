@@ -261,6 +261,7 @@ export function createPlaybackProgressService(deps: PlaybackProgressDeps = {}): 
         lastProgressAt.clear();
         lastHeartbeatAt.clear();
         permittedDevices.clear();
+        revokedDevices.clear();
     };
 
     return {

@@ -15,6 +15,7 @@ import {
     type WatermarkPayload,
     type WatermarkInput,
 } from '../services/playback-watermark';
+import { recordAudit } from '../security/audit';
 
 export interface PlaybackSessionsDb {
     query: <T = unknown>(sql: string, params?: unknown[]) => Promise<T[]>;
@@ -63,6 +64,16 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         const userId = str(body.userId) ?? str(user.id) ?? str(user.userId);
         if (!tenantId || !userId) {
             return res.status(400).json({ error: 'tenantId and userId required' });
+        }
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        if (userTenantId && tenantId !== userTenantId) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
+        const userIdClaim = str(user.id) ?? str(user.userId);
+        const userRole = str(user.role);
+        const privileged = userRole === 'admin' || userRole === 'super_admin' || userRole === 'instructor' || userRole === 'teacher' || userRole === 'staff';
+        if (userIdClaim && userId !== userIdClaim && !privileged) {
+            return res.status(403).json({ error: 'user_mismatch' });
         }
 
         const assetId = str(body.assetId) ?? str(body.videoId) ?? str(body.lessonId);
@@ -128,7 +139,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
             acquired: true,
             warning: acquisition.warning,
             activeSlots: acquisition.activeSlots,
-            limit: acquisition.slot ? undefined : undefined,
+            limit: registry.getPolicy(tenantId).maxConcurrentSessions,
             watermark,
             resumePosition,
             policy: registry.getPolicy(tenantId),
@@ -141,10 +152,20 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
 
     // POST /sessions/:sessionId/heartbeat
     const heartbeatHandler = async (req: Request, res: Response) => {
+        const user = getUser(req);
         const sessionId = String(req.params.sessionId || req.body?.sessionId || '');
         if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
         if (!registry.isSessionActive(sessionId)) {
             return res.status(404).json({ error: 'session_not_active' });
+        }
+        const slot = registry.getSession(sessionId);
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        const userIdClaim = str(user.id);
+        if (slot && userTenantId && slot.tenantId !== userTenantId) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
+        if (slot && userIdClaim && slot.userId !== userIdClaim) {
+            return res.status(403).json({ error: 'user_mismatch' });
         }
         const hb = progress.recordHeartbeat({ sessionId, now: now() });
         if (!hb.accepted) {
@@ -168,6 +189,16 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         const deviceId = str(body.deviceId);
         if (!tenantId || !enrollmentId || !assetId) {
             return res.status(400).json({ error: 'tenantId, enrollmentId, assetId required' });
+        }
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        if (userTenantId && tenantId !== userTenantId) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
+        const userEnrollment = str(user.studentEnrollmentId) ?? str(user.student_enrollment_id) ?? str(user.id);
+        const userRole = str(user.role);
+        const privileged = userRole === 'admin' || userRole === 'super_admin' || userRole === 'instructor' || userRole === 'teacher' || userRole === 'staff';
+        if (userEnrollment && enrollmentId !== userEnrollment && !privileged) {
+            return res.status(403).json({ error: 'student_mismatch' });
         }
         const result = progress.recordProgress({
             tenantId,
@@ -203,6 +234,16 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         if (!tenantId || !enrollmentId || !assetId) {
             return res.status(400).json({ error: 'tenantId, enrollmentId, assetId required' });
         }
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        if (userTenantId && tenantId !== userTenantId) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
+        const userEnrollment = str(user.studentEnrollmentId) ?? str(user.student_enrollment_id) ?? str(user.id);
+        const userRole = str(user.role);
+        const privileged = userRole === 'admin' || userRole === 'super_admin' || userRole === 'instructor' || userRole === 'teacher' || userRole === 'staff';
+        if (userEnrollment && enrollmentId !== userEnrollment && !privileged) {
+            return res.status(403).json({ error: 'student_mismatch' });
+        }
         const result = progress.getResumePosition({ tenantId, studentEnrollmentId: enrollmentId, assetId, deviceId, now: now() });
         if (!result.allowed) {
             const status = result.reason === 'device_not_permitted' ? 403 : 404;
@@ -220,6 +261,15 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         const body = (req.body ?? {}) as Record<string, unknown>;
         const sessionId = String(req.params.sessionId || body.sessionId || '');
         if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+        const slot = registry.getSession(sessionId);
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        const userIdClaim = str(user.id) ?? '';
+        if (slot && userTenantId && slot.tenantId !== userTenantId) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
+        if (slot && slot.userId !== userIdClaim) {
+            return res.status(403).json({ error: 'not_authorized' });
+        }
         const result = await registry.revokeSession({
             sessionId,
             actorId: str(user.id) ?? '',
@@ -245,6 +295,15 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         const body = (req.body ?? {}) as Record<string, unknown>;
         const sessionId = String(req.params.sessionId || body.sessionId || '');
         if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+        const userRole = str(user.role);
+        if (!(userRole === 'admin' || userRole === 'super_admin' || userRole === 'staff')) {
+            return res.status(403).json({ error: 'forbidden' });
+        }
+        const slot = registry.getSession(sessionId);
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        if (slot && userTenantId && slot.tenantId !== userTenantId && userRole !== 'super_admin') {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
         const result = await registry.revokeSession({
             sessionId,
             actorId: str(user.id) ?? '',
@@ -267,7 +326,14 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
     // GET /devices
     const listDevicesHandler = async (req: Request, res: Response) => {
         const user = getUser(req);
-        const tenantId = str(req.query.tenantId as string) ?? str(user.tenantId) ?? str(user.tenant_id);
+        const requestedTenantId = str(req.query.tenantId as string);
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        const tenantId = requestedTenantId ?? userTenantId;
+        const userRole = str(user.role);
+        const privileged = userRole === 'admin' || userRole === 'super_admin' || userRole === 'instructor' || userRole === 'teacher' || userRole === 'staff';
+        if (requestedTenantId && userTenantId && requestedTenantId !== userTenantId && !privileged) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
         const userId = str(req.query.userId as string) ?? str(user.id);
         if (!tenantId) return res.status(400).json({ error: 'tenantId required' });
         return res.json(registry.listDevices(tenantId, userId ?? undefined));
@@ -279,7 +345,16 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         const user = getUser(req);
         const body = (req.body ?? {}) as Record<string, unknown>;
         const deviceId = String(req.params.deviceId || body.deviceId || '');
-        const support = body.support === true || str(user.role) === 'admin' || str(user.role) === 'super_admin';
+        const userRole = str(user.role);
+        const support = userRole === 'admin' || userRole === 'super_admin' || userRole === 'staff';
+        const device = registry.getDevice(deviceId);
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        if (device && userTenantId && device.tenantId !== userTenantId && userRole !== 'super_admin') {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
+        if (device && !support && device.userId !== (str(user.id) ?? '')) {
+            return res.status(403).json({ error: 'not_owner' });
+        }
         const result = registry.revokeDevice({
             deviceId,
             actorId: str(user.id) ?? '',
@@ -297,7 +372,14 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
     // GET /policy (or /policy/:tenantId)
     const policyHandler = async (req: Request, res: Response) => {
         const user = getUser(req);
-        const tenantId = str(req.params.tenantId) ?? str(req.query.tenantId as string) ?? str(user.tenantId) ?? str(user.tenant_id);
+        const requestedTenantId = str(req.params.tenantId) ?? str(req.query.tenantId as string);
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        const tenantId = requestedTenantId ?? userTenantId;
+        const userRole = str(user.role);
+        const privileged = userRole === 'admin' || userRole === 'super_admin' || userRole === 'instructor' || userRole === 'teacher' || userRole === 'staff';
+        if (requestedTenantId && userTenantId && requestedTenantId !== userTenantId && !privileged) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
         if (!tenantId) return res.status(400).json({ error: 'tenantId required' });
         return res.json(registry.getPolicy(tenantId));
     };
@@ -307,7 +389,14 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
     // GET /sessions
     const listSessionsHandler = async (req: Request, res: Response) => {
         const user = getUser(req);
-        const tenantId = str(req.query.tenantId as string) ?? str(user.tenantId) ?? str(user.tenant_id);
+        const requestedTenantId = str(req.query.tenantId as string);
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        const tenantId = requestedTenantId ?? userTenantId;
+        const userRole = str(user.role);
+        const privileged = userRole === 'admin' || userRole === 'super_admin' || userRole === 'instructor' || userRole === 'teacher' || userRole === 'staff';
+        if (requestedTenantId && userTenantId && requestedTenantId !== userTenantId && !privileged) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
         const userId = str(req.query.userId as string) ?? undefined;
         const status = str(req.query.status as string) ?? undefined;
         if (!tenantId) return res.status(400).json({ error: 'tenantId required' });
@@ -320,4 +409,48 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
 
 export const createPlaybackSessionRouter = createPlaybackSessionsRouter;
 export const createPlaybackSessions = createPlaybackSessionsRouter;
-export default createPlaybackSessionsRouter;
+
+/* Production wiring: real pool, real auth, real audit sink. */
+
+let dbModule: typeof import('../db') | null = null;
+const loadDb = async (): Promise<typeof import('../db')> => {
+    dbModule ??= await import('../db');
+    return dbModule;
+};
+
+const productionDb: PlaybackSessionsDb = {
+    query: async <T = unknown>(sql: string, params?: unknown[]) => {
+        const { query } = await loadDb();
+        return query<T>(sql, params as never);
+    },
+    queryOne: async <T = unknown>(sql: string, params?: unknown[]) => {
+        const { queryOne } = await loadDb();
+        return queryOne<T>(sql, params as never);
+    },
+    execute: async (sql: string, params?: unknown[]) => {
+        const { execute } = await loadDb();
+        return execute(sql, params as never);
+    },
+};
+
+const productionAudit = async (event: Record<string, unknown>): Promise<void> => {
+    const { execute } = await loadDb();
+    const action = str(event.action) ?? 'playback.audit';
+    await recordAudit(execute, {
+        actorUserId: str(event.actorId) ?? str(event.userId),
+        tenantId: str(event.tenantId),
+        action,
+        resourceType: action.startsWith('playback.device') ? 'playback_device' : 'playback_session',
+        resourceId: str(event.sessionId) ?? str(event.deviceId) ?? 'unknown',
+        newValue: event,
+    });
+};
+
+export default createPlaybackSessionsRouter({
+    db: productionDb,
+    authenticate: async (req, res, next) => {
+        const { authenticateToken } = await import('../middleware/auth');
+        return authenticateToken(req, res, next);
+    },
+    audit: productionAudit,
+});

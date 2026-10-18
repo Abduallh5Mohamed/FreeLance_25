@@ -207,7 +207,7 @@ export function generateWatermarkPayload(
         });
     }
 
-    const layoutSeed = `${Math.floor(rng() * 1e9).toString(36)}-${Date.now().toString(36)}`;
+    const layoutSeed = `${Math.floor(rng() * 1e9).toString(36)}-${now().getTime().toString(36)}`;
 
     return {
         partialIdentity: identity,

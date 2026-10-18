@@ -382,3 +382,55 @@ export const createStudentImportRouter = (deps: StudentImportDeps): Router => {
 
     return router;
 };
+
+/* Production wiring: real pool, real auth, real tenant authority. */
+
+const TENANT_AUTHORITY_SQL = `
+    SELECT 'owner' AS authority
+    FROM tenants t
+    WHERE t.id = ? AND t.owner_user_id = ? AND t.status = 'active'
+    UNION ALL
+    SELECT m.role_key AS authority
+    FROM tenant_memberships m
+    INNER JOIN tenants t ON t.id = m.tenant_id
+    INNER JOIN users u ON u.id = m.user_id
+    WHERE m.user_id = ? AND m.tenant_id = ? AND m.status = 'active'
+      AND t.status = 'active' AND u.is_active = 1
+      AND m.role_key IN ('owner','instructor')
+    LIMIT 1
+`;
+
+let dbModule: typeof import('../db') | null = null;
+const loadDb = async (): Promise<typeof import('../db')> => {
+    dbModule ??= await import('../db');
+    return dbModule;
+};
+
+const productionDb: StudentImportDataAccess = {
+    query: async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+        const { query } = await loadDb();
+        return query<T>(sql, params as never);
+    },
+    queryOne: async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+        const { queryOne } = await loadDb();
+        return queryOne<T>(sql, params as never);
+    },
+    execute: async (sql: string, params?: unknown[]) => {
+        const { execute } = await loadDb();
+        return execute(sql, params as never);
+    },
+};
+
+const loadActiveTenantAuthority = async (userId: string, tenantId: string) => {
+    const { queryOne } = await loadDb();
+    return queryOne<{ authority: string }>(TENANT_AUTHORITY_SQL, [tenantId, userId, userId, tenantId]);
+};
+
+export default createStudentImportRouter({
+    db: productionDb,
+    authenticate: async (req, res, next) => {
+        const { authenticateToken } = await import('../middleware/auth');
+        return authenticateToken(req, res, next);
+    },
+    loadActiveTenantAuthority,
+});
