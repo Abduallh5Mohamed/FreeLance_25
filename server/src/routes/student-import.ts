@@ -22,6 +22,7 @@ import { Router, RequestHandler, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { AuthRequest } from '../middleware/auth';
 import { recordAudit } from '../security/audit';
+import { isDuplicateEntryError } from '../services/lesson-progress';
 import {
     analyzeStudentCsv,
     hashCsvContent,
@@ -180,16 +181,21 @@ export const createStudentImportRouter = (deps: StudentImportDeps): Router => {
         return { csv, branchId, fileKey, resolution: normalizeDuplicateResolution(body['duplicate_resolution']) };
     };
 
-    const loadExistingBatch = async (tenantId: string, request: CommitRequest, hash: string) => {
+    const loadExistingBatch = async (
+        dataAccess: StudentImportDataAccess,
+        tenantId: string,
+        request: CommitRequest,
+        hash: string,
+    ) => {
         if (request.fileKey) {
-            const byKey = await db.queryOne<ImportBatchRow>(
+            const byKey = await dataAccess.queryOne<ImportBatchRow>(
                 `SELECT id,imported_count,updated_count,skipped_count,rejected_count
                  FROM student_import_batches WHERE tenant_id=? AND file_key=? LIMIT 1`,
                 [tenantId, request.fileKey],
             );
             if (byKey) return byKey;
         }
-        return db.queryOne<ImportBatchRow>(
+        return dataAccess.queryOne<ImportBatchRow>(
             `SELECT id,imported_count,updated_count,skipped_count,rejected_count
              FROM student_import_batches WHERE tenant_id=? AND file_hash=? LIMIT 1`,
             [tenantId, hash],
@@ -247,7 +253,7 @@ export const createStudentImportRouter = (deps: StudentImportDeps): Router => {
                 return res.status(403).json({ error: 'Branch is outside this tenant' });
             }
             const hash = hashCsv(request.csv);
-            const existingBatch = await loadExistingBatch(scope.tenantId, request, hash);
+            const existingBatch = await loadExistingBatch(db, scope.tenantId, request, hash);
             if (existingBatch) return res.status(200).json(idempotentBody(existingBatch));
 
             const analyzed = await analyzeStudentCsv(request.csv, existingStudentLookup(scope.tenantId));
@@ -259,8 +265,29 @@ export const createStudentImportRouter = (deps: StudentImportDeps): Router => {
 
             const importId = randomUUID();
             const outcome = await runAtomic(async (tx) => {
-                const raced = await loadExistingBatch(scope.tenantId, request, hash);
+                const raced = await loadExistingBatch(tx, scope.tenantId, request, hash);
                 if (raced) return idempotentBody(raced);
+
+                try {
+                    await tx.execute(
+                        `INSERT INTO student_import_batches
+                           (id,tenant_id,branch_id,file_hash,file_key,status,headers,row_count,
+                            imported_count,updated_count,skipped_count,rejected_count,rejected_rows,created_by)
+                         VALUES (?,?,?,?,?, 'committed', ?,?,?,?,?,?,?,?)`,
+                        [
+                            importId, scope.tenantId, request.branchId, hash, request.fileKey,
+                            JSON.stringify(analysis.headers), analysis.rows.length + analysis.rejected.length,
+                            plan.toInsert.length, plan.toUpdate.length, plan.skipped.length,
+                            analysis.rejected.length, JSON.stringify(analysis.rejected), scope.userId,
+                        ],
+                    );
+                } catch (error) {
+                    if (isDuplicateEntryError(error)) {
+                        const existing = await loadExistingBatch(tx, scope.tenantId, request, hash);
+                        if (existing) return idempotentBody(existing);
+                    }
+                    throw error;
+                }
 
                 for (const row of plan.toInsert) {
                     await tx.execute(
@@ -280,22 +307,10 @@ export const createStudentImportRouter = (deps: StudentImportDeps): Router => {
                          WHERE tenant_id=? AND (phone=? OR email=?)`,
                         [
                             row.name, row.grade, row.parentPhone, row.notes,
-                            scope.tenantId, row.phone ? row.phone.replace(/[\s()\-]/g, '') : null, row.email,
+                            scope.tenantId, row.phone ? row.phone.replace(/[\\s()\\-]/g, '') : null, row.email,
                         ],
                     );
                 }
-                await tx.execute(
-                    `INSERT INTO student_import_batches
-                       (id,tenant_id,branch_id,file_hash,file_key,status,headers,row_count,
-                        imported_count,updated_count,skipped_count,rejected_count,rejected_rows,created_by)
-                     VALUES (?,?,?,?,?, 'committed', ?,?,?,?,?,?,?,?)`,
-                    [
-                        importId, scope.tenantId, request.branchId, hash, request.fileKey,
-                        JSON.stringify(analysis.headers), analysis.rows.length + analysis.rejected.length,
-                        plan.toInsert.length, plan.toUpdate.length, plan.skipped.length,
-                        analysis.rejected.length, JSON.stringify(analysis.rejected), scope.userId,
-                    ],
-                );
                 await recordAudit(tx.execute, {
                     actorUserId: scope.userId,
                     tenantId: scope.tenantId,
@@ -433,4 +448,25 @@ export default createStudentImportRouter({
         return authenticateToken(req, res, next);
     },
     loadActiveTenantAuthority,
+    transaction: async <T>(fn: (tx: StudentImportDataAccess) => Promise<T>) => {
+        const { withTransaction } = await loadDb();
+        return withTransaction(async (connection) => {
+            const tx: StudentImportDataAccess = {
+                query: async <U = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+                    const [rows] = await connection.execute(sql, params as never);
+                    return rows as U[];
+                },
+                queryOne: async <U = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+                    const [rows] = await connection.execute(sql, params as never);
+                    const list = rows as U[];
+                    return list.length > 0 ? list[0] : null;
+                },
+                execute: async (sql: string, params?: unknown[]) => {
+                    const [result] = await connection.execute(sql, params as never);
+                    return result as { insertId?: number; affectedRows?: number };
+                },
+            };
+            return fn(tx);
+        });
+    },
 });

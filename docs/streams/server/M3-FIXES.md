@@ -119,9 +119,44 @@ The `JWT_SECRET` fallback was removed from the production wiring; an unset or
 blank `VIDEO_PLAYBACK_SECRET` fails closed (`issue` returns `secret-unavailable`,
 `verify` denies). This keeps the playback-token family on an independent key.
 
+## F3 part 2 — secure-video.ts integration status
+
+`server/src/routes/secure-video.ts` was reviewed for the documented entitlement
+verification call site (`GET /manifest/:videoId/*`, `GET /media/:videoId`,
+`GET /key/:videoId`, after `validateMediaSession` and before
+`evaluateDeliveryAccess`). The call **cannot be added compatibly** in this batch,
+for these concrete reasons:
+
+1. The router is a singleton (`const router = Router()`) with no dependency
+   injection seam, so there is no `PlaybackEntitlementService` instance or
+   injected store/clock to call; instantiating one inline would bypass the
+   existing test wiring and the documented `deps.entitlement` boundary used by
+   `video-assets.ts`.
+2. The secure-video session/token family does not carry a playback entitlement
+   token: clients present only `sid` + `token` (JWT session token), and the
+   manifest rewrite threads only those two values into segment/key URLs. The
+   documented contract requires a new `entitlement` query parameter threaded into
+   every rewritten URL, which is a client-facing contract change not present in
+   any existing test or caller.
+3. The helper requires a server-resolved `lessonId` bound to the video, but
+   `secure-video.ts` has no video→lecture resolution (sessions store
+   `videoId`, not `lessonId`; the access policy resolves lectures separately).
+   Substituting `videoId` for `lessonId` would be semantically incorrect and
+   would deny every legitimate playback.
+4. Requiring an entitlement would turn every existing manifest/media/key
+   request (and the corresponding tests) into a 403, breaking the current
+   secure streaming contract that is gated by `verifyVideoSessionToken` +
+   `evaluateDeliveryAccess`.
+
+Therefore `secure-video.ts` is left unchanged; playback entitlement enforcement
+remains at issuance/heartbeat on the `video-assets.ts` surface, and the
+secure-video path continues to rely on its existing session JWT + composed
+video-access policy. Wiring is deferred until a lesson-resolving, entitlement-
+threading change can be made with a coordinated client update.
+
 ## Tests
 
 - `server/tests/m3-video-review-fixes.test.ts` adds rejection-path coverage for
   each finding (access-denied issuance, ownership/admin revocation, heartbeat
   binding/clamp/cap/rate-limit, boundary exemptions, secret fail-closed).
-- Full suite green (1534 tests) and typecheck clean.
+- Full suite green and typecheck clean.

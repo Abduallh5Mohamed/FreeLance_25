@@ -83,6 +83,23 @@ export const closePool = async (): Promise<void> => {
     }
 };
 
+export const withTransaction = async <T>(
+    fn: (connection: mysql.PoolConnection) => Promise<T>,
+): Promise<T> => {
+    const connection = await getPool().getConnection();
+    await connection.beginTransaction();
+    try {
+        const result = await fn(connection);
+        await connection.commit();
+        return result;
+    } catch (error) {
+        await connection.rollback();
+        throw error;
+    } finally {
+        connection.release();
+    }
+};
+
 export default {
     query,
     queryOne,
@@ -90,4 +107,5 @@ export default {
     testConnection,
     closePool,
     getPool,
+    withTransaction,
 };

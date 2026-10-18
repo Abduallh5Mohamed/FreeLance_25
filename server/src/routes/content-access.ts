@@ -673,6 +673,22 @@ export function createContentAccessRouter(deps: ContentAccessDeps): Router {
             if (validated.value.prerequisiteLectureId !== null && validated.value.prerequisiteLectureId === lectureId) {
                 return res.status(400).json({ error: 'A lesson cannot be its own prerequisite' });
             }
+            if (validated.value.prerequisiteLectureId !== null) {
+                const prerequisite = await db.queryOne<{ id: string; course_id: string; tenant_id: string }>(
+                    `SELECT l.id, l.course_id, c.tenant_id
+                     FROM lectures l
+                     INNER JOIN courses c ON c.id = l.course_id
+                     WHERE l.id = ? LIMIT 1`,
+                    [validated.value.prerequisiteLectureId],
+                );
+                if (
+                    !prerequisite ||
+                    prerequisite.tenant_id !== authority.tenant_id ||
+                    prerequisite.course_id !== authority.course_id
+                ) {
+                    return res.status(400).json({ error: 'prerequisite_lecture_id must belong to the same tenant and course' });
+                }
+            }
 
             const releasedAt = validated.value.releaseMode === 'scheduled' ? null : toUtcIso(new Date());
             const result = await runAtomic(async (tx) => {
