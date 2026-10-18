@@ -92,6 +92,7 @@
     "20261018_07_playback_sessions_progress.sql": "970d445fd9cbaccf1389ceee84d7af18dbcd2729edf6ed46f839ae51f240af1e",
     "20261018_08_question_bank_assignments.sql": "04a8d4d6286d03df4cc5502b9fbc09004738ae5bc37e6744e765574339f0b317",
     "20261018_09_exam_snapshots_grading.sql": "405ab326729782a465fd7c395c0a9ec3ad38d72d39159dfa2ba755d2d6a1f208",
-    "20261018_10_gradebook_certificates.sql": "7630ad75eda5fa909f13bd0c7ebab21766618d040dfc968681ba0ba48b3648e2"
+    "20261018_10_gradebook_certificates.sql": "7630ad75eda5fa909f13bd0c7ebab21766618d040dfc968681ba0ba48b3648e2",
+    "20261018_11_schedules_attendance_records.sql": "c78aee467765666c8180aafd044b8f6900ec3e2602ffa8bcd73ad14d896acc0b"
   }
 }
