@@ -61,6 +61,7 @@ import {
 } from '../src/services/video-usage-events';
 import {
     createVideoAssetsRouter,
+    type ResolvedLessonAccess,
     type UsageCallbackInput,
     type VideoAssetsDeps,
 } from '../src/routes/video-assets';
@@ -198,6 +199,14 @@ const makeUsageStore = (): UsageHarness => {
             [...events.values()].filter((event) => event.tenantId === tenantId).reduce((sum, event) => sum + event.watchSeconds, 0),
         sumStorageBytes: async (tenantId) =>
             [...events.values()].filter((event) => event.tenantId === tenantId).reduce((sum, event) => sum + event.storageBytes, 0),
+        sumWatchSecondsForEnrollment: async (enrollmentId, sinceMs) =>
+            [...events.values()]
+                .filter((event) => event.studentEnrollmentId === enrollmentId && event.kind === 'watch' && event.occurredAtMs >= sinceMs)
+                .reduce((sum, event) => sum + event.watchSeconds, 0),
+        countWatchEventsForEnrollment: async (enrollmentId, sinceMs) =>
+            [...events.values()]
+                .filter((event) => event.studentEnrollmentId === enrollmentId && event.kind === 'watch' && event.occurredAtMs >= sinceMs)
+                .length,
         recordAudit: async (input) => { audits.push(input); },
     };
     return { store, events, keys, audits };
@@ -652,10 +661,52 @@ interface RouterFixtures {
     verifyUsage?: (input: UsageCallbackInput) => boolean | Promise<boolean>;
     secret?: string;
     now?: () => number;
-    resolveLessonScope?: (lessonId: string) => Promise<{ tenantId: string } | null>;
+    resolveLessonScope?: (lessonId: string, principal: { id: string; tenantId: string }) => Promise<ResolvedLessonAccess | null>;
     isPlatformAdmin?: (userId: string) => Promise<boolean>;
+    isTenantAdmin?: (userId: string, tenantId: string) => Promise<boolean>;
     maxAttempts?: number;
 }
+
+/** Composed content-access facts that the policy allows (published + immediate). */
+const allowedLessonAccess = (tenantId = 'tenant-a', overrides: Partial<ResolvedLessonAccess> = {}): ResolvedLessonAccess => ({
+    tenantId,
+    isStaff: false,
+    lecture: {
+        tenantId,
+        instructorId: 'instr-a',
+        groupId: null,
+        gradeId: null,
+        branchId: null,
+        branchAmbiguous: false,
+        isPublished: true,
+        archived: false,
+        displayOrder: 0,
+    },
+    enrollment: {
+        id: 'enr-a',
+        tenantId,
+        instructorId: 'instr-a',
+        groupId: null,
+        gradeId: null,
+        branchId: null,
+    },
+    policy: {
+        lectureId: 'lec-1',
+        courseId: 'course-a',
+        tenantId,
+        releaseMode: 'immediate',
+        releaseAtUtc: null,
+        releaseTimeZone: 'UTC',
+        prerequisiteLectureId: null,
+        releasedAtUtc: null,
+        isPublished: true,
+        archived: false,
+        displayOrder: 0,
+    },
+    prerequisiteCompleted: false,
+    now: new Date(0),
+    ...overrides,
+});
 
 const buildRouter = (fixtures: RouterFixtures = {}) => {
     const ids = seqId();
@@ -681,8 +732,9 @@ const buildRouter = (fixtures: RouterFixtures = {}) => {
         lifecycle,
         entitlement,
         usage,
-        resolveLessonScope: fixtures.resolveLessonScope ?? (async () => ({ tenantId: 'tenant-a' })),
+        resolveLessonScope: fixtures.resolveLessonScope ?? (async () => allowedLessonAccess()),
         isPlatformAdmin: fixtures.isPlatformAdmin,
+        isTenantAdmin: fixtures.isTenantAdmin,
         verifyUsageCallback: fixtures.verifyUsage,
         now: fixtures.now,
         heartbeatWindowSeconds: 30,
@@ -697,6 +749,15 @@ const createAsset = async (router: ReturnType<typeof buildRouter>['router'], pro
     });
     assert.equal(response.statusCode, 201);
     return (response.body as { id: string }).id;
+};
+
+const issueEntitlement = async (
+    router: ReturnType<typeof buildRouter>['router'],
+    body: Record<string, unknown> = { lessonId: 'lec-1', sessionId: 'sess-1' },
+): Promise<string> => {
+    const response = await invokeRoute(router, { method: 'POST', url: '/playback/entitlements', token: STUDENT_A, body });
+    assert.equal(response.statusCode, 201);
+    return (response.body as { token: string }).token;
 };
 
 // ---- POST /assets ---------------------------------------------------------
@@ -807,7 +868,7 @@ test('playback: anonymous 401 and a staff principal without an enrollment is 403
 });
 
 test('playback: a cross-tenant lesson is 404, a valid issue returns a bound token', async () => {
-    const crossTenant = buildRouter({ resolveLessonScope: async () => ({ tenantId: 'tenant-b' }) });
+    const crossTenant = buildRouter({ resolveLessonScope: async () => allowedLessonAccess('tenant-b') });
     assert.equal((await invokeRoute(crossTenant.router, { method: 'POST', url: '/playback/entitlements', token: STUDENT_A, body: { lessonId: 'lec-1', sessionId: 'sess-1' } })).statusCode, 404);
 
     const { router, entitlement } = buildRouter();
@@ -828,7 +889,7 @@ test('playback: a missing secret is reported as unavailable, never a token', asy
     assert.equal(entitlementHarness.records.size, 0);
 });
 
-test('playback revoke: unknown 404, cross-tenant 403, same-tenant 200 then verification denies', async () => {
+test('playback revoke: unknown 404, cross-tenant 403, non-owner staff 403, record owner 200', async () => {
     const { router, entitlement, entitlementHarness } = buildRouter();
     assert.equal((await invokeRoute(router, { method: 'POST', url: '/playback/entitlements/revoke', token: INSTRUCTOR_A, body: { jti: 'ghost' } })).statusCode, 404);
 
@@ -837,8 +898,11 @@ test('playback revoke: unknown 404, cross-tenant 403, same-tenant 200 then verif
 
     // instr-b belongs to tenant-b: forbidden.
     assert.equal((await invokeRoute(router, { method: 'POST', url: '/playback/entitlements/revoke', token: INSTRUCTOR_B, body: { jti } })).statusCode, 403);
+    // Same-tenant staff who neither owns the enrollment nor is a tenant admin: forbidden.
+    assert.equal((await invokeRoute(router, { method: 'POST', url: '/playback/entitlements/revoke', token: INSTRUCTOR_A, body: { jti } })).statusCode, 403);
 
-    const revoked = await invokeRoute(router, { method: 'POST', url: '/playback/entitlements/revoke', token: INSTRUCTOR_A, body: { jti, reason: 'policy' } });
+    // The record's own enrollment may revoke it.
+    const revoked = await invokeRoute(router, { method: 'POST', url: '/playback/entitlements/revoke', token: STUDENT_A, body: { jti, reason: 'policy' } });
     assert.equal(revoked.statusCode, 200);
     assert.deepEqual(await entitlement.verify(token, { tenantId: 'tenant-a', lessonId: 'lec-1', studentEnrollmentId: 'enr-a', sessionId: 'sess-1' }), { allowed: false, reason: 'revoked' });
     assert.ok(entitlementHarness.audits.some((audit) => audit.action === 'video.playback.revoked'));
@@ -846,20 +910,25 @@ test('playback revoke: unknown 404, cross-tenant 403, same-tenant 200 then verif
 
 // ---- usage -----------------------------------------------------------------
 
-test('usage heartbeat: anonymous 401, staff without enrollment 403, invalid 400', async () => {
+test('usage heartbeat: anonymous 401, staff without enrollment 403, missing entitlement 403, invalid 400', async () => {
     const { router } = buildRouter({ now: () => 1_000 });
-    assert.equal((await invokeRoute(router, { method: 'POST', url: '/usage/heartbeat', body: { sessionId: 'sess-1', deltaSeconds: 5 } })).statusCode, 401);
-    assert.equal((await invokeRoute(router, { method: 'POST', url: '/usage/heartbeat', token: INSTRUCTOR_A, body: { sessionId: 'sess-1', deltaSeconds: 5 } })).statusCode, 403);
-    assert.equal((await invokeRoute(router, { method: 'POST', url: '/usage/heartbeat', token: STUDENT_A, body: { sessionId: 'sess-1', deltaSeconds: 0 } })).statusCode, 400);
-    assert.equal((await invokeRoute(router, { method: 'POST', url: '/usage/heartbeat', token: STUDENT_A, body: { deltaSeconds: 5 } })).statusCode, 400);
+    assert.equal((await invokeRoute(router, { method: 'POST', url: '/usage/heartbeat', body: { sessionId: 'sess-1', lessonId: 'lec-1', deltaSeconds: 5 } })).statusCode, 401);
+    assert.equal((await invokeRoute(router, { method: 'POST', url: '/usage/heartbeat', token: INSTRUCTOR_A, body: { sessionId: 'sess-1', lessonId: 'lec-1', deltaSeconds: 5 } })).statusCode, 403);
+    // A student without the server-issued entitlement token is denied.
+    assert.equal((await invokeRoute(router, { method: 'POST', url: '/usage/heartbeat', token: STUDENT_A, body: { sessionId: 'sess-1', lessonId: 'lec-1', deltaSeconds: 5 } })).statusCode, 403);
+    // lessonId is required to bind the heartbeat to a lesson.
+    assert.equal((await invokeRoute(router, { method: 'POST', url: '/usage/heartbeat', token: STUDENT_A, body: { sessionId: 'sess-1', deltaSeconds: 5 } })).statusCode, 400);
+    const token = await issueEntitlement(router);
+    assert.equal((await invokeRoute(router, { method: 'POST', url: '/usage/heartbeat', token: STUDENT_A, body: { sessionId: 'sess-1', lessonId: 'lec-1', token, deltaSeconds: 0 } })).statusCode, 400);
 });
 
 test('usage heartbeat: records tenant-attributed watch time and deduplicates within the window', async () => {
     const { router, usageHarness } = buildRouter({ now: () => 1_000 });
-    const first = await invokeRoute(router, { method: 'POST', url: '/usage/heartbeat', token: STUDENT_A, body: { sessionId: 'sess-1', deltaSeconds: 12 } });
+    const token = await issueEntitlement(router);
+    const first = await invokeRoute(router, { method: 'POST', url: '/usage/heartbeat', token: STUDENT_A, body: { sessionId: 'sess-1', lessonId: 'lec-1', token, deltaSeconds: 12 } });
     assert.equal(first.statusCode, 200);
     assert.equal((first.body as { recorded?: boolean }).recorded, true);
-    const duplicate = await invokeRoute(router, { method: 'POST', url: '/usage/heartbeat', token: STUDENT_A, body: { sessionId: 'sess-1', deltaSeconds: 12 } });
+    const duplicate = await invokeRoute(router, { method: 'POST', url: '/usage/heartbeat', token: STUDENT_A, body: { sessionId: 'sess-1', lessonId: 'lec-1', token, deltaSeconds: 12 } });
     assert.equal((duplicate.body as { deduplicated?: boolean }).deduplicated, true);
     const summary = await invokeRoute(router, { method: 'GET', url: '/usage/summary', token: INSTRUCTOR_A });
     assert.equal((summary.body as { watchSeconds?: number }).watchSeconds, 12);

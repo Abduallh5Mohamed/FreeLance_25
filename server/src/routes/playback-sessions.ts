@@ -1,13 +1,18 @@
 import { Router, Request, Response, RequestHandler } from 'express';
 import {
     createPlaybackSessionRegistry,
-    normalizePlaybackPolicy,
-    type PlaybackSessionRegistry,
-    type PlaybackPolicy,
+    asPlaybackSessionStore,
+    createSqlPlaybackSessionStore,
+    PlaybackDeviceLimitError,
+    type PlaybackSessionStore,
+    type PlaybackDevice,
+    type PlaybackStoreDb,
 } from '../services/playback-session-registry';
 import {
     createPlaybackProgressService,
-    type PlaybackProgressService,
+    asPlaybackProgressStore,
+    createSqlPlaybackProgressService,
+    type PlaybackProgressStore,
 } from '../services/playback-progress';
 import {
     generateWatermarkPayload,
@@ -17,18 +22,14 @@ import {
 } from '../services/playback-watermark';
 import { recordAudit } from '../security/audit';
 
-export interface PlaybackSessionsDb {
-    query: <T = unknown>(sql: string, params?: unknown[]) => Promise<T[]>;
-    queryOne: <T = unknown>(sql: string, params?: unknown[]) => Promise<T | null>;
-    execute: (sql: string, params?: unknown[]) => Promise<{ insertId?: number; affectedRows?: number }>;
-}
+export type PlaybackSessionsDb = PlaybackStoreDb;
 
 export interface PlaybackSessionsDeps {
     db?: PlaybackSessionsDb;
     authenticate?: RequestHandler;
     now?: () => Date;
-    registry?: PlaybackSessionRegistry;
-    progress?: PlaybackProgressService;
+    registry?: PlaybackSessionStore;
+    progress?: PlaybackProgressStore;
     audit?: (event: Record<string, unknown>) => void | Promise<void>;
 }
 
@@ -53,8 +54,8 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
     const router = Router();
     const authenticate = deps.authenticate ?? defaultAuthenticate;
     const now = deps.now ?? (() => new Date());
-    const registry = deps.registry ?? createPlaybackSessionRegistry({ now, audit: deps.audit });
-    const progress = deps.progress ?? createPlaybackProgressService({ now });
+    const registry = deps.registry ?? asPlaybackSessionStore(createPlaybackSessionRegistry({ now, audit: deps.audit }));
+    const progress = deps.progress ?? asPlaybackProgressStore(createPlaybackProgressService({ now }));
 
     // POST /sessions  (start a playback session)
     const startHandler = async (req: Request, res: Response) => {
@@ -77,25 +78,29 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         }
 
         const assetId = str(body.assetId) ?? str(body.videoId) ?? str(body.lessonId);
-        const durationSeconds = num(body.durationSeconds) ?? num(body.duration) ?? 0;
         const fingerprint = str(body.fingerprint) ?? str(body.deviceFingerprint) ?? 'unknown-device';
         const deviceLabel = str(body.deviceLabel) ?? str(body.deviceName) ?? null;
 
-        // register device
-        const device = registry.registerDevice({ tenantId, userId, fingerprint, label: deviceLabel, now: now() });
+        // register device; the server (never the client) owns the policy
+        let device: PlaybackDevice;
+        try {
+            device = await registry.registerDevice({ tenantId, userId, fingerprint, label: deviceLabel, now: now() });
+        } catch (error) {
+            if (error instanceof PlaybackDeviceLimitError) {
+                return res.status(409).json({ acquired: false, reason: 'device_limit', limit: error.limit });
+            }
+            throw error;
+        }
 
         const sessionId = str(body.sessionId) ?? `ps-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-        // optional policy override
-        const policyInput = body.policy ?? body.playbackPolicy;
-        const policy = policyInput ? normalizePlaybackPolicy(policyInput, tenantId) : undefined;
-
+        // No client-supplied policy: the registry resolves and clamps the
+        // tenant policy server-side, so limits cannot be raised by the caller.
         const acquisition = await registry.acquireSlot({
             tenantId,
             userId,
             deviceId: device.id,
             sessionId,
-            policy,
         });
 
         if (!acquisition.acquired) {
@@ -123,7 +128,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         // progress resume for this asset (if provided)
         let resumePosition: number | null = null;
         if (assetId) {
-            const resume = progress.getResumePosition({
+            const resume = await progress.getResumePosition({
                 tenantId,
                 studentEnrollmentId: str(user.studentEnrollmentId) ?? str(user.student_enrollment_id) ?? userId,
                 assetId,
@@ -133,16 +138,18 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
             if (resume.allowed) resumePosition = resume.position;
         }
 
+        const policy = await registry.getPolicy(tenantId);
+
         return res.status(201).json({
             sessionId,
             deviceId: device.id,
             acquired: true,
             warning: acquisition.warning,
             activeSlots: acquisition.activeSlots,
-            limit: registry.getPolicy(tenantId).maxConcurrentSessions,
+            limit: policy.maxConcurrentSessions,
             watermark,
             resumePosition,
-            policy: registry.getPolicy(tenantId),
+            policy,
         });
     };
 
@@ -155,10 +162,10 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         const user = getUser(req);
         const sessionId = String(req.params.sessionId || req.body?.sessionId || '');
         if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
-        if (!registry.isSessionActive(sessionId)) {
+        if (!(await registry.isSessionActive(sessionId))) {
             return res.status(404).json({ error: 'session_not_active' });
         }
-        const slot = registry.getSession(sessionId);
+        const slot = await registry.getSession(sessionId);
         const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
         const userIdClaim = str(user.id);
         if (slot && userTenantId && slot.tenantId !== userTenantId) {
@@ -167,7 +174,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         if (slot && userIdClaim && slot.userId !== userIdClaim) {
             return res.status(403).json({ error: 'user_mismatch' });
         }
-        const hb = progress.recordHeartbeat({ sessionId, now: now() });
+        const hb = await progress.recordHeartbeat({ sessionId, now: now() });
         if (!hb.accepted) {
             return res.status(429).json({ error: 'rate_limited', reason: hb.reason });
         }
@@ -200,7 +207,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         if (userEnrollment && enrollmentId !== userEnrollment && !privileged) {
             return res.status(403).json({ error: 'student_mismatch' });
         }
-        const result = progress.recordProgress({
+        const result = await progress.recordProgress({
             tenantId,
             studentEnrollmentId: enrollmentId,
             assetId,
@@ -244,7 +251,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         if (userEnrollment && enrollmentId !== userEnrollment && !privileged) {
             return res.status(403).json({ error: 'student_mismatch' });
         }
-        const result = progress.getResumePosition({ tenantId, studentEnrollmentId: enrollmentId, assetId, deviceId, now: now() });
+        const result = await progress.getResumePosition({ tenantId, studentEnrollmentId: enrollmentId, assetId, deviceId, now: now() });
         if (!result.allowed) {
             const status = result.reason === 'device_not_permitted' ? 403 : 404;
             return res.status(status).json(result);
@@ -261,7 +268,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         const body = (req.body ?? {}) as Record<string, unknown>;
         const sessionId = String(req.params.sessionId || body.sessionId || '');
         if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
-        const slot = registry.getSession(sessionId);
+        const slot = await registry.getSession(sessionId);
         const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
         const userIdClaim = str(user.id) ?? '';
         if (slot && userTenantId && slot.tenantId !== userTenantId) {
@@ -282,7 +289,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
             return res.status(status).json(result);
         }
         // also release slot
-        registry.releaseSlot(sessionId, 'self_revoke');
+        await registry.releaseSlot(sessionId, 'self_revoke');
         return res.json(result);
     };
     router.delete('/sessions/:sessionId', authenticate, selfRevokeHandler);
@@ -299,7 +306,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         if (!(userRole === 'admin' || userRole === 'super_admin' || userRole === 'staff')) {
             return res.status(403).json({ error: 'forbidden' });
         }
-        const slot = registry.getSession(sessionId);
+        const slot = await registry.getSession(sessionId);
         const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
         if (slot && userTenantId && slot.tenantId !== userTenantId && userRole !== 'super_admin') {
             return res.status(403).json({ error: 'tenant_mismatch' });
@@ -315,7 +322,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
             const status = result.reason === 'session_not_found' ? 404 : 403;
             return res.status(status).json(result);
         }
-        registry.releaseSlot(sessionId, 'support_revoke');
+        await registry.releaseSlot(sessionId, 'support_revoke');
         if (deps.audit) {
             await deps.audit({ action: 'playback.session.support_revoke', sessionId, actorId: str(user.id) });
         }
@@ -334,9 +341,13 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         if (requestedTenantId && userTenantId && requestedTenantId !== userTenantId && !privileged) {
             return res.status(403).json({ error: 'tenant_mismatch' });
         }
-        const userId = str(req.query.userId as string) ?? str(user.id);
         if (!tenantId) return res.status(400).json({ error: 'tenantId required' });
-        return res.json(registry.listDevices(tenantId, userId ?? undefined));
+        // Non-privileged callers may only list their own devices; the query
+        // selector is ignored so a student cannot enumerate peers in-tenant.
+        const requestedUserId = str(req.query.userId as string);
+        const userId = privileged ? (requestedUserId ?? undefined) : (str(user.id) ?? undefined);
+        if (!privileged && !userId) return res.status(403).json({ error: 'forbidden' });
+        return res.json(await registry.listDevices(tenantId, userId));
     };
     router.get('/devices', authenticate, listDevicesHandler);
 
@@ -347,7 +358,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         const deviceId = String(req.params.deviceId || body.deviceId || '');
         const userRole = str(user.role);
         const support = userRole === 'admin' || userRole === 'super_admin' || userRole === 'staff';
-        const device = registry.getDevice(deviceId);
+        const device = await registry.getDevice(deviceId);
         const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
         if (device && userTenantId && device.tenantId !== userTenantId && userRole !== 'super_admin') {
             return res.status(403).json({ error: 'tenant_mismatch' });
@@ -355,7 +366,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         if (device && !support && device.userId !== (str(user.id) ?? '')) {
             return res.status(403).json({ error: 'not_owner' });
         }
-        const result = registry.revokeDevice({
+        const result = await registry.revokeDevice({
             deviceId,
             actorId: str(user.id) ?? '',
             reason: str(body.reason) ?? (support ? 'support_revoke' : 'self_revoke'),
@@ -381,7 +392,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
             return res.status(403).json({ error: 'tenant_mismatch' });
         }
         if (!tenantId) return res.status(400).json({ error: 'tenantId required' });
-        return res.json(registry.getPolicy(tenantId));
+        return res.json(await registry.getPolicy(tenantId));
     };
     router.get('/policy', authenticate, policyHandler);
     router.get('/policy/:tenantId', authenticate, policyHandler);
@@ -397,10 +408,14 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         if (requestedTenantId && userTenantId && requestedTenantId !== userTenantId && !privileged) {
             return res.status(403).json({ error: 'tenant_mismatch' });
         }
-        const userId = str(req.query.userId as string) ?? undefined;
-        const status = str(req.query.status as string) ?? undefined;
         if (!tenantId) return res.status(400).json({ error: 'tenantId required' });
-        return res.json(registry.listSessions(tenantId, userId, status ?? undefined));
+        // Non-privileged callers may only list their own sessions; the query
+        // selector is ignored so a student cannot enumerate peers in-tenant.
+        const requestedUserId = str(req.query.userId as string);
+        const userId = privileged ? (requestedUserId ?? undefined) : (str(user.id) ?? undefined);
+        if (!privileged && !userId) return res.status(403).json({ error: 'forbidden' });
+        const status = str(req.query.status as string) ?? undefined;
+        return res.json(await registry.listSessions(tenantId, userId, status));
     };
     router.get('/sessions', authenticate, listSessionsHandler);
 
@@ -431,6 +446,39 @@ const productionDb: PlaybackSessionsDb = {
         const { execute } = await loadDb();
         return execute(sql, params as never);
     },
+    // Slot acquisition and device registration run their check-and-insert
+    // critical section on one pooled connection inside a transaction, so the
+    // `FOR UPDATE` lock and the insert cannot drift onto different connections.
+    transaction: async <T>(fn: (tx: PlaybackStoreDb) => Promise<T>) => {
+        const { getPool } = await loadDb();
+        const connection = await getPool().getConnection();
+        const readRows = async (sql: string, params?: unknown[]): Promise<unknown> => {
+            const [rows] = await connection.execute(sql, params as never);
+            return rows;
+        };
+        const tx: PlaybackStoreDb = {
+            query: async <R = unknown>(sql: string, params?: unknown[]) => (await readRows(sql, params)) as R[],
+            queryOne: async <R = unknown>(sql: string, params?: unknown[]) => {
+                const rows = (await readRows(sql, params)) as R[];
+                return rows.length > 0 ? rows[0] : null;
+            },
+            execute: async (sql: string, params?: unknown[]) => {
+                const [result] = await connection.execute(sql, params as never);
+                return result as { insertId?: number; affectedRows?: number };
+            },
+        };
+        try {
+            await connection.beginTransaction();
+            const result = await fn(tx);
+            await connection.commit();
+            return result;
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            connection.release();
+        }
+    },
 };
 
 const productionAudit = async (event: Record<string, unknown>): Promise<void> => {
@@ -453,4 +501,8 @@ export default createPlaybackSessionsRouter({
         return authenticateToken(req, res, next);
     },
     audit: productionAudit,
+    // Production default: durable, cross-process state in the migration-07
+    // tables. Tests keep the in-memory stores.
+    registry: createSqlPlaybackSessionStore(productionDb, { audit: productionAudit }),
+    progress: createSqlPlaybackProgressService(productionDb),
 });

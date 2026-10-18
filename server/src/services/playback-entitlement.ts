@@ -144,6 +144,37 @@ export function verifyPlaybackToken(secret: string, token: unknown): PlaybackTok
     return claims ? { ok: true, claims } : { ok: false, reason: 'unknown-claims' };
 }
 
+export interface PlaybackEntitlementRequest {
+    /** The opaque token presented by the client (query string or body). */
+    token: unknown;
+    tenantId: unknown;
+    lessonId: unknown;
+    studentEnrollmentId: unknown;
+    sessionId: unknown;
+}
+
+/**
+ * Verification helper for streaming routes.
+ *
+ * Delivery handlers (manifest/segment/key, or any other media surface) MUST
+ * call this — never `verifyPlaybackToken` directly — so the server-derived
+ * session facts are normalized and a malformed/absent binding fails closed
+ * instead of being skipped. The expectation is built exclusively from the
+ * supplied server state; the token can never widen it.
+ */
+export async function verifyPlaybackEntitlement(
+    service: PlaybackEntitlementService,
+    request: PlaybackEntitlementRequest,
+): Promise<PlaybackEntitlementDecision> {
+    const asString = (value: unknown): string => (typeof value === 'string' ? value : '');
+    return service.verify(request.token, {
+        tenantId: asString(request.tenantId),
+        lessonId: asString(request.lessonId),
+        studentEnrollmentId: asString(request.studentEnrollmentId),
+        sessionId: asString(request.sessionId),
+    });
+}
+
 /**
  * Pure entitlement decision: revocation, expiry and every binding are checked
  * deny-by-default. An absent expected binding denies (a caller that fails to

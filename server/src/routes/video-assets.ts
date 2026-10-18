@@ -37,17 +37,48 @@ import {
     PlaybackEntitlementService,
     createPlaybackEntitlementService,
     createSqlPlaybackEntitlementStore,
+    verifyPlaybackEntitlement,
 } from '../services/playback-entitlement';
 import {
     UsageEventInput,
     VideoUsageEventService,
     buildHeartbeatDedupeKey,
     buildProviderDedupeKey,
+    clampHeartbeatSeconds,
     createSqlVideoUsageStore,
     createVideoUsageEventService,
+    DEFAULT_HEARTBEAT_ENROLLMENT_WINDOW_SECONDS,
     DEFAULT_HEARTBEAT_WINDOW_SECONDS,
+    DEFAULT_MAX_HEARTBEAT_EVENTS_PER_ENROLLMENT,
+    DEFAULT_MAX_HEARTBEAT_SECONDS_PER_ENROLLMENT,
     normalizeUsageKind,
 } from '../services/video-usage-events';
+import {
+    LessonAccessFacts,
+    contentAccessDenialStatus,
+    evaluateContentAccess,
+} from './content-access';
+import { buildLessonReleasePolicy, ReleasePolicyRow } from '../services/content-release';
+
+/** Server-derived principal facts used to compose the content-access policy. */
+export interface LessonAccessPrincipal {
+    id: string;
+    tenantId: string;
+    studentEnrollmentId: string;
+    role: string;
+}
+
+/** The composed content-access facts for one lesson, plus its resolved tenant. */
+export interface ResolvedLessonAccess extends LessonAccessFacts {
+    tenantId: string;
+}
+
+/** Optional per-enrollment heartbeat ceilings; unset fields use the defaults. */
+export interface HeartbeatLimits {
+    windowSeconds?: number;
+    maxEventsPerEnrollment?: number;
+    maxSecondsPerEnrollment?: number;
+}
 
 /** Injected provider-callback verifier for usage reports (same fail-closed rule). */
 export interface UsageCallbackInput {
@@ -66,12 +97,23 @@ export interface VideoAssetsDeps {
     lifecycle: VideoAssetLifecycle;
     entitlement: PlaybackEntitlementService;
     usage: VideoUsageEventService;
-    /** Server-side scope of a lesson; a mismatched tenant denies issuance. */
-    resolveLessonScope: (lessonId: string) => Promise<{ tenantId: string } | null>;
+    /**
+     * Composed content-access facts for a lesson, resolved from server rows.
+     * Entitlement issuance denies unless the composed policy allows the caller
+     * (published, released, in-audience/enrollment); a null result is a 404.
+     */
+    resolveLessonScope: (
+        lessonId: string,
+        principal: LessonAccessPrincipal,
+    ) => Promise<ResolvedLessonAccess | null>;
+    /** Verified tenant-admin capability; absent => false (deny). */
+    isTenantAdmin?: (userId: string, tenantId: string) => Promise<boolean>;
     /** Optional verified platform capability for cross-tenant revoke. */
     isPlatformAdmin?: (userId: string) => Promise<boolean>;
     /** Usage provider-callback verifier; absent => callbacks are ignored. */
     verifyUsageCallback?: (input: UsageCallbackInput) => boolean | Promise<boolean>;
+    /** Per-enrollment anti-inflation ceilings for watch heartbeats. */
+    heartbeatLimits?: HeartbeatLimits;
     now?: () => number;
     heartbeatWindowSeconds?: number;
 }
@@ -82,6 +124,10 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
     const router = Router();
     const now = deps.now ?? ((): number => Date.now());
     const heartbeatWindow = deps.heartbeatWindowSeconds ?? DEFAULT_HEARTBEAT_WINDOW_SECONDS;
+    const heartbeatLimits = deps.heartbeatLimits ?? {};
+    const heartbeatLimitWindow = heartbeatLimits.windowSeconds ?? DEFAULT_HEARTBEAT_ENROLLMENT_WINDOW_SECONDS;
+    const maxHeartbeatsPerEnrollment = heartbeatLimits.maxEventsPerEnrollment ?? DEFAULT_MAX_HEARTBEAT_EVENTS_PER_ENROLLMENT;
+    const maxHeartbeatSecondsPerEnrollment = heartbeatLimits.maxSecondsPerEnrollment ?? DEFAULT_MAX_HEARTBEAT_SECONDS_PER_ENROLLMENT;
 
     const requireTenant = (req: AuthRequest, res: Response): { tenantId: string } | null => {
         if (!req.user) {
@@ -226,9 +272,25 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
             if (!lessonId || !sessionId) {
                 return res.status(400).json({ error: 'lessonId and sessionId are required' });
             }
-            const lesson = await deps.resolveLessonScope(lessonId);
-            if (!lesson || lesson.tenantId !== tenantId) {
+            // Compose the SAME content-access policy used by every lesson read:
+            // a token is only issued for a published, released lesson that is in
+            // the caller's enrollment/audience. A missing or cross-tenant lesson
+            // stays a 404 (no enumeration).
+            const access = await deps.resolveLessonScope(lessonId, {
+                id: principal.id,
+                tenantId,
+                studentEnrollmentId,
+                role: principal.role,
+            });
+            if (!access || access.tenantId !== tenantId) {
                 return res.status(404).json({ error: 'Lesson not found' });
+            }
+            const decision = evaluateContentAccess(access);
+            if (!decision.allowed) {
+                const status = contentAccessDenialStatus(decision.code);
+                return res.status(status).json({
+                    error: status === 403 ? 'Lesson is not available yet' : 'Lesson not found',
+                });
             }
             const issued = await deps.entitlement.issue(
                 { tenantId, lessonId, studentEnrollmentId, sessionId },
@@ -262,8 +324,18 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
             if (!jti) return res.status(400).json({ error: 'jti is required' });
             const record = await deps.entitlement.load(jti);
             if (!record) return res.status(404).json({ error: 'Entitlement not found' });
+            // Only the record's own enrollment may revoke it, or a verified
+            // tenant admin / platform admin. Same-tenant staff are not enough.
+            const ownsRecord = typeof principal.studentEnrollmentId === 'string'
+                && principal.studentEnrollmentId.length > 0
+                && record.studentEnrollmentId === principal.studentEnrollmentId;
             const isPlatformAdmin = deps.isPlatformAdmin ? await deps.isPlatformAdmin(principal.id) : false;
-            if (!isPlatformAdmin && record.tenantId !== principal.tenantId) {
+            const isTenantAdmin = !ownsRecord && !isPlatformAdmin
+                && deps.isTenantAdmin !== undefined
+                && principal.tenantId === record.tenantId
+                ? await deps.isTenantAdmin(principal.id, record.tenantId)
+                : false;
+            if (!ownsRecord && !isTenantAdmin && !isPlatformAdmin) {
                 return res.status(403).json({ error: 'Forbidden' });
             }
             const reason = typeof body.reason === 'string' ? body.reason : 'revoked';
@@ -288,19 +360,55 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
             }
             const body = (req.body ?? {}) as Record<string, unknown>;
             const sessionId = normalizeAssetId(body.sessionId);
-            if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
-            const dedupeKey = buildHeartbeatDedupeKey(sessionId, now(), heartbeatWindow);
+            const lessonId = normalizeAssetId(body.lessonId);
+            if (!sessionId || !lessonId) return res.status(400).json({ error: 'sessionId and lessonId are required' });
+
+            // A heartbeat must present the server-issued playback entitlement
+            // for this exact tenant/enrollment/lesson/session. The client can no
+            // longer invent a session id: watch time is bound to a token that
+            // passed the content-access policy at issuance.
+            const entitlement = await verifyPlaybackEntitlement(deps.entitlement, {
+                token: body.token,
+                tenantId: principal.tenantId,
+                lessonId,
+                studentEnrollmentId: principal.studentEnrollmentId,
+                sessionId,
+            });
+            if (!entitlement.allowed) {
+                return res.status(403).json({ error: 'A valid playback entitlement is required' });
+            }
+
+            // One heartbeat can never account for more than one dedupe window of
+            // watch time, so a large client delta cannot inflate the aggregate.
+            const deltaSeconds = clampHeartbeatSeconds(body.deltaSeconds, heartbeatWindow);
+            if (deltaSeconds === null) return res.status(400).json({ error: 'Invalid heartbeat' });
+            const nowMs = now();
+            const dedupeKey = buildHeartbeatDedupeKey(entitlement.claims.sessionId, nowMs, heartbeatWindow);
             if (!dedupeKey) return res.status(400).json({ error: 'Invalid heartbeat' });
+
+            // Bound the whole enrollment: a burst of distinct session ids is
+            // stopped by the per-enrollment event rate limit and aggregate cap.
+            const limit = await deps.usage.heartbeatLimit({
+                studentEnrollmentId: principal.studentEnrollmentId,
+                nowMs,
+                windowSeconds: heartbeatLimitWindow,
+                maxEventsPerWindow: maxHeartbeatsPerEnrollment,
+                maxSecondsPerWindow: maxHeartbeatSecondsPerEnrollment,
+            });
+            if (!limit.allowed) {
+                return res.status(429).json({ error: 'Watch heartbeat limit exceeded', reason: limit.reason });
+            }
 
             const input: UsageEventInput = {
                 tenantId: principal.tenantId,
                 kind: 'watch',
                 dedupeKey,
-                sessionId,
+                sessionId: entitlement.claims.sessionId,
                 studentEnrollmentId: principal.studentEnrollmentId,
-                watchSeconds: body.deltaSeconds,
+                watchSeconds: deltaSeconds,
                 source: 'heartbeat',
                 assetId: typeof body.assetId === 'string' ? body.assetId : undefined,
+                occurredAtMs: nowMs,
             };
             const result = await deps.usage.record(input);
             if ('error' in result) return res.status(400).json({ error: result.error });
@@ -460,6 +568,91 @@ function verifyUsageCallbackFromEnv(callback: UsageCallbackInput): boolean {
     return constantTimeEqualHex(expected, callback.signature);
 }
 
+/* -------------------------------------------------------------------------
+ * Production content-access facts (mirrors the C6/C7 reader so issuance and
+ * playback share one policy). The tenant is always the course row's.
+ * ------------------------------------------------------------------------- */
+
+interface LessonAccessLectureRow {
+    id: string;
+    course_id: string;
+    instructor_id: string | null;
+    group_id: string | null;
+    grade_id: string | null;
+    is_published: boolean | number;
+    display_order: number | null;
+    archived_at: string | Date | null;
+    tenant_id: string;
+    group_branch_id: string | null;
+    group_branch_scope: string | null;
+}
+
+interface LessonAccessEnrollmentRow {
+    id: string;
+    tenant_id: string;
+    instructor_id: string | null;
+    group_id: string | null;
+    grade_id: string | null;
+    group_branch_id: string | null;
+    group_branch_scope: string | null;
+}
+
+const LESSON_ACCESS_LECTURE_SQL = `
+    SELECT l.id, l.course_id, l.instructor_id, l.group_id, l.grade_id,
+           l.is_published, l.display_order, l.archived_at, c.tenant_id,
+           g.branch_id AS group_branch_id, g.branch_scope AS group_branch_scope
+    FROM lectures l
+    INNER JOIN courses c ON c.id = l.course_id
+    LEFT JOIN \`groups\` g ON g.id = l.group_id
+    WHERE l.id = ? LIMIT 1
+`;
+
+const LESSON_ACCESS_ENROLLMENT_SQL = `
+    SELECT s.id, s.tenant_id, s.instructor_id, s.group_id, s.grade_id,
+           g.branch_id AS group_branch_id, g.branch_scope AS group_branch_scope
+    FROM students s
+    INNER JOIN tenants t ON t.id = s.tenant_id
+    LEFT JOIN \`groups\` g ON g.id = s.group_id
+    WHERE s.id = ? AND s.user_id = ? AND s.is_active = 1 AND s.approval_status = 'approved' AND t.status = 'active'
+      AND (s.enrollment_status IS NULL OR s.enrollment_status = 'active')
+      AND (s.enrollment_start_date IS NULL OR s.enrollment_start_date <= UTC_TIMESTAMP())
+      AND (s.enrollment_end_date IS NULL OR s.enrollment_end_date > UTC_TIMESTAMP())
+    LIMIT 1
+`;
+
+const LESSON_ACCESS_POLICY_SQL = `
+    SELECT lecture_id, course_id, tenant_id, release_mode, release_at, release_timezone,
+           prerequisite_lecture_id, released_at
+    FROM lesson_release_policies WHERE lecture_id = ? LIMIT 1
+`;
+
+const PREREQUISITE_COMPLETED_SQL = `
+    SELECT 1 AS done FROM lesson_completions
+    WHERE student_enrollment_id = ? AND lecture_id = ? LIMIT 1
+`;
+
+const TENANT_ADMIN_SQL = `
+    SELECT 'owner' AS authority
+    FROM tenants t
+    WHERE t.id = ? AND t.owner_user_id = ? AND t.status = 'active'
+    UNION ALL
+    SELECT m.role_key AS authority
+    FROM tenant_memberships m
+    INNER JOIN tenants t ON t.id = m.tenant_id
+    INNER JOIN users u ON u.id = m.user_id
+    WHERE m.user_id = ? AND m.tenant_id = ? AND m.status = 'active'
+      AND t.status = 'active' AND u.is_active = 1 AND m.role_key = 'owner'
+    LIMIT 1
+`;
+
+function deriveBranchFacts(scope: string | null, branchId: string | null): { branchId: string | null; branchAmbiguous: boolean } {
+    const normalized = (scope ?? '').trim().toLowerCase();
+    if (normalized === 'branch') {
+        return branchId ? { branchId, branchAmbiguous: false } : { branchId: null, branchAmbiguous: true };
+    }
+    return { branchId: null, branchAmbiguous: false };
+}
+
 export default createVideoAssetsRouter({
     authenticate: async (req, res, next) => {
         const { authenticateToken } = await import('../middleware/auth');
@@ -471,15 +664,64 @@ export default createVideoAssetsRouter({
     }),
     entitlement: createPlaybackEntitlementService({
         store: createSqlPlaybackEntitlementStore(lazyDb),
-        getSecret: () => process.env.VIDEO_PLAYBACK_SECRET || process.env.JWT_SECRET,
+        // F9: a DEDICATED playback secret only. There is deliberately no
+        // JWT_SECRET fallback; an unset secret fails closed (issue refuses).
+        getSecret: () => process.env.VIDEO_PLAYBACK_SECRET,
     }),
     usage: createVideoUsageEventService({ store: createSqlVideoUsageStore(lazyDb) }),
-    resolveLessonScope: async (lessonId) => {
-        const row = await lazyDb.queryOne<{ tenant_id: string }>(
-            `SELECT c.tenant_id FROM lectures l INNER JOIN courses c ON c.id = l.course_id WHERE l.id = ? LIMIT 1`,
-            [lessonId],
+    resolveLessonScope: async (lessonId, principal) => {
+        const lecture = await lazyDb.queryOne<LessonAccessLectureRow>(LESSON_ACCESS_LECTURE_SQL, [lessonId]);
+        if (!lecture) return null;
+        const enrollment = principal.studentEnrollmentId
+            ? await lazyDb.queryOne<LessonAccessEnrollmentRow>(LESSON_ACCESS_ENROLLMENT_SQL, [principal.studentEnrollmentId, principal.id])
+            : null;
+        const policyRow = await lazyDb.queryOne<ReleasePolicyRow>(LESSON_ACCESS_POLICY_SQL, [lessonId]);
+        const policy = buildLessonReleasePolicy(lecture, policyRow);
+        let prerequisiteCompleted = false;
+        if (policy.releaseMode === 'sequential' && policy.prerequisiteLectureId && enrollment) {
+            const done = await lazyDb.queryOne<{ done: number }>(
+                PREREQUISITE_COMPLETED_SQL,
+                [enrollment.id, policy.prerequisiteLectureId],
+            );
+            prerequisiteCompleted = done !== null;
+        }
+        const lectureBranch = deriveBranchFacts(lecture.group_branch_scope, lecture.group_branch_id);
+        const enrollmentBranch = enrollment
+            ? deriveBranchFacts(enrollment.group_branch_scope, enrollment.group_branch_id)
+            : null;
+        return {
+            tenantId: lecture.tenant_id,
+            isStaff: principal.role !== 'student',
+            lecture: {
+                tenantId: lecture.tenant_id,
+                instructorId: lecture.instructor_id,
+                groupId: lecture.group_id,
+                gradeId: lecture.grade_id,
+                branchId: lectureBranch.branchId,
+                branchAmbiguous: lectureBranch.branchAmbiguous,
+                isPublished: Boolean(lecture.is_published),
+                archived: lecture.archived_at !== null && lecture.archived_at !== undefined,
+                displayOrder: Number(lecture.display_order ?? 0),
+            },
+            enrollment: enrollment ? {
+                id: enrollment.id,
+                tenantId: enrollment.tenant_id,
+                instructorId: enrollment.instructor_id,
+                groupId: enrollment.group_id,
+                gradeId: enrollment.grade_id,
+                branchId: enrollmentBranch?.branchId ?? null,
+            } : null,
+            policy,
+            prerequisiteCompleted,
+            now: new Date(),
+        };
+    },
+    isTenantAdmin: async (userId, tenantId) => {
+        const row = await lazyDb.queryOne<{ authority: string }>(
+            TENANT_ADMIN_SQL,
+            [tenantId, userId, userId, tenantId],
         );
-        return row ? { tenantId: row.tenant_id } : null;
+        return row !== null;
     },
     verifyUsageCallback: verifyUsageCallbackFromEnv,
 });

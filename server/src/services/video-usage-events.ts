@@ -28,6 +28,16 @@ export const MAX_WATCH_SECONDS_PER_EVENT = 3600;
 export const MAX_STORAGE_BYTES_PER_EVENT = 10 * 1024 * 1024 * 1024;
 export const DEFAULT_HEARTBEAT_WINDOW_SECONDS = 30;
 
+/**
+ * Per-enrollment anti-inflation bounds for client watch heartbeats. A single
+ * session can never report more than one dedupe window of watch time, and the
+ * whole enrollment is bounded by an aggregate-seconds ceiling plus an event
+ * count (rate limit) inside a rolling window.
+ */
+export const DEFAULT_HEARTBEAT_ENROLLMENT_WINDOW_SECONDS = 3600;
+export const DEFAULT_MAX_HEARTBEAT_EVENTS_PER_ENROLLMENT = 240;
+export const DEFAULT_MAX_HEARTBEAT_SECONDS_PER_ENROLLMENT = 7200;
+
 export function normalizeUsageKind(value: unknown): UsageKind | null {
     if (typeof value !== 'string') return null;
     return (USAGE_KINDS as readonly string[]).includes(value) ? (value as UsageKind) : null;
@@ -70,6 +80,21 @@ export function buildHeartbeatDedupeKey(
     const window = Math.max(1, Math.trunc(windowSeconds));
     const bucket = Math.floor(nowMs / (window * 1000));
     return `hb:${session}:${bucket}`;
+}
+
+/**
+ * Clamp a reported heartbeat delta to the dedupe window. A single heartbeat
+ * can never account for more than one window of watch time, so a client-chosen
+ * large delta cannot inflate the aggregate. Returns null for unusable input.
+ */
+export function clampHeartbeatSeconds(
+    value: unknown,
+    windowSeconds: number = DEFAULT_HEARTBEAT_WINDOW_SECONDS,
+): number | null {
+    const parsed = toNonNegativeInt(value);
+    if (parsed === null || parsed <= 0) return null;
+    const window = Math.max(1, Math.trunc(windowSeconds));
+    return Math.min(parsed, window);
 }
 
 /** Deterministic provider-callback dedupe key: one event per provider event id. */
@@ -175,6 +200,10 @@ export interface VideoUsageStore {
     insertEvent(row: NewUsageEventRow): Promise<boolean>;
     sumWatchSeconds(tenantId: string): Promise<number>;
     sumStorageBytes(tenantId: string): Promise<number>;
+    /** Watch seconds recorded for one enrollment at/after `sinceMs`. */
+    sumWatchSecondsForEnrollment(studentEnrollmentId: string, sinceMs: number): Promise<number>;
+    /** Watch events recorded for one enrollment at/after `sinceMs` (rate limit). */
+    countWatchEventsForEnrollment(studentEnrollmentId: string, sinceMs: number): Promise<number>;
     recordAudit(input: AuditRecordInput): Promise<void>;
 }
 
@@ -182,10 +211,23 @@ export type RecordUsageResult =
     | { recorded: boolean; deduplicated: boolean }
     | { error: string };
 
+export type HeartbeatLimitReason = 'rate-limit' | 'aggregate-cap';
+export type HeartbeatLimitDecision = { allowed: true } | { allowed: false; reason: HeartbeatLimitReason };
+
+export interface HeartbeatLimitInput {
+    studentEnrollmentId: string;
+    nowMs: number;
+    windowSeconds: number;
+    maxEventsPerWindow: number;
+    maxSecondsPerWindow: number;
+}
+
 export interface VideoUsageEventService {
     record(input: UsageEventInput): Promise<RecordUsageResult>;
     watchSeconds(tenantId: string): Promise<number>;
     storageBytes(tenantId: string): Promise<number>;
+    /** Anti-inflation gate for watch heartbeats, scoped to one enrollment. */
+    heartbeatLimit(input: HeartbeatLimitInput): Promise<HeartbeatLimitDecision>;
 }
 
 export interface VideoUsageEventDeps {
@@ -229,6 +271,22 @@ export function createVideoUsageEventService(deps: VideoUsageEventDeps): VideoUs
             const safe = typeof tenantId === 'string' ? tenantId.trim() : '';
             return safe ? store.sumStorageBytes(safe) : 0;
         },
+
+        heartbeatLimit: async (input) => {
+            const enrollmentId = typeof input.studentEnrollmentId === 'string' ? input.studentEnrollmentId.trim() : '';
+            if (!enrollmentId) return { allowed: true };
+            const window = Math.max(1, Math.trunc(input.windowSeconds));
+            const maxEvents = Math.max(1, Math.trunc(input.maxEventsPerWindow));
+            const maxSeconds = Math.max(1, Math.trunc(input.maxSecondsPerWindow));
+            const since = input.nowMs - window * 1000;
+            const [events, seconds] = await Promise.all([
+                store.countWatchEventsForEnrollment(enrollmentId, since),
+                store.sumWatchSecondsForEnrollment(enrollmentId, since),
+            ]);
+            if (events >= maxEvents) return { allowed: false, reason: 'rate-limit' };
+            if (seconds >= maxSeconds) return { allowed: false, reason: 'aggregate-cap' };
+            return { allowed: true };
+        },
     };
 }
 
@@ -256,6 +314,16 @@ export function createSqlVideoUsageStore(db: VideoUsageDb): VideoUsageStore {
         const row = await db.queryOne<{ total: string | number | null }>(
             `SELECT COALESCE(SUM(${column}), 0) AS total FROM video_usage_events WHERE tenant_id = ?`,
             [tenantId],
+        );
+        return Number(row?.total ?? 0);
+    };
+
+    const forEnrollment = async (aggregate: 'SUM' | 'COUNT', enrollmentId: string, sinceMs: number): Promise<number> => {
+        const expression = aggregate === 'SUM' ? 'COALESCE(SUM(watch_seconds), 0)' : 'COUNT(*)';
+        const row = await db.queryOne<{ total: string | number | null }>(
+            `SELECT ${expression} AS total FROM video_usage_events
+             WHERE student_enrollment_id = ? AND kind = 'watch' AND occurred_at >= ?`,
+            [enrollmentId, toMysqlUtc(sinceMs)],
         );
         return Number(row?.total ?? 0);
     };
@@ -291,6 +359,9 @@ export function createSqlVideoUsageStore(db: VideoUsageDb): VideoUsageStore {
 
         sumWatchSeconds: (tenantId) => sumFor(tenantId, 'watch_seconds'),
         sumStorageBytes: (tenantId) => sumFor(tenantId, 'storage_bytes'),
+
+        sumWatchSecondsForEnrollment: (enrollmentId, sinceMs) => forEnrollment('SUM', enrollmentId, sinceMs),
+        countWatchEventsForEnrollment: (enrollmentId, sinceMs) => forEnrollment('COUNT', enrollmentId, sinceMs),
 
         recordAudit: async (input) => {
             await recordAudit(db.execute, input);

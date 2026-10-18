@@ -13,6 +13,9 @@ import {
     createSessionRegistry,
     createDeviceRegistry,
     createPlaybackSessionRegistryFactory,
+    asPlaybackSessionStore,
+    PlaybackDeviceLimitError,
+    PLAYBACK_POLICY_CEILINGS,
 } from '../src/services/playback-session-registry';
 import {
     createPlaybackProgressService,
@@ -98,15 +101,17 @@ test('V5: warning and self/support revoke with audit', async () => {
     assert.ok(audits.length > 0);
 });
 
-test('V5: device limit enforced', () => {
+test('V5: device limit enforced at registration (F10)', () => {
     const registry = createPlaybackSessionRegistry({ now: () => new Date('2026-01-01T00:00:00Z') });
     const policy = { maxConcurrentSessions: 5, maxDevices: 1, warningThreshold: 0, selfRevokeAllowed: true, supportRevokeAllowed: true, tenantId: 't1' };
     registry.setPolicy(policy, 't1');
     const d1 = registry.registerDevice({ tenantId: 't1', userId: 'u1', fingerprint: 'fp1' });
     assert.ok(d1);
-    // registerDevice does not enforce limit at registration in our impl? It creates anyway; acquireSlot enforces? We'll check device count
-    const d2 = registry.registerDevice({ tenantId: 't1', userId: 'u1', fingerprint: 'fp2' });
-    assert.ok(d2);
+    // deny-by-default: a second distinct fingerprint is rejected, no new row
+    assert.throws(() => registry.registerDevice({ tenantId: 't1', userId: 'u1', fingerprint: 'fp2' }), PlaybackDeviceLimitError);
+    // re-registering the same active fingerprint is idempotent, not another row
+    assert.equal(registry.registerDevice({ tenantId: 't1', userId: 'u1', fingerprint: 'fp1' }).id, d1.id);
+    assert.equal(registry.listDevices('t1', 'u1').length, 1);
 });
 
 /* ---------- V6 progress ---------- */
@@ -229,6 +234,13 @@ test('V5: normalizePlaybackPolicy validation', () => {
     assert.equal(p.warningThreshold, 0);
 });
 
+test('V5: normalizePlaybackPolicy clamps to server ceilings (F1)', () => {
+    const p = normalizePlaybackPolicy({ maxConcurrentSessions: 1000, maxDevices: 1000 }, 't');
+    assert.equal(p.maxConcurrentSessions, PLAYBACK_POLICY_CEILINGS.maxConcurrentSessions);
+    assert.equal(p.maxDevices, PLAYBACK_POLICY_CEILINGS.maxDevices);
+    assert.ok(p.maxConcurrentSessions < 1000);
+});
+
 test('V5: registerDevice returns existing and listDevices tenant isolation', () => {
     const reg = createPlaybackSessionRegistry({ now: () => new Date('2026-01-01T00:00:00Z') });
     const d1 = reg.registerDevice({ tenantId: 't1', userId: 'u1', fingerprint: 'fp1' });
@@ -278,14 +290,18 @@ test('V5: acquireSlot deny cases', async () => {
 
 test('V5: device limit enforced at acquisition', async () => {
     const reg = createPlaybackSessionRegistry({ now: () => new Date('2026-01-01T00:00:00Z') });
-    const policy = { maxConcurrentSessions: 5, maxDevices: 2, warningThreshold: 0, selfRevokeAllowed: true, supportRevokeAllowed: true, tenantId: 't1' };
+    const policy = { maxConcurrentSessions: 5, maxDevices: 3, warningThreshold: 0, selfRevokeAllowed: true, supportRevokeAllowed: true, tenantId: 't1' };
     reg.setPolicy(policy, 't1');
     const d1 = reg.registerDevice({ tenantId: 't1', userId: 'u1', fingerprint: 'fp1' });
-    const d2 = reg.registerDevice({ tenantId: 't1', userId: 'u1', fingerprint: 'fp2' });
+    reg.registerDevice({ tenantId: 't1', userId: 'u1', fingerprint: 'fp2' });
+    reg.registerDevice({ tenantId: 't1', userId: 'u1', fingerprint: 'fp3' });
     const r = await reg.acquireSlot({ tenantId: 't1', userId: 'u1', deviceId: d1.id, sessionId: 's1', policy });
     assert.equal(r.acquired, true);
-    const d3 = reg.registerDevice({ tenantId: 't1', userId: 'u1', fingerprint: 'fp3' });
-    const r2 = await reg.acquireSlot({ tenantId: 't1', userId: 'u1', deviceId: d3.id, sessionId: 's2', policy });
+    // A later policy that lowers the ceiling below the registered device count
+    // is still denied at acquisition.
+    const lowered = { ...policy, maxDevices: 2 };
+    reg.setPolicy(lowered, 't1');
+    const r2 = await reg.acquireSlot({ tenantId: 't1', userId: 'u1', deviceId: d1.id, sessionId: 's2', policy: lowered });
     assert.equal(r2.acquired, false);
     assert.equal(r2.reason, 'device_limit');
 });
@@ -695,4 +711,54 @@ test('route: delete self revoke alias', async () => {
     const del = await invokeRoute(router, { method: 'DELETE', url: `/sessions/${sid}`, token: studentToken });
     assert.equal(del.statusCode, 200);
     assert.equal((del.body as any).revoked, true);
+});
+
+/* ---------- F1 / F2 / F10 route rejection paths ---------- */
+
+test('route: client-supplied policy is ignored and cannot raise limits (F1)', async () => {
+    const { router, studentToken } = makeRouter();
+    const oversized = { maxConcurrentSessions: 1000, maxDevices: 1000 };
+    const first = await invokeRoute(router, { method: 'POST', url: '/sessions', token: studentToken, body: { tenantId: 'tenant-a', userId: 'student-a', fingerprint: 'fp', assetId: 'asset-1', policy: oversized } });
+    assert.equal(first.statusCode, 201);
+    assert.equal((first.body as any).policy.maxConcurrentSessions, 2);
+    assert.ok((first.body as any).policy.maxConcurrentSessions <= PLAYBACK_POLICY_CEILINGS.maxConcurrentSessions);
+    const second = await invokeRoute(router, { method: 'POST', url: '/sessions', token: studentToken, body: { tenantId: 'tenant-a', userId: 'student-a', fingerprint: 'fp', assetId: 'asset-1', playbackPolicy: oversized } });
+    assert.equal(second.statusCode, 201);
+    // Third start exceeds the server's default 2 — the client policy never applied.
+    const third = await invokeRoute(router, { method: 'POST', url: '/sessions', token: studentToken, body: { tenantId: 'tenant-a', userId: 'student-a', fingerprint: 'fp', assetId: 'asset-1', policy: oversized } });
+    assert.equal(third.statusCode, 409);
+    assert.equal((third.body as any).reason, 'concurrency_limit');
+});
+
+test('route: device/session listing ignores foreign userId for non-privileged callers (F2)', async () => {
+    const { router, studentToken } = makeRouter();
+    await invokeRoute(router, { method: 'POST', url: '/sessions', token: studentToken, body: { tenantId: 'tenant-a', userId: 'student-a', fingerprint: 'fp', assetId: 'asset-1' } });
+    const mine = await invokeRoute(router, { method: 'GET', url: '/devices', token: studentToken, query: { tenantId: 'tenant-a', userId: 'admin-a' } });
+    assert.equal(mine.statusCode, 200);
+    const devices = mine.body as Array<{ userId: string }>;
+    assert.equal(devices.length, 1);
+    assert.ok(devices.every((d) => d.userId === 'student-a'));
+    const sessions = await invokeRoute(router, { method: 'GET', url: '/sessions', token: studentToken, query: { tenantId: 'tenant-a', userId: 'admin-a' } });
+    assert.equal(sessions.statusCode, 200);
+    const list = sessions.body as Array<{ userId: string }>;
+    assert.ok(list.length >= 1);
+    assert.ok(list.every((s) => s.userId === 'student-a'));
+});
+
+test('route: device registration rejected past maxDevices (F10)', async () => {
+    const db = makeFakeDataAccess(() => []);
+    const repository = makeRepository(
+        { 'student-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'student' } },
+        { memberships: { 'student-a': [{ tenant_id: 'tenant-a' }] }, enrollments: { 'student-a': [{ id: 'enr-a', tenant_id: 'tenant-a', instructor_id: 'instr-a', group_id: null, grade_id: null }] } },
+    );
+    const authenticate = createAuthenticateToken(repository);
+    const registry = createPlaybackSessionRegistry({ now: () => new Date('2026-01-01T00:00:00Z') });
+    registry.setPolicy({ maxConcurrentSessions: 5, maxDevices: 1, warningThreshold: 0, selfRevokeAllowed: true, supportRevokeAllowed: true, tenantId: 'tenant-a' }, 'tenant-a');
+    const router = createPlaybackSessionsRouter({ db, authenticate, registry: asPlaybackSessionStore(registry), now: () => new Date('2026-01-01T00:00:00Z') });
+    const studentToken = tokenFor({ id: 'student-a', role: 'student', tv: 0, tenant_id: 'tenant-a', student_enrollment_id: 'enr-a' });
+    const first = await invokeRoute(router, { method: 'POST', url: '/sessions', token: studentToken, body: { tenantId: 'tenant-a', userId: 'student-a', fingerprint: 'fp-1', assetId: 'asset-1' } });
+    assert.equal(first.statusCode, 201);
+    const second = await invokeRoute(router, { method: 'POST', url: '/sessions', token: studentToken, body: { tenantId: 'tenant-a', userId: 'student-a', fingerprint: 'fp-2', assetId: 'asset-1' } });
+    assert.equal(second.statusCode, 409);
+    assert.equal((second.body as any).reason, 'device_limit');
 });
