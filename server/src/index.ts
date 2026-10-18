@@ -64,6 +64,11 @@ import tenantSelfRoutes from './routes/tenant-self';
 import adminApprovalsRoutes from './routes/admin-approvals';
 import adminDashboardRoutes from './routes/admin-dashboard';
 import adminInsightsRoutes from './routes/admin-insights';
+import examVersionsRoutes from './routes/exam-versions';
+import gradebookRoutes from './routes/gradebook';
+import certificatesRoutes from './routes/certificates';
+import schedulesRoutes from './routes/schedules';
+import attendanceRecordsRoutes from './routes/attendance-records';
 import { initializeBuckets } from './services/minio';
 import { reconcileTenantSubscriptions } from './services/subscription-lifecycle';
 import { optionalAuth } from './middleware/auth';
@@ -204,6 +209,11 @@ app.use('/api/video-assets', videoAssetsRoutes);
 app.use('/api/playback', playbackSessionsRoutes);
 app.use('/api/question-bank', questionBankRoutes);
 app.use('/api/assignments', assignmentsRoutes);
+app.use('/api/exam-versions', examVersionsRoutes);
+app.use('/api/gradebook', gradebookRoutes);
+app.use('/api/certificates', certificatesRoutes);
+app.use('/api/schedules', schedulesRoutes);
+app.use('/api/attendance-records', attendanceRecordsRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {

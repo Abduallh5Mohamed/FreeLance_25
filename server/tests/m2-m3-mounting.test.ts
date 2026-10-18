@@ -6,9 +6,15 @@ import { Router } from 'express';
 import { authenticateToken, optionalAuth } from '../src/middleware/auth';
 import { enforceTenantAuthorityBoundary } from '../src/middleware/tenant-authority-boundary';
 import { enforceStudentWorkspaceBoundary } from '../src/middleware/student-workspace-boundary';
+import { rateLimit } from '../src/middleware/rate-limit';
 import { createContentAccessRouter } from '../src/routes/content-access';
 import { createQuestionBankRouter } from '../src/routes/question-bank';
 import { createAssignmentsRouter } from '../src/routes/assignments';
+import { createExamVersionsRouter } from '../src/routes/exam-versions';
+import { createGradebookRouter } from '../src/routes/gradebook';
+import { createCertificatesRouter } from '../src/routes/certificates';
+import { createSchedulesRouter } from '../src/routes/schedules';
+import { createAttendanceRecordsRouter } from '../src/routes/attendance-records';
 import { createTenantBrandingRouter } from '../src/routes/tenant-branding';
 import { createTenantDomainsRouter } from '../src/routes/tenant-domains';
 import { createAnnouncementsRouter } from '../src/routes/announcements';
@@ -18,7 +24,7 @@ import { createPlaybackSessionsRouter } from '../src/routes/playback-sessions';
 import { createVideoAssetLifecycle, createSqlVideoAssetStore } from '../src/services/video-asset-lifecycle';
 import { createPlaybackEntitlementService, createSqlPlaybackEntitlementStore } from '../src/services/playback-entitlement';
 import { createVideoUsageEventService, createSqlVideoUsageStore } from '../src/services/video-usage-events';
-import { invokeRoute } from './helpers/m2-harness';
+import { invokeRoute, makeFakeDataAccess } from './helpers/m2-harness';
 
 /**
  * M2/M3 mounting contract.
@@ -51,6 +57,11 @@ const EXPECTED_MOUNTS: ReadonlyArray<readonly [string, string]> = [
     ['/api/playback', 'playbackSessionsRoutes'],
     ['/api/question-bank', 'questionBankRoutes'],
     ['/api/assignments', 'assignmentsRoutes'],
+    ['/api/exam-versions', 'examVersionsRoutes'],
+    ['/api/gradebook', 'gradebookRoutes'],
+    ['/api/certificates', 'certificatesRoutes'],
+    ['/api/schedules', 'schedulesRoutes'],
+    ['/api/attendance-records', 'attendanceRecordsRoutes'],
 ];
 
 const MOUNT_RE = /app\.use\(\s*'(\/api[^']*)'\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/g;
@@ -221,6 +232,31 @@ function buildGuardedSurface(): GuardedSurface {
         authenticate: authenticateToken,
         loadActiveTenantAuthority: authorityTripwire,
     }));
+    router.use('/api/exam-versions', createExamVersionsRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
+    router.use('/api/gradebook', createGradebookRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
+    router.use('/api/certificates', createCertificatesRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
+    router.use('/api/schedules', createSchedulesRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
+    router.use('/api/attendance-records', createAttendanceRecordsRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
 
     return { router, storageCalls: db.calls };
 }
@@ -235,6 +271,11 @@ const ANONYMOUS_PROBES: ReadonlyArray<{ method: string; url: string; path: strin
     { method: 'GET', url: '/api/playback/sessions', path: '/api/playback' },
     { method: 'GET', url: '/api/question-bank/questions', path: '/api/question-bank' },
     { method: 'GET', url: '/api/assignments', path: '/api/assignments' },
+    { method: 'GET', url: '/api/exam-versions/exams/exam-1/versions', path: '/api/exam-versions' },
+    { method: 'GET', url: '/api/gradebook/scores', path: '/api/gradebook' },
+    { method: 'GET', url: '/api/certificates', path: '/api/certificates' },
+    { method: 'GET', url: '/api/schedules', path: '/api/schedules' },
+    { method: 'GET', url: '/api/attendance-records/sessions/session-1/records', path: '/api/attendance-records' },
 ];
 
 test('mounting: every mounted path denies an anonymous caller without touching storage', async () => {
@@ -254,4 +295,132 @@ test('mounting: every probe path corresponds to a declared mount', () => {
     for (const probe of ANONYMOUS_PROBES) {
         assert.ok(declared.has(probe.path), `probe path ${probe.path} is not a declared mount`);
     }
+});
+
+/* -------------------------------------------------------------------------- */
+/* The single public surface: certificate verification                         */
+/* -------------------------------------------------------------------------- */
+
+interface ProbeResponse {
+    statusCode?: number;
+    body?: unknown;
+    headers: Record<string, string>;
+    status(code: number): ProbeResponse;
+    json(payload: unknown): ProbeResponse;
+    set(header: string, value: string): ProbeResponse;
+    setHeader(header: string, value: string): ProbeResponse;
+}
+
+/**
+ * Anonymous GET against the guarded surface with a response that also models
+ * `setHeader`, which the rate-limited public verify route writes (the shared
+ * harness response only models `set()`). Same guard chain as buildGuardedSurface.
+ */
+async function invokeAnonymousGet(router: Router, url: string): Promise<ProbeResponse> {
+    const headers: Record<string, string> = {};
+    const response: ProbeResponse = {
+        headers,
+        status(code) { response.statusCode = code; return response; },
+        json(payload) {
+            if (response.statusCode === undefined) response.statusCode = 200;
+            response.body = payload;
+            return response;
+        },
+        set(header, value) { headers[header.toLowerCase()] = value; return response; },
+        setHeader(header, value) { headers[header.toLowerCase()] = value; return response; },
+    };
+    const req: any = {
+        method: 'GET',
+        url,
+        originalUrl: url,
+        headers: {},
+        body: {},
+        query: {},
+        ip: '127.0.0.1',
+        socket: { remoteAddress: '127.0.0.1' },
+    };
+    await (router as unknown as (r: unknown, s: unknown, n: () => void) => Promise<void>)(req, response, () => {});
+    const deadline = Date.now() + 5000;
+    while (response.statusCode === undefined && response.body === undefined && Date.now() < deadline) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    return response;
+}
+
+function buildPublicVerifySurface(rows: Array<Record<string, unknown>>): { router: Router; storageCalls: () => number } {
+    const db = makeFakeDataAccess(() => rows);
+    const router = Router();
+    router.use(optionalAuth, enforceTenantAuthorityBoundary, enforceStudentWorkspaceBoundary);
+    router.use('/api/certificates', createCertificatesRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
+    return { router, storageCalls: () => db.executed.length };
+}
+
+test('mounting: the public certificate verify path is reachable anonymously', async () => {
+    const { router, storageCalls } = buildPublicVerifySurface([]);
+    const res = await invokeAnonymousGet(router, '/api/certificates/verify/deadbeef');
+    assert.ok(
+        res.statusCode !== 401 && res.statusCode !== 403,
+        `public verify must not be denied to an anonymous caller (got ${res.statusCode})`,
+    );
+    assert.equal(res.statusCode, 404, 'an unknown verification id resolves to not-found');
+    assert.equal(storageCalls(), 1, 'the public verify path is the one anonymous read of storage');
+});
+
+test('mounting: the public certificate verify path exposes only minimal facts', async () => {
+    const row: Record<string, unknown> = {
+        id: 'cert-internal-id',
+        tenant_id: 'tenant-internal-id',
+        student_enrollment_id: 'enrollment-internal-id',
+        course_id: 'course-internal-id',
+        verification_id: 'verification-1',
+        status: 'issued',
+        final_score: 88,
+        issued_at: '2026-01-02T03:04:05.000Z',
+        issued_by: 'issuer-internal-id',
+        revoked_at: null,
+        revoked_by: null,
+        revoke_reason: null,
+        branding_logo_url: 'https://cdn.example/logo.png',
+        branding_primary_color: '#111111',
+        branding_secondary_color: '#222222',
+        branding_accent_color: '#333333',
+        branding_locale: 'ar',
+    };
+    const { router, storageCalls } = buildPublicVerifySurface([row]);
+    const res = await invokeAnonymousGet(router, '/api/certificates/verify/verification-1');
+    assert.equal(res.statusCode, 200);
+
+    const facts = (res.body as { certificate: Record<string, unknown> }).certificate;
+    assert.deepEqual(
+        Object.keys(facts).sort(),
+        ['branding', 'course', 'final_score', 'issued_at', 'status', 'student', 'tenant', 'verification_id'],
+    );
+    for (const internal of ['id', 'tenant_id', 'student_enrollment_id', 'course_id', 'issued_by', 'revoked_at', 'revoked_by', 'revoke_reason']) {
+        assert.ok(!(internal in facts), `public facts must not leak ${internal}`);
+    }
+    assert.equal(facts.verification_id, 'verification-1');
+    assert.equal(facts.status, 'issued');
+    assert.equal(storageCalls(), 1);
+});
+
+test('mounting: the public certificate verify path is rate-limited when wired', async () => {
+    const db = makeFakeDataAccess(() => []);
+    const router = Router();
+    router.use(optionalAuth, enforceTenantAuthorityBoundary, enforceStudentWorkspaceBoundary);
+    router.use('/api/certificates', createCertificatesRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+        verifyRateLimit: rateLimit('m2-m3-cert-verify-test', 2, 60_000),
+    }));
+
+    const first = await invokeAnonymousGet(router, '/api/certificates/verify/a');
+    const second = await invokeAnonymousGet(router, '/api/certificates/verify/b');
+    const third = await invokeAnonymousGet(router, '/api/certificates/verify/c');
+    assert.ok(first.statusCode !== 429 && second.statusCode !== 429);
+    assert.equal(third.statusCode, 429, 'the public verify path must throttle once the limit is exceeded');
 });

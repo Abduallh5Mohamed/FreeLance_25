@@ -39,8 +39,15 @@ authority (owner / active instructor membership) or an owner-only check.
 | playback sessions (V4/V5/V6) | `/api/playback` | `server/src/routes/playback-sessions.ts` |
 | question bank (M4) | `/api/question-bank` | `server/src/routes/question-bank.ts` |
 | assignments (M4) | `/api/assignments` | `server/src/routes/assignments.ts` |
+| exam versions (M4 A2/A3) | `/api/exam-versions` | `server/src/routes/exam-versions.ts` |
+| gradebook (M4) | `/api/gradebook` | `server/src/routes/gradebook.ts` |
+| certificates (M4 A8) | `/api/certificates` | `server/src/routes/certificates.ts` |
+| schedules (M5 G2) | `/api/schedules` | `server/src/routes/schedules.ts` |
+| attendance records (M5 G3) | `/api/attendance-records` | `server/src/routes/attendance-records.ts` |
 
 No mount path is an exact match of, or a path-segment prefix of, another mount.
+(`/api/attendance-records` is a distinct segment from the legacy `/api/attendance`,
+which stays mounted as-is.)
 
 ## Endpoints
 
@@ -180,6 +187,70 @@ does not assert 401/403 on these two.
 | POST | `/api/assignments/:id/publish` | `authenticateToken`; tenant staff authority |
 | POST | `/api/assignments/:id/archive` | `authenticateToken`; tenant staff authority |
 
+### `/api/exam-versions` — versioned exam snapshots and grading (M4)
+
+| Method | Path | Guard / authority |
+| --- | --- | --- |
+| POST | `/api/exam-versions/exams/:examId/versions` | `authenticateToken`; tenant staff authority |
+| GET | `/api/exam-versions/exams/:examId/versions` | `authenticateToken`; tenant staff authority |
+| GET | `/api/exam-versions/exams/:examId/versions/:versionId` | `authenticateToken`; tenant staff authority |
+| POST | `/api/exam-versions/exams/:examId/versions/:versionId/publish` | `authenticateToken`; tenant staff authority |
+| POST | `/api/exam-versions/exams/:examId/versions/:versionId/attempts` | `authenticateToken`; enrolled student (own audience) |
+| GET | `/api/exam-versions/attempts/:attemptId` | `authenticateToken`; owner student or tenant staff authority |
+| POST | `/api/exam-versions/attempts/:attemptId/submit` | `authenticateToken`; owner student |
+| POST | `/api/exam-versions/attempts/:attemptId/regrade` | `authenticateToken`; tenant staff authority |
+
+### `/api/gradebook` — weighting policy and scores (M4)
+
+| Method | Path | Guard / authority |
+| --- | --- | --- |
+| GET | `/api/gradebook/policy/:courseId` | `authenticateToken`; tenant staff authority |
+| PUT | `/api/gradebook/policy/:courseId` | `authenticateToken`; tenant staff authority |
+| POST | `/api/gradebook/scores` | `authenticateToken`; tenant staff authority |
+| GET | `/api/gradebook/scores` | `authenticateToken`; tenant staff authority |
+| GET | `/api/gradebook/me` | `authenticateToken`; enrolled student |
+| GET | `/api/gradebook/students/:enrollmentId` | `authenticateToken`; tenant staff authority |
+| GET | `/api/gradebook/export` | `authenticateToken`; tenant staff authority |
+| GET | `/api/gradebook/progress` | `authenticateToken`; enrolled student |
+
+### `/api/certificates` — issuance, revocation and public verification (M4)
+
+| Method | Path | Guard / authority |
+| --- | --- | --- |
+| GET | `/api/certificates/verify/:verificationId` | **public** (no `authenticateToken`); rate-limited (`certificates-verify`, 30/min per client address); returns minimal public facts only |
+| GET | `/api/certificates` | `authenticateToken`; tenant staff authority |
+| POST | `/api/certificates` | `authenticateToken`; tenant staff authority |
+| POST | `/api/certificates/:id/revoke` | `authenticateToken`; tenant staff authority |
+| GET | `/api/certificates/:id` | `authenticateToken`; tenant staff authority |
+
+`/api/certificates/verify/:verificationId` is the single anonymous surface. It is
+registered **before** `router.use(deps.authenticate)`, is rate-limited, and only
+projects the allowlisted public facts (verification id, status, issued-at,
+course/tenant display names, final score and tenant branding) — never internal
+ids, enrollment ids or issuer identities. Every other path on this mount rejects
+an anonymous caller at `authenticateToken` before any handler or storage access.
+
+### `/api/schedules` — calendar series and sessions (M5 G2)
+
+| Method | Path | Guard / authority |
+| --- | --- | --- |
+| GET | `/api/schedules` | `authenticateToken`; tenant staff authority |
+| POST | `/api/schedules/series` | `authenticateToken`; tenant staff authority |
+| GET | `/api/schedules/sessions` | `authenticateToken`; tenant staff authority |
+| POST | `/api/schedules/sessions/:id/cancel` | `authenticateToken`; tenant staff authority |
+| POST | `/api/schedules/sessions/:id/reschedule` | `authenticateToken`; tenant staff authority |
+| GET | `/api/schedules/student` | `authenticateToken`; enrolled student (own audience) |
+
+### `/api/attendance-records` — manual attendance (M5 G3)
+
+| Method | Path | Guard / authority |
+| --- | --- | --- |
+| GET | `/api/attendance-records/sessions/:sessionId/records` | `authenticateToken`; tenant staff authority |
+| POST | `/api/attendance-records/sessions/:sessionId/records` | `authenticateToken`; tenant staff authority |
+| POST | `/api/attendance-records/sessions/:sessionId/records/bulk` | `authenticateToken`; tenant staff authority |
+| POST | `/api/attendance-records/records/:recordId/correct` | `authenticateToken`; tenant staff authority |
+| GET | `/api/attendance-records/me` | `authenticateToken`; enrolled student |
+
 ## Production wiring added to factory-only modules
 
 `announcements.ts`, `student-import.ts` and `playback-sessions.ts` previously
@@ -196,4 +267,7 @@ exports and behavior are unchanged; `playback-sessions.ts` keeps
 `server/tests/m2-m3-mounting.test.ts` asserts statically that every mount above
 exists in `server/src/index.ts` after the guard chain, that no mount path
 collides (segment-aware), and hermetically that each mounted path returns
-401/403 to an anonymous caller with zero storage access.
+401/403 to an anonymous caller with zero storage access. The one exception is
+`/api/certificates/verify/:verificationId`: it is asserted to be reachable
+anonymously (one storage read, not a denial) and to expose only the allowlisted
+public facts.

@@ -1,6 +1,7 @@
 import { Router, RequestHandler, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { AuthRequest } from '../middleware/auth';
+import { rateLimit } from '../middleware/rate-limit';
 import { recordAudit, snapshotRow } from '../security/audit';
 import {
     CERTIFICATE_STATUSES,
@@ -21,6 +22,12 @@ export interface CertificatesDeps {
     db: CertificatesDataAccess;
     authenticate: RequestHandler;
     loadActiveTenantAuthority: (userId: string, tenantId: string) => Promise<{ authority: string } | null>;
+    /**
+     * Guards the public `/verify/:verificationId` endpoint. The production
+     * wiring supplies the per-client-address limiter; the factory itself stays
+     * free of module-level throttle state so hermetic tests can drive it.
+     */
+    verifyRateLimit?: RequestHandler;
     now?: () => Date;
 }
 
@@ -67,8 +74,11 @@ export const createCertificatesRouter = (deps: CertificatesDeps): Router => {
     const loadBranding = async (tenantId: string): Promise<{ logo_url: string | null; primary_color: string | null; secondary_color: string | null; accent_color: string | null; locale: string | null } | null> =>
         db.queryOne('SELECT logo_url, primary_color, secondary_color, accent_color, locale FROM tenant_branding WHERE tenant_id=? LIMIT 1', [tenantId]);
 
-    // Public verify endpoint (no auth)
-    router.get('/verify/:verificationId', async (req: AuthRequest, res: Response) => {
+    // Public verify endpoint (no auth). It is the only path reachable by an
+    // anonymous caller and returns minimal facts only; the injected limiter
+    // (production: per-client-address) bounds enumeration. Every path below
+    // passes through deps.authenticate.
+    const verifyPublicCertificate: RequestHandler = async (req: AuthRequest, res: Response) => {
         const verificationId = (req.params.verificationId ?? '').trim();
         if (!verificationId || verificationId.length > 128) { res.status(400).json({ error: 'invalid verification id' }); return; }
         const row = await db.queryOne<CertRow>('SELECT id, tenant_id, student_enrollment_id, course_id, verification_id, status, final_score, issued_at, issued_by, revoked_at, revoked_by, revoke_reason, branding_logo_url, branding_primary_color, branding_secondary_color, branding_accent_color, branding_locale FROM certificates WHERE verification_id=? LIMIT 1', [verificationId]);
@@ -90,7 +100,11 @@ export const createCertificatesRouter = (deps: CertificatesDeps): Router => {
             },
         });
         res.json({ certificate: facts });
-    });
+    };
+    const verifyHandlers: RequestHandler[] = deps.verifyRateLimit
+        ? [deps.verifyRateLimit, verifyPublicCertificate]
+        : [verifyPublicCertificate];
+    router.get('/verify/:verificationId', ...verifyHandlers);
 
     router.use(deps.authenticate);
 
@@ -184,4 +198,11 @@ const loadActiveTenantAuthority = async (userId: string, tenantId: string) => {
     const { queryOne } = await loadDb();
     return queryOne<{ authority: string }>(`SELECT m.role_key AS authority FROM tenant_memberships m INNER JOIN tenants t ON t.id=m.tenant_id AND t.status='active' INNER JOIN users u ON u.id=m.user_id AND u.is_active=1 WHERE m.user_id=? AND m.tenant_id=? AND m.status='active' LIMIT 1`, [userId, tenantId]);
 };
-export default createCertificatesRouter({ db: productionDb, authenticate: async (req, res, next) => { const { authenticateToken } = await import('../middleware/auth'); return authenticateToken(req, res, next); }, loadActiveTenantAuthority });
+export default createCertificatesRouter({
+    db: productionDb,
+    authenticate: async (req, res, next) => { const { authenticateToken } = await import('../middleware/auth'); return authenticateToken(req, res, next); },
+    loadActiveTenantAuthority,
+    // Only the public verify endpoint is anonymously reachable: throttle it per
+    // client address to bound enumeration of verification ids.
+    verifyRateLimit: rateLimit('certificates-verify', 30, 60_000),
+});
