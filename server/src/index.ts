@@ -7,6 +7,8 @@ import { setupSocketIO } from './services/socket';
 import studentEnrollmentRoutes, { cleanupEnrollmentPrivacyData } from './routes/student-enrollment';
 import branchesRoutes from './routes/branches';
 import contentAccessRoutes from './routes/content-access';
+import questionBankRoutes from './routes/question-bank';
+import assignmentsRoutes from './routes/assignments';
 import tenantBrandingRoutes from './routes/tenant-branding';
 import tenantDomainsRoutes from './routes/tenant-domains';
 import announcementsRoutes from './routes/announcements';
@@ -200,6 +202,8 @@ app.use('/api/announcements', announcementsRoutes);
 app.use('/api/student-import', studentImportRoutes);
 app.use('/api/video-assets', videoAssetsRoutes);
 app.use('/api/playback', playbackSessionsRoutes);
+app.use('/api/question-bank', questionBankRoutes);
+app.use('/api/assignments', assignmentsRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {

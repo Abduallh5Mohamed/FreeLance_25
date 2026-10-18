@@ -7,6 +7,8 @@ import { authenticateToken, optionalAuth } from '../src/middleware/auth';
 import { enforceTenantAuthorityBoundary } from '../src/middleware/tenant-authority-boundary';
 import { enforceStudentWorkspaceBoundary } from '../src/middleware/student-workspace-boundary';
 import { createContentAccessRouter } from '../src/routes/content-access';
+import { createQuestionBankRouter } from '../src/routes/question-bank';
+import { createAssignmentsRouter } from '../src/routes/assignments';
 import { createTenantBrandingRouter } from '../src/routes/tenant-branding';
 import { createTenantDomainsRouter } from '../src/routes/tenant-domains';
 import { createAnnouncementsRouter } from '../src/routes/announcements';
@@ -47,6 +49,8 @@ const EXPECTED_MOUNTS: ReadonlyArray<readonly [string, string]> = [
     ['/api/student-import', 'studentImportRoutes'],
     ['/api/video-assets', 'videoAssetsRoutes'],
     ['/api/playback', 'playbackSessionsRoutes'],
+    ['/api/question-bank', 'questionBankRoutes'],
+    ['/api/assignments', 'assignmentsRoutes'],
 ];
 
 const MOUNT_RE = /app\.use\(\s*'(\/api[^']*)'\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/g;
@@ -207,6 +211,17 @@ function buildGuardedSurface(): GuardedSurface {
 
     router.use('/api/playback', createPlaybackSessionsRouter({ db, authenticate: authenticateToken }));
 
+    router.use('/api/question-bank', createQuestionBankRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
+    router.use('/api/assignments', createAssignmentsRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
+
     return { router, storageCalls: db.calls };
 }
 
@@ -218,6 +233,8 @@ const ANONYMOUS_PROBES: ReadonlyArray<{ method: string; url: string; path: strin
     { method: 'POST', url: '/api/student-import/preview', path: '/api/student-import' },
     { method: 'GET', url: '/api/video-assets/assets/asset-1', path: '/api/video-assets' },
     { method: 'GET', url: '/api/playback/sessions', path: '/api/playback' },
+    { method: 'GET', url: '/api/question-bank/questions', path: '/api/question-bank' },
+    { method: 'GET', url: '/api/assignments', path: '/api/assignments' },
 ];
 
 test('mounting: every mounted path denies an anonymous caller without touching storage', async () => {

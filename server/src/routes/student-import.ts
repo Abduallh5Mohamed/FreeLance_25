@@ -337,7 +337,7 @@ export const createStudentImportRouter = (deps: StudentImportDeps): Router => {
                     rejected_count: analysis.rejected.length,
                 };
             });
-            res.status(201).json(outcome);
+            res.status(outcome.idempotent ? 200 : 201).json(outcome);
         } catch (error) {
             console.error('Commit student import error:', error);
             res.status(500).json({ error: 'Failed to import students' });

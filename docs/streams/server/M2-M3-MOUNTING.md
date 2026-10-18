@@ -37,6 +37,8 @@ authority (owner / active instructor membership) or an owner-only check.
 | student CSV import (C12) | `/api/student-import` | `server/src/routes/student-import.ts` |
 | video assets (V1/V3/V8) | `/api/video-assets` | `server/src/routes/video-assets.ts` |
 | playback sessions (V4/V5/V6) | `/api/playback` | `server/src/routes/playback-sessions.ts` |
+| question bank (M4) | `/api/question-bank` | `server/src/routes/question-bank.ts` |
+| assignments (M4) | `/api/assignments` | `server/src/routes/assignments.ts` |
 
 No mount path is an exact match of, or a path-segment prefix of, another mount.
 
@@ -148,6 +150,35 @@ does not assert 401/403 on these two.
 | GET | `/api/playback/policy` | `authenticateToken` |
 | GET | `/api/playback/policy/:tenantId` | `authenticateToken` |
 | GET | `/api/playback/sessions` | `authenticateToken` |
+
+### `/api/question-bank` — reusable question bank (M4)
+
+| Method | Path | Guard / authority |
+| --- | --- | --- |
+| GET | `/api/question-bank/questions` | `authenticateToken`; tenant staff authority |
+| POST | `/api/question-bank/questions` | `authenticateToken`; tenant staff authority |
+| GET | `/api/question-bank/questions/:id` | `authenticateToken`; tenant staff authority |
+| GET | `/api/question-bank/questions/:id/versions` | `authenticateToken`; tenant staff authority |
+| PATCH | `/api/question-bank/questions/:id` | `authenticateToken`; tenant staff authority |
+| POST | `/api/question-bank/questions/:id/archive` | `authenticateToken`; tenant staff authority |
+| GET | `/api/question-bank/export` | `authenticateToken`; tenant staff authority |
+| POST | `/api/question-bank/import` | `authenticateToken`; tenant staff authority |
+
+### `/api/assignments` — assignments and submissions (M4)
+
+| Method | Path | Guard / authority |
+| --- | --- | --- |
+| GET | `/api/assignments` | `authenticateToken`; tenant staff authority |
+| POST | `/api/assignments` | `authenticateToken`; tenant staff authority |
+| GET | `/api/assignments/student` | `authenticateToken`; enrolled student |
+| POST | `/api/assignments/:id/submissions` | `authenticateToken`; enrolled student |
+| GET | `/api/assignments/:id/submissions/mine` | `authenticateToken`; enrolled student |
+| GET | `/api/assignments/:id/submissions` | `authenticateToken`; tenant staff authority |
+| POST | `/api/assignments/:id/submissions/:submissionId/revoke` | `authenticateToken`; tenant staff authority |
+| GET | `/api/assignments/:id` | `authenticateToken`; staff or enrolled student |
+| PATCH | `/api/assignments/:id` | `authenticateToken`; tenant staff authority |
+| POST | `/api/assignments/:id/publish` | `authenticateToken`; tenant staff authority |
+| POST | `/api/assignments/:id/archive` | `authenticateToken`; tenant staff authority |
 
 ## Production wiring added to factory-only modules
 

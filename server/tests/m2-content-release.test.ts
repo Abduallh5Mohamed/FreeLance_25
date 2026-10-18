@@ -392,6 +392,7 @@ interface RouterFixtures {
     completedIds?: string[];
     courseScope?: Record<string, unknown> | null;
     releaseAuthority?: Record<string, unknown> | null;
+    prerequisite?: Record<string, unknown> | null;
     courseLessons?: Record<string, unknown>[];
     now?: Date;
     branchAccess?: ResourceBranchDeps;
@@ -420,6 +421,9 @@ const buildContentRouter = (fixtures: RouterFixtures = {}) => {
         }
         if (sql.includes('c.tenant_id, c.instructor_id')) {
             return fixtures.releaseAuthority === null ? [] : [fixtures.releaseAuthority ?? { id: 'lec-1', course_id: 'course-a', tenant_id: 'tenant-a', instructor_id: 'instr-a', is_owner: 1 }];
+        }
+        if (sql.includes('l.id, l.course_id, c.tenant_id')) {
+            return fixtures.prerequisite === null ? [] : [fixtures.prerequisite ?? { id: 'lec-0', course_id: 'course-a', tenant_id: 'tenant-a' }];
         }
         if (sql.includes('WHERE l.course_id = ? AND c.tenant_id = ?')) {
             return fixtures.courseLessons ?? [];
@@ -681,6 +685,70 @@ test('release config: a missing lecture is 404 with no write', async () => {
     const { router, executed } = buildContentRouter({ releaseAuthority: null });
     const response = await invokeRoute(router, { method: 'PUT', url: '/releases/lec-1', token: INSTRUCTOR_A, body: { release_mode: 'immediate' } });
     assert.equal(response.statusCode, 404);
+    assert.equal(executed.some((e) => e.sql.includes('INSERT INTO lesson_release_policies')), false);
+});
+
+test('release config: a same-course, same-tenant prerequisite is accepted and persisted', async () => {
+    const { router, executed } = buildContentRouter({
+        prerequisite: { id: 'lec-0', course_id: 'course-a', tenant_id: 'tenant-a' },
+    });
+    const response = await invokeRoute(router, {
+        method: 'PUT', url: '/releases/lec-1', token: INSTRUCTOR_A,
+        body: { release_mode: 'sequential', prerequisite_lecture_id: 'lec-0' },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal((response.body as { prerequisite_lecture_id?: string }).prerequisite_lecture_id, 'lec-0');
+    const write = executed.find((e) => e.sql.includes('INSERT INTO lesson_release_policies'));
+    assert.ok(write, 'the policy write was issued');
+    assert.equal(write!.params[6], 'lec-0', 'the prerequisite is bound to the policy row');
+    assert.ok(auditFor(executed, 'content.release.configured'));
+});
+
+test('release config: a prerequisite from another course is rejected 400 with no write', async () => {
+    const { router, executed } = buildContentRouter({
+        prerequisite: { id: 'lec-x', course_id: 'course-b', tenant_id: 'tenant-a' },
+    });
+    const response = await invokeRoute(router, {
+        method: 'PUT', url: '/releases/lec-1', token: INSTRUCTOR_A,
+        body: { release_mode: 'sequential', prerequisite_lecture_id: 'lec-x' },
+    });
+    assert.equal(response.statusCode, 400);
+    assert.equal(executed.some((e) => e.sql.includes('INSERT INTO lesson_release_policies')), false);
+    assert.equal(auditFor(executed, 'content.release.configured'), undefined);
+});
+
+test('release config: a prerequisite from another tenant is rejected 400 with no write', async () => {
+    const { router, executed } = buildContentRouter({
+        prerequisite: { id: 'lec-y', course_id: 'course-a', tenant_id: 'tenant-b' },
+    });
+    const response = await invokeRoute(router, {
+        method: 'PUT', url: '/releases/lec-1', token: INSTRUCTOR_A,
+        body: { release_mode: 'sequential', prerequisite_lecture_id: 'lec-y' },
+    });
+    assert.equal(response.statusCode, 400);
+    assert.equal(executed.some((e) => e.sql.includes('INSERT INTO lesson_release_policies')), false);
+});
+
+test('release config: a nonexistent prerequisite is rejected 400 with no write', async () => {
+    const { router, executed } = buildContentRouter({ prerequisite: null });
+    const response = await invokeRoute(router, {
+        method: 'PUT', url: '/releases/lec-1', token: INSTRUCTOR_A,
+        body: { release_mode: 'sequential', prerequisite_lecture_id: 'lec-missing' },
+    });
+    assert.equal(response.statusCode, 400);
+    assert.equal(executed.some((e) => e.sql.includes('INSERT INTO lesson_release_policies')), false);
+});
+
+test('release config: a self prerequisite is rejected 400 before any lookup or write', async () => {
+    const { router, executed } = buildContentRouter();
+    const response = await invokeRoute(router, {
+        method: 'PUT', url: '/releases/lec-1', token: INSTRUCTOR_A,
+        body: { release_mode: 'sequential', prerequisite_lecture_id: 'lec-1' },
+    });
+    assert.equal(response.statusCode, 400);
+    const prereqLookup = (e: { sql: string }): boolean =>
+        e.sql.includes('l.id, l.course_id, c.tenant_id') && !e.sql.includes('c.instructor_id');
+    assert.equal(executed.some(prereqLookup), false, 'no prerequisite lookup issued');
     assert.equal(executed.some((e) => e.sql.includes('INSERT INTO lesson_release_policies')), false);
 });
 
