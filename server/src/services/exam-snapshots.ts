@@ -365,6 +365,11 @@ export function isAutoSubmitDue(phase: TimingPhase): boolean {
     return phase.phase !== 'open';
 }
 
+/** True once the attempt is past the whole grace window and must be expired. */
+export function isAttemptExpiryDue(phase: TimingPhase): boolean {
+    return phase.phase === 'expired';
+}
+
 export interface ExamAudienceTarget {
     groupId: string | null;
     branchId: string | null;

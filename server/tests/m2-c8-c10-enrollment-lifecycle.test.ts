@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import test, { before, after } from 'node:test';
+import { quietConsole, restoreConsole } from './helpers/quiet-console';
+
+test.beforeEach(quietConsole);
+test.afterEach(restoreConsole);
 import { Router } from 'express';
 import { createAuthenticateToken } from '../src/middleware/auth';
 import {

@@ -64,7 +64,7 @@ import tenantSelfRoutes from './routes/tenant-self';
 import adminApprovalsRoutes from './routes/admin-approvals';
 import adminDashboardRoutes from './routes/admin-dashboard';
 import adminInsightsRoutes from './routes/admin-insights';
-import examVersionsRoutes from './routes/exam-versions';
+import examVersionsRoutes, { runExamAttemptExpiryPass } from './routes/exam-versions';
 import gradebookRoutes from './routes/gradebook';
 import certificatesRoutes from './routes/certificates';
 import schedulesRoutes from './routes/schedules';
@@ -349,6 +349,24 @@ const startServer = async () => {
                 void cleanupPrivacyData();
                 const privacyTimer = setInterval(() => void cleanupPrivacyData(), 6 * 60 * 60 * 1000);
                 privacyTimer.unref();
+            }
+
+            // Non-interactive auto-submit: expire overdue exam attempts that no
+            // student ever submitted, grading answers saved so far. An immediate
+            // pass at startup, then a periodic sweep. A slow pass never overlaps
+            // the next tick: an in-flight pass skips the tick it would collide with.
+            if (!skipDb) {
+                let examExpiryInFlight = false;
+                const expireExamAttempts = async () => {
+                    if (examExpiryInFlight) return;
+                    examExpiryInFlight = true;
+                    try { await runExamAttemptExpiryPass(); }
+                    catch (error) { console.error('[Exam expiry] Failed:', error); }
+                    finally { examExpiryInFlight = false; }
+                };
+                void expireExamAttempts();
+                const examExpiryTimer = setInterval(() => void expireExamAttempts(), 60 * 1000);
+                examExpiryTimer.unref();
             }
 
             // Recover stuck video processing happens through the unified

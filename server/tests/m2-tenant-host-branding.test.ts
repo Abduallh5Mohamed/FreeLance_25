@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { quietConsole, restoreConsole } from './helpers/quiet-console';
+
+test.beforeEach(quietConsole);
+test.afterEach(restoreConsole);
 import { createTenantHostResolver, normalizeHostHeader, resolveTenantHost, stripPort } from '../src/services/tenant-host';
 import { createTenantBrandingRouter } from '../src/routes/tenant-branding';
 import { createTenantDomainsRouter } from '../src/routes/tenant-domains';

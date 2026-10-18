@@ -124,12 +124,77 @@ export const createGradebookRouter = (deps: GradebookDeps): Router => {
         return calculateGrade(entries, { mode: (policy?.mode as 'points' | 'weighted') ?? 'points', rounding: (policy?.rounding as 'half_up' | 'half_even' | 'none') ?? 'half_up', passingScore: policy?.passing_score ?? null });
     };
 
+    /* --------------------------------------------------------------------- */
+    /* Authority + existence guards (deny by default)                         */
+    /* --------------------------------------------------------------------- */
+
+    interface CourseRow { id: string; tenant_id: string | null; instructor_id: string | null; }
+
+    const authorizeBranch = async (scope: { tenantId: string; userId: string; isOwner: boolean; branchId: string | null }, branchId: string): Promise<boolean> => {
+        const decision = await resolveBranchAccess(branchAccess, {
+            principalUserId: scope.userId,
+            principalTenantId: scope.tenantId,
+            branchId,
+            principalIsTenantOwner: scope.isOwner,
+        });
+        return decision.kind === 'allowed';
+    };
+
+    const instructorTeachesCourse = async (tenantId: string, userId: string, courseId: string): Promise<boolean> => {
+        const row = await db.queryOne<{ id: string }>(
+            'SELECT g.id FROM `groups` g INNER JOIN courses c ON c.id = g.course_id WHERE g.course_id=? AND g.instructor_id=? AND c.tenant_id=? LIMIT 1',
+            [courseId, userId, tenantId],
+        );
+        return Boolean(row);
+    };
+
+    /**
+     * Deny-by-default instructor authority over a course: the tenant owner, the
+     * course's own instructor, an instructor who owns a group mapped to the
+     * course, or an instructor whose verified branch membership grants access.
+     * Returns not-found (course absent/foreign) separately from forbidden.
+     */
+    const authorizeCourse = async (scope: { tenantId: string; userId: string; isOwner: boolean; branchId: string | null }, courseId: string): Promise<'ok' | 'not_found' | 'forbidden'> => {
+        const course = await db.queryOne<CourseRow>('SELECT id, tenant_id, instructor_id FROM courses WHERE id=? LIMIT 1', [courseId]);
+        if (!course || course.tenant_id !== scope.tenantId) return 'not_found';
+        if (scope.isOwner) return 'ok';
+        if (course.instructor_id === scope.userId) return 'ok';
+        if (await instructorTeachesCourse(scope.tenantId, scope.userId, courseId)) return 'ok';
+        if (scope.branchId && await authorizeBranch(scope, scope.branchId)) return 'ok';
+        return 'forbidden';
+    };
+
+    const denyCourse = (res: Response, result: 'not_found' | 'forbidden'): void => {
+        if (result === 'not_found') res.status(404).json({ error: 'Course not found' });
+        else res.status(403).json({ error: 'You are not authorized for this course' });
+    };
+
+    const enrollmentInTenant = async (tenantId: string, enrollmentId: string): Promise<boolean> => {
+        const row = await db.queryOne<{ id: string }>('SELECT id FROM students WHERE id=? AND tenant_id=? LIMIT 1', [enrollmentId, tenantId]);
+        return Boolean(row);
+    };
+
+    /** True when the enrollment belongs to a group (or active course link) of this course. */
+    const enrollmentInCourse = async (tenantId: string, enrollmentId: string, courseId: string): Promise<boolean> => {
+        const row = await db.queryOne<{ id: string }>(
+            `SELECT s.id FROM students s
+               LEFT JOIN \`groups\` g ON g.id = s.group_id
+               LEFT JOIN student_courses sc ON sc.student_id = s.id AND sc.course_id = ? AND sc.status='active'
+              WHERE s.id=? AND s.tenant_id=? AND (g.course_id = ? OR sc.course_id IS NOT NULL) LIMIT 1`,
+            [courseId, enrollmentId, tenantId, courseId],
+        );
+        return Boolean(row);
+    };
+
+
     // GET policy
     router.get('/policy/:courseId', async (req: AuthRequest, res: Response) => {
         const scope = await resolveStaffScope(req, res);
         if (!scope) return;
         const courseId = normalizeId(req.params.courseId);
         if (!courseId) { res.status(400).json({ error: 'invalid course id' }); return; }
+        const auth = await authorizeCourse(scope, courseId);
+        if (auth !== 'ok') { denyCourse(res, auth); return; }
         const policy = await loadPolicy(scope.tenantId, courseId);
         res.json({ policy: policyView(policy) });
     });
@@ -140,6 +205,8 @@ export const createGradebookRouter = (deps: GradebookDeps): Router => {
         if (!scope) return;
         const courseId = normalizeId(req.params.courseId);
         if (!courseId) { res.status(400).json({ error: 'invalid course id' }); return; }
+        const auth = await authorizeCourse(scope, courseId);
+        if (auth !== 'ok') { denyCourse(res, auth); return; }
         const validated = validateGradebookPolicy(req.body ?? {});
         if (!validated.ok) { res.status(400).json({ error: validated.error }); return; }
         const v = validated.value;
@@ -168,6 +235,10 @@ export const createGradebookRouter = (deps: GradebookDeps): Router => {
         const enrollmentId = normalizeId(body.student_enrollment_id ?? body.enrollment_id);
         const courseId = normalizeId(body.course_id ?? body.courseId);
         if (!enrollmentId || !courseId) { res.status(400).json({ error: 'student_enrollment_id and course_id are required' }); return; }
+        const auth = await authorizeCourse(scope, courseId);
+        if (auth !== 'ok') { denyCourse(res, auth); return; }
+        if (!(await enrollmentInTenant(scope.tenantId, enrollmentId))) { res.status(404).json({ error: 'Enrollment not found' }); return; }
+        if (!(await enrollmentInCourse(scope.tenantId, enrollmentId, courseId))) { res.status(400).json({ error: 'Enrollment does not belong to this course' }); return; }
         const validated = validateScoreEntry(body);
         if (!validated.ok) { res.status(400).json({ error: validated.error }); return; }
         const v = validated.value;
@@ -190,6 +261,22 @@ export const createGradebookRouter = (deps: GradebookDeps): Router => {
         if (!scope) return;
         const courseId = req.query.course_id ? normalizeId(req.query.course_id) : null;
         const enrollmentId = req.query.student_enrollment_id ? normalizeId(req.query.student_enrollment_id) : null;
+        if (courseId) {
+            const auth = await authorizeCourse(scope, courseId);
+            if (auth !== 'ok') { denyCourse(res, auth); return; }
+        } else if (!scope.isOwner) {
+            // A non-owner may only list scores for courses they teach (directly
+            // or through a group they own); never every course in the tenant.
+            const taught = 'course_id IN (SELECT id FROM courses WHERE tenant_id=? AND instructor_id=?) '
+                + 'OR course_id IN (SELECT g.course_id FROM `groups` g INNER JOIN courses c ON c.id=g.course_id WHERE g.instructor_id=? AND c.tenant_id=? AND g.course_id IS NOT NULL)';
+            let sql = `SELECT id, tenant_id, student_enrollment_id, course_id, category_id, item_type, item_id, score, max_score, weight, recorded_at FROM gradebook_scores WHERE tenant_id=? AND (${taught})`;
+            const params: unknown[] = [scope.tenantId, scope.tenantId, scope.userId, scope.userId, scope.tenantId];
+            if (enrollmentId) { sql += ' AND student_enrollment_id=?'; params.push(enrollmentId); }
+            sql += ' ORDER BY recorded_at DESC LIMIT 500';
+            const rows = await db.query<ScoreRow>(sql, params);
+            res.json({ scores: rows });
+            return;
+        }
         let sql = 'SELECT id, tenant_id, student_enrollment_id, course_id, category_id, item_type, item_id, score, max_score, weight, recorded_at FROM gradebook_scores WHERE tenant_id=?';
         const params: unknown[] = [scope.tenantId];
         if (courseId) { sql += ' AND course_id=?'; params.push(courseId); }
@@ -205,6 +292,7 @@ export const createGradebookRouter = (deps: GradebookDeps): Router => {
         if (!student) return;
         const courseId = req.query.course_id ? normalizeId(req.query.course_id) : null;
         if (!courseId) { res.status(400).json({ error: 'course_id is required' }); return; }
+        if (!(await enrollmentInCourse(student.tenantId, student.enrollmentId, courseId))) { res.status(404).json({ error: 'Course not found' }); return; }
         const grade = await computeForStudent(student.tenantId, student.enrollmentId, courseId);
         const policy = await loadPolicy(student.tenantId, courseId);
         // Students see the exact weighting policy their grade is computed from,
@@ -220,6 +308,9 @@ export const createGradebookRouter = (deps: GradebookDeps): Router => {
         if (!enrollmentId) { res.status(400).json({ error: 'invalid enrollment id' }); return; }
         const courseId = req.query.course_id ? normalizeId(req.query.course_id) : null;
         if (!courseId) { res.status(400).json({ error: 'course_id is required' }); return; }
+        const auth = await authorizeCourse(scope, courseId);
+        if (auth !== 'ok') { denyCourse(res, auth); return; }
+        if (!(await enrollmentInTenant(scope.tenantId, enrollmentId))) { res.status(404).json({ error: 'Enrollment not found' }); return; }
         const grade = await computeForStudent(scope.tenantId, enrollmentId, courseId);
         res.json({ student_enrollment_id: enrollmentId, course_id: courseId, grade });
     });
@@ -230,6 +321,8 @@ export const createGradebookRouter = (deps: GradebookDeps): Router => {
         if (!scope) return;
         const courseId = req.query.course_id ? normalizeId(req.query.course_id) : null;
         if (!courseId) { res.status(400).json({ error: 'course_id is required' }); return; }
+        const auth = await authorizeCourse(scope, courseId);
+        if (auth !== 'ok') { denyCourse(res, auth); return; }
         const scores = await db.query<ScoreRow>('SELECT id, tenant_id, student_enrollment_id, course_id, category_id, item_type, item_id, score, max_score, weight, recorded_at FROM gradebook_scores WHERE tenant_id=? AND course_id=? ORDER BY student_enrollment_id ASC, recorded_at ASC', [scope.tenantId, courseId]);
         const rows = scores.map((s) => [s.student_enrollment_id, s.category_id ?? '', s.item_type ?? '', s.score, s.max_score, s.weight ?? '']);
         const csv = toCsv(['student_enrollment_id', 'category_id', 'item_type', 'score', 'max_score', 'weight'], rows);
@@ -250,6 +343,7 @@ export const createGradebookRouter = (deps: GradebookDeps): Router => {
         if (!student) return;
         const courseId = req.query.course_id ? normalizeId(req.query.course_id) : null;
         if (!courseId) { res.status(400).json({ error: 'course_id is required' }); return; }
+        if (!(await enrollmentInCourse(student.tenantId, student.enrollmentId, courseId))) { res.status(404).json({ error: 'Course not found' }); return; }
         const grade = await computeForStudent(student.tenantId, student.enrollmentId, courseId);
         const policy = await loadPolicy(student.tenantId, courseId);
         res.json({ student_enrollment_id: student.enrollmentId, course_id: courseId, grade, policy: policyView(policy) });

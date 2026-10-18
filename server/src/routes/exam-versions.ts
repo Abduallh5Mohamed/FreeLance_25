@@ -31,6 +31,7 @@ import { AuthRequest } from '../middleware/auth';
 import { recordAudit, snapshotRow } from '../security/audit';
 import { tenantLocalNow, toUtcIso } from '../services/content-release';
 import {
+    AttemptGrade,
     DEFAULT_SCORING_POLICY,
     GradingQuestion,
     ScoringPolicy,
@@ -51,6 +52,7 @@ import {
     evaluateAttemptPhase,
     evaluateAttemptStart,
     evaluateManualSubmit,
+    isAttemptExpiryDue,
     normalizeId,
     validateExamVersionInput,
 } from '../services/exam-snapshots';
@@ -197,6 +199,193 @@ function toDbUtc(value: string | Date): string {
     return iso.slice(0, 19).replace('T', ' ');
 }
 
+/* ------------------------------------------------------------------------- */
+/* Shared loading / grading helpers (usable by routes and the expiry pass).   */
+/* ------------------------------------------------------------------------- */
+
+const AUTOSAVE_MIN_INTERVAL_MS = 1000;
+const MAX_DRAFT_ANSWER_BYTES = 128 * 1024;
+const MAX_DRAFT_ANSWERS = 500;
+const MAX_AUTOSAVE_THROTTLE_TRACKED = 5000;
+
+const timingOf = (row: ExamVersionRow): SnapshotTiming => ({
+    durationSeconds: Number(row.duration_seconds),
+    opensAtUtc: toUtcIso(row.opens_at),
+    closesAtUtc: toUtcIso(row.closes_at),
+    graceSeconds: Number(row.grace_seconds),
+});
+
+const scoringOf = (row: ExamVersionRow): ScoringPolicy =>
+    normalizeScoringPolicy(parseJson(row.scoring_policy)) ?? { ...DEFAULT_SCORING_POLICY };
+
+const gradingQuestionsOf = (rows: ExamVersionQuestionRow[]): GradingQuestion[] => rows.map((row) => ({
+    ref: row.id,
+    position: Number(row.position),
+    questionType: row.question_type,
+    points: Number(row.points),
+    correctAnswers: parseJsonArray(row.correct_answers),
+}));
+
+const loadVersionRow = async (db: ExamVersionsDataAccess, tenantId: string, examId: string, versionId: string): Promise<ExamVersionRow | null> =>
+    db.queryOne<ExamVersionRow>(
+        `SELECT ${VERSION_COLUMNS} FROM exam_versions WHERE id = ? AND exam_id = ? AND tenant_id = ? LIMIT 1`,
+        [versionId, examId, tenantId],
+    );
+
+const loadQuestionRows = async (db: ExamVersionsDataAccess, tenantId: string, versionId: string): Promise<ExamVersionQuestionRow[]> =>
+    db.query<ExamVersionQuestionRow>(
+        `SELECT ${QUESTION_COLUMNS} FROM exam_version_questions WHERE exam_version_id = ? AND tenant_id = ? ORDER BY position LIMIT 200`,
+        [versionId, tenantId],
+    );
+
+const loadAttemptRow = async (db: ExamVersionsDataAccess, tenantId: string, attemptId: string): Promise<AttemptRow | null> =>
+    db.queryOne<AttemptRow>(
+        `SELECT ${ATTEMPT_COLUMNS} FROM exam_versioned_attempts WHERE id = ? AND tenant_id = ? LIMIT 1`,
+        [attemptId, tenantId],
+    );
+
+const loadStoredAnswers = async (db: ExamVersionsDataAccess, tenantId: string, attemptId: string): Promise<AnswerRow[]> =>
+    db.query<AnswerRow>(
+        `SELECT id,question_ref,question_type,response,awarded_points,is_correct,manual_review
+         FROM exam_versioned_answers WHERE attempt_id = ? AND tenant_id = ?`,
+        [attemptId, tenantId],
+    );
+
+interface ComputedGrade { grade: AttemptGrade; fingerprint: string; status: string; passed: boolean | null; awarded: string; }
+
+/** Deterministic grading of the saved/current answers against the frozen snapshot. */
+const computeAttemptGrade = (version: ExamVersionRow, questionRows: ExamVersionQuestionRow[], answerMap: Record<string, unknown>): ComputedGrade => {
+    const policy = scoringOf(version);
+    const gradingQuestions = gradingQuestionsOf(questionRows);
+    const grade = gradeAttempt(gradingQuestions, answerMap, policy);
+    const fingerprint = computeGradingFingerprint({ versionId: version.id, policy, questions: gradingQuestions, answers: answerMap });
+    const passingHundredths = toHundredths(version.passing_points) ?? 0;
+    const passed = grade.manualRequired ? null : grade.autoScoreHundredths >= passingHundredths;
+    return {
+        grade,
+        fingerprint,
+        status: grade.manualRequired ? 'pending_review' : 'graded',
+        passed,
+        awarded: formatHundredths(grade.autoScoreHundredths),
+    };
+};
+
+interface PersistGradeParams {
+    tenantId: string;
+    attemptId: string;
+    examVersionId: string;
+    questionRows: ExamVersionQuestionRow[];
+    answerMap: Record<string, unknown>;
+    computed: ComputedGrade;
+    status: string;
+    autoSubmitted: boolean;
+    gradedAt: string | null;
+    actorUserId: string;
+    auditAction: string;
+}
+
+/**
+ * Atomically apply a completed grading pass: the attempt row (guarded by
+ * `status='in_progress'`), the per-question award ledger, the idempotency run
+ * row and the audit event. Returns false when the attempt already moved on.
+ */
+const persistAttemptGrade = async (tx: ExamVersionsDataAccess, p: PersistGradeParams): Promise<boolean> => {
+    const { grade, fingerprint, passed, awarded } = p.computed;
+    const updated = await tx.execute(
+        `UPDATE exam_versioned_attempts
+         SET status=?, auto_score=?, score=?, manual_required=?, grading_fingerprint=?,
+             submitted_at=COALESCE(submitted_at, UTC_TIMESTAMP()), graded_at=?, passed=?,
+             auto_submitted=?, version=version+1
+         WHERE id=? AND tenant_id=? AND status='in_progress'`,
+        [
+            p.status, awarded, grade.manualRequired ? null : awarded,
+            grade.manualRequired ? 1 : 0, fingerprint, p.gradedAt,
+            passed === null ? null : (passed ? 1 : 0),
+            p.autoSubmitted ? 1 : 0, p.attemptId, p.tenantId,
+        ],
+    );
+    if ((updated.affectedRows ?? 0) === 0) return false;
+    for (const question of grade.questions) {
+        await tx.execute(
+            `INSERT INTO exam_versioned_answers
+               (id,tenant_id,attempt_id,exam_version_id,question_ref,question_type,response,
+                awarded_points,is_correct,manual_review)
+             VALUES (?,?,?,?,?,?,?,?,?,?)
+             ON DUPLICATE KEY UPDATE response=VALUES(response), awarded_points=VALUES(awarded_points),
+                is_correct=VALUES(is_correct), manual_review=VALUES(manual_review)`,
+            [
+                randomUUID(), p.tenantId, p.attemptId, p.examVersionId, question.ref,
+                p.questionRows.find((row) => row.id === question.ref)?.question_type ?? 'essay',
+                JSON.stringify(p.answerMap[question.ref] ?? null),
+                question.awardedHundredths === null ? null : formatHundredths(question.awardedHundredths),
+                question.isCorrect === null ? null : (question.isCorrect ? 1 : 0),
+                question.autoGraded ? 0 : 1,
+            ],
+        );
+    }
+    await tx.execute(
+        `INSERT IGNORE INTO exam_grading_runs
+           (id,tenant_id,attempt_id,exam_version_id,idempotency_key,auto_score,manual_required,applied,created_by)
+         VALUES (?,?,?,?,?,?,?,1,?)`,
+        [randomUUID(), p.tenantId, p.attemptId, p.examVersionId, fingerprint, awarded, grade.manualRequired ? 1 : 0, p.actorUserId],
+    );
+    await recordAudit(tx.execute, {
+        actorUserId: p.actorUserId,
+        tenantId: p.tenantId,
+        action: p.auditAction,
+        resourceType: 'exam_attempt',
+        resourceId: p.attemptId,
+        newValue: snapshotRow({ status: p.status, auto_score: awarded, manual_required: grade.manualRequired, fingerprint, auto_submitted: p.autoSubmitted }),
+    });
+    return true;
+};
+
+/**
+ * Expire one overdue in-progress attempt: recompute a grade from every answer
+ * saved so far (autosave drafts and/or a racing submit), set
+ * `status='expired'`/`auto_submitted=1` and persist the award ledger. A no-op
+ * when the attempt is not yet past the grace deadline.
+ */
+const expireDueAttempt = async (
+    db: ExamVersionsDataAccess,
+    clock: () => Date,
+    attempt: AttemptRow,
+    runAtomic: <T>(fn: (tx: ExamVersionsDataAccess) => Promise<T>) => Promise<T>,
+): Promise<boolean> => {
+    if (attempt.status !== 'in_progress') return false;
+    const version = await loadVersionRow(db, attempt.tenant_id, attempt.exam_id, attempt.exam_version_id);
+    if (!version) return false;
+    const phase = evaluateAttemptPhase(timingOf(version), toUtcIso(attempt.started_at) ?? clock().toISOString(), clock());
+    if (!isAttemptExpiryDue(phase)) return false;
+
+    const questionRows = await loadQuestionRows(db, attempt.tenant_id, attempt.exam_version_id);
+    const stored = await loadStoredAnswers(db, attempt.tenant_id, attempt.id);
+    const answerMap: Record<string, unknown> = {};
+    for (const row of stored) answerMap[row.question_ref] = parseJson(row.response);
+
+    const computed = computeAttemptGrade(version, questionRows, answerMap);
+    return runAtomic((tx) => persistAttemptGrade(tx, {
+        tenantId: attempt.tenant_id,
+        attemptId: attempt.id,
+        examVersionId: attempt.exam_version_id,
+        questionRows,
+        answerMap,
+        computed,
+        status: 'expired',
+        autoSubmitted: true,
+        gradedAt: computed.grade.manualRequired ? null : clock().toISOString().slice(0, 19).replace('T', ' '),
+        actorUserId: attempt.student_user_id,
+        auditAction: 'exam_attempt.expire',
+    }));
+};
+
+const isDuplicateKeyError = (error: unknown): boolean => {
+    if (typeof error !== 'object' || error === null) return false;
+    const code = (error as { code?: unknown }).code;
+    const errno = (error as { errno?: unknown }).errno;
+    return code === 'ER_DUP_ENTRY' || errno === 1062;
+};
+
 export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
     const router = Router();
     const { db } = deps;
@@ -204,6 +393,10 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
     const runAtomic = deps.transaction
         ? deps.transaction
         : <T>(fn: (tx: ExamVersionsDataAccess) => Promise<T>): Promise<T> => fn(db);
+
+    // Per-attempt autosave throttle state, kept on the router instance so tests
+    // (which rebuild the router) never share it.
+    const lastAutosaveAt = new Map<string, number>();
 
     router.use(deps.authenticate);
 
@@ -283,26 +476,14 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
         return Boolean(row);
     };
 
-    const loadVersion = async (tenantId: string, examId: string, versionId: string): Promise<ExamVersionRow | null> =>
-        db.queryOne<ExamVersionRow>(
-            `SELECT ${VERSION_COLUMNS} FROM exam_versions
-             WHERE id = ? AND exam_id = ? AND tenant_id = ? LIMIT 1`,
-            [versionId, examId, tenantId],
-        );
+    const loadVersion = (tenantId: string, examId: string, versionId: string): Promise<ExamVersionRow | null> =>
+        loadVersionRow(db, tenantId, examId, versionId);
 
-    const loadVersionWithQuestions = async (tenantId: string, versionId: string): Promise<ExamVersionQuestionRow[]> =>
-        db.query<ExamVersionQuestionRow>(
-            `SELECT ${QUESTION_COLUMNS} FROM exam_version_questions
-             WHERE exam_version_id = ? AND tenant_id = ? ORDER BY position LIMIT 200`,
-            [versionId, tenantId],
-        );
+    const loadVersionWithQuestions = (tenantId: string, versionId: string): Promise<ExamVersionQuestionRow[]> =>
+        loadQuestionRows(db, tenantId, versionId);
 
-    const loadAttempt = async (tenantId: string, attemptId: string): Promise<AttemptRow | null> =>
-        db.queryOne<AttemptRow>(
-            `SELECT ${ATTEMPT_COLUMNS} FROM exam_versioned_attempts
-             WHERE id = ? AND tenant_id = ? LIMIT 1`,
-            [attemptId, tenantId],
-        );
+    const loadAttempt = (tenantId: string, attemptId: string): Promise<AttemptRow | null> =>
+        loadAttemptRow(db, tenantId, attemptId);
 
     const loadExamTargets = async (examId: string): Promise<ExamAudienceTarget[]> => {
         const rows = await db.query<{ group_id: string | null; branch_id: string | null; branch_scope: string | null }>(
@@ -317,24 +498,6 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             branchScope: row.branch_scope ?? 'tenant',
         }));
     };
-
-    const timingOf = (row: ExamVersionRow): SnapshotTiming => ({
-        durationSeconds: Number(row.duration_seconds),
-        opensAtUtc: toUtcIso(row.opens_at),
-        closesAtUtc: toUtcIso(row.closes_at),
-        graceSeconds: Number(row.grace_seconds),
-    });
-
-    const scoringOf = (row: ExamVersionRow): ScoringPolicy =>
-        normalizeScoringPolicy(parseJson(row.scoring_policy)) ?? { ...DEFAULT_SCORING_POLICY };
-
-    const gradingQuestionsOf = (rows: ExamVersionQuestionRow[]): GradingQuestion[] => rows.map((row) => ({
-        ref: row.id,
-        position: Number(row.position),
-        questionType: row.question_type,
-        points: Number(row.points),
-        correctAnswers: parseJsonArray(row.correct_answers),
-    }));
 
     /* --------------------------------------------------------------------- */
     /* Projections                                                            */
@@ -642,26 +805,35 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
 
             const attemptId = randomUUID();
             const startedAt = now();
-            await runAtomic(async (tx) => {
-                await tx.execute(
-                    `INSERT INTO exam_versioned_attempts
-                       (id,tenant_id,exam_id,exam_version_id,student_enrollment_id,student_user_id,status,
-                        started_at,deadline_at,auto_submitted)
-                     VALUES (?,?,?,?,?,?, 'in_progress', ?,?, 0)`,
-                    [
-                        attemptId, enrollment.tenantId, examId, versionId, enrollment.id, enrollment.userId,
-                        toDbUtc(startedAt), toDbUtc(decision.deadlineUtc),
-                    ],
-                );
-                await recordAudit(tx.execute, {
-                    actorUserId: enrollment.id,
-                    tenantId: enrollment.tenantId,
-                    action: 'exam_attempt.start',
-                    resourceType: 'exam_attempt',
-                    resourceId: attemptId,
-                    newValue: snapshotRow({ exam_id: examId, exam_version_id: versionId, deadline_at: decision.deadlineUtc }),
+            try {
+                await runAtomic(async (tx) => {
+                    await tx.execute(
+                        `INSERT INTO exam_versioned_attempts
+                           (id,tenant_id,exam_id,exam_version_id,student_enrollment_id,student_user_id,status,
+                            started_at,deadline_at,auto_submitted)
+                         VALUES (?,?,?,?,?,?, 'in_progress', ?,?, 0)`,
+                        [
+                            attemptId, enrollment.tenantId, examId, versionId, enrollment.id, enrollment.userId,
+                            toDbUtc(startedAt), toDbUtc(decision.deadlineUtc),
+                        ],
+                    );
+                    await recordAudit(tx.execute, {
+                        actorUserId: enrollment.id,
+                        tenantId: enrollment.tenantId,
+                        action: 'exam_attempt.start',
+                        resourceType: 'exam_attempt',
+                        resourceId: attemptId,
+                        newValue: snapshotRow({ exam_id: examId, exam_version_id: versionId, deadline_at: decision.deadlineUtc }),
+                    });
                 });
-            });
+            } catch (error) {
+                // A concurrent start loses the UNIQUE (exam_id, enrollment) race:
+                // report the same 409 the pre-insert check would have, never a 500.
+                if (isDuplicateKeyError(error)) {
+                    return res.status(409).json({ error: 'Attempt is not allowed', code: 'already_attempted' });
+                }
+                throw error;
+            }
 
             res.status(201).json({
                 id: attemptId,
@@ -691,9 +863,13 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             if (user.role === 'student') {
                 const enrollment = await resolveEnrollment(req, res);
                 if (!enrollment) return;
-                const attempt = await loadAttempt(enrollment.tenantId, attemptId);
+                let attempt = await loadAttempt(enrollment.tenantId, attemptId);
                 if (!attempt || attempt.student_enrollment_id !== enrollment.id) {
                     return res.status(404).json({ error: 'Attempt not found' });
+                }
+                if (attempt.status === 'in_progress') {
+                    await expireDueAttempt(db, now, attempt, runAtomic);
+                    attempt = (await loadAttempt(enrollment.tenantId, attemptId)) ?? attempt;
                 }
                 const questions = await loadVersionWithQuestions(enrollment.tenantId, attempt.exam_version_id);
                 return res.json({
@@ -704,8 +880,12 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
 
             const scope = await resolveStaffScope(req, res);
             if (!scope) return;
-            const attempt = await loadAttempt(scope.tenantId, attemptId);
+            let attempt = await loadAttempt(scope.tenantId, attemptId);
             if (!attempt) return res.status(404).json({ error: 'Attempt not found' });
+            if (attempt.status === 'in_progress') {
+                await expireDueAttempt(db, now, attempt, runAtomic);
+                attempt = (await loadAttempt(scope.tenantId, attemptId)) ?? attempt;
+            }
             const questions = await loadVersionWithQuestions(scope.tenantId, attempt.exam_version_id);
             return res.json({
                 ...projectAttempt(attempt),
@@ -714,6 +894,77 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
         } catch (error) {
             console.error('Read exam attempt error:', error);
             res.status(500).json({ error: 'Failed to load attempt' });
+        }
+    });
+
+    /* --------------------------------------------------------------------- */
+    /* POST /attempts/:attemptId/autosave — owner student, draft persistence  */
+    /* --------------------------------------------------------------------- */
+    router.post('/attempts/:attemptId/autosave', async (req: AuthRequest, res: Response) => {
+        try {
+            const enrollment = await resolveEnrollment(req, res);
+            if (!enrollment) return;
+            const attemptId = normalizeId(req.params.attemptId);
+            if (!attemptId) return res.status(404).json({ error: 'Attempt not found' });
+            const attempt = await loadAttempt(enrollment.tenantId, attemptId);
+            if (!attempt || attempt.student_enrollment_id !== enrollment.id) {
+                return res.status(404).json({ error: 'Attempt not found' });
+            }
+            if (attempt.status !== 'in_progress') {
+                return res.status(409).json({ error: 'This attempt is no longer in progress' });
+            }
+            const version = await loadVersion(enrollment.tenantId, attempt.exam_id, attempt.exam_version_id);
+            if (!version) return res.status(404).json({ error: 'Exam version not found' });
+
+            const phase = evaluateAttemptPhase(timingOf(version), toUtcIso(attempt.started_at) ?? now().toISOString(), now());
+            const decision = evaluateManualSubmit(phase);
+            if (!decision.allowed) {
+                // An expired attempt is finalized (grading every saved draft) on
+                // this touch; a draft written inside the grace window is refused.
+                if (isAttemptExpiryDue(phase)) await expireDueAttempt(db, now, attempt, runAtomic);
+                return res.status(403).json({ error: 'Autosave is not allowed', code: decision.reason });
+            }
+
+            const questionRows = await loadVersionWithQuestions(enrollment.tenantId, attempt.exam_version_id);
+            const answerMap = normalizeAnswerMap((typeof req.body === 'object' && req.body !== null ? req.body : {})['answers']);
+            const refs = new Set(questionRows.map((row) => row.id));
+            const keys = Object.keys(answerMap);
+            if (keys.some((key) => !refs.has(key))) {
+                return res.status(400).json({ error: 'Answers reference an unknown question' });
+            }
+            if (keys.length > MAX_DRAFT_ANSWERS || Buffer.byteLength(JSON.stringify(answerMap), 'utf8') > MAX_DRAFT_ANSWER_BYTES) {
+                return res.status(413).json({ error: 'Draft is too large' });
+            }
+            const nowMs = now().getTime();
+            const previous = lastAutosaveAt.get(attemptId);
+            if (previous !== undefined && nowMs - previous < AUTOSAVE_MIN_INTERVAL_MS) {
+                return res.status(429).json({ error: 'Autosave rate limited' });
+            }
+            // Bounded throttle bookkeeping: drop the oldest entries once the map
+            // grows past the cap (insertion-ordered Map, never rebuilt while hot).
+            if (lastAutosaveAt.size >= MAX_AUTOSAVE_THROTTLE_TRACKED) {
+                const drop = lastAutosaveAt.keys().next();
+                if (!drop.done) lastAutosaveAt.delete(drop.value);
+            }
+            lastAutosaveAt.set(attemptId, nowMs);
+
+            await runAtomic(async (tx) => {
+                for (const key of keys) {
+                    const question = questionRows.find((row) => row.id === key);
+                    if (!question) continue;
+                    await tx.execute(
+                        `INSERT INTO exam_versioned_answers
+                           (id,tenant_id,attempt_id,exam_version_id,question_ref,question_type,response,manual_review)
+                         VALUES (?,?,?,?,?,?,?,0)
+                         ON DUPLICATE KEY UPDATE response=VALUES(response)`,
+                        [randomUUID(), enrollment.tenantId, attemptId, attempt.exam_version_id, key, question.question_type, JSON.stringify(answerMap[key] ?? null)],
+                    );
+                }
+            });
+            res.json({ ok: true, saved: keys.length });
+        } catch (error) {
+            console.error('Autosave exam attempt error:', error);
+            res.status(500).json({ error: 'Failed to autosave attempt' });
         }
     });
 
@@ -736,7 +987,14 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             const version = await loadVersion(enrollment.tenantId, attempt.exam_id, attempt.exam_version_id);
             if (!version) return res.status(404).json({ error: 'Exam version not found' });
 
-            const phase = evaluateAttemptPhase(timingOf(version), toUtcIso(attempt.started_at) ?? new Date().toISOString(), now());
+            const phase = evaluateAttemptPhase(timingOf(version), toUtcIso(attempt.started_at) ?? now().toISOString(), now());
+            // Past the grace window a manual submit can no longer capture
+            // answers: run the compensation pass (which grades every answer
+            // autosaved during the attempt) and deny this late write.
+            if (isAttemptExpiryDue(phase)) {
+                await expireDueAttempt(db, now, attempt, runAtomic);
+                return res.status(403).json({ error: 'Submission is not allowed', code: 'EXPIRED' });
+            }
             const decision = evaluateManualSubmit(phase);
             if (!decision.allowed) {
                 return res.status(403).json({ error: 'Submission is not allowed', code: decision.reason });
@@ -749,84 +1007,27 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
                 return res.status(400).json({ error: 'Answers reference an unknown question' });
             }
 
-            const policy = scoringOf(version);
-            const gradingQuestions = gradingQuestionsOf(questionRows);
-            const grade = gradeAttempt(gradingQuestions, answerMap, policy);
-            const fingerprint = computeGradingFingerprint({
-                versionId: attempt.exam_version_id,
-                policy,
-                questions: gradingQuestions,
-                answers: answerMap,
-            });
-            const passingHundredths = toHundredths(version.passing_points) ?? 0;
-            const status = grade.manualRequired ? 'pending_review' : 'graded';
-            const passed = grade.manualRequired ? null : grade.autoScoreHundredths >= passingHundredths;
-            const awarded = formatHundredths(grade.autoScoreHundredths);
-
-            const applied = await runAtomic(async (tx) => {
-                const updated = await tx.execute(
-                    `UPDATE exam_versioned_attempts
-                     SET status=?, auto_score=?, score=?, manual_required=?, grading_fingerprint=?,
-                         submitted_at=UTC_TIMESTAMP(), graded_at=?, passed=?, version=version+1
-                     WHERE id=? AND tenant_id=? AND status='in_progress'`,
-                    [
-                        status, awarded, grade.manualRequired ? null : awarded,
-                        grade.manualRequired ? 1 : 0, fingerprint,
-                        grade.manualRequired ? null : new Date().toISOString().slice(0, 19).replace('T', ' '),
-                        passed === null ? null : (passed ? 1 : 0),
-                        attemptId, enrollment.tenantId,
-                    ],
-                );
-                if ((updated.affectedRows ?? 0) === 0) return false;
-                for (const question of grade.questions) {
-                    await tx.execute(
-                        `INSERT INTO exam_versioned_answers
-                           (id,tenant_id,attempt_id,exam_version_id,question_ref,question_type,response,
-                            awarded_points,is_correct,manual_review)
-                         VALUES (?,?,?,?,?,?,?,?,?,?)
-                         ON DUPLICATE KEY UPDATE response=VALUES(response), awarded_points=VALUES(awarded_points),
-                            is_correct=VALUES(is_correct), manual_review=VALUES(manual_review)`,
-                        [
-                            randomUUID(), enrollment.tenantId, attemptId, attempt.exam_version_id, question.ref,
-                            questionRows.find((row) => row.id === question.ref)?.question_type ?? 'essay',
-                            JSON.stringify(answerMap[question.ref] ?? null),
-                            question.awardedHundredths === null ? null : formatHundredths(question.awardedHundredths),
-                            question.isCorrect === null ? null : (question.isCorrect ? 1 : 0),
-                            question.autoGraded ? 0 : 1,
-                        ],
-                    );
-                }
-                await tx.execute(
-                    `INSERT IGNORE INTO exam_grading_runs
-                       (id,tenant_id,attempt_id,exam_version_id,idempotency_key,auto_score,manual_required,applied,created_by)
-                     VALUES (?,?,?,?,?,?,?,1,?)`,
-                    [
-                        randomUUID(), enrollment.tenantId, attemptId, attempt.exam_version_id, fingerprint,
-                        awarded, grade.manualRequired ? 1 : 0, enrollment.id,
-                    ],
-                );
-                await recordAudit(tx.execute, {
-                    actorUserId: enrollment.id,
-                    tenantId: enrollment.tenantId,
-                    action: 'exam_attempt.submit',
-                    resourceType: 'exam_attempt',
-                    resourceId: attemptId,
-                    newValue: snapshotRow({
-                        status,
-                        auto_score: awarded,
-                        manual_required: grade.manualRequired,
-                        fingerprint,
-                    }),
-                });
-                return true;
-            });
+            const computed = computeAttemptGrade(version, questionRows, answerMap);
+            const applied = await runAtomic((tx) => persistAttemptGrade(tx, {
+                tenantId: enrollment.tenantId,
+                attemptId,
+                examVersionId: attempt.exam_version_id,
+                questionRows,
+                answerMap,
+                computed,
+                status: computed.status,
+                autoSubmitted: false,
+                gradedAt: computed.grade.manualRequired ? null : now().toISOString().slice(0, 19).replace('T', ' '),
+                actorUserId: enrollment.id,
+                auditAction: 'exam_attempt.submit',
+            }));
             if (!applied) return res.status(409).json({ error: 'This attempt has already been submitted' });
 
             res.json({
                 attempt_id: attemptId,
-                status,
-                auto_score: Number(awarded),
-                manual_required: grade.manualRequired,
+                status: computed.status,
+                auto_score: Number(computed.awarded),
+                manual_required: computed.grade.manualRequired,
                 late: decision.late,
             });
         } catch (error) {
@@ -984,6 +1185,41 @@ const productionDb: ExamVersionsDataAccess = {
 const loadActiveTenantAuthority = async (userId: string, tenantId: string) => {
     const { queryOne } = await loadDb();
     return queryOne<{ authority: string }>(TENANT_AUTHORITY_SQL, [tenantId, userId, userId, tenantId]);
+};
+
+const ATTEMPT_COLUMNS_QUALIFIED =
+    'a.id,a.tenant_id,a.exam_id,a.exam_version_id,a.student_enrollment_id,a.student_user_id,a.status,a.started_at,' +
+    'a.deadline_at,a.submitted_at,a.auto_submitted,a.auto_score,a.score,a.manual_required,a.grading_fingerprint,a.graded_at,a.passed';
+
+/** Attempts whose grace window closed and that are still stuck in_progress. */
+const OVERDUE_ATTEMPT_SQL = `
+    SELECT ${ATTEMPT_COLUMNS_QUALIFIED}
+    FROM exam_versioned_attempts a
+    INNER JOIN exam_versions v ON v.id = a.exam_version_id AND v.tenant_id = a.tenant_id
+    WHERE a.status = 'in_progress'
+      AND DATE_ADD(a.deadline_at, INTERVAL v.grace_seconds SECOND) <= UTC_TIMESTAMP()
+    ORDER BY a.deadline_at ASC
+    LIMIT 200
+`;
+
+/**
+ * Server-side auto-submit sweep. Expires every overdue in-progress attempt,
+ * grading the answers saved so far. Errors are contained per attempt so one bad
+ * row never stops the pass; the periodic job caller passes the real pool.
+ */
+export const runExamAttemptExpiryPass = async (): Promise<number> => {
+    const db = productionDb;
+    const clock = (): Date => new Date();
+    const rows = await db.query<AttemptRow>(OVERDUE_ATTEMPT_SQL);
+    let expired = 0;
+    for (const attempt of rows) {
+        try {
+            if (await expireDueAttempt(db, clock, attempt, (fn) => fn(db))) expired += 1;
+        } catch (error) {
+            console.error('Exam attempt expiry failed:', error);
+        }
+    }
+    return expired;
 };
 
 export default createExamVersionsRouter({

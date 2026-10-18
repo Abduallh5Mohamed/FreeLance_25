@@ -2,11 +2,14 @@ import assert from 'node:assert/strict';
 import test, { after, before } from 'node:test';
 import { createAuthenticateToken } from '../src/middleware/auth';
 import {
+    SnapshotQuestionSource,
+    SnapshotTiming,
     buildSnapshotEntries,
     enrollmentMatchesExam,
     evaluateAttemptPhase,
     evaluateAttemptStart,
     evaluateManualSubmit,
+    isAttemptExpiryDue,
     isAutoSubmitDue,
     isSnapshotImmutable,
     normalizeId,
@@ -195,6 +198,11 @@ test('evaluateAttemptPhase / evaluateManualSubmit: open, grace and expired windo
     const expired = evaluateAttemptPhase(timing, started, new Date('2026-06-01T10:10:00Z'));
     assert.equal(expired.phase, 'expired');
     assert.deepEqual(evaluateManualSubmit(expired), { allowed: false, reason: 'EXPIRED' });
+    // Findings #3: the expiry compensation fires only past the whole grace
+    // window — inside grace the auto-submit path still owns the attempt.
+    assert.equal(isAttemptExpiryDue(open), false);
+    assert.equal(isAttemptExpiryDue(grace), false);
+    assert.equal(isAttemptExpiryDue(expired), true);
 });
 
 test('enrollmentMatchesExam: same tenant, then deny-by-default audience match', () => {
@@ -266,6 +274,8 @@ interface Fixtures {
 interface BuildOptions {
     updateAffected?: number;
     now?: Date;
+    /** Simulates the DB losing the UNIQUE (exam_id, enrollment) insert race. */
+    attemptInsertDuplicate?: boolean;
 }
 
 const validBody = (overrides: Record<string, unknown> = {}) => ({
@@ -297,6 +307,13 @@ const build = (fixtures: Fixtures = {}, opts: BuildOptions = {}) => {
     };
     const base = makeFakeDataAccess(responder);
     const execute = async (sql: string, params: unknown[] = []) => {
+        if (opts.attemptInsertDuplicate && sql.includes('INSERT INTO exam_versioned_attempts')) {
+            base.executed.push({ sql, params, kind: 'execute' });
+            const dup = new Error('Duplicate entry') as NodeJS.ErrnoException;
+            dup.code = 'ER_DUP_ENTRY';
+            dup.errno = 1062;
+            throw dup;
+        }
         if (opts.updateAffected !== undefined && sql.includes('UPDATE exam_versions')) {
             base.executed.push({ sql, params, kind: 'execute' });
             return { affectedRows: opts.updateAffected };
@@ -517,4 +534,40 @@ test('read attempt: tenant staff sees it with the answer key', async () => {
     assert.equal(response.statusCode, 200);
     const body = response.body as { questions?: Array<Record<string, unknown>> };
     assert.deepEqual(body.questions?.[0].correct_answers, ['4']);
+});
+
+// ---- Finding #9: attempt-start duplicate race ------------------------------
+
+test('start: a lost UNIQUE race on the attempt insert surfaces as 409 already_attempted, never a 500', async () => {
+    const { router, executed } = build({}, { attemptInsertDuplicate: true });
+    const response = await invokeRoute(router, { method: 'POST', url: '/exams/exam-1/versions/ver-1/attempts', token: STUDENT_A });
+    assert.equal(response.statusCode, 409);
+    assert.equal((response.body as Record<string, unknown>).code, 'already_attempted', 'the losing concurrent start reports the same denial as the pre-check');
+    assert.ok(executed.some((e) => e.sql.includes('INSERT INTO exam_versioned_attempts')));
+});
+
+// ---- Finding #3: lazy expiry on any touch of a past-grace attempt ----------
+
+test('read attempt: an open-phase attempt is read with no expiry writes', async () => {
+    const { router, executed } = build({});
+    const response = await invokeRoute(router, { method: 'GET', url: '/attempts/attempt-1', token: STUDENT_A });
+    assert.equal(response.statusCode, 200);
+    assert.equal(executed.some((e) => e.sql.includes('UPDATE exam_versioned_attempts')), false);
+});
+
+test('read attempt: past the grace deadline the touch expires the attempt (server-minted, audited)', async () => {
+    // deadline: 10:00 + 3600s = 11:00, grace 300s -> grace deadline 11:05;
+    // reading at 11:06 is past the whole grace window.
+    const { router, executed } = build(
+        { version: { ...VERSION_ROW, grace_seconds: 300 } },
+        { now: new Date('2026-06-01T11:06:00Z') },
+    );
+    const response = await invokeRoute(router, { method: 'GET', url: '/attempts/attempt-1', token: STUDENT_A });
+    assert.equal(response.statusCode, 200);
+    const expiry = executed.find((e) => e.sql.includes('UPDATE exam_versioned_attempts'));
+    assert.ok(expiry, 'the touch must run the compensation pass');
+    assert.equal(expiry!.params[0], 'expired');
+    assert.equal(expiry!.params[7], 1, 'auto_submitted is set by the server, never by the client');
+    assert.ok(executed.some((e) => e.sql.includes('INSERT IGNORE INTO exam_grading_runs')), 'the expired attempt is graded in the same pass');
+    assert.ok(auditAction(executed, 'exam_attempt.expire'));
 });

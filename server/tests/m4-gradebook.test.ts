@@ -41,26 +41,29 @@ after(() => {
 
 const INSTRUCTOR_A = tokenFor({ id: 'instructor-a', role: 'instructor', tv: 0, tenant_id: 'tenant-a' });
 const INSTRUCTOR_B = tokenFor({ id: 'instructor-b', role: 'instructor', tv: 0, tenant_id: 'tenant-b' });
+const INSTRUCTOR_C = tokenFor({ id: 'instructor-c', role: 'instructor', tv: 0, tenant_id: 'tenant-a' });
 const STUDENT_A = tokenFor({ id: 'student-a', role: 'student', tv: 0, student_enrollment_id: 'enr-s1', tenant_id: 'tenant-a' });
 
-const AUTHORITY: Record<string, string> = { 'instructor-a': 'owner', 'instructor-b': 'owner' };
+const AUTHORITY: Record<string, string> = { 'instructor-a': 'owner', 'instructor-b': 'owner', 'instructor-c': 'instructor' };
 
 function build(opts: { responder?: (sql: string, params: unknown[]) => unknown[] | null } = {}) {
     const db = makeFakeDataAccess(opts.responder ?? (() => []));
     const repository = makeRepository(
-        { 'instructor-a': { is_active: 1, token_version: 0 }, 'instructor-b': { is_active: 1, token_version: 0 }, 'student-a': { is_active: 1, token_version: 0 } },
+        { 'instructor-a': { is_active: 1, token_version: 0 }, 'instructor-b': { is_active: 1, token_version: 0 }, 'instructor-c': { is_active: 1, token_version: 0 }, 'student-a': { is_active: 1, token_version: 0 } },
         {
             instructorAccounts: {
                 'instructor-a': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
                 'instructor-b': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
+                'instructor-c': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
             },
-            memberships: { 'instructor-a': [{ tenant_id: 'tenant-a' }], 'instructor-b': [{ tenant_id: 'tenant-b' }], 'student-a': [{ tenant_id: 'tenant-a' }] },
+            memberships: { 'instructor-a': [{ tenant_id: 'tenant-a' }], 'instructor-b': [{ tenant_id: 'tenant-b' }], 'instructor-c': [{ tenant_id: 'tenant-a' }], 'student-a': [{ tenant_id: 'tenant-a' }] },
             enrollments: { 'student-a': [{ id: 'enr-s1', user_id: 'student-a', tenant_id: 'tenant-a', instructor_id: null, group_id: null, grade_id: null }] },
         },
     );
     const loadActiveTenantAuthority = async (userId: string, tenantId: string) => {
         const authority = AUTHORITY[userId];
-        return authority && tenantId === (userId === 'instructor-a' ? 'tenant-a' : 'tenant-b') ? { authority } : null;
+        const tenant = userId === 'instructor-b' ? 'tenant-b' : 'tenant-a';
+        return authority && tenantId === tenant ? { authority } : null;
     };
     const router = createGradebookRouter({
         db,
@@ -161,11 +164,61 @@ test('student cannot reach staff gradebook surfaces', async () => {
 });
 
 test('policy query is scoped to the caller tenant', async () => {
-    const { router, executed } = build();
+    const { router, executed } = build({ responder: (sql) => sql.includes('FROM courses') ? [{ id: 'course-1', tenant_id: 'tenant-b', instructor_id: null }] : [] });
     const res = await invokeRoute(router, { method: 'GET', url: '/policy/course-1', token: INSTRUCTOR_B });
     assert.equal(res.statusCode, 200);
     const query = findExecuted(executed, 'FROM gradebook_policies');
     assert.deepEqual(query?.params, ['tenant-b', 'course-1'], 'the policy read must bind the caller tenant, never a body/claim tenant');
+});
+
+test('policy get is denied for a course that does not exist in the caller tenant', async () => {
+    const { router, executed } = build();
+    const res = await invokeRoute(router, { method: 'GET', url: '/policy/course-1', token: INSTRUCTOR_A });
+    assert.equal(res.statusCode, 404);
+    assert.ok(!findExecuted(executed, 'FROM gradebook_policies'), 'a foreign/absent course must be denied before any policy read');
+});
+
+test('non-owner instructor cannot set the policy of a course they are not related to', async () => {
+    const { router, executed } = build({ responder: (sql) => sql.includes('FROM courses') ? [{ id: 'course-1', tenant_id: 'tenant-a', instructor_id: 'another-instructor' }] : [] });
+    const res = await invokeRoute(router, {
+        method: 'PUT', url: '/policy/course-1', token: INSTRUCTOR_C,
+        body: { mode: 'points', passing_score: 70 },
+    });
+    assert.equal(res.statusCode, 403);
+    assert.ok(!executed.some((e) => e.kind === 'execute' && e.sql.includes('gradebook_policies')), 'an unauthorized instructor must not touch the policy');
+});
+
+test('non-owner instructor may set the policy of a course they teach through a group', async () => {
+    const { router, executed } = build({ responder: (sql) => {
+        if (sql.includes('FROM courses')) return [{ id: 'course-1', tenant_id: 'tenant-a', instructor_id: 'another-instructor' }];
+        if (sql.includes('FROM `groups`')) return [{ id: 'group-1' }];
+        return [];
+    } });
+    const res = await invokeRoute(router, {
+        method: 'PUT', url: '/policy/course-1', token: INSTRUCTOR_C,
+        body: { mode: 'points', passing_score: 70 },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.ok(executed.some((e) => e.kind === 'execute' && e.sql.includes('gradebook_policies')));
+});
+
+test('non-owner instructor score listing is restricted to courses they teach', async () => {
+    const { router, executed } = build();
+    const res = await invokeRoute(router, { method: 'GET', url: '/scores', token: INSTRUCTOR_C });
+    assert.equal(res.statusCode, 200);
+    const query = executed.find((e) => e.kind === 'query' && e.sql.includes('FROM gradebook_scores'));
+    assert.ok(query && query.sql.includes('instructor_id=?'), 'a non-owner list must bind the instructor relation');
+    assert.ok(query!.params.includes('instructor-c'));
+});
+
+test('student cannot read the gradebook policy of a course they are not enrolled in', async () => {
+    const { router } = build({ responder: (sql) => {
+        if (sql.includes('LEFT JOIN')) return [];
+        if (sql.includes('FROM students')) return [{ id: 'enr-s1', tenant_id: 'tenant-a' }];
+        return [];
+    } });
+    const res = await invokeRoute(router, { method: 'GET', url: '/me?course_id=course-x', token: STUDENT_A, query: { course_id: 'course-x' } });
+    assert.equal(res.statusCode, 404);
 });
 
 test('weighted weights policy is visible to the student on /me', async () => {
@@ -189,7 +242,11 @@ test('CSV export neutralizes formulas and writes an audit row', async () => {
         category_id: '@SUM(A1)', item_type: 'exam', item_id: null, score: 5, max_score: 10, weight: null,
         recorded_at: '2026-01-01',
     }];
-    const { router, executed } = build({ responder: (sql) => (sql.includes('gradebook_scores') ? rows : []) });
+    const { router, executed } = build({ responder: (sql) => {
+        if (sql.includes('FROM courses')) return [{ id: 'course-1', tenant_id: 'tenant-a', instructor_id: 'instructor-a' }];
+        if (sql.includes('gradebook_scores')) return rows;
+        return [];
+    } });
     const res = await invokePlain(router, { method: 'GET', url: '/export?course_id=course-1', token: INSTRUCTOR_A, query: { course_id: 'course-1' } });
     assert.equal(res.statusCode, 200);
     assert.ok(typeof res.body === 'string' && (res.body as string).includes("'=cmd|calc"), 'a formula payload must be prefixed/neutralized');

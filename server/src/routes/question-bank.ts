@@ -350,15 +350,6 @@ export const createQuestionBankRouter = (deps: QuestionBankDeps): Router => {
             if (existing.archived_at !== null && existing.archived_at !== undefined) {
                 return res.status(409).json({ error: 'An archived question cannot be edited' });
             }
-            const usages = await db.query<{ exam_published: boolean | number }>(
-                `SELECT exam_published FROM question_bank_version_usages
-                 WHERE question_id = ? AND tenant_id = ? AND version = ?`,
-                [questionId, scope.tenantId, existing.current_version],
-            );
-            if (isVersionLocked(usages.map((usage) => ({ examPublished: Boolean(usage.exam_published) })))) {
-                return res.status(409).json({ error: 'This version is used by a published exam and is immutable' });
-            }
-
             const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as Record<string, unknown>;
             const merged: Record<string, unknown> = {
                 question_text: body['question_text'] ?? existing.question_text,
@@ -382,6 +373,19 @@ export const createQuestionBankRouter = (deps: QuestionBankDeps): Router => {
 
             const nextVersion = Number(existing.current_version) + 1;
             const result = await runAtomic(async (tx) => {
+                // Version-lock usage check inside the same atomic section as the
+                // append. SELECT ... FOR UPDATE takes gap/row locks on that
+                // (tenant, question, version) range so a concurrent exam publish
+                // that would begin referencing the current version serializes
+                // here instead of slipping between check and append (TOCTOU).
+                const usages = await tx.query<{ exam_published: boolean | number }>(
+                    `SELECT exam_published FROM question_bank_version_usages
+                     WHERE question_id = ? AND tenant_id = ? AND version = ? FOR UPDATE`,
+                    [questionId, scope.tenantId, existing.current_version],
+                );
+                if (isVersionLocked(usages.map((usage) => ({ examPublished: Boolean(usage.exam_published) })))) {
+                    return { kind: 'locked' as const };
+                }
                 const updated = await tx.execute(
                     `UPDATE question_bank_questions
                      SET question_type=?, question_text=?, options=?, correct_answers=?, points=?, explanation=?,
@@ -394,7 +398,7 @@ export const createQuestionBankRouter = (deps: QuestionBankDeps): Router => {
                         nextVersion, questionId, scope.tenantId, existing.current_version,
                     ],
                 );
-                if ((updated.affectedRows ?? 0) === 0) return false;
+                if ((updated.affectedRows ?? 0) === 0) return { kind: 'conflict' as const };
                 await insertVersion(tx, scope, questionId, nextVersion, validated.value);
                 await recordAudit(tx.execute, {
                     actorUserId: scope.userId,
@@ -405,9 +409,14 @@ export const createQuestionBankRouter = (deps: QuestionBankDeps): Router => {
                     oldValue: snapshotRow({ current_version: existing.current_version }),
                     newValue: snapshotRow({ current_version: nextVersion }),
                 });
-                return true;
+                return { kind: 'ok' as const };
             });
-            if (!result) return res.status(409).json({ error: 'Question changed concurrently' });
+            if (result.kind === 'locked') {
+                return res.status(409).json({ error: 'This version is used by a published exam and is immutable' });
+            }
+            if (result.kind === 'conflict') {
+                return res.status(409).json({ error: 'Question changed concurrently' });
+            }
             res.json({ id: questionId, current_version: nextVersion });
         } catch (error) {
             console.error('Update question bank question error:', error);

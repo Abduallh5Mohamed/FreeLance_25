@@ -240,6 +240,55 @@ test('attendance: a changed re-mark becomes an audited correction (before/after)
     assert.equal(newValue.state, 'present');
 });
 
+test('attendance: a duplicate-key race on the first mark returns the existing row as unchanged (no 500)', async () => {
+    let recordLookups = 0;
+    let insertAttempts = 0;
+    const db = makeFakeDataAccess((sql) => {
+        if (sessionLoad(sql)) return [{ ...sessionRecord, status: 'scheduled' }];
+        if (eligibleQuery(sql)) return [{ id: 'stu-1' }];
+        if (existingQuery(sql)) {
+            recordLookups += 1;
+            return recordLookups === 1 ? [] : [{ ...recordRow, state: 'present' }];
+        }
+        return [];
+    });
+    const repository = makeRepository(
+        { 'instructor-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' } },
+        { instructorAccounts: { 'instructor-a': { tenant_status: 'active', legacy_compat: 1, allowed: 1 } }, memberships: { 'instructor-a': [{ tenant_id: 'tenant-a' }] } },
+    );
+    const dataAccess: AttendanceDataAccess = {
+        query: db.query,
+        queryOne: db.queryOne,
+        execute: async (sql, params) => {
+            if (sql.includes('INSERT INTO attendance_records')) {
+                insertAttempts += 1;
+                throw Object.assign(new Error('duplicate key'), { code: 'ER_DUP_ENTRY' });
+            }
+            return db.execute(sql, params);
+        },
+    };
+    const router = createAttendanceRecordsRouter({
+        db: dataAccess,
+        authenticate: createAuthenticateToken(repository),
+        loadActiveTenantAuthority: async () => ({ authority: 'instructor' }),
+        transaction: async <T>(fn: (tx: AttendanceDataAccess) => Promise<T>) => fn(dataAccess),
+    });
+    const response = await invokeRoute(router, {
+        method: 'POST', url: '/sessions/se-1/records', token: INSTRUCTOR_A,
+        body: { student_id: 'stu-1', state: 'present', reason: 'arrived' },
+    });
+    assert.equal(response.statusCode, 200);
+    const body = response.body as { outcome?: string; idempotent?: boolean; id?: string; state?: string };
+    assert.equal(body.outcome, 'unchanged');
+    assert.equal(body.idempotent, true);
+    assert.equal(body.id, 'ar-1', 'the winner committed row is reported');
+    assert.equal(body.state, 'present');
+    assert.equal(insertAttempts, 1,
+        'only the single losing insert attempt is made');
+    assert.equal(auditAction(db.executed, 'attendance.mark'), undefined,
+        'the losing mark never audits itself');
+});
+
 // --- bulk mark ---
 test('attendance: bulk mark rejects an empty or duplicate payload with 400', async () => {
     const { router, executed } = buildRouter(() => []);

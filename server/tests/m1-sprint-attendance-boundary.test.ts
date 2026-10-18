@@ -28,6 +28,10 @@
  * no .env file is read and no external service is contacted.
  */
 import { test } from 'node:test';
+import { quietConsole, restoreConsole } from './helpers/quiet-console';
+
+test.beforeEach(quietConsole);
+test.afterEach(restoreConsole);
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { createServer, type Server } from 'node:http';

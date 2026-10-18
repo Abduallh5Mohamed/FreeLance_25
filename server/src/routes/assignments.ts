@@ -11,10 +11,19 @@
  *    whose tenant, branch and group match the assignment (deny by default);
  *  - every read/write carries `tenant_id = <principal tenant>`.
  *
- * Upload metadata is private: only an opaque `storage_key` is stored and it is
- * NEVER projected back to any caller (no public URL). `scan_status` starts
- * `pending` and is server-owned. Submissions are append-only versions; a
- * teacher revocation invalidates a version and re-opens the slot.
+ * Upload identity is server-owned on both values: the private `storage_key`
+ * is generated here (`tenants/{tenantId}/assignments/{assignmentId}/
+ * {enrollmentId}/{submissionId}.ext`), a client-supplied key (or any client
+ * size claim) is rejected/ignored, and the authoritative bytes come from an
+ * injected server-side storage-stat dependency. If no verified object exists
+ * at the generated key yet, the submission is recorded `pending_upload` —
+ * `file_size_bytes` stays 0 (server opinion: nothing verified) and
+ * `scan_status` remains `pending` until the scan/finalize pipeline verifies
+ * the object; the creator receives their own private upload target in the
+ * creation response only. The key is never projected by any read endpoint.
+ * Submissions are append-only versions; a teacher revocation invalidates a
+ * version and re-opens the slot. Duplicate-key races on the per-version
+ * UNIQUE key are re-evaluated and answered as a policy denial, not a 500.
  *
  * Exports `createAssignmentsRouter(deps)` and a default-wired router instance
  * (real pool/auth/authority) so a later mounting task can `app.use` it. This
@@ -38,9 +47,11 @@ import {
     EvaluateSubmissionInput,
     evaluateSubmission,
     enrollmentMatchesAssignment,
+    buildSubmissionStorageKey,
     normalizeId,
     validateAssignmentInput,
-    validateUploadMetadata,
+    validateUploadRequest,
+    validateVerifiedUpload,
 } from '../services/assignments';
 
 export interface AssignmentsDataAccess {
@@ -57,9 +68,24 @@ export interface AssignmentsDeps {
     branchAccess?: BranchAccessDeps;
     now?: () => Date;
     transaction?: <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>) => Promise<T>;
+    /**
+     * Server-side verification of a stored object: returns its byte size, or
+     * null when no verified object exists at the (server-generated) key.
+     * Submissions report bytes only from this dependency, never from the
+     * client body.
+     */
+    storageStat?: (storageKey: string) => Promise<number | null>;
 }
 
 const STAFF_AUTHORITIES = new Set(['owner', 'instructor']);
+
+/** mysql2 duplicate-key error (the per-version UNIQUE key lost the race). */
+const isDuplicateKeyError = (error: unknown): boolean => {
+    if (typeof error !== 'object' || error === null) return false;
+    const code = (error as { code?: unknown }).code;
+    const errno = (error as { errno?: unknown }).errno;
+    return code === 'ER_DUP_ENTRY' || errno === 1062;
+};
 
 interface AssignmentRow {
     id: string;
@@ -108,9 +134,13 @@ interface StaffScope {
 
 interface EnrollmentFacts {
     id: string;
+    /** Authenticated principal this enrollment belongs to. */
+    userId: string;
     tenantId: string;
     branchId: string | null;
     groupId: string | null;
+    /** Course of the enrollment's group (server-derived audience fact). */
+    courseId: string | null;
 }
 
 function parseJsonArray(value: string | null): string[] {
@@ -142,6 +172,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
     const runAtomic = deps.transaction
         ? deps.transaction
         : <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>): Promise<T> => fn(db);
+    const storageStat = deps.storageStat ?? (async (): Promise<number | null> => null);
 
     const branchAccess: BranchAccessDeps = deps.branchAccess ?? {
         findBranchById: async (branchId) => db.queryOne<BranchRow>(
@@ -195,9 +226,9 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
         }
         const row = await db.queryOne<{
             id: string; tenant_id: string; group_id: string | null;
-            branch_id: string | null; branch_scope: string | null;
+            branch_id: string | null; branch_scope: string | null; course_id: string | null;
         }>(
-            `SELECT s.id, s.tenant_id, s.group_id, grp.branch_id, grp.branch_scope
+            `SELECT s.id, s.tenant_id, s.group_id, grp.branch_id, grp.branch_scope, grp.course_id
              FROM students s LEFT JOIN \`groups\` grp ON grp.id = s.group_id
              WHERE s.user_id=? AND s.tenant_id=? AND s.is_active=1 AND s.approval_status='approved'
                AND (s.enrollment_status IS NULL OR s.enrollment_status='active')
@@ -211,7 +242,10 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             return null;
         }
         const branchId = row.branch_scope === 'branch' ? row.branch_id : null;
-        return { id: row.id, tenantId: row.tenant_id, branchId, groupId: row.group_id };
+        return {
+            id: row.id, userId: user.id, tenantId: row.tenant_id, branchId,
+            groupId: row.group_id, courseId: row.course_id ?? null,
+        };
     };
 
     /* --------------------------------------------------------------------- */
@@ -334,6 +368,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
         branchScope: row.branch_scope,
         branchId: row.branch_id,
         groupId: row.group_id,
+        courseId: row.course_id ?? null,
     });
 
     const submissionInput = (row: AssignmentRow): EvaluateSubmissionInput => ({
@@ -349,6 +384,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
         tenantId: enrollment.tenantId,
         branchId: enrollment.branchId,
         groupId: enrollment.groupId,
+        courseId: enrollment.courseId,
     });
 
     /* --------------------------------------------------------------------- */
@@ -448,7 +484,10 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
     });
 
     /* --------------------------------------------------------------------- */
-    /* POST /:id/submissions — enrolled student submit (audited)              */
+    /* POST /:id/submissions — enrolled student submit (audited).             */
+    /* Storage identity is server-owned: the key is generated here and the   */
+    /* bytes only come from a verified storage-stat. No verified object yet  */
+    /* means the row is recorded pending_upload (see header).                */
     /* --------------------------------------------------------------------- */
     router.post('/:id/submissions', async (req: AuthRequest, res: Response) => {
         try {
@@ -461,10 +500,11 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             if (!enrollmentMatchesAssignment(assignmentAudience(assignment), enrollmentAudience(enrollment))) {
                 return res.status(404).json({ error: 'Assignment not found' });
             }
-            const upload = validateUploadMetadata(req.body, {
+            const limits = {
                 maxFileBytes: Number(assignment.max_file_bytes),
                 allowedFileTypes: parseJsonArray(assignment.allowed_file_types),
-            });
+            };
+            const upload = validateUploadRequest(req.body, limits);
             if (!upload.ok) return res.status(400).json({ error: upload.error });
 
             const existing = (await loadSubmissions(enrollment.tenantId, assignmentId))
@@ -476,40 +516,95 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             }
 
             const submissionId = randomUUID();
-            const status = decision.late ? 'late' : 'submitted';
-            await runAtomic(async (tx) => {
-                await tx.execute(
-                    `INSERT INTO assignment_submissions
-                       (id,tenant_id,assignment_id,student_enrollment_id,student_user_id,version,status,
-                        file_name,file_type,file_size_bytes,storage_key,scan_status,is_late)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?, 'pending', ?)`,
-                    [
-                        submissionId, enrollment.tenantId, assignmentId, enrollment.id, enrollment.id, decision.nextVersion,
-                        status, upload.value.fileName, upload.value.fileType, upload.value.fileSizeBytes,
-                        upload.value.storageKey, decision.late ? 1 : 0,
-                    ],
-                );
-                await recordAudit(tx.execute, {
-                    actorUserId: enrollment.id,
-                    tenantId: enrollment.tenantId,
-                    action: 'assignment.submission.create',
-                    resourceType: 'assignment_submission',
-                    resourceId: submissionId,
-                    newValue: snapshotRow({
-                        assignment_id: assignmentId,
-                        version: decision.nextVersion,
-                        file_name: upload.value.fileName,
-                        file_size_bytes: upload.value.fileSizeBytes,
-                        late: decision.late,
-                    }),
-                });
+            const storageKey = buildSubmissionStorageKey({
+                tenantId: enrollment.tenantId,
+                assignmentId,
+                enrollmentId: enrollment.id,
+                submissionId,
+                fileExtension: upload.value.extension,
             });
-            res.status(201).json({
+            if (storageKey === null) {
+                return res.status(500).json({ error: 'Failed to generate the private upload target' });
+            }
+
+            // The authoritative size is only ever a server-side verification of
+            // the stored object. Nothing verified at the generated key yet (the
+            // normal first ask) records the row as pending_upload with a 0 size
+            // — no client claim is trusted.
+            const storedBytes = await storageStat(storageKey);
+            let fileSizeBytes: number;
+            let pendingUpload: boolean;
+            if (storedBytes === null) {
+                fileSizeBytes = 0;
+                pendingUpload = true;
+            } else {
+                const verified = validateVerifiedUpload(storedBytes, limits);
+                if (!verified.ok) return res.status(400).json({ error: verified.error });
+                fileSizeBytes = verified.value;
+                pendingUpload = false;
+            }
+
+            const status = decision.late ? 'late' : 'submitted';
+            try {
+                await runAtomic(async (tx) => {
+                    await tx.execute(
+                        `INSERT INTO assignment_submissions
+                           (id,tenant_id,assignment_id,student_enrollment_id,student_user_id,version,status,
+                            file_name,file_type,file_size_bytes,storage_key,scan_status,is_late)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?, 'pending', ?)`,
+                        [
+                            submissionId, enrollment.tenantId, assignmentId, enrollment.id, enrollment.userId,
+                            decision.nextVersion, status, upload.value.fileName, upload.value.fileType,
+                            fileSizeBytes, storageKey, decision.late ? 1 : 0,
+                        ],
+                    );
+                    await recordAudit(tx.execute, {
+                        actorUserId: enrollment.userId,
+                        tenantId: enrollment.tenantId,
+                        action: 'assignment.submission.create',
+                        resourceType: 'assignment_submission',
+                        resourceId: submissionId,
+                        newValue: snapshotRow({
+                            assignment_id: assignmentId,
+                            version: decision.nextVersion,
+                            file_name: upload.value.fileName,
+                            file_size_bytes: fileSizeBytes,
+                            pending_upload: pendingUpload,
+                            late: decision.late,
+                        }),
+                    });
+                });
+            } catch (error) {
+                if (!isDuplicateKeyError(error)) throw error;
+                // The per-(assignment,enrollment)-version UNIQUE key decided the
+                // race; re-evaluate from committed state for a precise policy
+                // answer instead of a raw 500.
+                const raced = (await loadSubmissions(enrollment.tenantId, assignmentId))
+                    .filter((row) => row.student_enrollment_id === enrollment.id)
+                    .map((row) => ({ version: Number(row.version), status: row.status }));
+                const denial = evaluateSubmission(submissionInput(assignment), raced, now());
+                if (!denial.allowed) {
+                    return res.status(403).json({ error: 'Submission is not allowed', code: denial.reason });
+                }
+                return res.status(409).json({ error: 'Submission changed concurrently, please retry' });
+            }
+            res.status(201).json(pendingUpload ? {
                 id: submissionId,
                 assignment_id: assignmentId,
                 version: decision.nextVersion,
                 status,
                 is_late: decision.late,
+                file_size_bytes: 0,
+                upload_status: 'pending_upload',
+                storage_key: storageKey,
+                scan_status: 'pending',
+            } : {
+                id: submissionId,
+                assignment_id: assignmentId,
+                version: decision.nextVersion,
+                status,
+                is_late: decision.late,
+                file_size_bytes: fileSizeBytes,
                 scan_status: 'pending',
             });
         } catch (error) {
@@ -866,6 +961,14 @@ const productionBranchAccess: BranchAccessDeps = {
     },
 };
 
+/**
+ * Production storage-stat seam: no object store is integrated in this
+ * milestone, so nothing can be verified at a generated key and submissions
+ * are recorded pending_upload (documented in the router header). When a
+ * storage backend lands, this reports the real object size instead.
+ */
+const productionStorageStat = async (): Promise<number | null> => null;
+
 export default createAssignmentsRouter({
     db: productionDb,
     authenticate: async (req, res, next) => {
@@ -874,4 +977,5 @@ export default createAssignmentsRouter({
     },
     loadActiveTenantAuthority,
     branchAccess: productionBranchAccess,
+    storageStat: productionStorageStat,
 });

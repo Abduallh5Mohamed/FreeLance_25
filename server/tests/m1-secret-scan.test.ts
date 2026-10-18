@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { quietConsole, restoreConsole } from './helpers/quiet-console';
+
+test.beforeEach(quietConsole);
+test.afterEach(restoreConsole);
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

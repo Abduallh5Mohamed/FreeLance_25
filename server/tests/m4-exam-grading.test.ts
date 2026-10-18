@@ -408,9 +408,126 @@ test('submit: a concurrent submit (zero affected rows) is 409', async () => {
 });
 
 test('submit: an audit failure aborts with 500 rather than committing unaudited', async () => {
-    const { router } = build({ questions: QUESTION_ROWS }, { auditThrows: true });
+    const { router, executed } = build({ questions: QUESTION_ROWS }, { auditThrows: true });
     const response = await invokeRoute(router, { method: 'POST', url: '/attempts/attempt-1/submit', token: STUDENT_A, body: { answers: CORRECT_ANSWERS } });
     assert.equal(response.statusCode, 500);
+});
+
+// ---- Finding #3: autosave drafts + server-side expiry compensation ---------
+
+test('autosave: anonymous is 401 with no data access', async () => {
+    const { router, executed } = build({ questions: QUESTION_ROWS });
+    const response = await invokeRoute(router, { method: 'POST', url: '/attempts/attempt-1/autosave', body: { answers: {} } });
+    assert.equal(response.statusCode, 401);
+    assert.equal(executed.length, 0);
+});
+
+test('autosave: a non-owner student is denied 404 with no write', async () => {
+    const { router, executed } = build({ attempt: { ...ATTEMPT_ROW, student_enrollment_id: 'enr-x' } });
+    const response = await invokeRoute(router, { method: 'POST', url: '/attempts/attempt-1/autosave', token: STUDENT_A, body: { answers: { 'eq-1': '4' } } });
+    assert.equal(response.statusCode, 404);
+    assert.equal(executed.some((e) => e.sql.includes('INSERT INTO exam_versioned_answers')), false);
+});
+
+test('autosave: an unknown answer reference is rejected 400 with no write', async () => {
+    const { router, executed } = build({ questions: QUESTION_ROWS });
+    const response = await invokeRoute(router, { method: 'POST', url: '/attempts/attempt-1/autosave', token: STUDENT_A, body: { answers: { nope: 'x' } } });
+    assert.equal(response.statusCode, 400);
+    assert.equal(executed.some((e) => e.sql.includes('INSERT INTO exam_versioned_answers')), false);
+});
+
+test('autosave: an oversized draft is rejected 413 with no write', async () => {
+    const { router, executed } = build({ questions: QUESTION_ROWS });
+    const response = await invokeRoute(router, {
+        method: 'POST',
+        url: '/attempts/attempt-1/autosave',
+        token: STUDENT_A,
+        body: { answers: { 'eq-1': 'x'.repeat(128 * 1024 + 1) } },
+    });
+    assert.equal(response.statusCode, 413);
+    assert.equal(executed.some((e) => e.sql.includes('INSERT INTO exam_versioned_answers')), false);
+});
+
+test('autosave: repeats inside the throttle window are 429 with no write', async () => {
+    const script = build({ questions: QUESTION_ROWS });
+    const first = await invokeRoute(script.router, { method: 'POST', url: '/attempts/attempt-1/autosave', token: STUDENT_A, body: { answers: { 'eq-1': '4' } } });
+    assert.equal(first.statusCode, 200);
+    const second = await invokeRoute(script.router, { method: 'POST', url: '/attempts/attempt-1/autosave', token: STUDENT_A, body: { answers: { 'eq-1': '3' } } });
+    assert.equal(second.statusCode, 429);
+    const inserts = script.executed.filter((e) => e.sql.includes('INSERT INTO exam_versioned_answers'));
+    assert.equal(inserts.length, 1, 'only the first call inside the window persists a draft');
+});
+
+test('autosave: persists draft responses while the phase is open, without grading', async () => {
+    const { router, executed } = build({ questions: QUESTION_ROWS });
+    const response = await invokeRoute(router, { method: 'POST', url: '/attempts/attempt-1/autosave', token: STUDENT_A, body: { answers: { 'eq-1': '4' } } });
+    assert.equal(response.statusCode, 200);
+    const draft = executed.find((e) => e.sql.includes('INSERT INTO exam_versioned_answers'));
+    assert.ok(draft);
+    assert.equal(draft!.params[4], 'eq-1', 'the draft is bound to the snapshot question ref');
+    assert.equal(draft!.params[6], '"4"', 'the draft response is persisted verbatim');
+    assert.match(draft!.sql, /VALUES \(\?,\?,\?,\?,\?,\?,\?,0\)/, 'drafts never pre-award; grading stays server-owned');
+    assert.equal(executed.some((e) => e.sql.includes('INSERT IGNORE INTO exam_grading_runs')), false, 'autosave must not grade');
+    assert.equal(executed.some((e) => e.sql.includes('UPDATE exam_versioned_attempts')), false, 'autosave must not finalize the attempt');
+});
+
+test('autosave: inside the grace window the draft is refused 403 with no write', async () => {
+    const { router, executed } = build(
+        { version: { ...VERSION_ROW, grace_seconds: 300 }, attempt: { ...ATTEMPT_ROW, started_at: '2026-06-01 09:00:00' }, questions: QUESTION_ROWS },
+        { now: new Date('2026-06-01T10:02:00Z') },
+    );
+    const response = await invokeRoute(router, { method: 'POST', url: '/attempts/attempt-1/autosave', token: STUDENT_A, body: { answers: { 'eq-1': '4' } } });
+    assert.equal(response.statusCode, 403);
+    assert.equal((response.body as Record<string, unknown>).code, 'LATE_REJECTED');
+    assert.equal(executed.some((e) => e.sql.includes('INSERT INTO exam_versioned_answers')), false);
+});
+
+test('autosave: past the grace deadline the touch finalizes the saved drafts as expired', async () => {
+    const { router, executed } = build(
+        {
+            attempt: { ...ATTEMPT_ROW, started_at: '2026-06-01 09:00:00' },
+            questions: QUESTION_ROWS,
+            storedAnswers: [
+                { id: 'a1', question_ref: 'eq-1', question_type: 'single_choice', response: '"4"', awarded_points: null, is_correct: null, manual_review: 0 },
+            ],
+        },
+        { now: new Date('2026-06-01T10:06:00Z') },
+    );
+    const response = await invokeRoute(router, { method: 'POST', url: '/attempts/attempt-1/autosave', token: STUDENT_A, body: { answers: { 'eq-1': '4' } } });
+    assert.equal(response.statusCode, 403);
+    assert.equal((response.body as Record<string, unknown>).code, 'EXPIRED');
+    const update = executed.find((e) => e.sql.includes('UPDATE exam_versioned_attempts'));
+    assert.ok(update, 'the touch runs the compensation pass');
+    assert.equal(update!.params[0], 'expired');
+    assert.equal(update!.params[1], '2.00', 'the draft saved during the open phase is graded');
+    assert.equal(update!.params[7], 1, 'auto_submitted is set by the server');
+    assert.ok(executed.some((e) => e.sql.includes('INSERT IGNORE INTO exam_grading_runs')));
+    assert.ok(auditAction(executed, 'exam_attempt.expire'));
+});
+
+test('submit: an expired submit grades the saved drafts and audits the server-side auto-submit', async () => {
+    const { router, executed } = build(
+        {
+            attempt: { ...ATTEMPT_ROW, started_at: '2026-06-01 09:00:00' },
+            questions: QUESTION_ROWS,
+            storedAnswers: [
+                { id: 'a1', question_ref: 'eq-1', question_type: 'single_choice', response: '"4"', awarded_points: '2.00', is_correct: 1, manual_review: 0 },
+                { id: 'a2', question_ref: 'eq-2', question_type: 'multiple_choice', response: '["a","c"]', awarded_points: '3.00', is_correct: 1, manual_review: 0 },
+                { id: 'a3', question_ref: 'eq-3', question_type: 'true_false', response: '"true"', awarded_points: '1.00', is_correct: 1, manual_review: 0 },
+            ],
+        },
+        { now: new Date('2026-06-01T11:00:00Z') },
+    );
+    const response = await invokeRoute(router, { method: 'POST', url: '/attempts/attempt-1/submit', token: STUDENT_A, body: { answers: CORRECT_ANSWERS } });
+    assert.equal(response.statusCode, 403);
+    assert.equal((response.body as Record<string, unknown>).code, 'EXPIRED');
+    const ledger = executed.filter((e) => e.sql.includes('INSERT INTO exam_versioned_answers'));
+    assert.equal(ledger.length, 3, 'every draft is re-written with a fresh award from the frozen snapshot');
+    assert.equal(ledger[0].params[7], '2.00', 'the draft award is persisted');
+    assert.equal(ledger[0].params[6], '"4"', 'the draft response survives the expiry pass');
+    assert.ok(auditAction(executed, 'exam_attempt.expire'));
+    const submitRuns = auditAction(executed, 'exam_attempt.submit');
+    assert.equal(submitRuns, undefined, 'a late manual submit never audits the manual path');
 });
 
 // ---- POST /attempts/:attemptId/regrade ------------------------------------

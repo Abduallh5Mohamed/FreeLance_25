@@ -50,6 +50,14 @@ export interface AttendanceDeps {
 
 const STAFF_AUTHORITIES = new Set(['owner', 'instructor']);
 
+/** mysql2 duplicate-key error (the UNIQUE (session_id, student_id) guard fired). */
+const isDuplicateKeyError = (error: unknown): boolean => {
+    if (typeof error !== 'object' || error === null) return false;
+    const code = (error as { code?: unknown }).code;
+    const errno = (error as { errno?: unknown }).errno;
+    return code === 'ER_DUP_ENTRY' || errno === 1062;
+};
+
 interface StaffScope {
     tenantId: string;
     userId: string;
@@ -180,12 +188,14 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
         session: SessionRow,
         entry: ValidatedMark,
     ): Promise<MarkOutcome> => {
-        const existing = await tx.queryOne<RecordRow>(
+        const findRecordRow = (studentId: string) => tx.queryOne<RecordRow>(
             `SELECT id, tenant_id, session_id, student_id, state, reason, version
              FROM attendance_records
              WHERE tenant_id=? AND session_id=? AND student_id=? LIMIT 1`,
-            [scope.tenantId, session.id, entry.studentId],
+            [scope.tenantId, session.id, studentId],
         );
+
+        const existing = await findRecordRow(entry.studentId);
 
         if (existing && existing.state === entry.state) {
             return { id: existing.id, student_id: entry.studentId, state: entry.state, outcome: 'unchanged' };
@@ -214,12 +224,27 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
         }
 
         const id = randomUUID();
-        await tx.execute(
-            `INSERT INTO attendance_records
-               (id, tenant_id, session_id, group_id, student_id, state, reason, marked_by, marked_at)
-             VALUES (?,?,?,?,?,?,?,?,UTC_TIMESTAMP())`,
-            [id, scope.tenantId, session.id, session.group_id, entry.studentId, entry.state, entry.reason, scope.userId],
-        );
+        try {
+            await tx.execute(
+                `INSERT INTO attendance_records
+                   (id, tenant_id, session_id, group_id, student_id, state, reason, marked_by, marked_at)
+                 VALUES (?,?,?,?,?,?,?,?,UTC_TIMESTAMP())`,
+                [id, scope.tenantId, session.id, session.group_id, entry.studentId, entry.state, entry.reason, scope.userId],
+            );
+        } catch (error) {
+            if (!isDuplicateKeyError(error)) throw error;
+            // Two concurrent first marks lost the "no existing record" window;
+            // the UNIQUE (session_id, student_id) guard decided the race. The
+            // winner's committed row is authoritative: report it idempotently.
+            const racedRow = await findRecordRow(entry.studentId);
+            if (!racedRow) throw error;
+            return {
+                id: racedRow.id,
+                student_id: racedRow.student_id,
+                state: racedRow.state as AttendanceState,
+                outcome: 'unchanged',
+            };
+        }
         await recordAudit(tx.execute, {
             actorUserId: scope.userId,
             tenantId: scope.tenantId,

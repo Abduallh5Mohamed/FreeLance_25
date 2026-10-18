@@ -3,6 +3,7 @@ import test, { after, before } from 'node:test';
 import { createAuthenticateToken } from '../src/middleware/auth';
 import type { BranchAccessDeps } from '../src/security/branch-access';
 import {
+    buildSubmissionStorageKey,
     enrollmentMatchesAssignment,
     evaluateSubmission,
     evaluateSubmissionWindow,
@@ -10,7 +11,8 @@ import {
     normalizeLatePolicy,
     normalizeResubmissionPolicy,
     validateAssignmentInput,
-    validateUploadMetadata,
+    validateUploadRequest,
+    validateVerifiedUpload,
 } from '../src/services/assignments';
 import { createAssignmentsRouter, type AssignmentsDataAccess } from '../src/routes/assignments';
 import {
@@ -81,15 +83,50 @@ test('validateAssignmentInput: rejects malformed scope/deadline/limits', () => {
 
 const LIMITS = { maxFileBytes: 1000, allowedFileTypes: ['pdf'] };
 
-test('validateUploadMetadata: accepts good metadata and rejects public URL / limits', () => {
-    const good = validateUploadMetadata({ file_name: 'hw.pdf', file_type: 'application/pdf', file_size_bytes: 500, storage_key: 't/a/a-1/v1-hw.pdf' }, LIMITS);
+test('validateUploadRequest: descriptive metadata only; client storage_key rejected; size claims ignored', () => {
+    // The client-declared file_size_bytes is ignored entirely (server-verified later).
+    const good = validateUploadRequest(
+        { file_name: 'hw.pdf', file_type: 'application/pdf', file_size_bytes: 999999 }, LIMITS,
+    );
     assert.equal(good.ok, true);
-    assert.equal(validateUploadMetadata({ file_name: '../evil.pdf', file_type: 'application/pdf', file_size_bytes: 500, storage_key: 'a.pdf' }, LIMITS).ok, false);
-    assert.equal(validateUploadMetadata({ file_name: 'hw.pdf', file_type: 'application/pdf', file_size_bytes: 500, storage_key: 'https://cdn.example.com/hw.pdf' }, LIMITS).ok, false);
-    assert.equal(validateUploadMetadata({ file_name: 'hw.pdf', file_type: 'application/pdf', file_size_bytes: 500, storage_key: '/srv/hw.pdf' }, LIMITS).ok, false);
-    assert.equal(validateUploadMetadata({ file_name: 'hw.pdf', file_type: 'application/pdf', file_size_bytes: 5000, storage_key: 'a.pdf' }, LIMITS).ok, false);
-    assert.equal(validateUploadMetadata({ file_name: 'hw.exe', file_type: 'application/octet-stream', file_size_bytes: 500, storage_key: 'a.exe' }, LIMITS).ok, false);
-    assert.equal(validateUploadMetadata({ file_name: 'noext', file_type: 'x', file_size_bytes: 500, storage_key: 'a' }, LIMITS).ok, false);
+    if (good.ok) assert.equal(good.value.extension, 'pdf');
+
+    assert.equal(validateUploadRequest({ file_name: 'hw.pdf', file_type: 'application/pdf', storage_key: 'tenants/x/y.pdf' }, LIMITS).ok, false,
+        'a client-supplied storage_key is rejected: the key is server-owned');
+    assert.equal(validateUploadRequest({ file_name: 'hw.pdf', file_type: 'application/pdf', storage_key: '' }, LIMITS).ok, true,
+        'an empty storage_key is treated as absent');
+    assert.equal(validateUploadRequest({ file_name: '../evil.pdf', file_type: 'application/pdf' }, LIMITS).ok, false);
+    assert.equal(validateUploadRequest({ file_name: 'hw.exe', file_type: 'application/octet-stream' }, LIMITS).ok, false);
+    assert.equal(validateUploadRequest({ file_name: 'noext', file_type: 'x' }, LIMITS).ok, false);
+});
+
+test('validateVerifiedUpload: only the server-verified size is accepted against the limits', () => {
+    const verifiedLimits = { maxFileBytes: 100000, allowedFileTypes: ['pdf'] };
+    assert.deepEqual(validateVerifiedUpload(1500, verifiedLimits), { ok: true, value: 1500 });
+    assert.equal(validateVerifiedUpload(200000, verifiedLimits).ok, false, 'above max_file_bytes');
+    assert.equal(validateVerifiedUpload(5, verifiedLimits).ok, false, 'below the minimum');
+    assert.equal(validateVerifiedUpload(0, verifiedLimits).ok, false);
+    assert.equal(validateVerifiedUpload(1.5, verifiedLimits).ok, false);
+});
+
+test('buildSubmissionStorageKey: namespaced per tenant/assignment/enrollment/submission, server-only', () => {
+    const key = buildSubmissionStorageKey({
+        tenantId: 'tenant-a', assignmentId: 'a-1', enrollmentId: 'enr-a',
+        submissionId: 'S1a2b3c4d5e6f7089a1b2c3d4e5f60718', fileExtension: 'pdf',
+    });
+    assert.equal(
+        key,
+        'tenants/tenant-a/assignments/a-1/enr-a/S1a2b3c4d5e6f7089a1b2c3d4e5f60718.pdf',
+        'the client never supplies any part of the key',
+    );
+    assert.equal(buildSubmissionStorageKey({
+        tenantId: '../evil', assignmentId: 'a-1', enrollmentId: 'enr-a',
+        submissionId: 'S1', fileExtension: 'pdf',
+    }), null);
+    assert.equal(buildSubmissionStorageKey({
+        tenantId: 'tenant-a', assignmentId: 'a-1', enrollmentId: 'enr-a',
+        submissionId: 'S1', fileExtension: 'exe/exe!',
+    }), null);
 });
 
 test('submission window: status, archive and late-policy behavior', () => {
@@ -131,16 +168,26 @@ test('evaluateSubmission: resubmission, limits, revoked slot reopens and version
     );
 });
 
-test('enrollmentMatchesAssignment: deny-by-default tenant/branch/group scope', () => {
-    const tenantWide = { tenantId: 'tenant-a', branchScope: 'tenant', branchId: null, groupId: null };
-    assert.equal(enrollmentMatchesAssignment(tenantWide, { tenantId: 'tenant-a', branchId: 'br-1', groupId: 'grp-1' }), true);
-    assert.equal(enrollmentMatchesAssignment(tenantWide, { tenantId: 'tenant-b', branchId: null, groupId: null }), false);
-    const branch = { tenantId: 'tenant-a', branchScope: 'branch', branchId: 'br-1', groupId: null };
-    assert.equal(enrollmentMatchesAssignment(branch, { tenantId: 'tenant-a', branchId: 'br-1', groupId: null }), true);
-    assert.equal(enrollmentMatchesAssignment(branch, { tenantId: 'tenant-a', branchId: 'br-2', groupId: null }), false);
-    const group = { tenantId: 'tenant-a', branchScope: 'tenant', branchId: null, groupId: 'grp-1' };
-    assert.equal(enrollmentMatchesAssignment(group, { tenantId: 'tenant-a', branchId: null, groupId: 'grp-1' }), true);
-    assert.equal(enrollmentMatchesAssignment(group, { tenantId: 'tenant-a', branchId: null, groupId: 'grp-2' }), false);
+test('enrollmentMatchesAssignment: deny-by-default tenant/branch/group/course scope', () => {
+    const tenantWide = { tenantId: 'tenant-a', branchScope: 'tenant', branchId: null, groupId: null, courseId: null };
+    assert.equal(enrollmentMatchesAssignment(tenantWide, { tenantId: 'tenant-a', branchId: 'br-1', groupId: 'grp-1', courseId: 'course-1' }), true);
+    assert.equal(enrollmentMatchesAssignment(tenantWide, { tenantId: 'tenant-b', branchId: null, groupId: null, courseId: null }), false);
+    const branch = { tenantId: 'tenant-a', branchScope: 'branch', branchId: 'br-1', groupId: null, courseId: null };
+    assert.equal(enrollmentMatchesAssignment(branch, { tenantId: 'tenant-a', branchId: 'br-1', groupId: null, courseId: null }), true);
+    assert.equal(enrollmentMatchesAssignment(branch, { tenantId: 'tenant-a', branchId: 'br-2', groupId: null, courseId: null }), false);
+    const group = { tenantId: 'tenant-a', branchScope: 'tenant', branchId: null, groupId: 'grp-1', courseId: null };
+    assert.equal(enrollmentMatchesAssignment(group, { tenantId: 'tenant-a', branchId: null, groupId: 'grp-1', courseId: null }), true);
+    assert.equal(enrollmentMatchesAssignment(group, { tenantId: 'tenant-a', branchId: null, groupId: 'grp-2', courseId: null }), false);
+    // A group audience takes precedence over the course fact.
+    assert.equal(enrollmentMatchesAssignment(
+        { ...group, courseId: 'course-9' },
+        { tenantId: 'tenant-a', branchId: null, groupId: 'grp-1', courseId: null },
+    ), true);
+    const course = { tenantId: 'tenant-a', branchScope: 'tenant', branchId: null, groupId: null, courseId: 'course-1' };
+    assert.equal(enrollmentMatchesAssignment(course, { tenantId: 'tenant-a', branchId: null, groupId: 'grp-1', courseId: 'course-1' }), true);
+    assert.equal(enrollmentMatchesAssignment(course, { tenantId: 'tenant-a', branchId: null, groupId: 'grp-1', courseId: 'course-2' }), false);
+    assert.equal(enrollmentMatchesAssignment(course, { tenantId: 'tenant-a', branchId: null, groupId: 'grp-1', courseId: null }), false,
+        'a student group without a course never matches a course audience');
 });
 
 // ---------------------------------------------------------------------------
@@ -175,14 +222,15 @@ interface Fixtures {
     submission?: Record<string, unknown> | null;
     course?: Record<string, unknown>[];
     group?: Record<string, unknown>[];
+    enrollment?: Record<string, unknown> | null;
 }
 
 const build = (
     fixtures: Fixtures = {},
-    opts: { now?: Date; branchAccess?: BranchAccessDeps } = {},
+    opts: { now?: Date; branchAccess?: BranchAccessDeps; storageStat?: (storageKey: string) => Promise<number | null> } = {},
 ) => {
     const responder = (sql: string): unknown[] | null => {
-        if (sql.includes('FROM students s LEFT JOIN')) return [ENROLLMENT_A];
+        if (sql.includes('FROM students s LEFT JOIN')) return [fixtures.enrollment ?? ENROLLMENT_A];
         if (sql.includes('FROM assignments') && sql.includes('id = ?')) {
             return fixtures.assignment === null ? [] : [fixtures.assignment ?? ASSIGNMENT];
         }
@@ -228,6 +276,7 @@ const build = (
         branchAccess: opts.branchAccess ?? allowBranch,
         now: () => opts.now ?? new Date('2026-01-01T00:00:00Z'),
         transaction: async <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>) => fn(db),
+        storageStat: opts.storageStat ?? (async () => 2000),
     });
     return { router, executed: db.executed };
 };
@@ -405,11 +454,41 @@ test('student list: only the caller audience is returned', async () => {
     assert.deepEqual(ids, ['a-1'], 'group grp-2 assignment is out of the caller audience');
 });
 
+test('course audience: a student outside the course is denied, an enrolled course student is served (read/submit)', async () => {
+    const courseAssignment = { ...ASSIGNMENT, course_id: 'course-1' };
+
+    const enrolledOtherCourse = build({
+        assignment: courseAssignment,
+        assignments: [courseAssignment],
+        enrollment: { ...ENROLLMENT_A, course_id: 'course-7' },
+    });
+    assert.equal((await invokeRoute(enrolledOtherCourse.router, { method: 'GET', url: '/a-1', token: STUDENT_A })).statusCode, 404,
+        'a course-audience assignment is invisible to students of other courses');
+    const listed = await invokeRoute(enrolledOtherCourse.router, { method: 'GET', url: '/student', token: STUDENT_A });
+    assert.deepEqual((listed.body as Array<{ id: string }>), [], 'not listed tenant-wide');
+    assert.equal((await invokeRoute(enrolledOtherCourse.router, {
+        method: 'POST', url: '/a-1/submissions', token: STUDENT_A,
+        body: { file_name: 'hw.pdf', file_type: 'application/pdf' },
+    })).statusCode, 404, 'not submittable by students outside the course');
+    assert.equal(enrolledOtherCourse.executed.some((e) => e.sql.includes('INSERT INTO assignment_submissions')), false);
+
+    const inCourse = build({
+        assignment: courseAssignment,
+        enrollment: { ...ENROLLMENT_A, course_id: 'course-1' },
+    });
+    assert.equal((await invokeRoute(inCourse.router, { method: 'GET', url: '/a-1', token: STUDENT_A })).statusCode, 200);
+    const submit = await invokeRoute(inCourse.router, {
+        method: 'POST', url: '/a-1/submissions', token: STUDENT_A,
+        body: { file_name: 'hw.pdf', file_type: 'application/pdf' },
+    });
+    assert.equal(submit.statusCode, 201);
+});
+
 test('submit: an enrolled student creates version 1 with no public URL and audits', async () => {
     const { router, executed } = build();
     const response = await invokeRoute(router, {
         method: 'POST', url: '/a-1/submissions', token: STUDENT_A,
-        body: { file_name: 'hw.pdf', file_type: 'application/pdf', file_size_bytes: 500, storage_key: 'tenant-a/a-1/hw.pdf' },
+        body: { file_name: 'hw.pdf', file_type: 'application/pdf', file_size_bytes: 500 },
     });
     assert.equal(response.statusCode, 201);
     const body = response.body as Record<string, unknown>;
@@ -417,7 +496,41 @@ test('submit: an enrolled student creates version 1 with no public URL and audit
     assert.equal(body.status, 'submitted');
     assert.equal(body.scan_status, 'pending');
     assert.equal('storage_key' in body, false);
+    const insert = executed.find((e) => e.sql.includes('INSERT INTO assignment_submissions'));
+    assert.ok(insert);
+    assert.equal(insert!.params[4], 'student-a', 'student_user_id is the authenticated user id');
+    const storageKey = insert!.params[10] as string;
+    assert.match(storageKey, /^tenants\/tenant-a\/assignments\/a-1\/enr-a\/[0-9a-f-]{36}\.pdf$/,
+        'the stored key is server-generated and namespaced');
     assert.ok(auditAction(executed, 'assignment.submission.create'));
+});
+
+test('submit: a client-supplied storage_key is rejected with 400 and nothing is written', async () => {
+    const { router, executed } = build();
+    const response = await invokeRoute(router, {
+        method: 'POST', url: '/a-1/submissions', token: STUDENT_A,
+        body: { file_name: 'hw.pdf', file_type: 'application/pdf', storage_key: 'tenants/tenant-b/other/file.pdf' },
+    });
+    assert.equal(response.statusCode, 400);
+    assert.equal(executed.some((e) => e.sql.includes('INSERT INTO assignment_submissions')), false);
+});
+
+test('submit: with no verified object the submission is recorded pending_upload (0 bytes, client size ignored)', async () => {
+    const { router, executed } = build({}, { storageStat: async () => null });
+    const response = await invokeRoute(router, {
+        method: 'POST', url: '/a-1/submissions', token: STUDENT_A,
+        body: { file_name: 'hw.pdf', file_type: 'application/pdf', file_size_bytes: 999999 },
+    });
+    assert.equal(response.statusCode, 201);
+    const body = response.body as Record<string, unknown>;
+    assert.equal(body.upload_status, 'pending_upload');
+    assert.equal(body.file_size_bytes, 0);
+    assert.equal(typeof body.storage_key, 'string', 'the creator receives their private upload target');
+    const insert = executed.find((e) => e.sql.includes('INSERT INTO assignment_submissions'));
+    assert.ok(insert);
+    assert.equal(insert!.params[9], 0, 'no client size claim is persisted');
+    assert.equal((insert!.params[10] as string).startsWith('tenants/tenant-a/assignments/a-1/enr-a/'), true);
+    assert.equal(insert!.params[4], 'student-a');
 });
 
 test('submit: late policy marks a submission late, and a block policy denies it', async () => {
@@ -427,7 +540,7 @@ test('submit: late policy marks a submission late, and a block policy denies it'
     );
     const lateRes = await invokeRoute(late.router, {
         method: 'POST', url: '/a-1/submissions', token: STUDENT_A,
-        body: { file_name: 'hw.pdf', file_type: 'application/pdf', file_size_bytes: 500, storage_key: 'k.pdf' },
+        body: { file_name: 'hw.pdf', file_type: 'application/pdf' },
     });
     assert.equal(lateRes.statusCode, 201);
     assert.equal((lateRes.body as { status?: string }).status, 'late');
@@ -438,30 +551,116 @@ test('submit: late policy marks a submission late, and a block policy denies it'
     );
     const blockedRes = await invokeRoute(blocked.router, {
         method: 'POST', url: '/a-1/submissions', token: STUDENT_A,
-        body: { file_name: 'hw.pdf', file_type: 'application/pdf', file_size_bytes: 500, storage_key: 'k.pdf' },
+        body: { file_name: 'hw.pdf', file_type: 'application/pdf' },
     });
     assert.equal(blockedRes.statusCode, 403);
     assert.equal((blockedRes.body as { code?: string }).code, 'DEADLINE_PASSED');
 });
 
-test('submit: rejects oversize and public-URL uploads with 400, cross-tenant with 404', async () => {
-    const oversize = build();
+test('submit: the verified size (not the client claim) enforces the limits, cross-tenant is 404', async () => {
+    const oversize = build({}, { storageStat: async () => 2000000 });
     assert.equal((await invokeRoute(oversize.router, {
         method: 'POST', url: '/a-1/submissions', token: STUDENT_A,
-        body: { file_name: 'hw.pdf', file_type: 'application/pdf', file_size_bytes: 2000000, storage_key: 'k.pdf' },
+        body: { file_name: 'hw.pdf', file_type: 'application/pdf', file_size_bytes: 500 },
     })).statusCode, 400);
 
-    const publicUrl = build();
-    assert.equal((await invokeRoute(publicUrl.router, {
+    const undersize = build({}, { storageStat: async () => 5 });
+    assert.equal((await invokeRoute(undersize.router, {
         method: 'POST', url: '/a-1/submissions', token: STUDENT_A,
-        body: { file_name: 'hw.pdf', file_type: 'application/pdf', file_size_bytes: 500, storage_key: 'https://x/y.pdf' },
+        body: { file_name: 'hw.pdf', file_type: 'application/pdf' },
     })).statusCode, 400);
 
     const crossTenant = build({ assignment: { ...ASSIGNMENT, tenant_id: 'tenant-b' } });
     assert.equal((await invokeRoute(crossTenant.router, {
         method: 'POST', url: '/a-1/submissions', token: STUDENT_A,
-        body: { file_name: 'hw.pdf', file_type: 'application/pdf', file_size_bytes: 500, storage_key: 'k.pdf' },
+        body: { file_name: 'hw.pdf', file_type: 'application/pdf' },
     })).statusCode, 404);
+});
+
+test('submit: a duplicate-key race is answered as a 409 retry, not a 500', async () => {
+    let listCalls = 0;
+    const db = makeFakeDataAccess((sql) => {
+        if (sql.includes('FROM students s LEFT JOIN')) return [ENROLLMENT_A];
+        if (sql.includes('FROM assignments') && sql.includes('id = ?')) return [ASSIGNMENT];
+        if (sql.includes('FROM assignment_submissions')) {
+            listCalls += 1;
+            return listCalls === 1 ? [] : [SUBMISSION_ROW];
+        }
+        return [];
+    });
+    const repository = makeRepository(
+        { 'student-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'student' } },
+        { enrollments: { 'student-a': [ENROLLMENT_A] } },
+    );
+    const dataAccess: AssignmentsDataAccess = {
+        query: db.query,
+        queryOne: db.queryOne,
+        execute: async (sql, params) => {
+            if (sql.includes('INSERT INTO assignment_submissions')) {
+                throw Object.assign(new Error('duplicate'), { code: 'ER_DUP_ENTRY' });
+            }
+            return db.execute(sql, params);
+        },
+    };
+    const router = createAssignmentsRouter({
+        db: dataAccess,
+        authenticate: createAuthenticateToken(repository),
+        loadActiveTenantAuthority: async () => null,
+        now: () => new Date('2026-01-01T00:00:00Z'),
+        transaction: async <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>) => fn(dataAccess),
+        storageStat: async () => 2000,
+    });
+    const response = await invokeRoute(router, {
+        method: 'POST', url: '/a-1/submissions', token: STUDENT_A,
+        body: { file_name: 'hw.pdf', file_type: 'application/pdf' },
+    });
+    assert.equal(response.statusCode, 409);
+    assert.equal(listCalls, 2, 'the retry decision re-evaluated the committed state');
+    assert.equal(db.executed.some((e) => e.sql.includes('INSERT INTO audit_events') && (e.params[3] as string) === 'assignment.submission.create'), false,
+        'a lost submission never audits');
+});
+
+test('submit: a duplicate-key race that reaches the policy limit is a 403 denial, not a 500', async () => {
+    let listCalls = 0;
+    const db = makeFakeDataAccess((sql) => {
+        if (sql.includes('FROM students s LEFT JOIN')) return [ENROLLMENT_A];
+        if (sql.includes('FROM assignments') && sql.includes('id = ?')) return [ASSIGNMENT];
+        if (sql.includes('FROM assignment_submissions')) {
+            listCalls += 1;
+            return listCalls === 1
+                ? []
+                : Array.from({ length: 5 }, (_, index) => ({ ...SUBMISSION_ROW, id: `sub-${index + 2}`, version: index + 1 }));
+        }
+        return [];
+    });
+    const repository = makeRepository(
+        { 'student-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'student' } },
+        { enrollments: { 'student-a': [ENROLLMENT_A] } },
+    );
+    const dataAccess: AssignmentsDataAccess = {
+        query: db.query,
+        queryOne: db.queryOne,
+        execute: async (sql, params) => {
+            if (sql.includes('INSERT INTO assignment_submissions')) {
+                throw Object.assign(new Error('duplicate'), { code: 'ER_DUP_ENTRY' });
+            }
+            return db.execute(sql, params);
+        },
+    };
+    const router = createAssignmentsRouter({
+        db: dataAccess,
+        authenticate: createAuthenticateToken(repository),
+        loadActiveTenantAuthority: async () => null,
+        now: () => new Date('2026-01-01T00:00:00Z'),
+        transaction: async <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>) => fn(dataAccess),
+        storageStat: async () => 2000,
+    });
+    const response = await invokeRoute(router, {
+        method: 'POST', url: '/a-1/submissions', token: STUDENT_A,
+        body: { file_name: 'hw.pdf', file_type: 'application/pdf' },
+    });
+    assert.equal(response.statusCode, 403);
+    assert.equal((response.body as { code?: string }).code, 'SUBMISSION_LIMIT_REACHED');
 });
 
 test('mine: returns only the caller own versions and leaks no storage key', async () => {

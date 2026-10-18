@@ -41,6 +41,10 @@
  *    test skips and the gap is reported instead of silently passing.
  */
 import { test, before, after } from 'node:test';
+import { quietConsole, restoreConsole } from './helpers/quiet-console';
+
+test.beforeEach(quietConsole);
+test.afterEach(restoreConsole);
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { validateHeaderValue } from 'node:http';

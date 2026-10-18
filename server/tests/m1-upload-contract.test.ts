@@ -51,7 +51,11 @@
  *    the route module is required and the pool is never opened.
  */
 import { test } from 'node:test';
+import { quietConsole, restoreConsole } from './helpers/quiet-console';
 import assert from 'node:assert';
+
+test.beforeEach(quietConsole);
+test.afterEach(restoreConsole);
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Readable } from 'stream';

@@ -93,7 +93,10 @@ export function publicCertificateFacts(cert: {
         course: cert.courseName ?? null,
         student: cert.studentName ?? null,
         tenant: cert.tenantName ?? null,
-        final_score: cert.finalScore ?? null,
+        // The raw numeric score is an internal academic record and is never
+        // projected to an anonymous verifier. The key is retained (always null)
+        // so the public response shape stays stable for existing clients.
+        final_score: null,
         branding: cert.branding ? {
             logo_url: cert.branding.logoUrl ?? null,
             primary_color: cert.branding.primaryColor ?? null,

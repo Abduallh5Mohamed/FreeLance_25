@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import test, { after, before } from 'node:test';
+import { quietConsole, restoreConsole } from './helpers/quiet-console';
+
+test.beforeEach(quietConsole);
+test.afterEach(restoreConsole);
 import jwt from 'jsonwebtoken';
 import type { NextFunction, RequestHandler, Router } from 'express';
 import { createAuthenticateToken, requireRoles } from '../src/middleware/auth';

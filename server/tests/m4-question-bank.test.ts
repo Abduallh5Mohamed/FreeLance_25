@@ -342,6 +342,45 @@ test('edit: a version used by a published exam is immutable (409, no write)', as
     assert.equal(executed.some((e) => e.sql.includes('INSERT INTO question_bank_versions')), false);
 });
 
+test('edit: the version-lock usage check runs inside the atomic section (FOR UPDATE, anti-TOCTOU)', async () => {
+    let insideTransaction = false;
+    const insideFlags: boolean[] = [];
+    const db = makeFakeDataAccess((sql) => {
+        if (sql.includes('FROM question_bank_questions')) return [QUESTION_ROW];
+        if (sql.includes('question_bank_version_usages')) {
+            insideFlags.push(insideTransaction);
+            return [{ exam_published: 0 }];
+        }
+        return [];
+    });
+    const repository = makeRepository(
+        { 'instructor-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' } },
+        { instructorAccounts: { 'instructor-a': { tenant_status: 'active', legacy_compat: 1, allowed: 1 } }, memberships: { 'instructor-a': [{ tenant_id: 'tenant-a' }] } },
+    );
+    const router = createQuestionBankRouter({
+        db,
+        authenticate: createAuthenticateToken(repository),
+        loadActiveTenantAuthority: async () => ({ authority: 'instructor' }),
+        transaction: async <T>(fn: (tx: QuestionBankDataAccess) => Promise<T>) => {
+            insideTransaction = true;
+            try {
+                return await fn(db);
+            } finally {
+                insideTransaction = false;
+            }
+        },
+    });
+    const response = await invokeRoute(router, { method: 'PATCH', url: '/questions/q-1', token: INSTRUCTOR_A, body: { question_text: 'updated' } });
+    assert.equal(response.statusCode, 200);
+    const usageQuery = db.executed.find((e) => e.sql.includes('question_bank_version_usages'));
+    assert.ok(usageQuery);
+    assert.match(usageQuery!.sql, /FOR UPDATE/, 'the check takes locking reads to serialize against exam publishes');
+    assert.deepEqual(insideFlags, [true], 'the usage check happens inside the transaction, not before it');
+    assert.equal(usageQuery!.params[0], 'q-1');
+    assert.equal(usageQuery!.params[1], 'tenant-a');
+    assert.equal(usageQuery!.params[2], 1, 'the check binds the current version being superseded');
+});
+
 test('edit: appends version 2 under an optimistic guard and audits it', async () => {
     const { router, executed } = build({ usages: [{ exam_published: 0 }] });
     const response = await invokeRoute(router, { method: 'PATCH', url: '/questions/q-1', token: INSTRUCTOR_A, body: { question_text: 'updated' } });
