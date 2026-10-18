@@ -1,0 +1,299 @@
+/**
+ * V8 — usage events for watch time and storage.
+ *
+ * Two independent event families are metered with the same, tenant-attributed
+ * record so reconciliation can be rebuilt from the ledger:
+ *
+ *  - `watch`   — seconds actually watched, reported by a client heartbeat
+ *                (deduplicated per heartbeat window) or a provider callback;
+ *  - `storage` — bytes stored, reported by a provider callback.
+ *
+ * Every event carries a caller-supplied `dedupeKey`. The ledger's
+ * UNIQUE(tenant_id, dedupe_key) is the race guard, so a replayed heartbeat or
+ * provider callback is absorbed instead of double-counted. The tenant is
+ * ALWAYS a server-derived input (the principal's verified tenant for a
+ * heartbeat, the signed provider payload for a callback) and is stored on the
+ * row, so aggregates are tenant-scoped by construction.
+ *
+ * Pure validation/normalization is separated from the store so the exact rules
+ * are testable without I/O. No `any`, no ts-ignore, no network, no runtime DDL.
+ */
+import { randomUUID } from 'crypto';
+import { AuditRecordInput, recordAudit } from '../security/audit';
+
+export const USAGE_KINDS = ['watch', 'storage'] as const;
+export type UsageKind = (typeof USAGE_KINDS)[number];
+
+export const MAX_WATCH_SECONDS_PER_EVENT = 3600;
+export const MAX_STORAGE_BYTES_PER_EVENT = 10 * 1024 * 1024 * 1024;
+export const DEFAULT_HEARTBEAT_WINDOW_SECONDS = 30;
+
+export function normalizeUsageKind(value: unknown): UsageKind | null {
+    if (typeof value !== 'string') return null;
+    return (USAGE_KINDS as readonly string[]).includes(value) ? (value as UsageKind) : null;
+}
+
+const DEDUPE_KEY_RE = /^[A-Za-z0-9:_.-]{1,200}$/;
+
+export function normalizeDedupeKey(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > 200) return null;
+    return DEDUPE_KEY_RE.test(trimmed) ? trimmed : null;
+}
+
+function normalizeId(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > 128 || !/^[A-Za-z0-9_-]+$/.test(trimmed)) return null;
+    return trimmed;
+}
+
+function toNonNegativeInt(value: unknown): number | null {
+    const parsed = typeof value === 'number' ? Math.trunc(value) : Number.parseInt(String(value ?? ''), 10);
+    if (!Number.isFinite(parsed) || parsed < 0) return null;
+    return parsed;
+}
+
+/**
+ * Deterministic heartbeat dedupe key: one event per (session, window bucket).
+ * The bucket is derived from the injected clock, never from a client value, so
+ * a burst of heartbeats inside one window collapses to a single unit.
+ */
+export function buildHeartbeatDedupeKey(
+    sessionId: unknown,
+    nowMs: number,
+    windowSeconds: number = DEFAULT_HEARTBEAT_WINDOW_SECONDS,
+): string | null {
+    const session = normalizeId(sessionId);
+    if (!session) return null;
+    const window = Math.max(1, Math.trunc(windowSeconds));
+    const bucket = Math.floor(nowMs / (window * 1000));
+    return `hb:${session}:${bucket}`;
+}
+
+/** Deterministic provider-callback dedupe key: one event per provider event id. */
+export function buildProviderDedupeKey(provider: unknown, eventId: unknown): string | null {
+    const safeProvider = normalizeProviderSegment(provider);
+    const safeEvent = normalizeProviderSegment(eventId);
+    if (!safeProvider || !safeEvent) return null;
+    return `cb:${safeProvider}:${safeEvent}`;
+}
+
+function normalizeProviderSegment(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > 128) return null;
+    return /^[A-Za-z0-9_.:-]+$/.test(trimmed) ? trimmed : null;
+}
+
+export type UsageSource = 'heartbeat' | 'provider' | 'other';
+
+export interface NormalizedUsageEvent {
+    tenantId: string;
+    kind: UsageKind;
+    dedupeKey: string;
+    sessionId: string | null;
+    studentEnrollmentId: string | null;
+    assetId: string | null;
+    watchSeconds: number;
+    storageBytes: number;
+    source: UsageSource;
+    occurredAtMs: number;
+}
+
+export interface UsageEventInput {
+    tenantId: unknown;
+    kind: unknown;
+    dedupeKey: unknown;
+    sessionId?: unknown;
+    studentEnrollmentId?: unknown;
+    assetId?: unknown;
+    watchSeconds?: unknown;
+    storageBytes?: unknown;
+    source?: unknown;
+    occurredAtMs?: unknown;
+}
+
+export type UsageValidation =
+    | { ok: true; value: NormalizedUsageEvent }
+    | { ok: false; error: string };
+
+export function validateUsageEvent(input: UsageEventInput): UsageValidation {
+    const tenantId = typeof input.tenantId === 'string' ? input.tenantId.trim() : '';
+    if (!tenantId || tenantId.length > 128) return { ok: false, error: 'tenant_id is required' };
+
+    const kind = normalizeUsageKind(input.kind);
+    if (!kind) return { ok: false, error: 'kind must be watch or storage' };
+
+    const dedupeKey = normalizeDedupeKey(input.dedupeKey);
+    if (!dedupeKey) return { ok: false, error: 'dedupe_key is required' };
+
+    const sessionId = input.sessionId === undefined || input.sessionId === null ? null : normalizeId(input.sessionId);
+    const studentEnrollmentId = input.studentEnrollmentId === undefined || input.studentEnrollmentId === null ? null : normalizeId(input.studentEnrollmentId);
+    const assetId = input.assetId === undefined || input.assetId === null ? null : normalizeId(input.assetId);
+    if (input.sessionId !== undefined && input.sessionId !== null && !sessionId) return { ok: false, error: 'session_id is malformed' };
+    if (input.studentEnrollmentId !== undefined && input.studentEnrollmentId !== null && !studentEnrollmentId) return { ok: false, error: 'student_enrollment_id is malformed' };
+    if (input.assetId !== undefined && input.assetId !== null && !assetId) return { ok: false, error: 'asset_id is malformed' };
+
+    const source: UsageSource = input.source === 'heartbeat' || input.source === 'provider' ? input.source : 'other';
+
+    let watchSeconds = 0;
+    let storageBytes = 0;
+    if (kind === 'watch') {
+        const parsed = toNonNegativeInt(input.watchSeconds);
+        if (parsed === null || parsed <= 0) return { ok: false, error: 'watch_seconds must be a positive integer' };
+        if (parsed > MAX_WATCH_SECONDS_PER_EVENT) return { ok: false, error: 'watch_seconds exceeds the per-event cap' };
+        watchSeconds = parsed;
+    } else {
+        const parsed = toNonNegativeInt(input.storageBytes);
+        if (parsed === null) return { ok: false, error: 'storage_bytes must be a non-negative integer' };
+        if (parsed > MAX_STORAGE_BYTES_PER_EVENT) return { ok: false, error: 'storage_bytes exceeds the per-event cap' };
+        storageBytes = parsed;
+    }
+
+    const occurredAtMs = input.occurredAtMs === undefined || input.occurredAtMs === null
+        ? Date.now()
+        : (Number.isFinite(Number(input.occurredAtMs)) ? Number(input.occurredAtMs) : Date.now());
+
+    return {
+        ok: true,
+        value: { tenantId, kind, dedupeKey, sessionId, studentEnrollmentId, assetId, watchSeconds, storageBytes, source, occurredAtMs },
+    };
+}
+
+/* =========================================================================
+ * Store boundary
+ * ========================================================================= */
+
+export interface NewUsageEventRow extends NormalizedUsageEvent {
+    id: string;
+}
+
+export interface VideoUsageStore {
+    /** Returns false when the (tenant, dedupe_key) pair already exists. */
+    insertEvent(row: NewUsageEventRow): Promise<boolean>;
+    sumWatchSeconds(tenantId: string): Promise<number>;
+    sumStorageBytes(tenantId: string): Promise<number>;
+    recordAudit(input: AuditRecordInput): Promise<void>;
+}
+
+export type RecordUsageResult =
+    | { recorded: boolean; deduplicated: boolean }
+    | { error: string };
+
+export interface VideoUsageEventService {
+    record(input: UsageEventInput): Promise<RecordUsageResult>;
+    watchSeconds(tenantId: string): Promise<number>;
+    storageBytes(tenantId: string): Promise<number>;
+}
+
+export interface VideoUsageEventDeps {
+    store: VideoUsageStore;
+    idFactory?: () => string;
+}
+
+export function createVideoUsageEventService(deps: VideoUsageEventDeps): VideoUsageEventService {
+    const idFactory = deps.idFactory ?? randomUUID;
+    const store = deps.store;
+
+    return {
+        record: async (input) => {
+            const validated = validateUsageEvent(input);
+            if (!validated.ok) return { error: validated.error };
+            const id = idFactory();
+            const inserted = await store.insertEvent({ id, ...validated.value });
+            if (!inserted) return { recorded: false, deduplicated: true };
+            await store.recordAudit({
+                actorUserId: null,
+                tenantId: validated.value.tenantId,
+                action: 'video.usage.recorded',
+                resourceType: 'video_usage_event',
+                resourceId: id,
+                newValue: {
+                    kind: validated.value.kind,
+                    watch_seconds: validated.value.watchSeconds,
+                    storage_bytes: validated.value.storageBytes,
+                    source: validated.value.source,
+                },
+            });
+            return { recorded: true, deduplicated: false };
+        },
+
+        watchSeconds: async (tenantId) => {
+            const safe = typeof tenantId === 'string' ? tenantId.trim() : '';
+            return safe ? store.sumWatchSeconds(safe) : 0;
+        },
+
+        storageBytes: async (tenantId) => {
+            const safe = typeof tenantId === 'string' ? tenantId.trim() : '';
+            return safe ? store.sumStorageBytes(safe) : 0;
+        },
+    };
+}
+
+/* =========================================================================
+ * SQL adapter (production wiring)
+ * ========================================================================= */
+
+export interface VideoUsageDb {
+    query: <T = unknown>(sql: string, params?: unknown[]) => Promise<T[]>;
+    queryOne: <T = unknown>(sql: string, params?: unknown[]) => Promise<T | null>;
+    execute: (sql: string, params?: unknown[]) => Promise<{ insertId?: number; affectedRows?: number }>;
+}
+
+export function isDuplicateUsageError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') return false;
+    return (error as { code?: unknown }).code === 'ER_DUP_ENTRY';
+}
+
+function toMysqlUtc(ms: number): string {
+    return new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+}
+
+export function createSqlVideoUsageStore(db: VideoUsageDb): VideoUsageStore {
+    const sumFor = async (tenantId: string, column: 'watch_seconds' | 'storage_bytes'): Promise<number> => {
+        const row = await db.queryOne<{ total: string | number | null }>(
+            `SELECT COALESCE(SUM(${column}), 0) AS total FROM video_usage_events WHERE tenant_id = ?`,
+            [tenantId],
+        );
+        return Number(row?.total ?? 0);
+    };
+
+    return {
+        insertEvent: async (row) => {
+            try {
+                await db.execute(
+                    `INSERT INTO video_usage_events
+                       (id, tenant_id, asset_id, kind, watch_seconds, storage_bytes, dedupe_key,
+                        session_id, student_enrollment_id, source, occurred_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        row.id,
+                        row.tenantId,
+                        row.assetId,
+                        row.kind,
+                        row.watchSeconds,
+                        row.storageBytes,
+                        row.dedupeKey,
+                        row.sessionId,
+                        row.studentEnrollmentId,
+                        row.source,
+                        toMysqlUtc(row.occurredAtMs),
+                    ],
+                );
+                return true;
+            } catch (error) {
+                if (isDuplicateUsageError(error)) return false;
+                throw error;
+            }
+        },
+
+        sumWatchSeconds: (tenantId) => sumFor(tenantId, 'watch_seconds'),
+        sumStorageBytes: (tenantId) => sumFor(tenantId, 'storage_bytes'),
+
+        recordAudit: async (input) => {
+            await recordAudit(db.execute, input);
+        },
+    };
+}

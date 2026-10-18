@@ -87,6 +87,8 @@
     "20261018_02_otp_challenge_submission.sql": "d56f9c66deccd86070b24521783efa54924b0e19556e142f7d365756737ddea6",
     "20261018_03_content_release_progress.sql": "7141df1388fb4f1c5c5046f6c0c761ebd57af1c3545dfc1688818cb218071644",
     "20261018_04_tenant_branding_domains.sql": "1feb3ed7f3f2154327a12e737100fac9f5662268ed183171b349cdc103a0a415",
-    "20261018_05_announcements_import.sql": "2cb61f3f7fa06593fc244bb54a4a66c587ae4918bd9bff3205576d10c24057ff"
+    "20261018_05_announcements_import.sql": "2cb61f3f7fa06593fc244bb54a4a66c587ae4918bd9bff3205576d10c24057ff",
+    "20261018_06_video_assets_entitlements.sql": "9e3d88b48bdd40709d5da8c5388f6885f2b701edf417855de9d0e9442d174605",
+    "20261018_07_playback_sessions_progress.sql": "970d445fd9cbaccf1389ceee84d7af18dbcd2729edf6ed46f839ae51f240af1e"
   }
 }
