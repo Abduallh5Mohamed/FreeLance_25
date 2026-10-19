@@ -271,3 +271,64 @@ collides (segment-aware), and hermetically that each mounted path returns
 `/api/certificates/verify/:verificationId`: it is asserted to be reachable
 anonymously (one storage read, not a denial) and to expose only the allowlisted
 public facts.
+
+## M6 parent-link / consent / discussion mounts (appended 2026-10-18)
+
+Three M6 routers are now mounted in `server/src/index.ts`. Two use normal JWT
+authentication and therefore sit **after** the shared `/api` guard chain, like the
+M2–M5 mounts above:
+
+| Router | Mount path | Source |
+| --- | --- | --- |
+| parent-link verification (M6 P1) | `/api/parent-links` | `server/src/routes/parent-links.ts` |
+| notification consent ledger (M6 P3) | `/api/notification-consent` | `server/src/routes/notification-consent.ts` |
+| lesson comments / Q&A (M6 P6) | `/api/lesson-discussions` | `server/src/routes/lesson-discussions.ts` |
+
+`/api/parent` (read-only parent views, M6 P2) is mounted **before** the guard
+chain on purpose. It authenticates with its own scoped opaque HMAC token
+(`pv1.<base64url payload>.<base64url signature>`), not a JWT. `optionalAuth`
+runs `jwt.verify` on any supplied Bearer value and would reject the opaque token
+with `401 Invalid token`, so the parent-views router must resolve its own
+credential first.
+
+Mount order in `index.ts`:
+
+```ts
+app.use('/api/parent', parentViewsRoutes);              // opaque pv1 token
+app.use('/api', optionalAuth, enforceTenantAuthorityBoundary, enforceStudentWorkspaceBoundary);
+app.use('/api/parent-links', parentLinksRoutes);
+app.use('/api/notification-consent', notificationConsentRoutes);
+app.use('/api/lesson-discussions', lessonDiscussionsRoutes);
+```
+
+No path is an exact match of, or a path-segment prefix of, another mount.
+`/api/parent` and `/api/parent-links` are distinct segments; neither shadows the
+other.
+
+### `/api/lesson-discussions` — endpoints
+
+| Method | Path | Guard / authority |
+| --- | --- | --- |
+| GET | `/api/lesson-discussions/lessons/:lectureId/threads` | `authenticateToken`; server-resolved lesson access |
+| POST | `/api/lesson-discussions/lessons/:lectureId/threads` | `authenticateToken`; allowed lesson access, per-user limiter |
+| GET | `/api/lesson-discussions/threads/:threadId` | `authenticateToken`; thread's lesson access |
+| POST | `/api/lesson-discussions/threads/:threadId/replies` | `authenticateToken`; thread's lesson access, per-user limiter |
+| DELETE | `/api/lesson-discussions/threads/:threadId` | `authenticateToken`; author or tenant staff |
+| DELETE | `/api/lesson-discussions/replies/:replyId` | `authenticateToken`; author or tenant staff |
+| POST | `/api/lesson-discussions/threads/:threadId/moderate` | `authenticateToken`; tenant staff (hide/restore/delete) |
+| POST | `/api/lesson-discussions/replies/:replyId/moderate` | `authenticateToken`; tenant staff (hide/restore/delete) |
+| POST | `/api/lesson-discussions/reports` | `authenticateToken`; accessible target, per-user limiter |
+| GET | `/api/lesson-discussions/blocks` | `authenticateToken`; own block list |
+| POST | `/api/lesson-discussions/blocks` | `authenticateToken`; own block list, per-user limiter |
+| DELETE | `/api/lesson-discussions/blocks/:blockedUserId` | `authenticateToken`; own block list |
+
+See `docs/streams/server/M6-P6-DELIVERY.md` for the access, moderation,
+retention, report/block and notification rules.
+
+### Verification addendum
+
+`server/tests/m2-m3-mounting.test.ts` (appended tests) asserts that the three
+post-guard M6 mounts are ordered after the guard chain and before the 404
+handler, that `/api/parent` precedes `optionalAuth`, that the new paths collide
+with no existing mount, and hermetically that an anonymous caller reaches
+neither SQL storage nor any injected store on any of the four surfaces.

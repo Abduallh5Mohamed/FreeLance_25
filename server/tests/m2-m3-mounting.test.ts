@@ -6,13 +6,11 @@ import { Router } from 'express';
 import { authenticateToken, optionalAuth } from '../src/middleware/auth';
 import { enforceTenantAuthorityBoundary } from '../src/middleware/tenant-authority-boundary';
 import { enforceStudentWorkspaceBoundary } from '../src/middleware/student-workspace-boundary';
-import { rateLimit } from '../src/middleware/rate-limit';
 import { createContentAccessRouter } from '../src/routes/content-access';
 import { createQuestionBankRouter } from '../src/routes/question-bank';
 import { createAssignmentsRouter } from '../src/routes/assignments';
 import { createExamVersionsRouter } from '../src/routes/exam-versions';
 import { createGradebookRouter } from '../src/routes/gradebook';
-import { createCertificatesRouter } from '../src/routes/certificates';
 import { createSchedulesRouter } from '../src/routes/schedules';
 import { createAttendanceRecordsRouter } from '../src/routes/attendance-records';
 import { createTenantBrandingRouter } from '../src/routes/tenant-branding';
@@ -24,7 +22,7 @@ import { createPlaybackSessionsRouter } from '../src/routes/playback-sessions';
 import { createVideoAssetLifecycle, createSqlVideoAssetStore } from '../src/services/video-asset-lifecycle';
 import { createPlaybackEntitlementService, createSqlPlaybackEntitlementStore } from '../src/services/playback-entitlement';
 import { createVideoUsageEventService, createSqlVideoUsageStore } from '../src/services/video-usage-events';
-import { invokeRoute, makeFakeDataAccess } from './helpers/m2-harness';
+import { invokeRoute } from './helpers/m2-harness';
 
 /**
  * M2/M3 mounting contract.
@@ -59,9 +57,19 @@ const EXPECTED_MOUNTS: ReadonlyArray<readonly [string, string]> = [
     ['/api/assignments', 'assignmentsRoutes'],
     ['/api/exam-versions', 'examVersionsRoutes'],
     ['/api/gradebook', 'gradebookRoutes'],
-    ['/api/certificates', 'certificatesRoutes'],
     ['/api/schedules', 'schedulesRoutes'],
     ['/api/attendance-records', 'attendanceRecordsRoutes'],
+];
+
+/**
+ * Human decision (2026-10-19): certificates are out of the current product
+ * scope (school teachers/students product, not a graduation/certificate
+ * platform). `/api/certificates` must never be mounted by the primary
+ * server; source, migrations and historic data are preserved instead of
+ * deleted. See docs/streams/server/TEACHER-SCHOOL-PRODUCT-ALIGNMENT.md.
+ */
+const EXCLUDED_MOUNTS: ReadonlyArray<readonly [string, string]> = [
+    ['/api/certificates', 'certificatesRoutes'],
 ];
 
 const MOUNT_RE = /app\.use\(\s*'(\/api[^']*)'\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/g;
@@ -106,6 +114,25 @@ test('mounting: every new M2/M3 router is mounted after the /api guard chain', (
         const parsed = mounts.find((mount) => mount.path === mountPath);
         assert.ok(parsed, `${mountPath} must be parsed as an /api mount`);
         assert.equal(parsed?.variable, variable, `${mountPath} must mount the expected router variable`);
+    }
+});
+
+test('mounting: excluded certificate surface is not mounted by the primary server', () => {
+    for (const [mountPath, variable] of EXCLUDED_MOUNTS) {
+        assert.ok(
+            !indexSource.includes(`app.use('${mountPath}'`),
+            `${mountPath} must not be mounted (excluded from product scope by human decision 2026-10-19)`,
+        );
+        assert.ok(
+            !indexSource.includes(variable),
+            `the excluded router variable ${variable} must not be referenced by index.ts`,
+        );
+    }
+
+    const mounts = parseMounts(indexSource);
+    for (const [mountPath] of EXCLUDED_MOUNTS) {
+        const mounted = mounts.find((mount) => mount.path === mountPath || mount.path.startsWith(`${mountPath}/`));
+        assert.ok(!mounted, `no mount may occupy the excluded surface ${mountPath}`);
     }
 });
 
@@ -242,11 +269,8 @@ function buildGuardedSurface(): GuardedSurface {
         authenticate: authenticateToken,
         loadActiveTenantAuthority: authorityTripwire,
     }));
-    router.use('/api/certificates', createCertificatesRouter({
-        db,
-        authenticate: authenticateToken,
-        loadActiveTenantAuthority: authorityTripwire,
-    }));
+    // certificates are excluded by human decision (2026-10-19) and are
+    // intentionally absent from this guarded surface as well.
     router.use('/api/schedules', createSchedulesRouter({
         db,
         authenticate: authenticateToken,
@@ -273,7 +297,6 @@ const ANONYMOUS_PROBES: ReadonlyArray<{ method: string; url: string; path: strin
     { method: 'GET', url: '/api/assignments', path: '/api/assignments' },
     { method: 'GET', url: '/api/exam-versions/exams/exam-1/versions', path: '/api/exam-versions' },
     { method: 'GET', url: '/api/gradebook/scores', path: '/api/gradebook' },
-    { method: 'GET', url: '/api/certificates', path: '/api/certificates' },
     { method: 'GET', url: '/api/schedules', path: '/api/schedules' },
     { method: 'GET', url: '/api/attendance-records/sessions/session-1/records', path: '/api/attendance-records' },
 ];
@@ -298,7 +321,7 @@ test('mounting: every probe path corresponds to a declared mount', () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* The single public surface: certificate verification                         */
+/* Excluded surface: certificates are out of product scope (2026-10-19)         */
 /* -------------------------------------------------------------------------- */
 
 interface ProbeResponse {
@@ -313,8 +336,8 @@ interface ProbeResponse {
 
 /**
  * Anonymous GET against the guarded surface with a response that also models
- * `setHeader`, which the rate-limited public verify route writes (the shared
- * harness response only models `set()`). Same guard chain as buildGuardedSurface.
+ * `setHeader`. Used to prove the excluded certificate surface answers with the
+ * primary server's 404 handler rather than any certificate behaviour.
  */
 async function invokeAnonymousGet(router: Router, url: string): Promise<ProbeResponse> {
     const headers: Record<string, string> = {};
@@ -347,80 +370,200 @@ async function invokeAnonymousGet(router: Router, url: string): Promise<ProbeRes
     return response;
 }
 
-function buildPublicVerifySurface(rows: Array<Record<string, unknown>>): { router: Router; storageCalls: () => number } {
-    const db = makeFakeDataAccess(() => rows);
+/**
+ * A primary-server-shaped surface: the exact guard chain, every mounted
+ * teaching router (certificates excluded per the 2026-10-19 human decision)
+ * and — mirroring server/src/index.ts — the terminal 404 handler. Tripwire
+ * storage proves the excluded paths never reach any handler before the 404.
+ */
+function buildPrimaryServerSurface(): { router: Router; storageCalls: () => number } {
+    const db = tripwireDb();
     const router = Router();
     router.use(optionalAuth, enforceTenantAuthorityBoundary, enforceStudentWorkspaceBoundary);
-    router.use('/api/certificates', createCertificatesRouter({
+
+    router.use('/api/content', createContentAccessRouter({ db, authenticate: authenticateToken }));
+    router.use('/api/tenant/branding', createTenantBrandingRouter({ db, authenticate: authenticateToken }));
+    router.use('/api/tenant/domains', createTenantDomainsRouter({ db, authenticate: authenticateToken }));
+    router.use('/api/announcements', createAnnouncementsRouter({
         db,
         authenticate: authenticateToken,
         loadActiveTenantAuthority: authorityTripwire,
     }));
-    return { router, storageCalls: () => db.executed.length };
+    router.use('/api/student-import', createStudentImportRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
+    router.use('/api/question-bank', createQuestionBankRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
+    router.use('/api/assignments', createAssignmentsRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
+    router.use('/api/exam-versions', createExamVersionsRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
+    router.use('/api/gradebook', createGradebookRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
+    router.use('/api/schedules', createSchedulesRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
+    router.use('/api/attendance-records', createAttendanceRecordsRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
+
+    // Terminal 404 handler, identical in shape to server/src/index.ts.
+    router.use((_req, res) => {
+        res.status(404).json({ error: 'Route not found' });
+    });
+
+    return { router, storageCalls: db.calls };
 }
 
-test('mounting: the public certificate verify path is reachable anonymously', async () => {
-    const { router, storageCalls } = buildPublicVerifySurface([]);
-    const res = await invokeAnonymousGet(router, '/api/certificates/verify/deadbeef');
-    assert.ok(
-        res.statusCode !== 401 && res.statusCode !== 403,
-        `public verify must not be denied to an anonymous caller (got ${res.statusCode})`,
-    );
-    assert.equal(res.statusCode, 404, 'an unknown verification id resolves to not-found');
-    assert.equal(storageCalls(), 1, 'the public verify path is the one anonymous read of storage');
-});
-
-test('mounting: the public certificate verify path exposes only minimal facts', async () => {
-    const row: Record<string, unknown> = {
-        id: 'cert-internal-id',
-        tenant_id: 'tenant-internal-id',
-        student_enrollment_id: 'enrollment-internal-id',
-        course_id: 'course-internal-id',
-        verification_id: 'verification-1',
-        status: 'issued',
-        final_score: 88,
-        issued_at: '2026-01-02T03:04:05.000Z',
-        issued_by: 'issuer-internal-id',
-        revoked_at: null,
-        revoked_by: null,
-        revoke_reason: null,
-        branding_logo_url: 'https://cdn.example/logo.png',
-        branding_primary_color: '#111111',
-        branding_secondary_color: '#222222',
-        branding_accent_color: '#333333',
-        branding_locale: 'ar',
-    };
-    const { router, storageCalls } = buildPublicVerifySurface([row]);
-    const res = await invokeAnonymousGet(router, '/api/certificates/verify/verification-1');
-    assert.equal(res.statusCode, 200);
-
-    const facts = (res.body as { certificate: Record<string, unknown> }).certificate;
-    assert.deepEqual(
-        Object.keys(facts).sort(),
-        ['branding', 'course', 'final_score', 'issued_at', 'status', 'student', 'tenant', 'verification_id'],
-    );
-    for (const internal of ['id', 'tenant_id', 'student_enrollment_id', 'course_id', 'issued_by', 'revoked_at', 'revoked_by', 'revoke_reason']) {
-        assert.ok(!(internal in facts), `public facts must not leak ${internal}`);
+test('mounting: the excluded certificates surface resolves to the 404 handler, not to certificate behaviour', async () => {
+    const { router, storageCalls } = buildPrimaryServerSurface();
+    for (const url of [
+        '/api/certificates',
+        '/api/certificates/verify/deadbeef',
+        '/api/certificates/cert-1',
+        '/api/certificates/cert-1/revoke',
+    ]) {
+        const res = await invokeAnonymousGet(router, url);
+        assert.equal(res.statusCode, 404, `anonymous GET ${url} must resolve to the 404 handler (got ${res.statusCode})`);
+        assert.deepEqual(res.body, { error: 'Route not found' }, `${url} must not answer with any certificate projection`);
     }
-    assert.equal(facts.verification_id, 'verification-1');
-    assert.equal(facts.status, 'issued');
-    assert.equal(storageCalls(), 1);
+    assert.equal(storageCalls(), 0, 'the excluded surface must never reach storage');
 });
 
-test('mounting: the public certificate verify path is rate-limited when wired', async () => {
-    const db = makeFakeDataAccess(() => []);
+test('mounting: sibling teaching surfaces stay mounted and still deny anonymous callers', async () => {
+    const { router, storageCalls } = buildPrimaryServerSurface();
+    for (const url of ['/api/assignments', '/api/gradebook/scores', '/api/schedules']) {
+        const res = await invokeAnonymousGet(router, url);
+        assert.ok(
+            res.statusCode === 401 || res.statusCode === 403,
+            `teaching surface GET ${url} must still deny an anonymous caller (got ${res.statusCode})`,
+        );
+    }
+    assert.equal(storageCalls(), 0, 'anonymous callers must not reach storage');
+});
+
+/* -------------------------------------------------------------------------- */
+/* M6 P1/P2/P6 mounts (appended 2026-10-18)                                    */
+/* -------------------------------------------------------------------------- */
+
+const M6_MOUNTS: ReadonlyArray<readonly [string, string]> = [
+    ['/api/parent-links', 'parentLinksRoutes'],
+    ['/api/notification-consent', 'notificationConsentRoutes'],
+    ['/api/lesson-discussions', 'lessonDiscussionsRoutes'],
+];
+
+test('mounting (M6): parent-link, consent and discussion routers mount after the guard chain', () => {
+    const guardIndex = indexSource.indexOf(GUARD_ANCHOR);
+    assert.ok(guardIndex > -1, 'the shared /api guard chain must exist');
+    const notFoundIndex = indexSource.indexOf('// 404 handler');
+    assert.ok(notFoundIndex > guardIndex, 'the 404 handler must follow the guard chain');
+
+    for (const [mountPath, variable] of M6_MOUNTS) {
+        const statement = `app.use('${mountPath}', ${variable})`;
+        const mountIndex = indexSource.indexOf(statement);
+        assert.ok(mountIndex > -1, `expected mount statement missing: ${statement}`);
+        assert.ok(mountIndex > guardIndex, `${mountPath} must be mounted after the /api guard chain`);
+        assert.ok(mountIndex < notFoundIndex, `${mountPath} must be mounted before the 404 handler`);
+    }
+});
+
+test('mounting (M6): parent read-only views mount BEFORE optionalAuth (opaque pv1 token)', () => {
+    const guardIndex = indexSource.indexOf(GUARD_ANCHOR);
+    const parentIndex = indexSource.indexOf("app.use('/api/parent', parentViewsRoutes)");
+    assert.ok(parentIndex > -1, 'the parent views router must be mounted');
+    // parent-views authenticates with its own scoped HMAC token (pv1.<payload>.<sig>),
+    // which is not a JWT; optionalAuth would reject it as "Invalid token".
+    assert.ok(parentIndex < guardIndex, 'parent views must be mounted before the optionalAuth guard chain');
+});
+
+test('mounting (M6): the new mount paths collide with no other mount (segment-aware)', () => {
+    const mounts = parseMounts(indexSource);
+    const newPaths = M6_MOUNTS.map(([mountPath]) => mountPath);
+    for (const newPath of newPaths) {
+        const candidate = segments(newPath);
+        for (const mount of mounts) {
+            if (mount.path === newPath) continue;
+            const other = segments(mount.path);
+            const collides = isSegmentPrefix(other, candidate)
+                || isSegmentPrefix(candidate, other)
+                || (other.length === candidate.length && mount.path === newPath);
+            assert.ok(!collides, `${newPath} would collide with ${mount.path}`);
+        }
+    }
+});
+
+test('mounting (M6): the new M6 surfaces deny an anonymous caller without touching storage', async () => {
+    const { createParentLinksRouter } = await import('../src/routes/parent-links');
+    const { createNotificationConsentRouter } = await import('../src/routes/notification-consent');
+    const { createParentViewsRouter } = await import('../src/routes/parent-views');
+    const { createParentViewVerifier } = await import('../src/services/parent-links');
+    const { createLessonDiscussionsRouter } = await import('../src/routes/lesson-discussions');
+
+    let storageCalls = 0;
+    const tripwire = <T>(): T => new Proxy({} as T, {
+        get: () => (): never => {
+            storageCalls += 1;
+            throw new Error('storage must not be touched by an anonymous caller');
+        },
+    });
+
+    const db = tripwireDb();
     const router = Router();
+    // parent views are mounted BEFORE the guard chain, mirroring index.ts.
+    router.use('/api/parent', createParentViewsRouter({
+        store: tripwire(),
+        verifier: createParentViewVerifier({ store: tripwire(), getSecret: () => undefined, now: () => new Date() }),
+    }));
     router.use(optionalAuth, enforceTenantAuthorityBoundary, enforceStudentWorkspaceBoundary);
-    router.use('/api/certificates', createCertificatesRouter({
+    router.use('/api/parent-links', createParentLinksRouter({
         db,
         authenticate: authenticateToken,
         loadActiveTenantAuthority: authorityTripwire,
-        verifyRateLimit: rateLimit('m2-m3-cert-verify-test', 2, 60_000),
+        getOtpService: () => null,
+        getSecret: () => undefined,
+    }));
+    router.use('/api/notification-consent', createNotificationConsentRouter({
+        db,
+        authenticate: authenticateToken,
+        getLinkSecret: () => undefined,
+    }));
+    router.use('/api/lesson-discussions', createLessonDiscussionsRouter({
+        store: tripwire(),
+        authenticate: authenticateToken,
+        resolveLessonAccess: async () => { throw new Error('access must not resolve for an anonymous caller'); },
     }));
 
-    const first = await invokeAnonymousGet(router, '/api/certificates/verify/a');
-    const second = await invokeAnonymousGet(router, '/api/certificates/verify/b');
-    const third = await invokeAnonymousGet(router, '/api/certificates/verify/c');
-    assert.ok(first.statusCode !== 429 && second.statusCode !== 429);
-    assert.equal(third.statusCode, 429, 'the public verify path must throttle once the limit is exceeded');
+    const probes = [
+        { method: 'GET', url: '/api/parent/child' },
+        { method: 'GET', url: '/api/parent-links' },
+        { method: 'GET', url: '/api/notification-consent/state' },
+        { method: 'GET', url: '/api/lesson-discussions/blocks' },
+    ];
+    for (const probe of probes) {
+        const res = await invokeRoute(router, probe);
+        assert.ok(
+            res.statusCode === 401 || res.statusCode === 403,
+            `${probe.method} ${probe.url} must deny an anonymous caller (got ${res.statusCode})`,
+        );
+    }
+    assert.equal(db.calls(), 0, 'an anonymous caller must not reach SQL storage');
+    assert.equal(storageCalls, 0, 'an anonymous caller must not reach injected stores');
 });

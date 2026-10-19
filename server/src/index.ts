@@ -15,6 +15,10 @@ import announcementsRoutes from './routes/announcements';
 import studentImportRoutes from './routes/student-import';
 import videoAssetsRoutes from './routes/video-assets';
 import playbackSessionsRoutes from './routes/playback-sessions';
+import parentLinksRoutes from './routes/parent-links';
+import parentViewsRoutes from './routes/parent-views';
+import notificationConsentRoutes from './routes/notification-consent';
+import lessonDiscussionsRoutes from './routes/lesson-discussions';
 
 // Import routes
 import authRoutes from './routes/auth';
@@ -66,7 +70,6 @@ import adminDashboardRoutes from './routes/admin-dashboard';
 import adminInsightsRoutes from './routes/admin-insights';
 import examVersionsRoutes, { runExamAttemptExpiryPass } from './routes/exam-versions';
 import gradebookRoutes from './routes/gradebook';
-import certificatesRoutes from './routes/certificates';
 import schedulesRoutes from './routes/schedules';
 import attendanceRecordsRoutes from './routes/attendance-records';
 import { initializeBuckets } from './services/minio';
@@ -149,9 +152,19 @@ app.get('/health', (req: Request, res: Response) => {
 });
 
 // API Routes
+// Parent read-only views authenticate with their own scoped opaque HMAC token
+// (`pv1.<payload>.<sig>`), not a JWT. It must be mounted BEFORE the optionalAuth
+// guard below, because optionalAuth would jwt.verify the Bearer value and
+// reject the opaque token with 401 "Invalid token".
+app.use('/api/parent', parentViewsRoutes);
+
 // Resolve any supplied credential before route handlers. Invalid credentials
 // must never degrade into anonymous access; public routes still allow no token.
 app.use('/api', optionalAuth, enforceTenantAuthorityBoundary, enforceStudentWorkspaceBoundary);
+
+app.use('/api/parent-links', parentLinksRoutes);
+app.use('/api/notification-consent', notificationConsentRoutes);
+app.use('/api/lesson-discussions', lessonDiscussionsRoutes);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/groups', groupsRoutes);
@@ -211,7 +224,12 @@ app.use('/api/question-bank', questionBankRoutes);
 app.use('/api/assignments', assignmentsRoutes);
 app.use('/api/exam-versions', examVersionsRoutes);
 app.use('/api/gradebook', gradebookRoutes);
-app.use('/api/certificates', certificatesRoutes);
+// Human decision (2026-10-19): the product serves school teachers and their
+// students, not a graduation/certificate platform. The certificates router is
+// intentionally NOT mounted here. Source, migrations and historic data are
+// preserved (nothing deleted) — only public exposure is removed. See
+// docs/streams/server/TEACHER-SCHOOL-PRODUCT-ALIGNMENT.md and docs17 A8 /
+// docs18 certificate mentions (marked superseded by human decision).
 app.use('/api/schedules', schedulesRoutes);
 app.use('/api/attendance-records', attendanceRecordsRoutes);
 
