@@ -43,7 +43,8 @@
   ],
   "unresolved": [
     "No MySQL execution has been performed by this generator. A fresh-database run must validate the complete staged order; any additional failure requires an explicit reviewed repair.",
-    "M2 lifecycle migration 20261018_01 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval."
+    "M2 lifecycle migration 20261018_01 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval.",
+    "M6 delivery migration 20261018_14 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval."
   ],
   "databaseCollationSha256": "60c1bf0c55f3bbb1f76cfdcd8d52b3c532be9616952b85f26a8b9caed1925929",
   "sourceSha256": {
@@ -93,6 +94,9 @@
     "20261018_08_question_bank_assignments.sql": "04a8d4d6286d03df4cc5502b9fbc09004738ae5bc37e6744e765574339f0b317",
     "20261018_09_exam_snapshots_grading.sql": "405ab326729782a465fd7c395c0a9ec3ad38d72d39159dfa2ba755d2d6a1f208",
     "20261018_10_gradebook_certificates.sql": "7630ad75eda5fa909f13bd0c7ebab21766618d040dfc968681ba0ba48b3648e2",
-    "20261018_11_schedules_attendance_records.sql": "c78aee467765666c8180aafd044b8f6900ec3e2602ffa8bcd73ad14d896acc0b"
+    "20261018_11_schedules_attendance_records.sql": "c78aee467765666c8180aafd044b8f6900ec3e2602ffa8bcd73ad14d896acc0b",
+    "20261018_13_parent_links.sql": "bcd1a2f1b8c12f152e31f4f1a006f06dc1016683984003194066bce32adcb47b",
+    "20261018_14_notification_outbox_consent.sql": "09a9a007c0e8ee789d512635ff751c888d8e542803ad83702fe6cc061dec3107",
+    "20261018_15_playback_entitlement_indexes.sql": "ead8e779c2203fd21faf2541dd063791941cacf7953f5a605b80507daed91d02"
   }
 }
