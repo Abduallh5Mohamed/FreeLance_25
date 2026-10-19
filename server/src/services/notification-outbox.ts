@@ -110,6 +110,9 @@ const MAX_ATTEMPTS_CEILING = 10;
 const MAX_EVENT_LENGTH = 60;
 const MAX_PURPOSE_LENGTH = 50;
 
+const isDuplicateError = (error: unknown): boolean =>
+    typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ER_DUP_ENTRY';
+
 export interface EnqueueOk {
     ok: true;
 }
@@ -172,27 +175,41 @@ export const enqueueOutboxRow = async (
     if (existing) return { ok: true, id: existing.id, duplicate: true };
     const id = randomUUID();
     const now = (input.now ?? (() => new Date()))();
-    await db.execute(
-        `INSERT INTO notification_outbox
-         (id, idempotency_key, tenant_id, event_type, purpose, recipient_user_id, recipient_user_type,
-          channel, locale, template_id, payload, status, attempts, max_attempts, next_attempt_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
-        [
-            id,
-            input.idempotencyKey,
-            input.tenantId,
-            input.eventType,
-            input.purpose,
-            input.recipientUserId,
-            input.recipientUserType,
-            input.channel,
-            input.locale,
-            input.templateId ?? null,
-            JSON.stringify(input.payload),
-            input.maxAttempts ?? MAX_ATTEMPTS_DEFAULT,
-            now,
-        ],
-    );
+    try {
+        await db.execute(
+            `INSERT INTO notification_outbox
+             (id, idempotency_key, tenant_id, event_type, purpose, recipient_user_id, recipient_user_type,
+              channel, locale, template_id, payload, status, attempts, max_attempts, next_attempt_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
+            [
+                id,
+                input.idempotencyKey,
+                input.tenantId,
+                input.eventType,
+                input.purpose,
+                input.recipientUserId,
+                input.recipientUserType,
+                input.channel,
+                input.locale,
+                input.templateId ?? null,
+                JSON.stringify(input.payload),
+                input.maxAttempts ?? MAX_ATTEMPTS_DEFAULT,
+                now,
+            ],
+        );
+    } catch (error) {
+        // L4: two concurrent enqueues of the same key can both pass the
+        // pre-check; the unique key then rejects the loser. That is the
+        // idempotent outcome, not a failure: return the winning row.
+        if (isDuplicateError(error)) {
+            const raced = await db.queryOne<{ id: string }>(
+                'SELECT id FROM notification_outbox WHERE idempotency_key = ? LIMIT 1',
+                [input.idempotencyKey],
+            );
+            if (raced) return { ok: true, id: raced.id, duplicate: true };
+        }
+        throw error;
+    }
     return { ok: true, id, duplicate: false };
 };
 
@@ -394,6 +411,14 @@ const linkSignature = (encoded: string, secret: string): string =>
 export const linkTtlSecondsDefault = 7 * 24 * 3600;
 
 /**
+ * L2: unsubscribe links are bearer tokens, so they default to a short 24h
+ * lifetime and are single-use (the `jti` is consumed on first presentation).
+ * Report links keep the longer default; only the destructive unsubscribe
+ * surface is shortened.
+ */
+export const unsubscribeLinkTtlSecondsDefault = 24 * 3600;
+
+/**
  * Signs a link payload: base64url(json).hmac. A random jti plus expiry bound
  * the token in time; the payload itself is verified on read (never trusted).
  */
@@ -446,6 +471,9 @@ export const verifySecureLink = (
     if (record['kind'] !== 'report' && record['kind'] !== 'unsubscribe') return { ok: false, reason: 'malformed' };
     if (typeof record['ref'] !== 'string') return { ok: false, reason: 'malformed' };
     if (typeof record['exp'] !== 'number' || !Number.isFinite(record['exp'])) {
+        return { ok: false, reason: 'malformed' };
+    }
+    if (typeof record['jti'] !== 'string' || record['jti'].length === 0) {
         return { ok: false, reason: 'malformed' };
     }
     if (record['exp'] <= now().getTime()) return { ok: false, reason: 'expired' };
@@ -813,6 +841,8 @@ export interface ParentReportDeliveryInput {
     linkSecret: string;
     baseUrl: string;
     reportTtlSeconds?: number;
+    /** L2: unsubscribe links are short-lived and single-use by default. */
+    unsubscribeTtlSeconds?: number;
     idempotencyKeySuffix?: string;
     now?: () => Date;
 }
@@ -864,7 +894,7 @@ export const enqueueParentReportDelivery = async (
         const unsubscribeToken = signSecureLink(
             { kind: 'unsubscribe', ref: reportRef, userId: input.parentUserId, userType: 'parent', purpose: 'progress_report', channel: input.channel },
             input.linkSecret,
-            { ttlSeconds: input.reportTtlSeconds, now: input.now },
+            { ttlSeconds: input.unsubscribeTtlSeconds ?? unsubscribeLinkTtlSecondsDefault, now: input.now },
         );
         reportLink = `?e=${reportToken}`;
         unsubscribeLink = `?u=${unsubscribeToken}`;

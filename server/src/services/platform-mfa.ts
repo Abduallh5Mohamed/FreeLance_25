@@ -521,6 +521,13 @@ export const createSqlPlatformMfaStore = (db: PlatformMfaDb): PlatformMfaStore =
             [userId],
         ),
     upsertPendingSecret: async (userId, sealedSecret) => {
+        // A re-enroll invalidates every previously issued recovery code: they
+        // were bound to the replaced secret/activation and must never remain
+        // a valid second factor across disable -> re-enroll -> re-activate.
+        await db.execute(
+            `DELETE FROM platform_mfa_recovery_codes WHERE user_id = ?`,
+            [userId],
+        );
         await db.execute(
             `INSERT INTO platform_mfa_secrets
              (user_id, sealed_secret, status, last_used_step, failed_attempts, locked_until, stepup_epoch)
@@ -606,6 +613,12 @@ export const createSqlPlatformMfaStore = (db: PlatformMfaDb): PlatformMfaStore =
              SET sealed_secret = NULL, status = 'disabled', last_used_step = 0,
                  stepup_epoch = stepup_epoch + 1
              WHERE user_id = ?`,
+            [userId],
+        );
+        // Disabling MFA must also invalidate outstanding recovery codes so a
+        // later re-enroll cannot inherit them as a second factor.
+        await db.execute(
+            `DELETE FROM platform_mfa_recovery_codes WHERE user_id = ?`,
             [userId],
         );
     },

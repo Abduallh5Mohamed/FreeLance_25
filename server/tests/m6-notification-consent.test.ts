@@ -51,9 +51,11 @@ interface FakeState {
     seqCounter: number;
     executed: ExecutedStatement[];
     failWith: Error | null;
+    /** L2: consumed unsubscribe token jtis (unique, like the table PK). */
+    consumedJtis: Set<string>;
 }
 
-const makeState = (): FakeState => ({ events: [], seqCounter: 0, executed: [], failWith: null });
+const makeState = (): FakeState => ({ events: [], seqCounter: 0, executed: [], failWith: null, consumedJtis: new Set() });
 
 const makeFakeDb = (state: FakeState): NotificationDataAccess => {
     const record = (sql: string, params: unknown[], kind: ExecutedStatement['kind']): void => {
@@ -82,6 +84,16 @@ const makeFakeDb = (state: FakeState): NotificationDataAccess => {
     const execute = async (sql: string, params: unknown[] = []): Promise<{ insertId?: number; affectedRows?: number }> => {
         record(sql, params, 'execute');
         const upper = sql.replace(/\s+/g, ' ').toUpperCase();
+        if (upper.includes('INSERT INTO NOTIFICATION_UNSUBSCRIBE_TOKEN_USES')) {
+            const jti = String(params[0]);
+            if (state.consumedJtis.has(jti)) {
+                const error = new Error('duplicate unsubscribe token jti') as Error & { code?: string };
+                error.code = 'ER_DUP_ENTRY';
+                throw error;
+            }
+            state.consumedJtis.add(jti);
+            return { affectedRows: 1, insertId: 0 };
+        }
         if (upper.includes('INSERT INTO NOTIFICATION_CONSENT_EVENTS')) {
             const [id, tenantId, userId, userType, purpose, channel, action, source, recordedBy, recordedAt] = params;
             state.events.push({
@@ -404,6 +416,35 @@ test('signed unsubscribe link works logged out, appends an unsubscribe_link revo
         const before = h.state.events.length;
         assert.equal((await req(h, 'POST', '/unsubscribe', null, { token: tampered })).statusCode, 403);
         assert.equal(h.state.events.length, before);
+    });
+});
+
+test('L2: an unsubscribe token is single-use; a replay is an idempotent success and re-applies nothing', async () => {
+    await withHarness((state) => {
+        state.events.push({
+            id: 'e-a-g', seq: 1, tenant_id: null, user_id: USER_A, user_type: 'student',
+            purpose: 'progress_report', channel: 'email', action: 'grant', source: 'account_settings',
+            recorded_by: USER_A, recorded_at: new Date(),
+        });
+    }, async (h) => {
+        const student = h.tokenFor({ id: USER_A, role: 'student' });
+        const issued = await req(h, 'POST', '/unsubscribe-link', student, { channel: 'email' });
+        const token = (issued.body as { token: string })['token'];
+        const first = await req(h, 'POST', '/unsubscribe', null, { token });
+        assert.equal(first.statusCode, 200);
+        assert.deepEqual(first.body, { status: 'unsubscribed', channel: 'email', purpose: 'all' });
+        const eventsAfterFirst = h.state.events.length;
+        assert.equal(h.state.consumedJtis.size, 1);
+        const scope = { userId: USER_A, userType: 'student' };
+        assert.equal(await canDeliverTo(h.db, { ...scope, purpose: 'progress_report', channel: 'email' }), false);
+
+        // Replaying the exact same link: harmless idempotent success, no new
+        // consent event and no second token consumption.
+        const replay = await req(h, 'POST', '/unsubscribe', null, { token });
+        assert.equal(replay.statusCode, 200);
+        assert.deepEqual(replay.body, first.body);
+        assert.equal(h.state.events.length, eventsAfterFirst, 'a replay must not append another revoke');
+        assert.equal(h.state.consumedJtis.size, 1);
     });
 });
 

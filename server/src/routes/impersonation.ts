@@ -338,16 +338,9 @@ export const createImpersonationRouter = (deps: ImpersonationRouteDeps): Router 
 /* Production wiring: real pool, real auth, real platform-permission guard,
    the sealed audit writer and server-derived target resolution. */
 let dbModule: typeof import('../db') | null = null;
-const loadDb = async (): Promise<ImpersonationDb> => {
+const loadDb = async (): Promise<typeof import('../db')> => {
     dbModule ??= await import('../db');
-    const { query, queryOne, execute } = dbModule;
-    return {
-        query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) =>
-            query<T>(sql, params as never) as Promise<T[]>,
-        queryOne: <T = Record<string, unknown>>(sql: string, params?: unknown[]) =>
-            queryOne<T>(sql, params as never) as Promise<T | null>,
-        execute: (sql: string, params?: unknown[]) => execute(sql, params as never),
-    };
+    return dbModule;
 };
 
 const productionDb: ImpersonationDb = {
@@ -399,7 +392,26 @@ export default createImpersonationRouter({
     requirePlatformPermission: (permission) => requireAdminPermission(permission),
     recordAudit: async (input) => {
         const { recordSealedAuditEvent } = await import('../services/audit-log');
-        await recordSealedAuditEvent(productionDb, input);
+        // The sealed append runs on one transactional connection so the
+        // audit-chain head lock serializes concurrent appends.
+        const { withTransaction } = await loadDb();
+        await withTransaction(async (connection) => {
+            await recordSealedAuditEvent({
+                query: async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+                    const [rows] = await connection.query(sql, params as never);
+                    return rows as T[];
+                },
+                queryOne: async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+                    const [rows] = await connection.query(sql, params as never);
+                    return (rows as T[])[0] ?? null;
+                },
+                execute: async (sql: string, params?: unknown[]) => {
+                    const [result] = await connection.execute(sql, params as never);
+                    const header = result as { insertId?: number; affectedRows?: number };
+                    return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+                },
+            }, input);
+        });
     },
     resolveTargetUser: resolveProductionTargetUser,
     isImpersonationManager: async (userId) => {

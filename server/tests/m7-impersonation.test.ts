@@ -93,9 +93,13 @@ test('while impersonating protected actions are blocked and read scope is enforc
     };
     const writeContext = { ...context, scope: 'write' as const, banner: { ...context.banner, scope: 'write' as const } };
     assert.deepEqual(evaluateImpersonationWrite(null, 'enrollment.delete'), { blocked: false });
-    assert.deepEqual(evaluateImpersonationWrite(context, 'course.update'), { blocked: false });
+    // read scope denies EVERY mutation, even non-classified ones: the
+    // documented read-only guarantee holds without the second helper.
+    assert.deepEqual(evaluateImpersonationWrite(context, 'course.update'), { blocked: true, protection: 'read_only' });
+    assert.deepEqual(evaluateImpersonationWrite(context, 'announcement.create'), { blocked: true, protection: 'read_only' });
     assert.deepEqual(evaluateImpersonationWrite(context, 'wallet.refund'), { blocked: true, protection: 'money_movement' });
     assert.deepEqual(evaluateImpersonationWrite(writeContext, 'user.password.change'), { blocked: true, protection: 'password_change' });
+    assert.deepEqual(evaluateImpersonationWrite(writeContext, 'course.update'), { blocked: false });
     assert.equal(requireImpersonationWriteScope(context).ok, false);
     assert.equal(requireImpersonationWriteScope(writeContext).ok, true);
 });

@@ -20,7 +20,9 @@
  *  - Protected actions are always blocked while impersonating — password
  *    changes, MFA changes, money movement and destructive data actions — with
  *    `classifyProtectedAction` + `assertImpersonationPermits` as the deny
- *    helpers adopters call before their own handlers.
+ *    helpers adopters call before their own handlers. A read scope denies
+ *    every mutation through `evaluateImpersonationWrite` (`read_only`
+ *    protection), independent of `requireImpersonationWriteScope`.
  *  - Tenant-owner notification is an injected, best-effort, PII-free hook
  *    (ids + scope + expiry only) fired on activation and on revoke; a failing
  *    hook never fails the session change.
@@ -411,13 +413,18 @@ export const classifyProtectedAction = (action: string): ProtectedActionKind | n
     return null;
 };
 
+export type ImpersonationProtectionKind = ProtectedActionKind | 'read_only';
+
 export type ImpersonationActionVerdict =
     | { blocked: false }
-    | { blocked: true; protection: ProtectedActionKind };
+    | { blocked: true; protection: ImpersonationProtectionKind };
 
 /**
- * Deny helper adopters call before a protected mutation. Blocked even with an
- * explicit write scope; read scope additionally allows no mutations at all.
+ * Deny helper adopters call before any mutation. Protected actions are
+ * blocked even with an explicit write scope, and a read scope allows NO
+ * mutations at all — every mutating action is denied with the `read_only`
+ * protection, so the documented read-only guarantee holds regardless of
+ * whether the adopter also calls `requireImpersonationWriteScope`.
  */
 export const evaluateImpersonationWrite = (
     context: ImpersonationContext | null,
@@ -426,6 +433,7 @@ export const evaluateImpersonationWrite = (
     if (!context) return { blocked: false };
     const protection = classifyProtectedAction(action);
     if (protection) return { blocked: true, protection };
+    if (context.scope === 'read') return { blocked: true, protection: 'read_only' };
     return { blocked: false };
 };
 

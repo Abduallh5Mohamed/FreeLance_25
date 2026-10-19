@@ -14,9 +14,12 @@
  *  - Reports are read through an injected source (never mutated here) and the
  *    lesson-discussions content is reached through an injected gateway. Only a
  *    bounded, non-PII evidence snapshot (ids + content hash) is stored.
+ *  - A decision (and an appeal decision) is refused to the report's reporter
+ *    and to the reported content's author.
  *  - An appeal may be filed exactly once, by the report's reporter or the target
  *    author, and is resolved only by a reviewer different from the original
- *    decider and from the appellant. Decision history is append-only.
+ *    decider, from the appellant and from the target author. Decision history
+ *    is append-only.
  *  - Every mutation is audited (actor, reason, before/after) in the same
  *    transaction, so a failed audit aborts the write. The tenant owner is
  *    notified through an injected, PII-free hook (best-effort).
@@ -442,6 +445,9 @@ export function createModerationRouter(deps: ModerationDeps): Router {
             if (row.reporter_user_id === scope.userId) {
                 return res.status(403).json({ error: 'A reviewer cannot decide a case they reported' });
             }
+            if (row.target_author_user_id && row.target_author_user_id === scope.userId) {
+                return res.status(403).json({ error: 'A reviewer cannot decide a case about their own content' });
+            }
             await applyDecision(scope, row, decision, reason, 'decision');
             res.json(projectCase({
                 ...row,
@@ -561,6 +567,9 @@ export function createModerationRouter(deps: ModerationDeps): Router {
             }
             if (appeal.appellant_user_id === scope.userId) {
                 return res.status(403).json({ error: 'An appellant cannot review their own appeal' });
+            }
+            if (row.target_author_user_id && row.target_author_user_id === scope.userId) {
+                return res.status(403).json({ error: 'A reviewer cannot review an appeal about their own content' });
             }
             await applyDecision(scope, row, decision, reason, 'appeal_decision', appeal.appellant_user_id);
             res.json({

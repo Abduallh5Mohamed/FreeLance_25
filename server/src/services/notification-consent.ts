@@ -18,7 +18,9 @@
  * server-derived principal namespace (never client input), mirroring
  * services/notification-preferences.ts. Persistence contract: table
  * notification_consent_events is created by the versioned migration
- * 20261018_14_notification_outbox_consent.sql (never at runtime).
+ * 20261018_14_notification_outbox_consent.sql and table
+ * notification_unsubscribe_token_uses by 20261018_21_unsubscribe_token_use.sql
+ * (never at runtime).
  */
 
 import { randomUUID } from 'crypto';
@@ -166,6 +168,40 @@ export const parseConsentInput = (body: unknown): ConsentParseResult => {
         return { ok: false, error: 'note must be 1-200 characters' };
     }
     return { ok: true, value: { purpose: record['purpose'], channel: record['channel'], action: record['action'] } };
+};
+
+const isDuplicateError = (error: unknown): boolean =>
+    typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ER_DUP_ENTRY';
+
+export interface ConsumeUnsubscribeTokenInput {
+    jti: string;
+    userId: string;
+    userType: string;
+    now?: () => Date;
+}
+
+/**
+ * L2: single-use unsubscribe tokens. The signed token's `jti` is persisted the
+ * first time it is presented; the unique primary key turns any replay into a
+ * handled duplicate. Returns true on first use, false when the token was
+ * already consumed, so the caller can answer a replay with a harmless
+ * idempotent success and never re-apply a revoke.
+ */
+export const consumeUnsubscribeToken = async (
+    db: NotificationDataAccess,
+    input: ConsumeUnsubscribeTokenInput,
+): Promise<boolean> => {
+    try {
+        await db.execute(
+            `INSERT INTO notification_unsubscribe_token_uses (jti, user_id, user_type, consumed_at)
+             VALUES (?, ?, ?, ?)`,
+            [input.jti, input.userId, input.userType, (input.now ?? (() => new Date()))()],
+        );
+        return true;
+    } catch (error) {
+        if (isDuplicateError(error)) return false;
+        throw error;
+    }
 };
 
 const assertRecordable = (input: ConsentRecordInput): void => {

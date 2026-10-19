@@ -60,9 +60,11 @@ interface OutboxState {
     executed: { sql: string; params: unknown[]; kind: 'query' | 'queryOne' | 'execute' }[];
     failWith: Error | null;
     seq: number;
+    /** L4: simulate a concurrent enqueue where the INSERT loses the unique key. */
+    race: { key: string; committed: boolean } | null;
 }
 
-const makeState = (): OutboxState => ({ rows: [], receipts: [], executed: [], failWith: null, seq: 0 });
+const makeState = (): OutboxState => ({ rows: [], receipts: [], executed: [], failWith: null, seq: 0, race: null });
 
 const makeDb = (state: OutboxState): NotificationDataAccess => {
     const record = (sql: string, params: unknown[], kind: 'query' | 'queryOne' | 'execute'): void => {
@@ -87,6 +89,9 @@ const makeDb = (state: OutboxState): NotificationDataAccess => {
     const queryOne = async <T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T | null> => {
         record(sql, params, 'queryOne');
         if (sql.toUpperCase().includes('FROM NOTIFICATION_OUTBOX WHERE IDEMPOTENCY_KEY')) {
+            // L4 race: the winner is committed only after the loser's INSERT
+            // fails, so the loser's pre-check must not see it yet.
+            if (state.race && state.race.key === params[0] && !state.race.committed) return null;
             const row = state.rows.find((candidate) => candidate.idempotency_key === params[0]);
             return (row ?? null) as T | null;
         }
@@ -102,6 +107,12 @@ const makeDb = (state: OutboxState): NotificationDataAccess => {
         const upper = sql.replace(/\s+/g, ' ').toUpperCase();
         if (upper.includes('INSERT INTO NOTIFICATION_OUTBOX')) {
             const [id, key, tenantId, eventType, purpose, recipientId, recipientType, channel, locale, templateId, payload, maxAttempts, nextAt] = params;
+            if (state.race && state.race.key === String(key) && !state.race.committed) {
+                state.race.committed = true;
+                const error = new Error('duplicate idempotency key') as Error & { code?: string };
+                error.code = 'ER_DUP_ENTRY';
+                throw error;
+            }
             state.rows.push({
                 id: String(id), idempotency_key: String(key), tenant_id: tenantId === null ? null : String(tenantId),
                 event_type: String(eventType), purpose: String(purpose),
@@ -239,6 +250,20 @@ test('enqueue is idempotent on the idempotency key', async () => {
     const replay = { methods: new Set(state.executed.map((e) => e.sql.match(/UPDATE|INSERT|DELETE/i)?.[0]?.toUpperCase() ?? 'SELECT')) };
     assert.ok(!replay.methods.has('UPDATE'));
     assert.ok(!replay.methods.has('DELETE'));
+});
+
+test('L4: a duplicate-key race returns the existing row instead of a 500', async () => {
+    const state = makeState();
+    const existing = seedRow(state, { id: 'outbox-existing', idempotency_key: 'race-key' });
+    state.race = { key: 'race-key', committed: false };
+    const db = makeDb(state);
+    const result = await enqueueOutboxRow(db, { ...validEnqueue, idempotencyKey: 'race-key' }, { now: NOW });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+        assert.equal(result.duplicate, true);
+        assert.equal(result.id, existing.id);
+    }
+    assert.equal(state.rows.length, 1);
 });
 
 test('outbox backoff is bounded and strictly increasing', () => {

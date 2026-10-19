@@ -11,7 +11,10 @@
  *  - The signed unsubscribe link is the one unauthenticated surface: it
  *    verifies against the dedicated NOTIFICATION_LINK_SECRET and appends a
  *    revoke (source 'unsubscribe_link') whose effect is immediate because the
- *    delivery path re-checks the ledger at send time.
+ *    delivery path re-checks the ledger at send time. Unsubscribe links are
+ *    short-lived (24h default) and single-use: the token's jti is consumed on
+ *    first presentation, so a replay returns an idempotent success without
+ *    re-applying any revoke.
  *
  * This module exports `createNotificationConsentRouter(deps)`; production
  * wiring (real pool + real auth) is the default export at the bottom. No
@@ -23,6 +26,7 @@ import { AuthRequest } from '../middleware/auth';
 import {
     canDeliverTo,
     clampConsentHistoryLimit,
+    consumeUnsubscribeToken,
     effectiveConsentMap,
     fetchConsentHistory,
     isConsentPurpose,
@@ -44,6 +48,7 @@ import {
     LinkSecretMissingError,
     resolveLinkSecret,
     signSecureLink,
+    unsubscribeLinkTtlSecondsDefault,
     verifySecureLink,
     type SecureLinkPayload,
 } from '../services/notification-outbox';
@@ -149,6 +154,24 @@ export const createNotificationConsentRouter = (deps: ConsentRouteDeps): Router 
             if (!isConsentUserType(payload.userType)) {
                 return res.status(403).json({ error: 'Account type is not eligible for notification consent' });
             }
+            const success = {
+                status: 'unsubscribed' as const,
+                channel: payload.channel ?? 'all',
+                purpose: payload.purpose ?? 'all',
+            };
+            // L2: consume the token's jti exactly once. A replay (same link
+            // opened twice, or a prefetch/scanner hitting it) is a harmless
+            // idempotent success: the consent state was already applied on the
+            // first, single use and is never re-applied.
+            const firstUse = await consumeUnsubscribeToken(db, {
+                jti: payload.jti,
+                userId: payload.userId,
+                userType: payload.userType,
+                now: deps.now,
+            });
+            if (!firstUse) {
+                return res.json(success);
+            }
             if (payload.channel && isNotificationChannel(payload.channel)) {
                 if (payload.purpose) {
                     await recordConsent(db, {
@@ -183,7 +206,7 @@ export const createNotificationConsentRouter = (deps: ConsentRouteDeps): Router 
                     });
                 }
             }
-            return res.json({ status: 'unsubscribed', channel: payload.channel ?? 'all', purpose: payload.purpose ?? 'all' });
+            return res.json(success);
         } catch (error) {
             console.error('Unsubscribe error:', error);
             res.status(500).json({ error: 'Failed to process unsubscribe' });
@@ -210,7 +233,7 @@ export const createNotificationConsentRouter = (deps: ConsentRouteDeps): Router 
                     channel: parsed.channel,
                 },
                 secret,
-                { now: deps.now },
+                { ttlSeconds: unsubscribeLinkTtlSecondsDefault, now: deps.now },
             );
             return res.json({ token });
         } catch (error) {

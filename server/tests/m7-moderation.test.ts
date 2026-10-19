@@ -78,6 +78,7 @@ const authRepository = () => makeRepository(USERS, {
 const AUTHORITY: Record<string, { authority: string } | null> = {
     'owner-a:tenant-a': { authority: 'owner' },
     'instructor-a:tenant-a': { authority: 'instructor' },
+    'author-a:tenant-a': { authority: 'instructor' },
     'owner-b:tenant-b': { authority: 'owner' },
 };
 
@@ -518,6 +519,14 @@ test('POST /cases/:id/decision: the reporter cannot decide their own report', as
     assert.equal(h.content.actions.length, 0);
 });
 
+test('POST /cases/:id/decision: the reported content author cannot decide their own case', async () => {
+    const h = buildHarness({ seed: [seedCase({ id: 'case-a', target_author_user_id: 'author-a' })] });
+    const res = await request(h.router, { method: 'POST', url: '/cases/case-a/decision', token: AUTHOR_A, body: decisionBody('hide_content') });
+    assert.equal(res.statusCode, 403);
+    assert.equal(h.content.actions.length, 0);
+    assert.equal(h.memory.history.length, 0);
+});
+
 test('POST /cases/:id/decision: validation, already-decided, cross-tenant and non-moderator', async () => {
     assert.equal((await request(buildHarness({ seed: [seedCase({ id: 'case-a' })] }).router, {
         method: 'POST', url: '/cases/case-a/decision', token: OWNER_A, body: decisionBody('hide_content', 'x'),
@@ -643,6 +652,15 @@ test('POST /cases/:id/appeal-decision: the original reviewer and the appellant a
     assert.equal((await request(appellant.router, {
         method: 'POST', url: '/cases/case-a/appeal-decision', token: OWNER_A, body: decisionBody('dismiss', 'uphold'),
     })).statusCode, 403);
+});
+
+test('POST /cases/:id/appeal-decision: the reported content author cannot review the appeal', async () => {
+    const h = buildHarness({ seed: [appealedCase({ target_author_user_id: 'author-a' })], seedAppeals: [pendingAppeal()] });
+    const res = await request(h.router, {
+        method: 'POST', url: '/cases/case-a/appeal-decision', token: AUTHOR_A, body: decisionBody('restore_content', 'appeal upheld'),
+    });
+    assert.equal(res.statusCode, 403);
+    assert.equal(h.memory.cases.get('case-a')?.status, 'appealed');
 });
 
 test('POST /cases/:id/appeal-decision: no pending appeal, validation, cross-tenant and non-moderator', async () => {

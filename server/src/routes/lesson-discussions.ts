@@ -70,6 +70,7 @@ import {
     resolveResourceBranchAccess,
     getResourceBranchDeps,
 } from '../security/resource-branch';
+import { hasVerifiedPlatformPermission } from '../security/admin-permissions';
 
 export interface LessonDiscussionsDb {
     query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>;
@@ -829,11 +830,36 @@ const DENIED_ACCESS: LessonAccess = {
 };
 
 /**
+ * H1: the platform capability that authorizes cross-tenant discussion reach.
+ * It is the same verified "platform operator" tier used by resource-derived
+ * branch access (`security.manage`/super admin), never a bare role label.
+ */
+const LESSON_PLATFORM_PERMISSION_KEY = 'security.manage';
+
+/**
+ * H1: tenant reach for a non-student principal. A principal may only act on a
+ * lesson inside its own server-derived tenant; cross-tenant reach is granted
+ * solely by a *verified* platform capability, never by a `role` label such as
+ * `admin`. The capability lookup is injected so the decision boundary is
+ * testable without a database; production passes
+ * `hasVerifiedPlatformPermission`.
+ */
+export const hasLessonTenantReach = async (
+    principal: Pick<LessonAccessPrincipal, 'id' | 'tenantId'>,
+    lectureTenantId: string,
+    hasPlatformCapability: (userId: string) => Promise<boolean>,
+): Promise<boolean> => {
+    if (principal.tenantId && principal.tenantId === lectureTenantId) return true;
+    return hasPlatformCapability(principal.id);
+};
+
+/**
  * Production access resolver. Reuses the composed content-access policy so the
  * lesson must be published, in the caller's enrolled audience/branch, and
  * released (immediate/scheduled/sequential) before any discussion is served.
- * Staff reach a lesson only through resource-derived branch authority inside
- * their own tenant. Nothing from the request body participates.
+ * A non-student principal reaches a lesson only inside its own server-derived
+ * tenant; cross-tenant reach requires a verified platform capability and never
+ * a `role` label. Nothing from the request body participates.
  */
 export async function resolveProductionLessonAccess(
     principal: LessonAccessPrincipal,
@@ -851,9 +877,12 @@ export async function resolveProductionLessonAccess(
     };
 
     if (principal.role !== 'student') {
-        if (principal.role !== 'admin') {
-            if (!principal.tenantId || principal.tenantId !== lecture.tenant_id) return DENIED_ACCESS;
-        }
+        const reach = await hasLessonTenantReach(
+            principal,
+            lecture.tenant_id,
+            (userId) => hasVerifiedPlatformPermission(LESSON_PLATFORM_PERMISSION_KEY, userId),
+        );
+        if (!reach) return DENIED_ACCESS;
         const decision = await resolveResourceBranchAccess(
             getResourceBranchDeps(),
             principalFromAuthUser({

@@ -13,6 +13,9 @@
  *  - Disable requires a fresh MFA step-up token (x-mfa-step-up header) and
  *    invalidates outstanding step-up tokens by bumping the row epoch.
  *  - Recovery codes are returned in plaintext exactly once, at activation.
+ *    Re-enrolling (a new pending secret) and disabling delete every stored
+ *    recovery code for the user, so previously issued codes can never remain
+ *    a valid second factor across disable -> re-enroll -> re-activate.
  *  - Every mutation is audited through the injected sealed-audit writer inside
  *    an injectable transaction seam; a failed audit aborts the mutation.
  *
@@ -285,17 +288,11 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
 /* Production wiring: real pool, real auth, real platform-permission guard and
    the sealed audit writer. The MFA key is read from MFA_SECRET_KEY at call
    time; a missing/short key fails closed with 503. */
+
 let dbModule: typeof import('../db') | null = null;
-const loadDb = async (): Promise<PlatformMfaDb> => {
+const loadDb = async (): Promise<typeof import('../db')> => {
     dbModule ??= await import('../db');
-    const { query, queryOne, execute } = dbModule;
-    return {
-        query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) =>
-            query<T>(sql, params as never) as Promise<T[]>,
-        queryOne: <T = Record<string, unknown>>(sql: string, params?: unknown[]) =>
-            queryOne<T>(sql, params as never) as Promise<T | null>,
-        execute: (sql: string, params?: unknown[]) => execute(sql, params as never),
-    };
+    return dbModule;
 };
 
 const productionDb: PlatformMfaDb = {
@@ -322,7 +319,26 @@ export default createPlatformMfaRouter({
     requirePlatformPermission: (permission) => requireAdminPermission(permission),
     recordAudit: async (input) => {
         const { recordSealedAuditEvent } = await import('../services/audit-log');
-        await recordSealedAuditEvent(productionDb, input);
+        // The sealed append runs on one transactional connection so the
+        // audit-chain head lock serializes concurrent appends.
+        const { withTransaction } = await loadDb();
+        await withTransaction(async (connection) => {
+            await recordSealedAuditEvent({
+                query: async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+                    const [rows] = await connection.query(sql, params as never);
+                    return rows as T[];
+                },
+                queryOne: async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+                    const [rows] = await connection.query(sql, params as never);
+                    return (rows as T[])[0] ?? null;
+                },
+                execute: async (sql: string, params?: unknown[]) => {
+                    const [result] = await connection.execute(sql, params as never);
+                    const header = result as { insertId?: number; affectedRows?: number };
+                    return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+                },
+            }, input);
+        });
     },
     sealKey: () => mfaKeyFromEnv(),
 });

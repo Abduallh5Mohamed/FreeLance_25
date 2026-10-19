@@ -13,6 +13,7 @@ import {
     MFA_RATE_LIMITS,
     PlatformMfaStore,
     base32Decode,
+    createSqlPlatformMfaStore,
     generateRecoveryCodes,
     generateTotpSecret,
     hotpAt,
@@ -28,7 +29,7 @@ import {
     verifyTotpReplayChecked,
 } from '../src/services/platform-mfa';
 import { createPlatformMfaRouter } from '../src/routes/platform-mfa';
-import { makeRepository, TEST_SECRET, tokenFor } from './helpers/m2-harness';
+import { makeFakeDataAccess, makeRepository, TEST_SECRET, tokenFor } from './helpers/m2-harness';
 
 const originalSecret = process.env.JWT_SECRET;
 before(() => { process.env.JWT_SECRET = TEST_SECRET; });
@@ -168,6 +169,9 @@ const makeStore = (): StoreFixture => {
             };
         },
         upsertPendingSecret: async (userId, sealedSecret) => {
+            // Mirror of the SQL-store contract: a re-enroll invalidates every
+            // previously issued recovery code before the new secret lands.
+            recoveryHashes.delete(String(userId));
             const previous = rows.get(String(userId));
             rows.set(String(userId), {
                 user_id: String(userId),
@@ -231,6 +235,9 @@ const makeStore = (): StoreFixture => {
                 row.last_used_step = 0;
                 row.stepup_epoch += 1;
             }
+            // Mirror of the SQL-store contract: disabling deletes recovery
+            // codes so a later re-enroll cannot inherit them.
+            recoveryHashes.delete(String(userId));
         },
     };
     return { store, rows, recoveryHashes };
@@ -257,6 +264,7 @@ interface BuildOptions {
 const buildRouter = (store: PlatformMfaStore, options: BuildOptions = {}): RouteFixture => {
     const audits: AuditEntry[] = [];
     const state = { failAudit: false };
+    let rngState = 0;
     const router: Router = createPlatformMfaRouter({
         db: {
             query: async (): Promise<unknown[]> => [],
@@ -292,7 +300,12 @@ const buildRouter = (store: PlatformMfaStore, options: BuildOptions = {}): Route
         },
         sealKey: options.sealKey ?? (() => TEST_KEY),
         now: () => FIXED_NOW,
-        rng: (length) => Buffer.alloc(length, 5),
+        // each generated batch must differ from the previous one, so the
+        // counter advances on every call (activate twice -> two disjunct sets)
+        rng: (length) => {
+            rngState = (rngState + 1) % 256;
+            return Buffer.alloc(length, rngState);
+        },
     });
     return { router, audits, state };
 };
@@ -580,6 +593,91 @@ test('mfa verify: a recovery code is single use across calls', async () => {
     });
     assert.equal(secondUse.statusCode, 400);
     assert.equal((fixture.recoveryHashes.get('admin-a') ?? []).includes(recoveryCodeHash(codes[0])), false);
+});
+
+// --- recovery-code invalidation on re-enroll and disable (review fix M5) ---
+
+test('sql mfa store: re-enroll and disable purge stored recovery codes', async () => {
+    const db = makeFakeDataAccess(() => []);
+    const store = createSqlPlatformMfaStore(db);
+    await store.upsertPendingSecret('admin-a', 'sealed-secret');
+    await store.disable('admin-a');
+    const executed = db.executed;
+    const purgeIndexes = executed
+        .map((statement, index) => statement.sql.includes('DELETE FROM platform_mfa_recovery_codes') ? index : -1)
+        .filter((index) => index >= 0);
+    assert.equal(purgeIndexes.length, 2);
+    assert.deepEqual(executed[purgeIndexes[0]].params, ['admin-a']);
+    assert.deepEqual(executed[purgeIndexes[1]].params, ['admin-a']);
+    // each path keeps its primary mutation: the re-enroll purge precedes the
+    // new pending secret, the disable purge follows the row disabling
+    const upsertIndex = executed.findIndex((statement) => statement.sql.includes('INSERT INTO platform_mfa_secrets'));
+    const disableIndex = executed.findIndex((statement) => statement.sql.includes("SET sealed_secret = NULL, status = 'disabled'"));
+    assert.ok(purgeIndexes[0] < upsertIndex);
+    assert.ok(purgeIndexes[1] > disableIndex);
+});
+
+test('mfa lifecycle: disable -> re-enroll -> old recovery code is rejected, new codes work', async () => {
+    const fixture = makeStore();
+    seedRow(fixture.rows, 'admin-a', { secret: SECRET32, epoch: 1, status: 'pending' });
+    const { router } = buildRouter(fixture.store);
+
+    // 1) activation issues the first batch of recovery codes
+    const activation = await invoke(router, {
+        method: 'POST', url: '/verify', token: ADMIN_A, body: { code: codeFor(SECRET32, currentStep) },
+    });
+    assert.equal(activation.statusCode, 200);
+    const firstCodes = (activation.body as { recovery_codes?: string[] }).recovery_codes ?? [];
+    assert.equal(firstCodes.length, 10);
+    assert.equal((fixture.recoveryHashes.get('admin-a') ?? []).length, 10);
+
+    // 2) disable with a fresh step-up token purges those codes
+    const disableToken = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW);
+    const disable = await invoke(router, {
+        method: 'POST', url: '/disable', token: ADMIN_A,
+        body: { reason: 'offboarding request validated' },
+        headers: { 'x-mfa-step-up': disableToken },
+    });
+    assert.equal(disable.statusCode, 200);
+    assert.equal((fixture.recoveryHashes.get('admin-a') ?? []).length, 0);
+    assert.equal(fixture.rows.get('admin-a')?.status, 'disabled');
+
+    // 3) the old code can no longer authenticate anything
+    const staleCode = await invoke(router, {
+        method: 'POST', url: '/verify', token: ADMIN_A, body: { recovery_code: firstCodes[0] },
+    });
+    assert.equal(staleCode.statusCode, 404);
+
+    // 4) re-enroll -> pending; the old code still must not pass
+    const reenroll = await invoke(router, {
+        method: 'POST', url: '/enroll', token: ADMIN_A,
+        body: { reason: 're-enrollment after offboarding' },
+    });
+    assert.equal(reenroll.statusCode, 200);
+    assert.equal(fixture.rows.get('admin-a')?.status, 'pending');
+    const oldCode = await invoke(router, {
+        method: 'POST', url: '/verify', token: ADMIN_A, body: { recovery_code: firstCodes[0] },
+    });
+    assert.equal(oldCode.statusCode, 400);
+    assert.equal((fixture.recoveryHashes.get('admin-a') ?? []).length, 0);
+
+    // 5) the second activation issues a fresh batch; old codes stay dead
+    const reenrolledSecret = openSealedValue(fixture.rows.get('admin-a')?.sealed_secret ?? '', TEST_KEY);
+    const reactivate = await invoke(router, {
+        method: 'POST', url: '/verify', token: ADMIN_A,
+        body: { code: codeFor(reenrolledSecret, currentStep) },
+    });
+    assert.equal(reactivate.statusCode, 200);
+    const secondCodes = (reactivate.body as { recovery_codes?: string[] }).recovery_codes ?? [];
+    assert.equal(secondCodes.length, 10);
+    const oldCodeAfterReactivation = await invoke(router, {
+        method: 'POST', url: '/verify', token: ADMIN_A, body: { recovery_code: firstCodes[0] },
+    });
+    assert.equal(oldCodeAfterReactivation.statusCode, 400);
+    const newCodeFirstUse = await invoke(router, {
+        method: 'POST', url: '/verify', token: ADMIN_A, body: { recovery_code: secondCodes[0] },
+    });
+    assert.equal(newCodeFirstUse.statusCode, 200);
 });
 
 // --- disable ---

@@ -13,7 +13,9 @@
  *  - Export is audited with the actor, applied filters and row count in the
  *    same sealed chain; export cells are formula-neutralized.
  *  - Reads are read-only: no handler issues UPDATE or DELETE against
- *    audit_events (append-only semantics).
+ *    audit_events (append-only semantics). The sealed append itself advances
+ *    the audit_chain_head anchor row (a separate table) under a locked
+ *    transaction, which is what serializes concurrent appends.
  */
 
 import { Router, RequestHandler, Response } from 'express';
@@ -145,20 +147,32 @@ export const createAuditLogsRouter = (deps: AuditLogsDeps): Router => {
 };
 
 /* Production wiring: real pool, real auth, real platform-capability guard,
-   server-derived tenant ownership and the real sealed audit writer. */
+   server-derived tenant ownership and the real sealed audit writer run under
+   a single-connection transaction so the head-row lock serializes appends. */
 
 let dbModule: typeof import('../db') | null = null;
-const loadDb = async (): Promise<AuditLogDataAccess> => {
+const loadDb = async (): Promise<typeof import('../db')> => {
     dbModule ??= await import('../db');
-    const { query, queryOne, execute } = dbModule;
-    return {
-        query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) =>
-            query<T>(sql, params as never) as Promise<T[]>,
-        queryOne: <T = Record<string, unknown>>(sql: string, params?: unknown[]) =>
-            queryOne<T>(sql, params as never) as Promise<T | null>,
-        execute: (sql: string, params?: unknown[]) => execute(sql, params as never),
-    };
+    return dbModule;
 };
+
+type Connection = Parameters<Parameters<typeof import('../db').withTransaction>[0]>[0];
+
+const connectionDataAccess = (connection: Connection): AuditLogDataAccess => ({
+    query: async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+        const [rows] = await connection.query(sql, params as never);
+        return rows as T[];
+    },
+    queryOne: async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+        const [rows] = await connection.query(sql, params as never);
+        return (rows as T[])[0] ?? null;
+    },
+    execute: async (sql: string, params?: unknown[]) => {
+        const [result] = await connection.execute(sql, params as never);
+        const header = result as { insertId?: number; affectedRows?: number };
+        return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+    },
+});
 
 const productionDb: AuditLogDataAccess = {
     query: async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
@@ -172,6 +186,10 @@ const productionDb: AuditLogDataAccess = {
     execute: async (sql: string, params?: unknown[]) => {
         const { execute } = await loadDb();
         return execute(sql, params as never);
+    },
+    transaction: async <T>(fn: (tx: AuditLogDataAccess) => Promise<T>): Promise<T> => {
+        const { withTransaction } = await loadDb();
+        return withTransaction((connection) => fn(connectionDataAccess(connection)));
     },
 };
 

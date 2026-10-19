@@ -9,9 +9,18 @@
  *    the chain starts). The verification walk re-computes every payload hash
  *    and the link between consecutive sealed rows, so any payload mutation,
  *    seal replacement or row reordering in the sealed tail is detected.
+ *  - the chain total order is the monotonic `chain_seq` assigned by the
+ *    sealed writer under a single-row head lock (audit_chain_head, SELECT ...
+ *    FOR UPDATE), so the leaf read and the verification walk share one order
+ *    even when two sealed rows land in the same TIMESTAMP second (id is a
+ *    random UUID and must never decide chain order). Legacy rows sealed
+ *    before the sequence existed keep chain_seq = 0 and stay ordered by
+ *    (created_at, id) exactly as they were written.
+ *  - the anchored head row (head_seq, head_entry_hash, head_row_id) is
+ *    advanced on every append; verification compares it to the current leaf
+ *    so deleting the newest rows (tail truncation) is detected.
  *  - legacy rows without entry_hash are reported as "unsealed" and do not
- *    break verification; the chain is defined over sealed rows in
- *    (created_at, id) order.
+ *    break verification; the chain is defined over sealed rows.
  *
  * Retention policy: audit rows are kept for at least AUDIT_RETENTION_DAYS
  * (365). A retention purge is a DBA-managed, separately approved activity that
@@ -30,6 +39,13 @@ export interface AuditLogDataAccess {
     query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>;
     queryOne: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T | null>;
     execute: (sql: string, params?: unknown[]) => Promise<{ insertId?: number; affectedRows?: number }>;
+    /**
+     * Optional serialized-transaction seam. When present, the sealed append
+     * runs inside it so the head-row lock is held across leaf resolution,
+     * insert and head advance; without it the caller must already run the
+     * append on one transactional connection.
+     */
+    transaction?: <T>(fn: (tx: AuditLogDataAccess) => Promise<T>) => Promise<T>;
 }
 
 export interface SealedAuditRecordInput {
@@ -45,6 +61,29 @@ export interface SealedAuditRecordInput {
 
 /** Genesis seed for the first sealed entry in a database. */
 export const CHAIN_GENESIS = 'm7-audit-chain-genesis';
+
+/** Singleton row id of the anchored chain head (audit_chain_head). */
+export const CHAIN_HEAD_ROW_ID = 'audit-chain-head';
+
+export interface AuditChainHeadRow {
+    head_seq: number | string | null;
+    head_entry_hash: string | null;
+    head_row_id: string | null;
+}
+
+const LOCKED_HEAD_SELECT =
+    'SELECT head_seq, head_entry_hash, head_row_id FROM audit_chain_head WHERE id = ? FOR UPDATE';
+
+const headSeqOf = (row: AuditChainHeadRow | undefined): number => {
+    const parsed = Number(row?.head_seq ?? 0);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+};
+
+/** Bootstrap sequence for the head seed derived from the current legacy leaf. */
+const seedSeqOf = (leaf: { chain_seq: number | string | null } | undefined): number => {
+    const parsed = Number(leaf?.chain_seq ?? 0);
+    return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
+};
 
 const canonicalizeJson = (value: unknown): string => {
     if (value === null || value === undefined) return '';
@@ -98,52 +137,133 @@ export const computeEntryHash = (input: ChainHashPayload): string =>
         .digest('hex');
 
 /**
- * Append a sealed audit event: the current chain leaf is read highest-first
- * and the new row links to it, inside the caller's transaction.
+ * The actual append: runs on one transactional connection. The single-row
+ * head lock (SELECT ... FOR UPDATE) serializes transactional appenders, and
+ * the head row itself pins the previous hash, so two writers can never read
+ * the same leaf and fork the chain, and two sealed rows written in the same
+ * second still get distinct, increasing chain_seq values.
  */
-export const recordSealedAuditEvent = async (
+const MAX_SEQ_RESERVE_ATTEMPTS = 8;
+
+const appendSealedAuditEvent = async (
     db: Pick<AuditLogDataAccess, 'query' | 'execute'>,
     input: SealedAuditRecordInput,
 ): Promise<void> => {
-    const leafRows = await db.query<{ entry_hash: string }>(
-        'SELECT entry_hash FROM audit_events WHERE entry_hash IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1',
-    );
     const id = randomUUID();
     const oldValue = input.oldValue === undefined ? null : JSON.stringify(input.oldValue);
     const newValue = input.newValue === undefined ? null : JSON.stringify(input.newValue);
     const reason = input.reason ?? null;
-    const prevHash = leafRows[0]?.entry_hash ?? null;
-    const entryHash = computeEntryHash({
-        prevEntryHash: prevHash,
-        id,
-        actorUserId: input.actorUserId,
-        tenantId: input.tenantId,
-        action: input.action,
-        resourceType: input.resourceType,
-        resourceId: input.resourceId,
-        oldValue,
-        newValue,
-        reason,
-    });
-    await db.execute(
-        `INSERT INTO audit_events
-         (id, actor_user_id, tenant_id, action, resource_type, resource_id,
-          old_value, new_value, reason, entry_hash, prev_entry_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
+    for (let attempt = 0; attempt < MAX_SEQ_RESERVE_ATTEMPTS; attempt += 1) {
+        let headRows = await db.query<AuditChainHeadRow>(LOCKED_HEAD_SELECT, [CHAIN_HEAD_ROW_ID]);
+        let head = headRows[0];
+        if (!head) {
+            // Legacy bootstrap: seed the anchored head from the current leaf
+            // using the exact (chain_seq, created_at, id) order the
+            // verification walk uses. Concurrent first appends compute
+            // identical seed values from the same immutable legacy leaf; the
+            // ON-DUPLICATE no-op makes the losing INSERT harmless and the
+            // loser re-locks onto the winner's row.
+            const leafRows = await db.query<{ id: string; entry_hash: string; chain_seq: number | string | null }>(
+                `SELECT id, entry_hash, chain_seq FROM audit_events
+                 WHERE entry_hash IS NOT NULL
+                 ORDER BY chain_seq DESC, created_at DESC, id DESC
+                 LIMIT 1`,
+            );
+            const leaf = leafRows[0];
+            const seedSeq = seedSeqOf(leaf);
+            await db.execute(
+                `INSERT INTO audit_chain_head (id, head_seq, head_entry_hash, head_row_id)
+                 VALUES (?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE head_seq = audit_chain_head.head_seq`,
+                [CHAIN_HEAD_ROW_ID, seedSeq, leaf?.entry_hash ?? null, leaf?.id ?? null],
+            );
+            headRows = await db.query<AuditChainHeadRow>(LOCKED_HEAD_SELECT, [CHAIN_HEAD_ROW_ID]);
+            head = headRows[0];
+            if (!head) throw new Error('The anchored audit chain head is unavailable');
+        }
+        const headSeq = headSeqOf(head);
+        const prevHash = head.head_entry_hash ?? null;
+        const nextSeq = headSeq + 1;
+        const entryHash = computeEntryHash({
+            prevEntryHash: prevHash,
             id,
-            input.actorUserId,
-            input.tenantId,
-            input.action,
-            input.resourceType,
-            input.resourceId,
+            actorUserId: input.actorUserId,
+            tenantId: input.tenantId,
+            action: input.action,
+            resourceType: input.resourceType,
+            resourceId: input.resourceId,
             oldValue,
             newValue,
             reason,
-            entryHash,
-            prevHash,
-        ],
-    );
+        });
+        // Reserve the next sequence atomically: the optimistic CAS on the
+        // head row keeps non-transactional callers (each statement releases
+        // the FOR UPDATE lock) from forking the chain; a lost race re-reads
+        // the advanced head and retries.
+        const reserved = await db.execute(
+            `UPDATE audit_chain_head
+             SET head_seq = ?, head_entry_hash = ?, head_row_id = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ? AND head_seq = ?`,
+            [nextSeq, entryHash, id, CHAIN_HEAD_ROW_ID, headSeq],
+        );
+        if ((reserved.affectedRows ?? 0) === 0) continue;
+        try {
+            await db.execute(
+                `INSERT INTO audit_events
+                 (id, actor_user_id, tenant_id, action, resource_type, resource_id,
+                  old_value, new_value, reason, entry_hash, prev_entry_hash, chain_seq)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    id,
+                    input.actorUserId,
+                    input.tenantId,
+                    input.action,
+                    input.resourceType,
+                    input.resourceId,
+                    oldValue,
+                    newValue,
+                    reason,
+                    entryHash,
+                    prevHash,
+                    nextSeq,
+                ],
+            );
+        } catch (error) {
+            // Best-effort compensated rollback of the reservation so the head
+            // never anchors a row that was never inserted; inside a real
+            // transaction the caller's rollback undoes both statements.
+            try {
+                await db.execute(
+                    `UPDATE audit_chain_head
+                     SET head_seq = ?, head_entry_hash = ?, head_row_id = ?
+                     WHERE id = ? AND head_seq = ?`,
+                    [headSeq, prevHash, head.head_row_id ?? null, CHAIN_HEAD_ROW_ID, nextSeq],
+                );
+            } catch {
+                /* the head-restore is advisory; the row INSERT failure is rethrown */
+            }
+            throw error;
+        }
+        return;
+    }
+    throw new Error('The audit chain head is contended; append abandoned');
+};
+
+/**
+ * Append a sealed audit event linked to the anchored head. When the data
+ * access exposes a transaction seam the append runs inside it (head lock held
+ * across read + insert + head advance); otherwise the caller must already be
+ * running on a single transactional connection.
+ */
+export const recordSealedAuditEvent = async (
+    db: AuditLogDataAccess,
+    input: SealedAuditRecordInput,
+): Promise<void> => {
+    if (db.transaction) {
+        await db.transaction((tx) => appendSealedAuditEvent(tx, input));
+        return;
+    }
+    await appendSealedAuditEvent(db, input);
 };
 
 export interface AuditChainRow {
@@ -158,14 +278,23 @@ export interface AuditChainRow {
     reason: string | null;
     entry_hash: string;
     prev_entry_hash: string | null;
+    chain_seq: number | string | null;
 }
 
 export interface ChainFailure {
     rowIndex: number;
     rowId: string;
-    code: 'payload-hash-mismatch' | 'chain-link-mismatch';
+    code: 'payload-hash-mismatch' | 'chain-link-mismatch' | 'chain-sequence-gap' | 'head-anchor-mismatch';
     expected: string | null;
     actual: string | null;
+}
+
+export interface ChainHeadAnchor {
+    headSeq: number;
+    headEntryHash: string | null;
+    leafSeq: number | null;
+    leafEntryHash: string | null;
+    ok: boolean;
 }
 
 export interface ChainVerification {
@@ -173,14 +302,19 @@ export interface ChainVerification {
     checked: number;
     unsealed: number;
     firstFailure: ChainFailure | null;
+    /** Null when no anchored head row exists (legacy chain; truncation undetectable). */
+    headAnchor: ChainHeadAnchor | null;
 }
 
 export const MAX_CHAIN_VERIFY_ROWS = 20000;
 
 /**
- * Walk the sealed chain in (created_at, id) order and re-compute every hash
- * plus the link between consecutive sealed rows. Bounded by MAX_CHAIN_VERIFY_ROWS
- * so a runaway database cannot hang the endpoint.
+ * Walk the sealed chain in the shared (chain_seq, created_at, id) total order
+ * — the same order the append leaf read uses — re-computing every hash plus
+ * the link between consecutive sealed rows, and finally compare the anchored
+ * head row to the current leaf so deleting the newest rows (tail truncation)
+ * is detected. Bounded by MAX_CHAIN_VERIFY_ROWS so a runaway database cannot
+ * hang the endpoint.
  */
 export const verifyAuditChain = async (
     db: Pick<AuditLogDataAccess, 'query'>,
@@ -192,18 +326,36 @@ export const verifyAuditChain = async (
         : MAX_CHAIN_VERIFY_ROWS;
     const rows = await db.query<AuditChainRow>(
         `SELECT id, actor_user_id, tenant_id, action, resource_type, resource_id,
-                old_value, new_value, reason, entry_hash, prev_entry_hash
+                old_value, new_value, reason, entry_hash, prev_entry_hash, chain_seq
          FROM audit_events
          WHERE entry_hash IS NOT NULL
-         ORDER BY created_at ASC, id ASC
+         ORDER BY chain_seq ASC, created_at ASC, id ASC
          LIMIT ${limit}`,
     );
     const unsealedRows = await db.query<{ unsealed: number }>(
         'SELECT COUNT(*) AS unsealed FROM audit_events WHERE entry_hash IS NULL',
     );
     const unsealed = Number(unsealedRows[0]?.unsealed ?? 0);
+    const headRows = await db.query<AuditChainHeadRow>(
+        'SELECT head_seq, head_entry_hash, head_row_id FROM audit_chain_head WHERE id = ?',
+        [CHAIN_HEAD_ROW_ID],
+    );
+    const head = headRows[0] ?? null;
+    const leafRows = await db.query<{ id: string; entry_hash: string; chain_seq: number | string | null }>(
+        `SELECT id, entry_hash, chain_seq FROM audit_events
+         WHERE entry_hash IS NOT NULL
+         ORDER BY chain_seq DESC, created_at DESC, id DESC
+         LIMIT 1`,
+    );
+    const leaf = leafRows[0] ?? null;
+    const asSeq = (value: number | string | null | undefined): number | null => {
+        const parsed = Number(value ?? 0);
+        return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : null;
+    };
     let previousHash: string | null = null;
-    for (let index = 0; index < rows.length; index += 1) {
+    let previousSeq: number | null = null;
+    let walkFailure: ChainFailure | null = null;
+    for (let index = 0; index < rows.length && walkFailure === null; index += 1) {
         const row = rows[index];
         const storedHash = String(row.entry_hash ?? '');
         const recomputed = computeEntryHash({
@@ -219,18 +371,14 @@ export const verifyAuditChain = async (
             reason: row.reason,
         });
         if (storedHash !== recomputed) {
-            return {
-                ok: false,
-                checked: rows.length,
-                unsealed,
-                firstFailure: {
-                    rowIndex: index,
-                    rowId: String(row.id),
-                    code: 'payload-hash-mismatch',
-                    expected: recomputed,
-                    actual: storedHash,
-                },
+            walkFailure = {
+                rowIndex: index,
+                rowId: String(row.id),
+                code: 'payload-hash-mismatch',
+                expected: recomputed,
+                actual: storedHash,
             };
+            break;
         }
         // The first sealed row stores a null predecessor and folds the genesis
         // seed into its own payload hash; only subsequent rows link to the
@@ -239,22 +387,65 @@ export const verifyAuditChain = async (
         const expectedPrev = previousHash;
         const storedPrev = row.prev_entry_hash ?? null;
         if (storedPrev !== expectedPrev) {
-            return {
-                ok: false,
-                checked: rows.length,
-                unsealed,
-                firstFailure: {
+            walkFailure = {
+                rowIndex: index,
+                rowId: String(row.id),
+                code: 'chain-link-mismatch',
+                expected: expectedPrev,
+                actual: storedPrev,
+            };
+            break;
+        }
+        // Rows appended after the sequence existed must carry a strictly
+        // increasing chain_seq; a hole means a sealed row was removed from
+        // the middle of the chain. Legacy rows (seq 0) predate the sequence.
+        const seq = asSeq(row.chain_seq);
+        if (seq !== null && seq > 0) {
+            if (previousSeq !== null && seq !== previousSeq + 1) {
+                walkFailure = {
                     rowIndex: index,
                     rowId: String(row.id),
-                    code: 'chain-link-mismatch',
-                    expected: expectedPrev,
-                    actual: storedPrev,
-                },
-            };
+                    code: 'chain-sequence-gap',
+                    expected: String(previousSeq + 1),
+                    actual: String(seq),
+                };
+                break;
+            }
+            previousSeq = seq;
         }
         previousHash = storedHash;
     }
-    return { ok: true, checked: rows.length, unsealed, firstFailure: null };
+    let headAnchor: ChainHeadAnchor | null = null;
+    let anchorFailure: ChainFailure | null = null;
+    if (head) {
+        const headSeq = headSeqOf(head);
+        const headHash = head.head_entry_hash ?? null;
+        const leafSeq = leaf ? asSeq(leaf.chain_seq) : null;
+        const leafHash = leaf?.entry_hash ?? null;
+        const anchorOk = leaf
+            ? leafSeq === headSeq && leafHash === headHash
+            : headSeq === 0 && headHash === null;
+        headAnchor = {
+            headSeq,
+            headEntryHash: headHash,
+            leafSeq,
+            leafEntryHash: leafHash ?? null,
+            ok: anchorOk,
+        };
+        if (!anchorOk) {
+            anchorFailure = {
+                // Not a per-row defect: the anchored head and the live leaf
+                // disagree, i.e. the sealed tail was truncated or rewritten.
+                rowIndex: -1,
+                rowId: String(head.head_row_id ?? CHAIN_HEAD_ROW_ID),
+                code: 'head-anchor-mismatch',
+                expected: headHash,
+                actual: leafHash ?? null,
+            };
+        }
+    }
+    const firstFailure = walkFailure ?? anchorFailure;
+    return { ok: firstFailure === null, checked: rows.length, unsealed, firstFailure, headAnchor };
 };
 
 /* ----------------------------------------------------------------------- */

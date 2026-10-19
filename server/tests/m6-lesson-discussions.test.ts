@@ -36,7 +36,7 @@ import {
     type ReplyRow,
     type ThreadRow,
 } from '../src/services/lesson-discussions';
-import { createLessonDiscussionsRouter } from '../src/routes/lesson-discussions';
+import { createLessonDiscussionsRouter, hasLessonTenantReach } from '../src/routes/lesson-discussions';
 import { TEST_SECRET, invokeRoute, makeRepository, tokenFor } from './helpers/m2-harness';
 
 const originalSecret = process.env.JWT_SECRET;
@@ -369,6 +369,20 @@ test('access: an ambiguous branch scope is denied with 403', async () => {
 test('access: a cross-tenant store row is hidden even when the resolver allows the tenant', async () => {
     const h = buildHarness(makeState({ threads: [makeThread({ id: 'thread-x', tenant_id: OTHER_TENANT })] }));
     assert.equal((await request(h, 'GET', '/threads/thread-x', STUDENT)).statusCode, 404);
+});
+
+test('H1: tenant reach needs a verified platform capability; an admin role label alone is never enough', async () => {
+    const platform = async (id: string): Promise<boolean> => id === 'platform-op';
+    // Same server-derived tenant: allowed without any platform capability.
+    assert.equal(await hasLessonTenantReach({ id: 'instructor-a', tenantId: TENANT }, TENANT, platform), true);
+    // A bare `admin` role label with no tenant (or a different tenant) is denied.
+    assert.equal(await hasLessonTenantReach({ id: 'admin-a', tenantId: null }, TENANT, platform), false);
+    assert.equal(await hasLessonTenantReach({ id: 'admin-a', tenantId: OTHER_TENANT }, TENANT, platform), false);
+    // Cross-tenant reach is allowed only through the verified capability.
+    assert.equal(await hasLessonTenantReach({ id: 'platform-op', tenantId: null }, TENANT, platform), true);
+    assert.equal(await hasLessonTenantReach({ id: 'platform-op', tenantId: OTHER_TENANT }, TENANT, platform), true);
+    // An unverified lookup denies.
+    assert.equal(await hasLessonTenantReach({ id: 'admin-a', tenantId: null }, TENANT, async () => false), false);
 });
 
 // ---------------------------------------------------------------------------

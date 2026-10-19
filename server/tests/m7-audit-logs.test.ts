@@ -4,6 +4,7 @@ import type { Router } from 'express';
 import { createAuthenticateToken } from '../src/middleware/auth';
 import {
     AUDIT_CSV_HEADERS,
+    CHAIN_HEAD_ROW_ID,
     MAX_CHAIN_VERIFY_ROWS,
     MAX_EXPORT_ROWS,
     MAX_PAGE,
@@ -17,6 +18,7 @@ import {
     verifyAuditChain,
 } from '../src/services/audit-log';
 import type {
+    AuditChainHeadRow,
     AuditChainRow,
     AuditLogDataAccess,
     SealedAuditRecordInput,
@@ -65,50 +67,218 @@ test('computeEntryHash is deterministic and differs per payload or predecessor',
     );
 });
 
-test('recordSealedAuditEvent seeds the chain with genesis and links each new row', async () => {
-    const inserted: Array<{ sql: string; params: unknown[] }> = [];
+const BASE_INPUT: SealedAuditRecordInput = {
+    actorUserId: 'admin-a',
+    tenantId: 'tenant-a',
+    action: 'audit_log.exported',
+    resourceType: 'audit_events',
+    resourceId: '*',
+    newValue: { row_count: 2 },
+    reason: 'Audit log CSV export',
+};
+
+/**
+ * In-memory fake of the head-anchored append contract: stateful head row,
+ * simulated CAS guard semantics and statement recording, so the tests can
+ * assert the exact statement order and parameters the append produces.
+ */
+const makeChainDb = () => {
+    const executed: Array<{ sql: string; params: unknown[] }> = [];
+    const state = {
+        head: null as { head_seq: number; head_entry_hash: string | null; head_row_id: string | null } | null,
+        legacyLeaf: null as { id: string; entry_hash: string; chain_seq: number } | null,
+    };
+    const casAttempts: Array<{ assignedSeq: number; guardSeq: number }> = [];
+    let loseNextCas = false;
+    let failRowInserts = false;
     const db = {
-        query: async <T>(): Promise<T[]> => (inserted.length
-            ? [{ entry_hash: 'leaf-0' } as unknown as T]
-            : []),
+        query: async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
+            executed.push({ sql, params });
+            if (sql.includes('FROM audit_chain_head')) {
+                return (state.head ? [{ ...state.head }] : []) as unknown as T[];
+            }
+            return (state.legacyLeaf ? [{ ...state.legacyLeaf }] : []) as unknown as T[];
+        },
         queryOne: async <T>(): Promise<T | null> => null,
         execute: async (sql: string, params: unknown[] = []) => {
-            inserted.push({ sql, params });
+            if (sql.includes('INSERT INTO audit_chain_head')) {
+                executed.push({ sql, params });
+                state.head = {
+                    head_seq: Number(params[1]),
+                    head_entry_hash: params[2] as string | null,
+                    head_row_id: params[3] as string | null,
+                };
+                return { affectedRows: 1 };
+            }
+            if (sql.includes('INSERT INTO audit_events')) {
+                executed.push({ sql, params });
+                if (failRowInserts) throw new Error('The audit_events insert failed');
+                return { affectedRows: 1 };
+            }
+            if (sql.includes('UPDATE audit_chain_head')) {
+                executed.push({ sql, params });
+                const [assignedSeq, assignedHash, assignedRowId, , guardSeq] =
+                    params as [number, string | null, string | null, string, number];
+                casAttempts.push({ assignedSeq: Number(assignedSeq), guardSeq: Number(guardSeq) });
+                if (Number(guardSeq) !== state.head?.head_seq) return { affectedRows: 0 };
+                if (loseNextCas) {
+                    // simulate the concurrent writer winning this guard first
+                    loseNextCas = false;
+                    state.head = {
+                        head_seq: Number(guardSeq) + 1,
+                        head_entry_hash: `competitor-${Number(guardSeq) + 1}`,
+                        head_row_id: 'competitor-row',
+                    };
+                    return { affectedRows: 0 };
+                }
+                state.head = {
+                    head_seq: Number(assignedSeq),
+                    head_entry_hash: assignedHash,
+                    head_row_id: assignedRowId,
+                };
+                return { affectedRows: 1 };
+            }
+            executed.push({ sql, params });
             return { affectedRows: 1 };
         },
     };
-    const input: SealedAuditRecordInput = {
+    return {
+        db: db as unknown as AuditLogDataAccess,
+        executed,
+        state,
+        casAttempts,
+        advanceHeadWithoutGuard: (nextHash: string) => {
+            state.head = {
+                head_seq: (state.head?.head_seq ?? 0) + 1,
+                head_entry_hash: nextHash,
+                head_row_id: 'competitor-row',
+            };
+        },
+        failNextCas: () => { loseNextCas = true; },
+        failRowInserts: () => { failRowInserts = true; },
+    };
+};
+
+test('recordSealedAuditEvent bootstraps the anchored head and assigns chain_seq 1', async () => {
+    // Legacy database: no head row yet, no sealed rows either.
+    const fake = makeChainDb();
+    await recordSealedAuditEvent(fake.db, BASE_INPUT);
+
+    // Statement order: locked head read -> legacy leaf read -> head seed ->
+    // locked head re-read -> CAS reservation -> sealed row INSERT.
+    assert.ok(fake.executed[0].sql.includes('FROM audit_chain_head'));
+    assert.ok(fake.executed[0].sql.includes('FOR UPDATE'));
+    assert.ok(fake.executed[1].sql.includes('ORDER BY chain_seq DESC, created_at DESC, id DESC'));
+    const seed = fake.executed[2];
+    assert.ok(seed.sql.includes('INSERT INTO audit_chain_head'));
+    assert.deepEqual(seed.params, [CHAIN_HEAD_ROW_ID, 0, null, null]);
+    assert.ok(fake.executed[3].sql.includes('FOR UPDATE'));
+    const reserve = fake.executed[4];
+    assert.ok(reserve.sql.includes('UPDATE audit_chain_head'));
+    assert.ok(reserve.sql.includes('WHERE id = ? AND head_seq = ?'));
+    assert.ok(reserve.sql.includes('updated_at = CURRENT_TIMESTAMP'));
+    const insert = fake.executed[5];
+    assert.ok(insert.sql.includes('entry_hash, prev_entry_hash, chain_seq'));
+    // genesis link: prev null, sequence starts at 1, payload hash recomputes
+    assert.equal(insert.params[10], null);
+    assert.equal(insert.params[11], 1);
+    const recomputed = computeEntryHash({
+        prevEntryHash: null,
+        id: String(insert.params[0]),
+        actorUserId: insert.params[1] as string,
+        tenantId: insert.params[2] as string,
+        action: String(insert.params[3]),
+        resourceType: String(insert.params[4]),
+        resourceId: String(insert.params[5]),
+        oldValue: insert.params[6],
+        newValue: insert.params[7],
+        reason: insert.params[8] as string | null,
+    });
+    assert.equal(insert.params[9], recomputed);
+    // the anchored head advanced onto the new row
+    assert.deepEqual(reserve.params, [1, recomputed, String(insert.params[0]), CHAIN_HEAD_ROW_ID, 0]);
+    assert.deepEqual(fake.state.head, { head_seq: 1, head_entry_hash: recomputed, head_row_id: String(insert.params[0]) });
+});
+
+test('recordSealedAuditEvent seeds the head from a legacy sealed leaf and keeps the link', async () => {
+    // Legacy database with sealed row 'legacy-1' (hash L0, seq 0).
+    const fake = makeChainDb();
+    fake.state.legacyLeaf = { id: 'legacy-1', entry_hash: 'L0', chain_seq: 0 };
+    await recordSealedAuditEvent(fake.db, BASE_INPUT);
+    // the head seed anchors the legacy leaf; the new row links onto it
+    assert.deepEqual(fake.executed[2].params, [CHAIN_HEAD_ROW_ID, 0, 'L0', 'legacy-1']);
+    assert.equal(fake.executed[5].params[10], 'L0');
+    assert.equal(fake.executed[5].params[11], 1);
+    assert.deepEqual(fake.executed[4].params, [
+        1,
+        fake.executed[5].params[9] as string,
+        String(fake.executed[5].params[0]),
+        CHAIN_HEAD_ROW_ID,
+        0,
+    ]);
+});
+
+test('recordSealedAuditEvent chains onto the anchored head without a legacy leaf read', async () => {
+    // Second append: the head row already exists (seq 1, hash of the first row).
+    const firstHash = computeEntryHash({
+        prevEntryHash: null,
+        id: 'row-1',
         actorUserId: 'admin-a',
         tenantId: 'tenant-a',
-        action: 'audit_log.exported',
-        resourceType: 'audit_events',
-        resourceId: '*',
-        newValue: { row_count: 2 },
-        reason: 'Audit log CSV export',
-    };
-    await recordSealedAuditEvent(db, input);
-    await recordSealedAuditEvent(db, input);
-
-    const first = inserted[0];
-    const second = inserted[1];
-    assert.ok(first.sql.includes('entry_hash, prev_entry_hash'));
-    // genesis link: no leaf existed for the first row
-    assert.equal(first.params[10], null);
-    const recomputedFirst = computeEntryHash({
-        prevEntryHash: null,
-        id: String(first.params[0]),
-        actorUserId: first.params[1] as string,
-        tenantId: first.params[2] as string,
-        action: String(first.params[3]),
-        resourceType: String(first.params[4]),
-        resourceId: String(first.params[5]),
-        oldValue: first.params[6],
-        newValue: first.params[7],
-        reason: first.params[8] as string | null,
+        action: BASE_INPUT.action,
+        resourceType: BASE_INPUT.resourceType,
+        resourceId: BASE_INPUT.resourceId,
+        oldValue: null,
+        newValue: JSON.stringify({ row_count: 2 }),
+        reason: BASE_INPUT.reason ?? null,
     });
-    assert.equal(first.params[9], recomputedFirst);
-    assert.equal(second.params[10], 'leaf-0');
-    assert.notEqual(second.params[9], first.params[9]);
+    const fake = makeChainDb();
+    fake.state.head = { head_seq: 1, head_entry_hash: firstHash, head_row_id: 'row-1' };
+    await recordSealedAuditEvent(fake.db, BASE_INPUT);
+    // no bootstrap: exactly head read -> CAS reserve -> row insert
+    assert.equal(fake.executed.length, 3);
+    assert.ok(!fake.executed.some((e) => e.sql.includes('ORDER BY chain_seq DESC')));
+    const insert = fake.executed[2];
+    assert.equal(insert.params[10], firstHash);
+    assert.equal(insert.params[11], 2);
+    assert.deepEqual(fake.executed[1].params, [2, insert.params[9], String(insert.params[0]), CHAIN_HEAD_ROW_ID, 1]);
+});
+
+test('recordSealedAuditEvent retries the CAS until it reserves a fresh sequence', async () => {
+    const fake = makeChainDb();
+    fake.state.head = { head_seq: 7, head_entry_hash: 'competitor-7', head_row_id: 'competitor-row-7' };
+    // simulated concurrent writer: wins the first reservation guard
+    fake.failNextCas();
+    await recordSealedAuditEvent(fake.db, BASE_INPUT);
+    assert.equal(fake.casAttempts.length, 2);
+    assert.equal(fake.casAttempts[0].assignedSeq, 8);
+    assert.equal(fake.casAttempts[0].guardSeq, 7);
+    assert.equal(fake.casAttempts[1].assignedSeq, 9);
+    assert.equal(fake.casAttempts[1].guardSeq, 8);
+    // the winning attempt inserted seq 9 linked to the competitor's hash
+    assert.equal(fake.executed.filter((e) => e.sql.includes('INSERT INTO audit_events')).length, 1);
+    const insert = fake.executed.find((e) => e.sql.includes('INSERT INTO audit_events'));
+    assert.equal(insert?.params[10], 'competitor-8');
+    assert.equal(insert?.params[11], 9);
+    assert.deepEqual(fake.state.head, {
+        head_seq: 9,
+        head_entry_hash: insert?.params[9],
+        head_row_id: String(insert?.params[0]),
+    });
+});
+
+test('recordSealedAuditEvent fails without leaving a phantom head anchor when the row insert fails', async () => {
+    const fake = makeChainDb();
+    fake.state.head = { head_seq: 4, head_entry_hash: 'h-4', head_row_id: 'row-4' };
+    fake.failRowInserts();
+    await assert.rejects(() => recordSealedAuditEvent(fake.db, BASE_INPUT), /audit_events insert failed/);
+    // the compensated restore put the head back on the pre-append anchor
+    const restores = fake.executed.filter((e) =>
+        e.sql.includes('UPDATE audit_chain_head') && !e.sql.includes('updated_at = CURRENT_TIMESTAMP'));
+    assert.equal(restores.length, 1);
+    assert.equal(restores[0].sql.includes('WHERE id = ? AND head_seq = ?'), true);
+    assert.deepEqual(restores[0].params, [4, 'h-4', 'row-4', CHAIN_HEAD_ROW_ID, 5]);
+    assert.deepEqual(fake.state.head, { head_seq: 4, head_entry_hash: 'h-4', head_row_id: 'row-4' });
 });
 
 // ---------------------------------------------------------------------------
@@ -132,6 +302,7 @@ const chainRow = (
         reason: null,
         entry_hash: '',
         prev_entry_hash: prev,
+        chain_seq: 0,
     };
     Object.assign(row, overrides);
     row.entry_hash = computeEntryHash({
@@ -149,20 +320,52 @@ const chainRow = (
     return row;
 };
 
+/** Fake for verifyAuditChain's four queries: walk / unsealed count / head / leaf. */
+const verifyChainDb = (fixture: {
+    rows: AuditChainRow[];
+    unsealed?: number;
+    head?: AuditChainHeadRow | null;
+    leaf?: { id: string; entry_hash: string; chain_seq: number | string | null } | null;
+}) => ({
+    query: async <T>(sql: string): Promise<T[]> => {
+        if (sql.includes('ORDER BY chain_seq DESC')) return (fixture.leaf ? [fixture.leaf] : []) as unknown as T[];
+        if (sql.includes('FROM audit_chain_head')) return (fixture.head ? [fixture.head] : []) as unknown as T[];
+        if (sql.includes('COUNT(*)')) return [{ unsealed: fixture.unsealed ?? 0 }] as unknown as T[];
+        return fixture.rows as unknown as T[];
+    },
+}) as unknown as Pick<AuditLogDataAccess, 'query'>;
+
 test('verifyAuditChain reports a valid sealed chain', async () => {
     const a = chainRow(1, null);
     const b = chainRow(2, a.entry_hash);
     const c = chainRow(3, b.entry_hash);
-    const result = await verifyAuditChain({
-        query: async (sql: string): Promise<unknown[]> => {
-            if (sql.includes('COUNT(*)')) return [{ unsealed: 0 }];
-            return [a, b, c];
-        },
-    } as never);
+    // legacy chain: no anchored head row (query returns nothing)
+    const result = await verifyAuditChain(verifyChainDb({ rows: [a, b, c] }));
     assert.equal(result.ok, true);
     assert.equal(result.checked, 3);
     assert.equal(result.unsealed, 0);
     assert.equal(result.firstFailure, null);
+    assert.equal(result.headAnchor, null);
+});
+
+test('verifyAuditChain validates a sequenced chain against its anchored head', async () => {
+    const a = chainRow(1, null, { chain_seq: 1 });
+    const b = chainRow(2, a.entry_hash, { chain_seq: 2 });
+    const c = chainRow(3, b.entry_hash, { chain_seq: 3 });
+    const result = await verifyAuditChain(verifyChainDb({
+        rows: [a, b, c],
+        head: { head_seq: 3, head_entry_hash: c.entry_hash, head_row_id: 'row-3' },
+        leaf: { id: 'row-3', entry_hash: c.entry_hash, chain_seq: 3 },
+    }));
+    assert.equal(result.ok, true);
+    assert.equal(result.checked, 3);
+    assert.deepEqual(result.headAnchor, {
+        headSeq: 3,
+        headEntryHash: c.entry_hash,
+        leafSeq: 3,
+        leafEntryHash: c.entry_hash,
+        ok: true,
+    });
 });
 
 test('verifyAuditChain detects payload tampering and broken links', async () => {
@@ -170,42 +373,98 @@ test('verifyAuditChain detects payload tampering and broken links', async () => 
     // The row keeps the hash signed for the original action but its stored
     // action was rewritten in place: a genuine payload tamper.
     const b = { ...chainRow(2, a.entry_hash), action: 'announcement.update' };
-    const tamperDb = {
-        query: async (sql: string): Promise<unknown[]> => {
-            if (sql.includes('COUNT(*)')) return [{ unsealed: 3 }];
-            return [a, b];
-        },
-    };
-    const tampered = await verifyAuditChain(tamperDb as never);
+    const tampered = await verifyAuditChain(verifyChainDb({ rows: [a, b], unsealed: 3 }));
     assert.equal(tampered.ok, false);
     assert.equal(tampered.firstFailure?.code, 'payload-hash-mismatch');
     assert.equal(tampered.firstFailure?.rowId, 'row-2');
     assert.equal(tampered.checked, 2);
     assert.equal(tampered.unsealed, 3);
+    assert.equal(tampered.headAnchor, null);
 
     // A re-signed row over a broken predecessor chain must still fail.
     const c = chainRow(3, b.entry_hash);
     const cForged = chainRow(3, 'c-forged-prev', { entry_hash: 'forged' });
-    const linkDb = {
-        query: async (sql: string): Promise<unknown[]> => {
-            if (sql.includes('COUNT(*)')) return [{ unsealed: 0 }];
-            return [a, c as AuditChainRow, cForged];
-        },
-    };
-    const brokenLink = await verifyAuditChain(linkDb as never);
+    const brokenLink = await verifyAuditChain(verifyChainDb({ rows: [a, c, cForged] }));
     assert.equal(brokenLink.ok, false);
     assert.equal(brokenLink.firstFailure?.code, 'chain-link-mismatch');
+});
+
+test('verifyAuditChain flags a hole in the assigned chain_seq run', async () => {
+    // Row with seq 2 was deleted from the middle of the chain: 1 -> 3 jumps.
+    const a = chainRow(1, null, { chain_seq: 1 });
+    const c = chainRow(3, a.entry_hash, { chain_seq: 3 });
+    const result = await verifyAuditChain(verifyChainDb({
+        rows: [a, c],
+        head: { head_seq: 3, head_entry_hash: c.entry_hash, head_row_id: 'row-3' },
+        leaf: { id: 'row-3', entry_hash: c.entry_hash, chain_seq: 3 },
+    }));
+    assert.equal(result.ok, false);
+    assert.equal(result.firstFailure?.code, 'chain-sequence-gap');
+    assert.equal(result.firstFailure?.rowId, 'row-3');
+    assert.equal(result.firstFailure?.expected, '2');
+    assert.equal(result.firstFailure?.actual, '3');
+});
+
+test('verifyAuditChain detects tail truncation through the head anchor', async () => {
+    const a = chainRow(1, null, { chain_seq: 1 });
+    const b = chainRow(2, a.entry_hash, { chain_seq: 2 });
+    const c = chainRow(3, b.entry_hash, { chain_seq: 3 });
+    // Simulated tamper: row-3 was deleted, but the head still anchors it
+    // (walk data shows the stale pre-truncation chain, the leaf read shows
+    // the truncated tail) — the anchor comparison must fail the check.
+    const result = await verifyAuditChain(verifyChainDb({
+        rows: [a, b, c],
+        head: { head_seq: 3, head_entry_hash: c.entry_hash, head_row_id: 'row-3' },
+        leaf: { id: 'row-2', entry_hash: b.entry_hash, chain_seq: 2 },
+    }));
+    assert.equal(result.ok, false);
+    assert.equal(result.firstFailure?.code, 'head-anchor-mismatch');
+    assert.equal(result.firstFailure?.rowId, 'row-3');
+    assert.equal(result.firstFailure?.expected, c.entry_hash);
+    assert.equal(result.firstFailure?.actual, b.entry_hash);
+    assert.deepEqual(result.headAnchor, {
+        headSeq: 3,
+        headEntryHash: c.entry_hash,
+        leafSeq: 2,
+        leafEntryHash: b.entry_hash,
+        ok: false,
+    });
+});
+
+test('verifyAuditChain treats legacy seq 0 rows as un-sequenced but sealed', async () => {
+    // Mixed legacy run: seq-0 rows keep (created_at, id) ordering and must
+    // not trip the sequence-gap check when followed by sequenced rows.
+    const a = chainRow(1, null);
+    const b = chainRow(2, a.entry_hash);
+    const c = chainRow(3, b.entry_hash, { chain_seq: 1 });
+    const d = chainRow(4, c.entry_hash, { chain_seq: 2 });
+    const result = await verifyAuditChain(verifyChainDb({ rows: [a, b, c, d] }));
+    assert.equal(result.ok, true);
+    assert.equal(result.checked, 4);
+    assert.equal(result.firstFailure, null);
+});
+
+test('verifyAuditChain tolerates an empty chain anchored at genesis', async () => {
+    const result = await verifyAuditChain(verifyChainDb({
+        rows: [],
+        head: { head_seq: 0, head_entry_hash: null, head_row_id: null },
+        leaf: null,
+    }));
+    assert.equal(result.ok, true);
+    assert.equal(result.checked, 0);
+    assert.deepEqual(result.headAnchor, {
+        headSeq: 0,
+        headEntryHash: null,
+        leafSeq: null,
+        leafEntryHash: null,
+        ok: true,
+    });
 });
 
 test('verifyAuditChain is bounded by the scan cap and counts unsealed rows', async () => {
     assert.equal(MAX_CHAIN_VERIFY_ROWS, 20000);
     const a = chainRow(1, null);
-    const result = await verifyAuditChain({
-        query: async (sql: string): Promise<unknown[]> => {
-            if (sql.includes('COUNT(*)')) return [{ unsealed: 7 }];
-            return [a];
-        },
-    } as never);
+    const result = await verifyAuditChain(verifyChainDb({ rows: [a], unsealed: 7 }));
     assert.equal(result.ok, true);
     assert.equal(result.checked, 1);
     assert.equal(result.unsealed, 7);
@@ -300,6 +559,8 @@ interface RouteFixture {
     auditCount?: number;
     chainRows?: AuditChainRow[];
     unsealed?: number;
+    head?: AuditChainHeadRow | null;
+    leaf?: { id: string; entry_hash: string; chain_seq: number | string | null } | null;
 }
 
 const buildRouter = (fixture: RouteFixture = {}) => {
@@ -308,6 +569,12 @@ const buildRouter = (fixture: RouteFixture = {}) => {
     const db: AuditLogDataAccess = {
         query: async <T = Record<string, unknown>>(sql: string, params: unknown[] = []) => {
             executed.push({ sql, params, kind: 'query' });
+            if (sql.includes('ORDER BY chain_seq DESC')) {
+                return (fixture.leaf ? [fixture.leaf] : []) as unknown as T[];
+            }
+            if (sql.includes('FROM audit_chain_head')) {
+                return (fixture.head ? [fixture.head] : []) as unknown as T[];
+            }
             if (sql.includes('WHERE entry_hash IS NOT NULL')) {
                 return (fixture.chainRows ?? []) as unknown as T[];
             }
@@ -553,7 +820,8 @@ test('audit events: chain verification is platform-only', async () => {
     assert.equal(denied.statusCode, 403);
     const ok = await invoke(router, { method: 'GET', url: '/chain/verify', token: ADMIN });
     assert.equal(ok.statusCode, 200);
-    assert.deepEqual(ok.body, { ok: true, checked: 0, unsealed: 0, firstFailure: null });
+    // legacy chain (no head row): headAnchor is reported as null
+    assert.deepEqual(ok.body, { ok: true, checked: 0, unsealed: 0, firstFailure: null, headAnchor: null });
 });
 
 test('audit events: chain verification reports tampering through the route', async () => {
@@ -565,8 +833,40 @@ test('audit events: chain verification reports tampering through the route', asy
     const { router } = buildRouter({ chainRows: [a, tampered] });
     const response = await invoke(router, { method: 'GET', url: '/chain/verify', token: ADMIN });
     assert.equal(response.statusCode, 200);
-    const body = response.body as { ok: boolean; firstFailure?: { code?: string; rowId?: string } };
+    const body = response.body as { ok: boolean; firstFailure?: { code?: string; rowId?: string }; headAnchor?: unknown };
     assert.equal(body.ok, false);
     assert.equal(body.firstFailure?.code, 'payload-hash-mismatch');
     assert.equal(body.firstFailure?.rowId, 'row-2');
+    assert.equal(body.headAnchor, null);
+});
+
+test('audit events: the route exposes the anchored-head verdict', async () => {
+    const a = chainRow(1, null, { chain_seq: 1 });
+    const b = chainRow(2, a.entry_hash, { chain_seq: 2 });
+    const { router } = buildRouter({
+        chainRows: [a, b],
+        head: { head_seq: 2, head_entry_hash: b.entry_hash, head_row_id: 'row-2' },
+        leaf: { id: 'row-1', entry_hash: a.entry_hash, chain_seq: 1 },
+    });
+    const response = await invoke(router, { method: 'GET', url: '/chain/verify', token: ADMIN });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.body, {
+        ok: false,
+        checked: 2,
+        unsealed: 0,
+        firstFailure: {
+            rowIndex: -1,
+            rowId: 'row-2',
+            code: 'head-anchor-mismatch',
+            expected: b.entry_hash,
+            actual: a.entry_hash,
+        },
+        headAnchor: {
+            headSeq: 2,
+            headEntryHash: b.entry_hash,
+            leafSeq: 1,
+            leafEntryHash: a.entry_hash,
+            ok: false,
+        },
+    });
 });
