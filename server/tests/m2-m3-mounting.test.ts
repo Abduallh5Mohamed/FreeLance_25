@@ -567,3 +567,102 @@ test('mounting (M6): the new M6 surfaces deny an anonymous caller without touchi
     assert.equal(db.calls(), 0, 'an anonymous caller must not reach SQL storage');
     assert.equal(storageCalls, 0, 'an anonymous caller must not reach injected stores');
 });
+
+/* -------------------------------------------------------------------------- */
+/* M7 platform mounts (appended 2026-10-19)                                    */
+/* -------------------------------------------------------------------------- */
+
+const M7_MOUNTS: ReadonlyArray<readonly [string, string]> = [
+    ['/api/platform/flags', 'platformFlagsRoutes'],
+    ['/api/audit-logs', 'auditLogsRoutes'],
+    ['/api/moderation', 'moderationRoutes'],
+];
+
+test('mounting (M7): platform flags, audit logs and moderation mount after the guard chain', () => {
+    const guardIndex = indexSource.indexOf(GUARD_ANCHOR);
+    assert.ok(guardIndex > -1, 'the shared /api guard chain must exist');
+    const notFoundIndex = indexSource.indexOf('// 404 handler');
+    assert.ok(notFoundIndex > guardIndex, 'the 404 handler must follow the guard chain');
+
+    for (const [mountPath, variable] of M7_MOUNTS) {
+        const statement = `app.use('${mountPath}', ${variable})`;
+        const mountIndex = indexSource.indexOf(statement);
+        assert.ok(mountIndex > -1, `expected mount statement missing: ${statement}`);
+        assert.ok(mountIndex > guardIndex, `${mountPath} must be mounted after the /api guard chain`);
+        assert.ok(mountIndex < notFoundIndex, `${mountPath} must be mounted before the 404 handler`);
+
+        const parsed = parseMounts(indexSource).find((mount) => mount.path === mountPath);
+        assert.ok(parsed, `${mountPath} must be parsed as an /api mount`);
+        assert.equal(parsed?.variable, variable, `${mountPath} must mount the expected router variable`);
+    }
+});
+
+test('mounting (M7): the new mount paths collide with no other mount (segment-aware)', () => {
+    const mounts = parseMounts(indexSource);
+    for (const [mountPath] of M7_MOUNTS) {
+        const candidate = segments(mountPath);
+        for (const mount of mounts) {
+            if (mount.path === mountPath) continue;
+            const other = segments(mount.path);
+            const collides = isSegmentPrefix(other, candidate) || isSegmentPrefix(candidate, other);
+            assert.ok(!collides, `${mountPath} would collide with ${mount.path}`);
+        }
+    }
+});
+
+test('mounting (M7): platform flags, audit logs and moderation deny an anonymous caller without touching storage', async () => {
+    const { createPlatformFlagsRouter } = await import('../src/routes/platform-flags');
+    const { createAuditLogsRouter } = await import('../src/routes/audit-logs');
+    const { createModerationRouter } = await import('../src/routes/moderation');
+    type RequestHandler = import('express').RequestHandler;
+
+    const forbidden = (): RequestHandler =>
+        ((_req: unknown, res: { status(code: number): { json(body: unknown): void } }) => {
+            res.status(403).json({ error: 'Forbidden' });
+        }) as unknown as RequestHandler;
+
+    const db = tripwireDb();
+    const router = Router();
+    router.use(optionalAuth, enforceTenantAuthorityBoundary, enforceStudentWorkspaceBoundary);
+    router.use('/api/platform/flags', createPlatformFlagsRouter({
+        db,
+        authenticate: authenticateToken,
+        requirePlatformPermission: () => forbidden(),
+        recordAudit: async () => { throw new Error('audit must not run for an anonymous caller'); },
+    }));
+    router.use('/api/audit-logs', createAuditLogsRouter({
+        db,
+        authenticate: authenticateToken,
+        requirePlatformPermission: () => forbidden(),
+        isPlatformReader: async () => { throw new Error('scope must not resolve for an anonymous caller'); },
+        tenantOwnerTenantId: async () => { throw new Error('scope must not resolve for an anonymous caller'); },
+        recordAudit: async () => { throw new Error('audit must not run for an anonymous caller'); },
+    }));
+    router.use('/api/moderation', createModerationRouter({
+        db,
+        authenticate: authenticateToken,
+        reports: { findReportById: async () => { throw new Error('reports must not be read for an anonymous caller'); } },
+        content: {
+            snapshotEvidence: async () => { throw new Error('evidence must not be read for an anonymous caller'); },
+            applyAction: async () => { throw new Error('content must not change for an anonymous caller'); },
+        },
+        isPlatformModerator: async () => { throw new Error('permission must not resolve for an anonymous caller'); },
+        loadActiveTenantAuthority: async () => { throw new Error('authority must not resolve for an anonymous caller'); },
+        notifyTenantOwner: async () => { throw new Error('notification must not fire for an anonymous caller'); },
+        recordAudit: async () => { throw new Error('audit must not run for an anonymous caller'); },
+    }));
+
+    const probes = [
+        { method: 'GET', url: '/api/platform/flags' },
+        { method: 'GET', url: '/api/audit-logs' },
+        { method: 'GET', url: '/api/moderation/cases' },
+    ];
+    for (const probe of probes) {
+        const res = await invokeRoute(router, probe);
+        assert.ok(
+            res.statusCode === 401 || res.statusCode === 403,
+            `${probe.method} ${probe.url} must deny an anonymous caller (got ${res.statusCode})`,
+        );
+    }
+    assert.equal(db.calls(), 0, 'an anonymous caller must not reach SQL storage');
+});

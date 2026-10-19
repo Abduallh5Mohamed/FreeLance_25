@@ -332,3 +332,75 @@ post-guard M6 mounts are ordered after the guard chain and before the 404
 handler, that `/api/parent` precedes `optionalAuth`, that the new paths collide
 with no existing mount, and hermetically that an anonymous caller reaches
 neither SQL storage nor any injected store on any of the four surfaces.
+
+## M7 platform mounts (appended 2026-10-19)
+
+Three M7 routers are now mounted in `server/src/index.ts`, after the shared
+`/api` guard chain and before the 404 handler:
+
+| Router | Mount path | Source |
+| --- | --- | --- |
+| feature flags (M7 O1) | `/api/platform/flags` | `server/src/routes/platform-flags.ts` |
+| audit log read/export (M7 O2) | `/api/audit-logs` | `server/src/routes/audit-logs.ts` |
+| content moderation (M7 O4) | `/api/moderation` | `server/src/routes/moderation.ts` |
+
+Mount order in `index.ts`:
+
+```ts
+app.use('/api', optionalAuth, enforceTenantAuthorityBoundary, enforceStudentWorkspaceBoundary);
+// ...
+app.use('/api/platform/flags', platformFlagsRoutes);
+app.use('/api/audit-logs', auditLogsRoutes);
+app.use('/api/moderation', moderationRoutes);
+```
+
+No path is an exact match of, or a path-segment prefix of, another mount
+(`/api/platform/flags` is unrelated to the existing `/api/admin/platform`;
+`/api/audit-logs` and `/api/moderation` are new segments).
+
+### `/api/platform/flags` — feature flags
+
+| Method | Path | Guard / authority |
+| --- | --- | --- |
+| GET | `/api/platform/flags` | `authenticateToken`; verified `platform_flags.read` permission |
+| POST | `/api/platform/flags` | `authenticateToken`; verified `platform_flags.manage` permission |
+| GET | `/api/platform/flags/:id` | `authenticateToken`; verified `platform_flags.read` permission |
+| GET | `/api/platform/flags/:id/versions` | `authenticateToken`; verified `platform_flags.read` permission |
+| POST | `/api/platform/flags/:id/versions` | `authenticateToken`; verified `platform_flags.manage` permission |
+| POST | `/api/platform/flags/:id/versions/:versionId/publish` | `authenticateToken`; verified `platform_flags.manage` permission |
+| POST | `/api/platform/flags/:id/versions/:versionId/rollback` | `authenticateToken`; verified `platform_flags.manage` permission |
+| POST | `/api/platform/flags/:id/archive` | `authenticateToken`; verified `platform_flags.manage` permission |
+
+### `/api/audit-logs` — audit log read + export
+
+| Method | Path | Guard / authority |
+| --- | --- | --- |
+| GET | `/api/audit-logs` | `authenticateToken`; verified platform reader or verified tenant owner (pinned to own tenant) |
+| GET | `/api/audit-logs/export.csv` | `authenticateToken`; verified platform reader or verified tenant owner; the export itself is audited |
+| GET | `/api/audit-logs/verify` | `authenticateToken`; verified platform reader (hash-chain verification) |
+
+### `/api/moderation` — content moderation queue
+
+| Method | Path | Guard / authority |
+| --- | --- | --- |
+| GET | `/api/moderation/cases` | `authenticateToken`; verified platform moderator or tenant staff (pinned to own tenant) |
+| GET | `/api/moderation/cases/:id` | `authenticateToken`; same scope; cross-tenant ids are 404 |
+| POST | `/api/moderation/cases` | `authenticateToken`; same scope; report target must be provable |
+| POST | `/api/moderation/cases/:id/assign` | `authenticateToken`; same scope; reviewer must be a verified moderator of the case tenant |
+| POST | `/api/moderation/cases/:id/decision` | `authenticateToken`; same scope; reporter cannot decide their own report |
+| POST | `/api/moderation/cases/:id/appeal` | `authenticateToken`; the report's reporter or the target author (one appeal per case) |
+| POST | `/api/moderation/cases/:id/appeal-decision` | `authenticateToken`; same scope; reviewer must differ from the original decider and the appellant |
+
+See `docs/streams/server/M7-O4-DELIVERY.md` for the queue, evidence-snapshot,
+reviewer, decision, appeal and audit rules.
+
+### Verification addendum (M7)
+
+`server/tests/m2-m3-mounting.test.ts` (appended M7 tests) asserts that the three
+M7 mounts are ordered after the guard chain and before the 404 handler, that the
+new paths collide with no existing mount, and hermetically that an anonymous
+caller is denied (401/403) with zero storage access on all three surfaces.
+`server/tests/m7-moderation.test.ts` covers the moderation router's allow/deny/
+cross-tenant/validation/failure cases, and `server/tests/m7-feature-flags.test.ts`
+and `server/tests/m7-audit-logs.test.ts` cover the other two.
+

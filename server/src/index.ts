@@ -72,6 +72,9 @@ import examVersionsRoutes, { runExamAttemptExpiryPass } from './routes/exam-vers
 import gradebookRoutes from './routes/gradebook';
 import schedulesRoutes from './routes/schedules';
 import attendanceRecordsRoutes from './routes/attendance-records';
+import platformFlagsRoutes from './routes/platform-flags';
+import auditLogsRoutes from './routes/audit-logs';
+import moderationRoutes from './routes/moderation';
 import { initializeBuckets } from './services/minio';
 import { reconcileTenantSubscriptions } from './services/subscription-lifecycle';
 import { optionalAuth } from './middleware/auth';
@@ -232,6 +235,14 @@ app.use('/api/gradebook', gradebookRoutes);
 // docs18 certificate mentions (marked superseded by human decision).
 app.use('/api/schedules', schedulesRoutes);
 app.use('/api/attendance-records', attendanceRecordsRoutes);
+
+// M7 platform surfaces. Mounted behind the same /api guards above: a supplied
+// credential is resolved to a verified principal before any handler, and each
+// router re-checks the verified platform permission / tenant authority
+// (deny-by-default) rather than trusting a JWT role claim.
+app.use('/api/platform/flags', platformFlagsRoutes);
+app.use('/api/audit-logs', auditLogsRoutes);
+app.use('/api/moderation', moderationRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {

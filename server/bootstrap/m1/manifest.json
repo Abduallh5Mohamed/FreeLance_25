@@ -46,7 +46,9 @@
     "M2 lifecycle migration 20261018_01 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval.",
     "M6 delivery migration 20261018_14 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval.",
     "M6 P6 migration 20261018_16 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval.",
-    "M7 O2/O7 migration 20261018_17 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval."
+    "M7 O2/O7 migration 20261018_17 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval.",
+    "M7 O4 moderation migration 20261018_18 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval.",
+    "M7 O6/O9 migration 20261018_19 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval."
   ],
   "databaseCollationSha256": "60c1bf0c55f3bbb1f76cfdcd8d52b3c532be9616952b85f26a8b9caed1925929",
   "sourceSha256": {
@@ -101,6 +103,8 @@
     "20261018_14_notification_outbox_consent.sql": "09a9a007c0e8ee789d512635ff751c888d8e542803ad83702fe6cc061dec3107",
     "20261018_15_playback_entitlement_indexes.sql": "ead8e779c2203fd21faf2541dd063791941cacf7953f5a605b80507daed91d02",
     "20261018_16_lesson_discussions.sql": "4e89a561e4ffad84f9ee9aae52e244931c84d37eb7a129df7e4de54d1363f2da",
-    "20261018_17_feature_flags_audit_chain.sql": "00d121876db54f1e3c1652f016209f3e2f2796ee890c23a361c0cf79a7ca027a"
+    "20261018_17_feature_flags_audit_chain.sql": "00d121876db54f1e3c1652f016209f3e2f2796ee890c23a361c0cf79a7ca027a",
+    "20261018_18_moderation.sql": "7419b47ca6bc70747fc43595dd208de74b5efab0d8e481c87d77831ed7d0e139",
+    "20261018_19_platform_mfa_impersonation.sql": "29863121f9010391aab07b7e02e604aefb673000c049b15861708370c1b66c3f"
   }
 }
