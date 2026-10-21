@@ -404,3 +404,82 @@ caller is denied (401/403) with zero storage access on all three surfaces.
 cross-tenant/validation/failure cases, and `server/tests/m7-feature-flags.test.ts`
 and `server/tests/m7-audit-logs.test.ts` cover the other two.
 
+## M8 search / tenant export / observability mounts (appended 2026-10-20)
+
+Three already-built M8 surfaces are wired by `server/src/index.ts`. Mount order
+is load-bearing and is asserted statically by
+`server/tests/m2-m3-mounting.test.ts`:
+
+```ts
+import 'dotenv/config';                                  // before any route default captures a secret
+// ...
+mountObservability(app, {                                // request context + observer + ops router
+    logger: createLogger(),
+    metrics: createMetricsRegistry(),
+    metricsToken: process.env.METRICS_TOKEN,
+    readiness: [createDatabaseReadinessCheck()],
+});
+// ...
+app.use('/api', optionalAuth, enforceTenantAuthorityBoundary, enforceStudentWorkspaceBoundary);
+// ...
+app.use('/api/search', searchRoutes);
+app.use('/api/tenant-exports', tenantExportRoutes);
+```
+
+`mountObservability` installs `createRequestContextMiddleware()` as its first
+handler, so the correlation id exists on **every** request (including the
+public probes and any denied `/api` call) before the `/api` guard chain runs.
+The ops router it installs owns root-relative paths and is therefore mounted
+**outside** `/api`: the probes need no credential, while the scrape stays
+denied without the dedicated `METRICS_TOKEN`.
+
+`/api/tenant-exports` is the plural form chosen by the mounting delivery. It
+does not collide with `/api/tenants/me` or `/api/tenant/branding`
+(`tenant-exports` is a distinct path segment), and no second alias
+`/api/tenant-export` is mounted — one surface, one path.
+
+### Endpoints
+
+| Method | Path | Guard |
+| --- | --- | --- |
+| GET | `/api/search` | `authenticateToken`; server-derived tenant from the verified principal. Student: own tenant only, published + enrolled content, question bank 403. Staff: verified tenant **owner** only, every status of her own tenant. |
+| GET | `/api/tenant-exports` | `authenticateToken`; verified tenant owner of the principal's tenant, or verified platform actor holding `tenant_export.request` (must name `tenant_id`) |
+| POST | `/api/tenant-exports` | Same authority; `503` when `TENANT_EXPORT_SECRET` is under 32 bytes; one active export per tenant + post-completion cooldown |
+| GET | `/api/tenant-exports/:id` | Same authority, re-checked against the **job's** `tenant_id`; cross-tenant id → 403 |
+| POST | `/api/tenant-exports/:id/download-token` | Same authority; issues a signed, expiring HMAC token bound to export id **and** tenant id |
+| GET | `/api/tenant-exports/:id/download` | Same authority **plus** the signed download token; the response is streamed as an attachment |
+| GET | `/metrics` | Dedicated `METRICS_TOKEN` bearer, compared in constant time. No/wrong bearer → `401`; unset or under-32-byte configured token → `503` (fails closed). No authentication middleware, no `/api` guard. |
+| GET | `/healthz` | Public liveness, no credential, no dependency checks |
+| GET | `/readyz` | Public readiness, no credential; runs the injected dependency checks and returns a generic verdict with no detail leakage |
+| GET | `/health` | Public legacy health probe (pre-existing, unchanged) |
+
+### Unmounted on purpose
+
+`/api/certificates` stays unmounted (owner decision 2026-10-19, teacher/school
+product scope). Source, migrations and historic data are preserved; only public
+exposure is removed. `server/tests/m2-m3-mounting.test.ts` asserts the mount is
+absent and that every `/api/certificates*` path resolves to the 404 handler.
+
+### Verification addendum (M8)
+
+`server/tests/m2-m3-mounting.test.ts` (appended M8 tests) proves hermetically,
+with injected dependencies and tripwire storage:
+
+- `/api/search` and `/api/tenant-exports` are each mounted exactly once, after
+  the shared `/api` guard chain and before the terminal 404 handler.
+- `mountObservability(app, …)` is wired exactly once and **precedes** the guard
+  chain; `/metrics`, `/healthz` and `/readyz` are never mounted under `/api`.
+- The M8 mount paths are neither exact matches of, nor path-segment prefixes
+  of, any other mount.
+- An anonymous `GET /api/search`, `GET /api/tenant-exports` and
+  `POST /api/tenant-exports` are rejected with `401` with **zero** storage,
+  authority, ownership or storage-writer calls.
+- `/healthz` and `/readyz` answer `200` anonymously (`/healthz` runs no
+  dependency check, `/readyz` runs exactly the injected one), while `/metrics`
+  is `401` without a bearer, `401` with a wrong bearer, `200` with the
+  configured bearer, and `503` when no token is configured — never rendering
+  the registry on a denial.
+- `/api/metrics` resolves to the 404 handler (the scrape is root-only), and
+  every probe carries a safe `x-request-id` (a caller-supplied safe id is
+  echoed; an unsafe one is replaced).
+

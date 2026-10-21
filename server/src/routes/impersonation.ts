@@ -16,23 +16,33 @@
  *  - Immediate revoke is possible for the starter, the approver or a holder
  *    of `impersonation.manage`; the issued context verifies the LIVE row, so a
  *    revoked (or expired) session stops working on the next request.
- *  - Every mutation is audited (actor, reason, session id) through the
- *    injected sealed writer inside an injectable transaction seam; a failed
- *    audit aborts the mutation.
- *  - Tenant-owner notification is an injected best-effort hook; a failing
- *    hook never fails the request.
+ *  - The dedicated signing key is resolved and validated BEFORE approval
+ *    starts: a missing, too-short or JWT-derived key fails closed with 503 and
+ *    no session is activated. Approval then performs the pending -> active
+ *    transition and the sealed audit on ONE injected transaction (row lock +
+ *    guarded affectedRows), so a failed audit rolls the activation back. The
+ *    response always carries a minted token; there is no null-token success.
+ *  - Start and revoke run on the same ONE injected transaction (insert /
+ *    locked guarded transition + sealed audit), so a failed audit rolls the
+ *    mutation back instead of leaving a phantom or unaudited session.
  *
- * Integration point (middleware/auth.ts stays untouched): adopters wire
- * `createImpersonationVerifier(...)` against the `x-impersonation` header,
- * then enforce `evaluateImpersonationWrite(context, action)` (protected
- * actions) and `requireImpersonationWriteScope(context)` (read-only default)
- * before their handlers. All three seams are covered by hermetic tests here.
+ * Integration point: request-level enforcement lives in
+ * `middleware/impersonation-context.ts` (`enforceImpersonationContext`),
+ * mounted by `index.ts` after the shared auth guard. It verifies the
+ * `x-impersonation` header, binds it to the authenticated TARGET principal
+ * and enforces the read-only allowlist before any business handler; this
+ * module stays the session-management surface (start/approve/revoke/list)
+ * and still rejects a context itself. Adopters call
+ * `evaluateImpersonationWrite` (protected actions) and
+ * `requireImpersonationWriteScope` (read-only default) before their own
+ * mutations. The contract is documented in
+ * docs/contracts/IMPERSONATION-INTEGRATION.md.
  */
 
 import { Router, RequestHandler, Response } from 'express';
+import type { PoolConnection } from 'mysql2/promise';
 import { AuthRequest } from '../middleware/auth';
 import { requireAdminPermission } from '../security/admin-permissions';
-import { SealedAuditRecordInput } from '../services/audit-log';
 import {
     DEFAULT_IMPERSONATION_SECONDS,
     IMPERSONATION_HEADER,
@@ -41,12 +51,14 @@ import {
     ImpersonationNotificationHook,
     ImpersonationSessionRow,
     ImpersonationStore,
+    ImpersonationTransactionRunner,
     createImpersonationRateLimiter,
     createImpersonationService,
     createImpersonationVerifier,
     createSqlImpersonationStore,
     noopImpersonationNotificationHook,
     notifyTenantOwnerSafely,
+    resolveImpersonationSigningKey,
     signImpersonationToken,
     validateStartInput,
 } from '../services/impersonation';
@@ -62,18 +74,29 @@ export interface ImpersonationRouteDeps {
     db: ImpersonationDb;
     authenticate: RequestHandler;
     requirePlatformPermission: (permission: string) => RequestHandler;
-    recordAudit: (input: SealedAuditRecordInput) => Promise<void>;
     /** Resolves the ONLY acceptable target row; null denies (404). */
     resolveTargetUser: (targetUserId: string, tenantId: string) => Promise<PlatformTargetRow | null>;
     /** A holder of `impersonation.manage` may revoke any session. */
     isImpersonationManager: (userId: string) => Promise<boolean>;
-    /** Production default: JWT_SECRET-derived key; null fails closed. */
-    tokenKey?: () => Buffer | null;
+    /**
+     * Dedicated impersonation signing key. Production reads
+     * IMPERSONATION_TOKEN_SECRET; returning null/undefined or a key shorter
+     * than 32 bytes makes approval fail closed (503).
+     */
+    tokenKey?: () => Buffer | null | Promise<Buffer | null>;
+    /**
+     * One database transaction exposing the whole store plus the sealed audit,
+     * all bound to a single connection. Production wires `withTransaction`;
+     * start, approve and revoke run inside it, so each mutation and its audit
+     * commit or roll back together. There is no non-transactional path.
+     */
+    transaction: ImpersonationTransactionRunner;
+    /** Compared against the signing key so the JWT secret is never reused. */
+    jwtSecret?: string | null;
     notify?: ImpersonationNotificationHook;
     now?: () => Date;
     idFactory?: () => string;
     store?: ImpersonationStore;
-    transaction?: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 const sessionProjection = (row: ImpersonationSessionRow): Record<string, unknown> => ({
@@ -95,13 +118,16 @@ export const createImpersonationRouter = (deps: ImpersonationRouteDeps): Router 
     const router = Router();
     const now = deps.now ?? (() => new Date());
     const store = deps.store ?? createSqlImpersonationStore(deps.db);
-    const service = createImpersonationService({ store, now, idFactory: deps.idFactory });
-    const notify = deps.notify ?? noopImpersonationNotificationHook;
-    const runAtomic = deps.transaction ?? (<T>(fn: () => Promise<T>): Promise<T> => fn());
-    const tokenKey = deps.tokenKey ?? (async () => {
-        const { getJwtSecret } = await import('../middleware/auth');
-        return Buffer.from(getJwtSecret().toString(), 'utf8');
+    const service = createImpersonationService({
+        store,
+        now,
+        idFactory: deps.idFactory,
+        transaction: deps.transaction,
     });
+    const notify = deps.notify ?? noopImpersonationNotificationHook;
+    const tokenKey = deps.tokenKey ?? productionImpersonationTokenKey;
+    const jwtSecret = (): string | null =>
+        deps.jwtSecret !== undefined ? deps.jwtSecret : (process.env.JWT_SECRET ?? null);
     const verifier = createImpersonationVerifier({ store, tokenKey, now });
     const readGuard = deps.requirePlatformPermission('impersonation.read');
     const startGuard = deps.requirePlatformPermission('impersonation.start');
@@ -164,23 +190,6 @@ export const createImpersonationRouter = (deps: ImpersonationRouteDeps): Router 
                 }
                 return res.status(500).json({ error: 'Failed to start impersonation session' });
             }
-            await runAtomic(async () => {
-                await deps.recordAudit({
-                    actorUserId: starterId,
-                    tenantId: validated.value.tenantId,
-                    action: 'impersonation.session_requested',
-                    resourceType: 'impersonation_session',
-                    resourceId: started.session.id,
-                    newValue: {
-                        session_id: started.session.id,
-                        target_user_id: validated.value.targetUserId,
-                        tenant_id: validated.value.tenantId,
-                        scope: validated.value.scope,
-                        requested_seconds: validated.value.durationSeconds,
-                    },
-                    reason: validated.value.reason,
-                });
-            });
             res.status(201).json({
                 ...sessionProjection(started.session),
                 status: 'pending_approval',
@@ -206,6 +215,15 @@ export const createImpersonationRouter = (deps: ImpersonationRouteDeps): Router 
             if (await rejectChainedImpersonation(req, res)) return;
             const sessionId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
             if (!sessionId) return res.status(400).json({ error: 'A session id is required' });
+            // Fail closed BEFORE the transition: an activated session we cannot
+            // mint a context for is unusable and must never exist.
+            const signing = await resolveImpersonationSigningKey(tokenKey, { jwtSecret: jwtSecret() });
+            if (!signing.ok) {
+                return res.status(503).json({
+                    error: 'Impersonation signing is not configured',
+                    code: 'SIGNING_UNAVAILABLE',
+                });
+            }
             const approved = await service.approve(sessionId, approverId);
             if (!approved.ok) {
                 switch (approved.reason) {
@@ -222,26 +240,8 @@ export const createImpersonationRouter = (deps: ImpersonationRouteDeps): Router 
                         return res.status(500).json({ error: 'Failed to approve impersonation session' });
                 }
             }
-            await runAtomic(async () => {
-                await deps.recordAudit({
-                    actorUserId: approverId,
-                    tenantId: approved.session.tenant_id,
-                    action: 'impersonation.session_approved',
-                    resourceType: 'impersonation_session',
-                    resourceId: approved.session.id,
-                    newValue: {
-                        session_id: approved.session.id,
-                        approved_by: approverId,
-                        scope: approved.session.scope,
-                        expires_at: approved.expiresAt.toISOString(),
-                    },
-                    reason: approved.session.reason,
-                });
-            });
-            let contextToken: string | null = null;
             const writeScope = approved.session.scope === 'write';
-            const key = await tokenKey();
-            if (key) contextToken = signImpersonationToken(approved.session, writeScope, key, now().getTime());
+            const contextToken = signImpersonationToken(approved.session, writeScope, signing.key, now().getTime());
             await notifyTenantOwnerSafely(notify, {
                 kind: 'session_started',
                 sessionId: approved.session.id,
@@ -288,18 +288,6 @@ export const createImpersonationRouter = (deps: ImpersonationRouteDeps): Router 
                 if (revoked.reason === 'not_found') return res.status(404).json({ error: 'Impersonation session not found' });
                 return res.status(500).json({ error: 'Failed to revoke impersonation session' });
             }
-            await runAtomic(async () => {
-                await deps.recordAudit({
-                    actorUserId: actorId,
-                    tenantId: revoked.session.tenant_id,
-                    action: 'impersonation.session_revoked',
-                    resourceType: 'impersonation_session',
-                    resourceId: revoked.session.id,
-                    oldValue: { status: 'active' },
-                    newValue: { session_id: revoked.session.id, revoked_by: actorId },
-                    reason: revoked.session.reason,
-                });
-            });
             await notifyTenantOwnerSafely(notify, {
                 kind: 'session_ended',
                 sessionId: revoked.session.id,
@@ -358,6 +346,45 @@ const productionDb: ImpersonationDb = {
     },
 };
 
+/** Bind the impersonation data access to one pool connection/transaction. */
+const connectionDb = (connection: PoolConnection): ImpersonationDb => ({
+    query: async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+        const [rows] = await connection.query(sql, params as never);
+        return rows as T[];
+    },
+    queryOne: async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+        const [rows] = await connection.query(sql, params as never);
+        return (rows as T[])[0] ?? null;
+    },
+    execute: async (sql: string, params?: unknown[]) => {
+        const [result] = await connection.execute(sql, params as never);
+        const header = result as { insertId?: number; affectedRows?: number };
+        return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+    },
+});
+
+/**
+ * Dedicated impersonation signing key for production: the
+ * IMPERSONATION_TOKEN_SECRET only, read at call time. The JWT secret is
+ * never a fallback (a compromised session token must not mint contexts).
+ */
+export const productionImpersonationTokenKey: NonNullable<ImpersonationRouteDeps['tokenKey']> = async () => {
+    const secret = process.env.IMPERSONATION_TOKEN_SECRET;
+    return secret ? Buffer.from(secret, 'utf8') : null;
+};
+
+/**
+ * The verifier the request-context middleware mounts: the shared SQL store
+ * plus the dedicated key, re-checking the LIVE session row on every call so
+ * revoke is immediate. Built lazily/cheaply; no connection is created here.
+ */
+export const createProductionImpersonationVerifier = () =>
+    createImpersonationVerifier({
+        store: createSqlImpersonationStore(productionDb),
+        tokenKey: productionImpersonationTokenKey,
+        now: () => new Date(),
+    });
+
 export const resolveProductionTargetUser = async (
     targetUserId: string,
     tenantId: string,
@@ -390,27 +417,22 @@ export default createImpersonationRouter({
         return authenticateToken(req, res, next);
     },
     requirePlatformPermission: (permission) => requireAdminPermission(permission),
-    recordAudit: async (input) => {
-        const { recordSealedAuditEvent } = await import('../services/audit-log');
-        // The sealed append runs on one transactional connection so the
-        // audit-chain head lock serializes concurrent appends.
+    transaction: async (work) => {
+        // ONE transaction per mutation: the insert/locked guarded transition
+        // and the sealed audit append commit or roll back together. Any failure
+        // rolls the mutation back before the caller responds, so no phantom
+        // pending session and no revoked, unaudited row can survive it.
         const { withTransaction } = await loadDb();
-        await withTransaction(async (connection) => {
-            await recordSealedAuditEvent({
-                query: async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
-                    const [rows] = await connection.query(sql, params as never);
-                    return rows as T[];
-                },
-                queryOne: async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
-                    const [rows] = await connection.query(sql, params as never);
-                    return (rows as T[])[0] ?? null;
-                },
-                execute: async (sql: string, params?: unknown[]) => {
-                    const [result] = await connection.execute(sql, params as never);
-                    const header = result as { insertId?: number; affectedRows?: number };
-                    return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
-                },
-            }, input);
+        const { recordSealedAuditEvent } = await import('../services/audit-log');
+        return withTransaction(async (connection) => {
+            const txDb = connectionDb(connection);
+            const txStore = createSqlImpersonationStore(txDb);
+            return work({
+                ...txStore,
+                // The sealed append runs on the SAME connection, so the
+                // audit-chain head lock serializes with the mutation.
+                recordAudit: (input) => recordSealedAuditEvent(txDb, input),
+            });
         });
     },
     resolveTargetUser: resolveProductionTargetUser,

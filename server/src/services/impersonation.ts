@@ -14,9 +14,9 @@
  *  - The issued context is a short HMAC token
  *    `imp1.<sessionId>.<actor>.<target>.<tenant>.<write?>.<exp>.<mac>` carrying
  *    the banner facts. `createImpersonationVerifier` is the verification seam
- *    the shared auth middleware can adopt later (middleware/auth.ts is NOT
- *    edited in this batch): it re-checks the signature, expiry and the LIVE
- *    session row on every call, so revoke is immediate.
+ *    `middleware/impersonation-context.ts` mounts on the `x-impersonation`
+ *    header: it re-checks the signature, expiry and the LIVE session row on
+ *    every call, so revoke is immediate.
  *  - Protected actions are always blocked while impersonating — password
  *    changes, MFA changes, money movement and destructive data actions — with
  *    `classifyProtectedAction` + `assertImpersonationPermits` as the deny
@@ -26,13 +26,31 @@
  *  - Tenant-owner notification is an injected, best-effort, PII-free hook
  *    (ids + scope + expiry only) fired on activation and on revoke; a failing
  *    hook never fails the session change.
- *  - Every session mutation is audited through the injected sealed writer
- *    inside an injectable transaction seam; a failed audit aborts the write.
+ *  - Approval is the only privilege-granting mutation, so it is performed as
+ *    ONE unit of work on a caller-supplied transaction: the row is read with
+ *    a lock (`SELECT ... FOR UPDATE` in the SQL store), the pending -> active
+ *    UPDATE is guarded by `affectedRows === 1`, and the sealed audit append
+ *    runs on the SAME transaction. A failed audit therefore rolls the
+ *    activation back instead of leaving an active, unaudited session.
+ *  - Start and revoke run on the same one-transaction seam: the insert and
+ *    the locked guarded transition each commit or roll back together with
+ *    their sealed audit, so a failing audit sink can never leave a phantom
+ *    `pending_approval` session (unaudited request) or a revoked, unaudited
+ *    row behind.
+ *  - Concurrent starts are serialized on the stable verified target row: a
+ *    count+insert pair alone lets two transactions both count zero and both
+ *    insert, so `start` locks the target `users` row (FOR UPDATE) before it
+ *    counts, on the same connection, and fails closed when that row cannot
+ *    be locked.
+ *  - The dedicated signing key is resolved and validated by the caller BEFORE
+ *    that transaction, so a missing/invalid key never activates a session
+ *    that could not mint a context token (no null-token success path).
  *
  * No `any`, no ts-ignore, no runtime DDL, no network, no PII in logs.
  */
 
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
+import type { SealedAuditRecordInput } from './audit-log';
 
 export const MAX_IMPERSONATION_SECONDS = 1800;
 export const DEFAULT_IMPERSONATION_SECONDS = 1800;
@@ -40,6 +58,8 @@ export const MIN_IMPERSONATION_REASON_CHARS = 16;
 export const IMPERSONATION_TOKEN_VERSION = 'imp1';
 export const IMPERSONATION_HEADER = 'x-impersonation';
 export const ID_PATTERN = /^[\w-]{1,64}$/;
+/** HMAC-SHA256 key material must carry at least 256 bits of secret. */
+export const MIN_IMPERSONATION_SIGNING_KEY_BYTES = 32;
 
 export interface ImpersonationDb {
     query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>;
@@ -125,6 +145,22 @@ export interface ImpersonationStore {
     insertSession(row: ImpersonationSessionRow): Promise<void>;
     findSession(sessionId: string): Promise<ImpersonationSessionRow | null>;
     /**
+     * Row-locking read (`SELECT ... FOR UPDATE`) used only inside the approval
+     * transaction; callers outside a transaction must not use it.
+     */
+    lockSession(sessionId: string): Promise<ImpersonationSessionRow | null>;
+    /**
+     * Row lock on the stable, verified target row used to serialize
+     * concurrent starts for the SAME target: the SQL store issues
+     * `SELECT id FROM users WHERE id = ? FOR UPDATE`. A count alone cannot
+     * dedupe starts (two transactions can both count zero and both insert),
+     * so `start` takes this lock BEFORE counting. Callers must already be
+     * inside the start transaction; MySQL holds the lock until it commits or
+     * rolls back. A null result means the verified target row is gone and the
+     * start fails closed.
+     */
+    lockTargetUser(targetUserId: string): Promise<{ id: string } | null>;
+    /**
      * Conditional pending -> active move; a second approver and the new
      * expiry are sealed together. Returns affected rows (0 => race/late).
      */
@@ -135,6 +171,20 @@ export interface ImpersonationStore {
     countActiveForTargetUser(targetUserId: string): Promise<number>;
 }
 
+/**
+ * The transaction-scoped surface EVERY mutating unit of work (start, approve,
+ * revoke) runs against: the whole store plus the sealed audit, all bound by
+ * the production adapter to ONE database connection, so the mutation, its
+ * guarded transition and the audit commit or roll back together.
+ */
+export interface ImpersonationTransaction extends ImpersonationStore {
+    recordAudit(input: SealedAuditRecordInput): Promise<void>;
+}
+
+export type ImpersonationTransactionRunner = <T>(
+    work: (tx: ImpersonationTransaction) => Promise<T>,
+) => Promise<T>;
+
 /* ----------------------------------------------------------------------- */
 /* Session lifecycle service (store-driven).                                */
 /* ----------------------------------------------------------------------- */
@@ -143,9 +193,15 @@ export interface ImpersonationServiceDeps {
     store: ImpersonationStore;
     now: () => Date;
     idFactory?: () => string;
+    /**
+     * Required: start, approve and revoke must never run outside a transaction
+     * that also holds the audit append. There is deliberately no
+     * non-transactional fallback for any of the three mutations.
+     */
+    transaction: ImpersonationTransactionRunner;
 }
 
-export type StartDenyReason = 'invalid' | 'target_active_session' | 'store_error';
+export type StartDenyReason = 'invalid' | 'self_target' | 'target_active_session' | 'target_not_lockable' | 'store_error';
 
 export type StartResult =
     | { ok: true; session: ImpersonationSessionRow }
@@ -183,62 +239,149 @@ export const createImpersonationService = (deps: ImpersonationServiceDeps) => {
     });
 
     return {
-        /** Validation + dedupe + insert; caller resolves the target row first. */
+        /**
+         * Dedupe + insert + audit as ONE unit of work: the pending session and
+         * its audit record commit or roll back together, so a failing audit
+         * sink can never leave a phantom (unaudited) `pending_approval` row
+         * behind. Caller resolves the target row first.
+         *
+         * Concurrency: the count+insert pair alone cannot dedupe — two
+         * transactions can both count zero live sessions and both insert for
+         * the same target. The start therefore takes a row lock on the stable
+         * verified target row (`lockTargetUser`) BEFORE counting, so a second
+         * start for the same target blocks on that lock, counts the session
+         * the winner inserted, and is refused. A target row that cannot be
+         * locked (deleted between resolution and transaction) fails closed.
+         */
         start: async (starterId: string, input: StartImpersonationInput): Promise<StartResult> => {
             try {
-                const active = await deps.store.countActiveForTargetUser(input.targetUserId);
-                if (active > 0) return { ok: false, reason: 'target_active_session' };
-                const row = buildRow(input, starterId, deps.now());
-                await deps.store.insertSession(row);
-                return { ok: true, session: row };
+                return await deps.transaction(async (tx) => {
+                    // A support actor may never open a session against their OWN
+                    // identity: the bearer of the context must be the actor and
+                    // the effective principal the target, so a self-target row
+                    // would make the two indistinguishable. Denied before the
+                    // lock so no phantom pending row is written.
+                    if (String(starterId) === String(input.targetUserId)) {
+                        return { ok: false, reason: 'self_target' } as const;
+                    }
+                    const lockedTarget = await tx.lockTargetUser(input.targetUserId);
+                    if (!lockedTarget) return { ok: false, reason: 'target_not_lockable' } as const;
+                    const active = await tx.countActiveForTargetUser(input.targetUserId);
+                    if (active > 0) return { ok: false, reason: 'target_active_session' } as const;
+                    const row = buildRow(input, starterId, deps.now());
+                    await tx.insertSession(row);
+                    await tx.recordAudit({
+                        actorUserId: starterId,
+                        tenantId: input.tenantId,
+                        action: 'impersonation.session_requested',
+                        resourceType: 'impersonation_session',
+                        resourceId: row.id,
+                        newValue: {
+                            session_id: row.id,
+                            target_user_id: input.targetUserId,
+                            tenant_id: input.tenantId,
+                            scope: input.scope,
+                            requested_seconds: input.durationSeconds,
+                        },
+                        reason: input.reason,
+                    });
+                    return { ok: true, session: row } as const;
+                });
             } catch (error) {
                 console.error('Impersonation start failed:', error);
                 return { ok: false, reason: 'store_error' };
             }
         },
 
-        /** Activation by a DIFFERENT admin; clamps the expiry to <= 30 minutes. */
+        /**
+         * Activation by a DIFFERENT admin inside one transaction: locked read,
+         * guarded transition and sealed audit commit or roll back together.
+         * The expiry is clamped to <= 30 minutes.
+         */
         approve: async (sessionId: string, approverId: string): Promise<ApproveResult> => {
             try {
-                const row = await deps.store.findSession(sessionId);
-                if (!row) return { ok: false, reason: 'not_found' };
-                if (row.status !== 'pending_approval') return { ok: false, reason: 'not_pending' };
-                if (String(row.started_by) === String(approverId)) return { ok: false, reason: 'self_approval' };
-                const requested = Number(row.requested_seconds ?? DEFAULT_IMPERSONATION_SECONDS);
-                const seconds = Number.isFinite(requested) && requested > 0
-                    ? Math.min(requested, MAX_IMPERSONATION_SECONDS)
-                    : DEFAULT_IMPERSONATION_SECONDS;
-                const now = deps.now();
-                const expiresAt = new Date(now.getTime() + Math.min(seconds, MAX_IMPERSONATION_SECONDS) * 1000);
-                const approveExpiration = row.expires_at ? new Date(row.expires_at) : null;
-                const fallbackAt = approveExpiration && !Number.isNaN(approveExpiration.getTime())
-                    ? approveExpiration
-                    : expiresAt;
-                const bounded = fallbackAt.getTime() < expiresAt.getTime() ? fallbackAt : expiresAt;
-                const moved = await deps.store.transitionToActive(sessionId, approverId, bounded, now);
-                if (moved === 0) return { ok: false, reason: 'besides_transition' };
-                const session = await deps.store.findSession(sessionId);
-                if (!session) return { ok: false, reason: 'not_found' };
-                return { ok: true, session, expiresAt: bounded };
+                return await deps.transaction(async (tx) => {
+                    const row = await tx.lockSession(sessionId);
+                    if (!row) return { ok: false, reason: 'not_found' } as const;
+                    if (row.status !== 'pending_approval') return { ok: false, reason: 'not_pending' } as const;
+                    if (String(row.started_by) === String(approverId)) return { ok: false, reason: 'self_approval' } as const;
+                    const requested = Number(row.requested_seconds ?? DEFAULT_IMPERSONATION_SECONDS);
+                    const seconds = Number.isFinite(requested) && requested > 0
+                        ? Math.min(requested, MAX_IMPERSONATION_SECONDS)
+                        : DEFAULT_IMPERSONATION_SECONDS;
+                    const now = deps.now();
+                    const requestedExpiry = new Date(now.getTime() + seconds * 1000);
+                    const existingExpiry = row.expires_at ? new Date(row.expires_at) : null;
+                    const bounded = existingExpiry && !Number.isNaN(existingExpiry.getTime())
+                        && existingExpiry.getTime() < requestedExpiry.getTime()
+                        ? existingExpiry
+                        : requestedExpiry;
+                    const moved = await tx.transitionToActive(sessionId, approverId, bounded, now);
+                    if (moved !== 1) return { ok: false, reason: 'besides_transition' } as const;
+                    const session = await tx.findSession(sessionId);
+                    // Impossible with a locked, just-updated primary key; throw so
+                    // the transaction rolls the activation back rather than
+                    // committing a session we cannot read.
+                    if (!session) throw new Error('The activated impersonation session could not be re-read');
+                    await tx.recordAudit({
+                        actorUserId: approverId,
+                        tenantId: session.tenant_id,
+                        action: 'impersonation.session_approved',
+                        resourceType: 'impersonation_session',
+                        resourceId: session.id,
+                        newValue: {
+                            session_id: session.id,
+                            approved_by: approverId,
+                            scope: session.scope,
+                            expires_at: bounded.toISOString(),
+                        },
+                        reason: session.reason,
+                    });
+                    return { ok: true, session, expiresAt: bounded } as const;
+                });
             } catch (error) {
                 console.error('Impersonation approval failed:', error);
                 return { ok: false, reason: 'store_error' };
             }
         },
 
+        /**
+         * Revocation as ONE unit of work: the row is locked, the conditional
+         * UPDATE is guarded by `affectedRows === 1` and the sealed audit runs
+         * on the same connection, so a failed audit rolls the revocation back
+         * (the session stays active and the caller retries) instead of leaving
+         * a revoked, unaudited row. A racing revoker loses the guard (0 rows ->
+         * `besides_transition`), a repeat revoke of a terminal row is
+         * `not_revocable`, so revocation stays applied exactly once.
+         */
         revoke: async (sessionId: string, revokedBy: string): Promise<RevokeResult> => {
             try {
-                const row = await deps.store.findSession(sessionId);
-                if (!row) return { ok: false, reason: 'not_found' };
-                if (row.status !== 'active' && row.status !== 'pending_approval') {
-                    return { ok: false, reason: 'not_revocable' };
-                }
-                const now = deps.now();
-                const moved = await deps.store.transitionToRevoked(sessionId, revokedBy, now);
-                if (moved === 0) return { ok: false, reason: 'besides_transition' };
-                const session = await deps.store.findSession(sessionId);
-                if (!session) return { ok: false, reason: 'not_found' };
-                return { ok: true, session };
+                return await deps.transaction(async (tx) => {
+                    const row = await tx.lockSession(sessionId);
+                    if (!row) return { ok: false, reason: 'not_found' } as const;
+                    if (row.status !== 'active' && row.status !== 'pending_approval') {
+                        return { ok: false, reason: 'not_revocable' } as const;
+                    }
+                    const now = deps.now();
+                    const moved = await tx.transitionToRevoked(sessionId, revokedBy, now);
+                    if (moved !== 1) return { ok: false, reason: 'besides_transition' } as const;
+                    const session = await tx.findSession(sessionId);
+                    // Impossible with a locked, just-updated primary key; throw so
+                    // the transaction rolls the revocation back rather than
+                    // committing a session we cannot read.
+                    if (!session) throw new Error('The revoked impersonation session could not be re-read');
+                    await tx.recordAudit({
+                        actorUserId: revokedBy,
+                        tenantId: session.tenant_id,
+                        action: 'impersonation.session_revoked',
+                        resourceType: 'impersonation_session',
+                        resourceId: session.id,
+                        oldValue: { status: row.status, revoked_by: row.revoked_by ?? null },
+                        newValue: { session_id: session.id, revoked_by: revokedBy },
+                        reason: session.reason,
+                    });
+                    return { ok: true, session } as const;
+                });
             } catch (error) {
                 console.error('Impersonation revoke failed:', error);
                 return { ok: false, reason: 'store_error' };
@@ -258,12 +401,46 @@ export const createImpersonationService = (deps: ImpersonationServiceDeps) => {
 const toB64Url = (value: string): string => Buffer.from(value, 'utf8').toString('base64url');
 const fromB64Url = (value: string): string => Buffer.from(value, 'base64url').toString('utf8');
 
+export type ImpersonationSigningKeyResult =
+    | { ok: true; key: Buffer }
+    | { ok: false; reason: 'missing' | 'invalid' };
+
+/**
+ * Fail-closed signing prerequisite. The provider is the ONLY source of key
+ * material; it must return at least 32 bytes and must not be the shared JWT
+ * secret (a compromised session token must not be able to mint impersonation
+ * contexts). A throwing provider is treated as missing, never as success.
+ */
+export const resolveImpersonationSigningKey = async (
+    provider: () => Buffer | null | Promise<Buffer | null>,
+    options: { jwtSecret?: string | null } = {},
+): Promise<ImpersonationSigningKeyResult> => {
+    let candidate: Buffer | null;
+    try {
+        candidate = await provider();
+    } catch {
+        return { ok: false, reason: 'missing' };
+    }
+    if (!candidate) return { ok: false, reason: 'missing' };
+    if (!Buffer.isBuffer(candidate) || candidate.length < MIN_IMPERSONATION_SIGNING_KEY_BYTES) {
+        return { ok: false, reason: 'invalid' };
+    }
+    const jwtSecret = options.jwtSecret;
+    if (jwtSecret && jwtSecret.length > 0 && candidate.equals(Buffer.from(jwtSecret, 'utf8'))) {
+        return { ok: false, reason: 'invalid' };
+    }
+    return { ok: true, key: candidate };
+};
+
 export const signImpersonationToken = (
     session: ImpersonationSessionRow,
     writeScope: boolean,
     key: Buffer,
     nowMs: number,
 ): string => {
+    if (!Buffer.isBuffer(key) || key.length < MIN_IMPERSONATION_SIGNING_KEY_BYTES) {
+        throw new Error('An impersonation signing key of at least 32 bytes is required');
+    }
     const parts = [
         IMPERSONATION_TOKEN_VERSION,
         toB64Url(session.id),
@@ -351,6 +528,10 @@ export interface ImpersonationVerifierDeps {
  * Verification seam the shared auth middleware can adopt later. Deny-by-
  * default: signature, expiry and then the LIVE session row (immediate
  * revocation, scope/expiry/tenant consistency) before a context is issued.
+ * The signed context's scope flag must equal the live row's scope (the row
+ * is authoritative — a write-flagged context over a read row, or the
+ * reverse, is a `row_mismatch`), and the live row's `expires_at` is the
+ * only expiry authority; the signed field records the issue time only.
  */
 export const createImpersonationVerifier = (deps: ImpersonationVerifierDeps) =>
     async (token: unknown): Promise<ImpersonationVerifyResult> => {
@@ -373,7 +554,8 @@ export const createImpersonationVerifier = (deps: ImpersonationVerifierDeps) =>
             if (
                 String(row.started_by) !== context.actorUserId ||
                 String(row.target_user_id) !== context.targetUserId ||
-                String(row.tenant_id) !== context.tenantId
+                String(row.tenant_id) !== context.tenantId ||
+                String(row.scope) !== context.scope
             ) {
                 return { ok: false, reason: 'row_mismatch' };
             }
@@ -383,6 +565,46 @@ export const createImpersonationVerifier = (deps: ImpersonationVerifierDeps) =>
             return { ok: false, reason: 'store_error' };
         }
     };
+
+/* ----------------------------------------------------------------------- */
+/* Binding the verified context to the request principal.                   */
+/* ----------------------------------------------------------------------- */
+
+export interface ImpersonationRequestPrincipal {
+    userId: string;
+    tenantId?: string | null;
+}
+
+export type ImpersonationPrincipalDenyReason = 'unauthenticated' | 'actor_mismatch' | 'tenant_mismatch';
+
+export type ImpersonationPrincipalVerdict =
+    | { ok: true }
+    | { ok: false; reason: ImpersonationPrincipalDenyReason };
+
+/**
+ * The request carrying `x-impersonation` must be authenticated as the
+ * session's ACTOR — the separately authenticated support principal recorded
+ * as `started_by` — NOT as the target. The actor is bound twice: the signed
+ * token carries `actorUserId` and the verifier re-checks it against the live
+ * row, and this binding re-checks it against the authenticated bearer, so
+ * neither a token minted for another actor nor one stolen from the target
+ * ("target credentials") can be replayed. A bearer that is the TARGET user
+ * (or any third principal) is refused: support impersonation authenticates
+ * the support actor and resolves the effective target identity server-side
+ * (middleware/impersonation-context.ts), so no target credentials are ever
+ * required or accepted.
+ */
+export const matchImpersonationPrincipal = (
+    context: ImpersonationContext,
+    principal: ImpersonationRequestPrincipal | null,
+): ImpersonationPrincipalVerdict => {
+    if (!principal || !principal.userId) return { ok: false, reason: 'unauthenticated' };
+    if (String(principal.userId) !== context.actorUserId) return { ok: false, reason: 'actor_mismatch' };
+    if (principal.tenantId != null && String(principal.tenantId) !== context.tenantId) {
+        return { ok: false, reason: 'tenant_mismatch' };
+    }
+    return { ok: true };
+};
 
 /* ----------------------------------------------------------------------- */
 /* Protected actions: always blocked while impersonating.                   */
@@ -527,13 +749,42 @@ export const createSqlImpersonationStore = (db: ImpersonationDb): ImpersonationS
             [sessionId],
         );
     },
+    lockSession: async (sessionId) => {
+        if (!sessionId || sessionId.length > 64) return null;
+        // Callers must already be inside the approval transaction; MySQL keeps
+        // the row lock until that transaction commits or rolls back.
+        return db.queryOne<ImpersonationSessionRow>(
+            `SELECT id, started_by, approved_by, target_user_id, tenant_id, reason, scope,
+                    status, requested_seconds, expires_at, revoked_at, revoked_by, created_at
+             FROM impersonation_sessions WHERE id = ? LIMIT 1 FOR UPDATE`,
+            [sessionId],
+        );
+    },
+    lockTargetUser: async (targetUserId) => {
+        if (!targetUserId || targetUserId.length > 64) return null;
+        // Serializes concurrent starts for the same target: the row lock is
+        // held until the surrounding start transaction commits or rolls back,
+        // so the count-then-insert dedupe cannot be raced by a second start
+        // for the same target. The caller must already be inside that
+        // transaction.
+        return db.queryOne<{ id: string }>(
+            `SELECT id FROM users WHERE id = ? LIMIT 1 FOR UPDATE`,
+            [targetUserId],
+        );
+    },
     transitionToActive: async (sessionId, approverId, expiresAt, now) => {
+        // `expires_at` is bound as a Date, exactly like `insertSession` does
+        // for the same column: the driver formats it with the pool's
+        // `timezone` and decodes the column with the same offset, so the
+        // instant survives the write/read pair. Pre-formatting it here (a UTC
+        // wall-clock string, as this once did) used the opposite convention
+        // and stored an expiry two hours in the past, which made every
+        // activated session unusable.
         const result = await db.execute(
             `UPDATE impersonation_sessions
              SET approved_by = ?, status = 'active', expires_at = ?, updated_at = ?
              WHERE id = ? AND status = 'pending_approval' AND started_by <> ?`,
-            [approverId, expiresAt.toISOString().slice(0, 19).replace('T', ' '),
-             rowStamp(now), sessionId, approverId],
+            [approverId, expiresAt, rowStamp(now), sessionId, approverId],
         );
         return result.affectedRows ?? 0;
     },

@@ -785,6 +785,36 @@ export interface EnrollmentLifecycleDeps {
 const ENROLLMENT_STATUSES = new Set(['active', 'revoked', 'expired']);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$/;
 
+/** Normalize a validated/stored enrollment date to `YYYY-MM-DD HH:MM:SS`. */
+function comparableEnrollmentDate(value: string | Date | null): string | null {
+    if (value === null || value === undefined) return null;
+    if (value instanceof Date) {
+        return Number.isFinite(value.getTime())
+            ? value.toISOString().slice(0, 19).replace('T', ' ')
+            : null;
+    }
+    const text = value.trim();
+    if (!text) return null;
+    if (text.length === 10) return `${text} 00:00:00`;
+    return text.replace('T', ' ').slice(0, 19);
+}
+
+/**
+ * The stored window is half-open `[start, end)`. A partial update is merged
+ * with the stored row before writing, so the *merged* pair — not only the
+ * request payload — must be checked: otherwise a single-field update can
+ * produce `start >= end`, which no read predicate can ever satisfy.
+ */
+export function enrollmentWindowIsValid(
+    start: string | Date | null,
+    end: string | Date | null,
+): boolean {
+    const normalizedStart = comparableEnrollmentDate(start);
+    const normalizedEnd = comparableEnrollmentDate(end);
+    if (normalizedStart === null || normalizedEnd === null) return true;
+    return normalizedStart < normalizedEnd;
+}
+
 export function validateEnrollmentLifecycleInput(body: unknown): {
     ok: true; value: { term: string | null; startDate: string | null; endDate: string | null; status: string | null };
 } | { ok: false; error: string } {
@@ -849,6 +879,14 @@ export const createEnrollmentLifecycleHandler = (deps: EnrollmentLifecycleDeps) 
                     enrollment_end_date: validated.value.endDate ?? existing.enrollment_end_date,
                     enrollment_status: newStatus,
                 };
+                // Validate the EFFECTIVE window after merging the partial update
+                // with the stored row. Rejecting here (before the UPDATE and the
+                // audit) keeps an inverted [start,end) window from ever being
+                // persisted, which would make the enrollment permanently
+                // ineffective while looking "active".
+                if (!enrollmentWindowIsValid(newValue.enrollment_start_date, newValue.enrollment_end_date)) {
+                    return { invalidWindow: true as const };
+                }
                 await tx.execute(
                     `UPDATE students
                      SET term=COALESCE(?, term),
@@ -869,6 +907,9 @@ export const createEnrollmentLifecycleHandler = (deps: EnrollmentLifecycleDeps) 
                 });
                 return { notFound: false as const, newStatus };
             });
+            if ('invalidWindow' in result) {
+                return res.status(400).json({ error: 'Enrollment date window must have a start before its exclusive end' });
+            }
             if (result.notFound) return res.status(404).json({ error: 'Enrollment not found' });
             res.json({ status: 'ok', enrollment_status: result.newStatus });
         } catch (error) {

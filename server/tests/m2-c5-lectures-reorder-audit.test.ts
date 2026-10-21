@@ -278,6 +278,29 @@ test('lecture update and its audit are issued through the same transaction data 
 test('lecture create and its audit are issued through the same transaction data seam', async () => {
     const { router, executed } = buildLectureRouter((sql) => {
         if (sql.includes('SELECT id FROM courses WHERE id = ? AND tenant_id = ?')) return [{ id: 'course-a' }];
+        // A real, tenant-consistent video row for `video://lesson`: owned by the
+        // actor, in tenant-a, in the destination course's tenant. The binding
+        // check has something true to verify instead of being bypassed.
+        if (sql.includes('FROM videos WHERE id = ?')) {
+            return [{ id: 'lesson', tenant_id: 'tenant-a', course_id: 'course-a', uploaded_by: 'instructor-a' }];
+        }
+        if (sql.includes('SELECT tenant_id FROM courses WHERE id = ?')) return [{ tenant_id: 'tenant-a' }];
+        if (sql.includes('SELECT id, role, phone, is_active FROM users WHERE id = ?')) {
+            return [{ id: 'instructor-a', role: 'instructor', phone: '0100000011', is_active: 1 }];
+        }
+        if (sql.includes('SELECT instructor_id, tenant_id, is_active FROM courses WHERE id = ?')) {
+            return [{ instructor_id: 'instructor-a', tenant_id: 'tenant-a', is_active: 1 }];
+        }
+        if (sql.includes('UNION ALL') && sql.includes('tenant_memberships')) return [{ authority: 'owner' }];
+        if (sql.includes('candidate_count')) {
+            return [{
+                candidate_count: 0,
+                id: null, instructor_id: null, grade_id: null, group_id: null,
+                is_published: 0, archived_at: null,
+            }];
+        }
+        if (sql.includes('FROM lectures WHERE video_url = ?')) return [];
+        if (sql.includes('FROM instructor_shared_lectures') && sql.includes('sl.instructor_id = ?')) return [];
         if (sql.includes('SELECT * FROM lectures WHERE id = ?')) return [{ id: 'lecture-new' }];
         return [];
     });

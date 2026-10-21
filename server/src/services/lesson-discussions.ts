@@ -31,6 +31,10 @@ export const THREAD_STATUSES = ['open', 'hidden', 'deleted'] as const;
 export type ThreadStatus = (typeof THREAD_STATUSES)[number];
 export const REPLY_STATUSES = ['visible', 'hidden', 'deleted'] as const;
 export type ReplyStatus = (typeof REPLY_STATUSES)[number];
+// Existing legal `lesson_discussion_reports.status` values (migration
+// 20261018_16_lesson_discussions.sql). A report is inserted `open`.
+export const REPORT_STATUSES = ['open', 'reviewed', 'dismissed'] as const;
+export type ReportStatus = (typeof REPORT_STATUSES)[number];
 
 export type ModerationAction = 'hide' | 'restore' | 'delete';
 export const MODERATION_ACTIONS: readonly ModerationAction[] = ['hide', 'restore', 'delete'];

@@ -15,14 +15,28 @@
  * `/metrics` is denied by default: it requires a dedicated `METRICS_TOKEN`
  * bearer value of at least 32 bytes, compared in constant time. A missing or
  * too-short configured token fails closed with 503; a missing/incorrect bearer
- * is 401. The process-to-process bearer never appears in logs.
+ * is 401. The process-to-process bearer never appears in logs. Denials are
+ * `no-store`: a cached denial or verdict must never be replayed by a proxy.
  *
  * `/healthz` is pure liveness (no dependencies). `/readyz` runs injected
  * dependency checks and reports a generic ready/not-ready verdict with no
  * detail leakage.
+ *
+ * Every probe is bounded: a check that never settles is cut off at
+ * `checkTimeoutMs` (and the whole readiness sweep at `readinessBudgetMs`) and
+ * reported as unavailable/not-ready, so a hung dependency can never hang the
+ * probe. Timeout handles are always cleared, so a probe leaves no timer behind
+ * and no background timer is started. Liveness and dependency readiness stay
+ * separate concepts: `/healthz` never runs a dependency check.
+ *
+ * An empty readiness list is NOT treated as ready: a deployment that wires no
+ * checks looks identical to a broken one, so it reports `not_ready` unless the
+ * operator explicitly opts in with `readinessOptIn` (documented intent that no
+ * dependency gate exists).
  */
 
 import { createHash, timingSafeEqual } from 'crypto';
+import { performance } from 'perf_hooks';
 import { Application, NextFunction, Request, RequestHandler, Response, Router } from 'express';
 import {
     ContextRequest,
@@ -39,6 +53,12 @@ import {
 
 /** Minimum byte length of a deployable metrics token. */
 export const METRICS_TOKEN_MIN_BYTES = 32;
+
+/** Per-check timeout for the liveness/readiness predicates, in milliseconds. */
+export const DEFAULT_CHECK_TIMEOUT_MS = 2000;
+
+/** Overall budget for one readiness sweep (all checks), in milliseconds. */
+export const DEFAULT_READINESS_BUDGET_MS = 5000;
 
 /** A readiness dependency check; its name is never exposed to a caller. */
 export interface ReadinessCheck {
@@ -61,6 +81,16 @@ export interface ObservabilityDeps {
     liveness?: () => boolean | Promise<boolean>;
     /** Readiness dependency checks run by `/readyz`. */
     readiness?: readonly ReadinessCheck[];
+    /** Per-check timeout in milliseconds (defaults to `DEFAULT_CHECK_TIMEOUT_MS`). */
+    checkTimeoutMs?: number;
+    /** Overall readiness budget in milliseconds (defaults to `DEFAULT_READINESS_BUDGET_MS`). */
+    readinessBudgetMs?: number;
+    /**
+     * Explicit operator opt-in that an empty `readiness` list is intentional.
+     * Without it an unwired deployment reports `not_ready` instead of a false
+     * `ready`.
+     */
+    readinessOptIn?: boolean;
 }
 
 interface ObservedRequest extends ContextRequest {
@@ -177,6 +207,41 @@ const noStore = (res: Response): void => {
     res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
 };
 
+type BoundedResult<T> = { ok: true; value: T } | { ok: false };
+
+/** A finite, positive millisecond bound; anything else falls back. */
+const boundedMs = (value: number | undefined, fallback: number): number =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+
+/**
+ * Resolve `task` within `timeoutMs`. A rejection (including a synchronous throw)
+ * or a timeout yields `{ ok: false }`; a late result after the timeout is
+ * ignored rather than surfaced as an unhandled rejection. The timer handle is
+ * cleared on every path, so a probe never leaks a pending timer.
+ */
+const runBounded = async <T>(task: () => T | Promise<T>, timeoutMs: number): Promise<BoundedResult<T>> => {
+    let handle: ReturnType<typeof setTimeout> | undefined;
+    const attempt = Promise.resolve()
+        .then(task)
+        .then(
+            (value): BoundedResult<T> => ({ ok: true, value }),
+            (): BoundedResult<T> => ({ ok: false }),
+        );
+    try {
+        return await Promise.race<BoundedResult<T>>([
+            attempt,
+            new Promise<BoundedResult<T>>((resolve) => {
+                handle = setTimeout(() => resolve({ ok: false }), timeoutMs);
+            }),
+        ]);
+    } finally {
+        if (handle !== undefined) {
+            clearTimeout(handle);
+            handle = undefined;
+        }
+    }
+};
+
 /**
  * Router exposing `/metrics`, `/healthz` and `/readyz`. Mount it at the
  * application root (paths already include their leading slash).
@@ -185,11 +250,15 @@ export function createOpsRouter(deps: ObservabilityDeps): Router {
     const router = Router();
     const liveness = deps.liveness ?? (() => true);
     const readiness = deps.readiness ?? [];
+    const checkTimeoutMs = boundedMs(deps.checkTimeoutMs, DEFAULT_CHECK_TIMEOUT_MS);
+    const readinessBudgetMs = boundedMs(deps.readinessBudgetMs, DEFAULT_READINESS_BUDGET_MS);
 
     router.get('/metrics', (req: Request, res: Response) => {
         const result = authorizeMetricsRequest(req.headers.authorization, deps.metricsToken);
         if (!result.ok) {
             deps.logger.warn('metrics_scrape_denied', { status: result.status });
+            // A denial is per-caller and must never be cached or replayed.
+            res.setHeader('Cache-Control', 'no-store');
             res.status(result.status).json({
                 error: result.status === 503 ? 'Metrics endpoint is not configured' : 'Unauthorized',
             });
@@ -200,24 +269,25 @@ export function createOpsRouter(deps: ObservabilityDeps): Router {
     });
 
     router.get('/healthz', async (_req: Request, res: Response) => {
-        let alive = false;
-        try {
-            alive = await liveness();
-        } catch {
-            alive = false;
-        }
+        const outcome = await runBounded(liveness, checkTimeoutMs);
+        const alive = outcome.ok && Boolean(outcome.value);
         res.setHeader('Cache-Control', 'no-store');
         res.status(alive ? 200 : 503).json({ status: alive ? 'ok' : 'unavailable' });
     });
 
     router.get('/readyz', async (_req: Request, res: Response) => {
-        let ready = true;
+        // No checks wired is not evidence of readiness: require an explicit
+        // opt-in, otherwise an unwired deployment must report not-ready.
+        let ready = readiness.length > 0 || deps.readinessOptIn === true;
+        const deadline = performance.now() + readinessBudgetMs;
         for (const dependency of readiness) {
-            try {
-                if (!(await dependency.check())) ready = false;
-            } catch {
+            const remaining = deadline - performance.now();
+            if (remaining <= 0) {
                 ready = false;
+                break;
             }
+            const outcome = await runBounded(dependency.check, Math.min(checkTimeoutMs, remaining));
+            if (!outcome.ok || !outcome.value) ready = false;
         }
         res.setHeader('Cache-Control', 'no-store');
         // Generic verdict only: no dependency names, counts, errors or versions.

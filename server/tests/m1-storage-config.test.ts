@@ -140,3 +140,25 @@ test('M1 security config workflow is static only', async () => {
     assert.match(workflow, /m1-storage-config\.test\.ts/);
     assert.match(workflow, /tsx --test/);
 });
+
+test('assignment bucket wiring: the private bucket is provisioned and matches the object adapter default', async () => {
+    const minioSource = await readRepoFile('server/src/services/minio.ts');
+
+    assert.match(
+        minioSource,
+        /ASSIGNMENTS:\s*process\.env\.MINIO_BUCKET_ASSIGNMENTS\s*\|\|\s*'assignment-submissions'/,
+        'provisioning must wire the private assignment bucket with its documented default',
+    );
+    assert.doesNotMatch(
+        minioSource,
+        /\.\s*setBucketPolicy\s*\(/,
+        'a bucket policy is how a bucket becomes public: no policy call may exist, so every bucket stays private',
+    );
+
+    const adapterSource = await readRepoFile('server/src/services/assignment-storage.ts');
+    assert.match(
+        adapterSource,
+        /MINIO_BUCKET_ASSIGNMENTS\s*\|\|\s*'assignment-submissions'/,
+        'the object adapter must target the same bucket default as provisioning',
+    );
+});

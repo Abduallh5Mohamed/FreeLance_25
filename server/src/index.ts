@@ -1,3 +1,5 @@
+// Load environment before route defaults capture dedicated service secrets.
+import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -75,11 +77,20 @@ import attendanceRecordsRoutes from './routes/attendance-records';
 import platformFlagsRoutes from './routes/platform-flags';
 import auditLogsRoutes from './routes/audit-logs';
 import moderationRoutes from './routes/moderation';
+import searchRoutes from './routes/search';
+import tenantExportRoutes from './routes/tenant-export';
+import platformMfaRoutes from './routes/platform-mfa';
+import impersonationRoutes from './routes/impersonation';
+import { mountObservability, createDatabaseReadinessCheck } from './routes/ops';
+import { createLogger } from './services/logger';
+import { createMetricsRegistry } from './services/metrics';
 import { initializeBuckets } from './services/minio';
 import { reconcileTenantSubscriptions } from './services/subscription-lifecycle';
-import { optionalAuth } from './middleware/auth';
+import { optionalAuth, authenticateToken } from './middleware/auth';
+import { enforceImpersonationContext, rejectImpersonationHeader } from './middleware/impersonation-context';
 import { enforceStudentWorkspaceBoundary } from './middleware/student-workspace-boundary';
 import { enforceTenantAuthorityBoundary } from './middleware/tenant-authority-boundary';
+import { createDefaultReportingDatabase, createSchoolReportingRouters } from './services/school-reporting-wiring';
 
 dotenv.config();
 
@@ -136,6 +147,7 @@ app.use(cors({
         } else callback(new Error('Origin is not allowed by CORS'));
     },
     credentials: true,
+    exposedHeaders: ['X-Results-Truncated'],
 }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -143,10 +155,12 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Initialize Socket.IO
 setupSocketIO(httpServer);
 
-// Request logging middleware
-app.use((req: Request, res: Response, next: NextFunction) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
-    next();
+// One structured request observer; no raw URL/query logging of signed tokens.
+mountObservability(app, {
+    logger: createLogger(),
+    metrics: createMetricsRegistry(),
+    metricsToken: process.env.METRICS_TOKEN,
+    readiness: [createDatabaseReadinessCheck()],
 });
 
 // Health check endpoint
@@ -158,16 +172,37 @@ app.get('/health', (req: Request, res: Response) => {
 // Parent read-only views authenticate with their own scoped opaque HMAC token
 // (`pv1.<payload>.<sig>`), not a JWT. It must be mounted BEFORE the optionalAuth
 // guard below, because optionalAuth would jwt.verify the Bearer value and
-// reject the opaque token with 401 "Invalid token".
+// reject the opaque token with 401 "Invalid token". The surface is
+// independently authenticated, so it can never verify an impersonation
+// context: a presented `x-impersonation` header is explicitly REFUSED on this
+// mount instead of being silently bypassed.
+app.use('/api/parent', (req: Request, res: Response, next: NextFunction) => rejectImpersonationHeader(req, res, next));
 app.use('/api/parent', parentViewsRoutes);
 
 // Resolve any supplied credential before route handlers. Invalid credentials
 // must never degrade into anonymous access; public routes still allow no token.
 app.use('/api', optionalAuth, enforceTenantAuthorityBoundary, enforceStudentWorkspaceBoundary);
 
+// M7 O6 impersonation — request-context enforcement. Registered immediately
+// after the shared /api guard chain (and therefore after authentication) and
+// BEFORE EVERY business router below, so a presented `x-impersonation` header
+// is verified against the LIVE session row, bound to the authenticated support
+// ACTOR, and resolved to the effective TARGET principal before any business
+// handler can run; an absent header leaves the request an ordinary request.
+// Path-less so every /api surface below is covered exactly like the guard
+// chain above covers it, and it can never precede authentication.
+app.use(enforceImpersonationContext);
+// Session management (start/approve/revoke/list) behind the router's own
+// authenticate + verified platform permissions. An issued context can never
+// manage sessions: the enforcement denies the management namespace first.
+app.use('/api/platform/impersonation', impersonationRoutes);
+
 app.use('/api/parent-links', parentLinksRoutes);
 app.use('/api/notification-consent', notificationConsentRoutes);
 app.use('/api/lesson-discussions', lessonDiscussionsRoutes);
+app.use('/api/search', searchRoutes);
+app.use('/api/tenant-exports', tenantExportRoutes);
+app.use('/api/platform/mfa', platformMfaRoutes);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/groups', groupsRoutes);
@@ -243,6 +278,18 @@ app.use('/api/attendance-records', attendanceRecordsRoutes);
 app.use('/api/platform/flags', platformFlagsRoutes);
 app.use('/api/audit-logs', auditLogsRoutes);
 app.use('/api/moderation', moderationRoutes);
+
+// B2-C school reporting surfaces. Mounted once, after the /api guard chain and
+// the impersonation-context enforcement above, so the impersonation/auth
+// context applies before any handler. Each router authenticates first and then
+// runs the lazy schema-readiness check (503 fail-closed) before data access.
+const schoolReportingRouters = createSchoolReportingRouters({
+    db: createDefaultReportingDatabase(),
+    authenticate: authenticateToken,
+});
+app.use('/api/exam-manual-grading', schoolReportingRouters.examManualGrading);
+app.use('/api/progress-reports', schoolReportingRouters.progressReports);
+app.use('/api/attendance-reports', schoolReportingRouters.attendanceReports);
 
 // 404 handler
 app.use((req: Request, res: Response) => {

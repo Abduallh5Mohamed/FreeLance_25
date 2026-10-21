@@ -11,19 +11,24 @@
  *    whose tenant, branch and group match the assignment (deny by default);
  *  - every read/write carries `tenant_id = <principal tenant>`.
  *
- * Upload identity is server-owned on both values: the private `storage_key`
- * is generated here (`tenants/{tenantId}/assignments/{assignmentId}/
- * {enrollmentId}/{submissionId}.ext`), a client-supplied key (or any client
- * size claim) is rejected/ignored, and the authoritative bytes come from an
- * injected server-side storage-stat dependency. If no verified object exists
- * at the generated key yet, the submission is recorded `pending_upload` —
- * `file_size_bytes` stays 0 (server opinion: nothing verified) and
- * `scan_status` remains `pending` until the scan/finalize pipeline verifies
- * the object; the creator receives their own private upload target in the
- * creation response only. The key is never projected by any read endpoint.
- * Submissions are append-only versions; a teacher revocation invalidates a
- * version and re-opens the slot. Duplicate-key races on the per-version
- * UNIQUE key are re-evaluated and answered as a policy denial, not a 500.
+ * Upload identity and object facts are server-owned on every value. The
+ * private `storage_key` is generated here (`tenants/{tenantId}/assignments/
+ * {assignmentId}/{enrollmentId}/{submissionId}.ext`), a client-supplied key
+ * (or any client size/scan claim) is rejected/ignored, and the authoritative
+ * metadata comes from an injected server-side object store. The lifecycle is:
+ *
+ *   POST   /:id/submissions                       create row + short-lived upload URL
+ *   POST   /:id/submissions/:sid/upload-authorization  re-issue an expired URL
+ *   POST   /:id/submissions/:sid/finalize         verify object + scan, atomically
+ *
+ * A freshly created row is `pending_upload` (size 0, scan pending). Finalize
+ * verifies the key binding, size, stored content type and a bounded magic-byte
+ * prefix, then records the verified size. Without a verified scanner the row
+ * ends in `pending_scan` — uploaded is never treated as clean. The key is
+ * never projected by any read endpoint. Submissions are append-only versions;
+ * a teacher revocation invalidates a version and re-opens the slot.
+ * Duplicate-key races on the per-version UNIQUE key are re-evaluated and
+ * answered as a policy denial, not a 500.
  *
  * Exports `createAssignmentsRouter(deps)` and a default-wired router instance
  * (real pool/auth/authority) so a later mounting task can `app.use` it. This
@@ -45,14 +50,39 @@ import {
     AssignmentAudienceFacts,
     EnrollmentAudienceFacts,
     EvaluateSubmissionInput,
+    ExistingSubmission,
     evaluateSubmission,
+    evaluateSubmissionWindow,
     enrollmentMatchesAssignment,
     buildSubmissionStorageKey,
+    deriveUploadStatus,
     normalizeId,
     validateAssignmentInput,
+    validateFinalizeRequest,
     validateUploadRequest,
     validateVerifiedUpload,
+    UploadStatus,
 } from '../services/assignments';
+import {
+    AssignmentObjectMetadata,
+    AssignmentObjectStore,
+    BoundObjectVersion,
+    MalwareScanner,
+    MAX_SIGNATURE_PREFIX_BYTES,
+    QuarantineCleanup,
+    ScanTimeoutError,
+    boundObjectVersion,
+    createMinioAssignmentObjectStore,
+    expectedContentType,
+    normalizeContentType,
+    parseSubmissionStorageKey,
+    removeScannedObjectVersion,
+    runBoundedScan,
+    scanTimeoutMs,
+    uploadAuthorizationTtlSeconds,
+    verifyObjectSignature,
+    verifySubmissionStorageKey,
+} from '../services/assignment-storage';
 
 export interface AssignmentsDataAccess {
     query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>;
@@ -69,12 +99,21 @@ export interface AssignmentsDeps {
     now?: () => Date;
     transaction?: <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>) => Promise<T>;
     /**
-     * Server-side verification of a stored object: returns its byte size, or
-     * null when no verified object exists at the (server-generated) key.
-     * Submissions report bytes only from this dependency, never from the
-     * client body.
+     * Server-owned private object store for submission files. Every object
+     * fact (key, size, content type, signature) is read through this adapter;
+     * the client never supplies one. Absent means the upload lifecycle cannot
+     * be authorized and the create route fails closed with 503.
      */
-    storageStat?: (storageKey: string) => Promise<number | null>;
+    objectStore?: AssignmentObjectStore;
+    /**
+     * Verified malware scanner adapter. Absent means a verified upload stays
+     * `pending_scan` (HTTP 202) — the route never fabricates a clean verdict.
+     */
+    malwareScanner?: MalwareScanner;
+    /** Wall-clock bound for one scan (clamped to 1–120 s; default 30 s). */
+    scanTimeoutMs?: number;
+    /** Short-lived upload authorization lifetime (clamped to 60–600 s). */
+    uploadUrlTtlSeconds?: number;
 }
 
 const STAFF_AUTHORITIES = new Set(['owner', 'instructor']);
@@ -125,6 +164,11 @@ interface SubmissionRow {
     revoked_at: string | Date | null;
 }
 
+/** Finalize needs the private reference; read projections never select it. */
+interface SubmissionStorageRow extends SubmissionRow {
+    storage_key: string;
+}
+
 interface StaffScope {
     tenantId: string;
     userId: string;
@@ -155,6 +199,43 @@ function parseJsonArray(value: string | null): string[] {
 
 const pad2 = (value: number): string => String(value).padStart(2, '0');
 
+/**
+ * Epoch milliseconds for a persisted `submitted_at`. A MySQL DATETIME is a UTC
+ * wall time without a zone (the column default is `CURRENT_TIMESTAMP` in UTC),
+ * so it is parsed as UTC; a driver Date is already absolute. Unparseable
+ * values yield null and the caller treats the row as still in flight.
+ */
+function submittedAtMs(value: string | Date | null | undefined): number | null {
+    if (value instanceof Date) {
+        const time = value.getTime();
+        return Number.isFinite(time) ? time : null;
+    }
+    if (typeof value !== 'string' || value === '') return null;
+    const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+        ? `${value.replace(' ', 'T')}Z`
+        : value;
+    const time = Date.parse(normalized);
+    return Number.isFinite(time) ? time : null;
+}
+
+/**
+ * Upload authorization projected to the caller. `max_bytes_enforced` is true
+ * only when the storage adapter signed a content-length range into the
+ * authorization; a presigned PUT cannot bind the body length, so the response
+ * says `finalize_stat_only` instead of promising a limit it cannot enforce.
+ */
+interface UploadAuthorizationProjection {
+    method: 'PUT' | 'POST';
+    url: string;
+    fields?: Record<string, string>;
+    expires_in_seconds: number;
+    expires_at: string;
+    required_headers: Record<string, string>;
+    max_bytes: number;
+    max_bytes_enforced: boolean;
+    max_bytes_enforcement: 'signed_content_length_range' | 'finalize_stat_only';
+}
+
 /** Render an absolute UTC instant back into a local wall time for re-editing. */
 function toLocalWallTime(isoUtc: string, timeZone: string): string {
     const wall = tenantLocalNow(new Date(isoUtc), timeZone);
@@ -172,7 +253,10 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
     const runAtomic = deps.transaction
         ? deps.transaction
         : <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>): Promise<T> => fn(db);
-    const storageStat = deps.storageStat ?? (async (): Promise<number | null> => null);
+    const objectStore = deps.objectStore;
+    const malwareScanner = deps.malwareScanner;
+    const scanWindowMs = scanTimeoutMs(deps.scanTimeoutMs);
+    const uploadTtlSeconds = uploadAuthorizationTtlSeconds(deps.uploadUrlTtlSeconds);
 
     const branchAccess: BranchAccessDeps = deps.branchAccess ?? {
         findBranchById: async (branchId) => db.queryOne<BranchRow>(
@@ -316,13 +400,228 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             [assignmentId, tenantId],
         );
 
+    const SUBMISSION_COLUMNS =
+        'id,assignment_id,tenant_id,student_enrollment_id,student_user_id,version,status,' +
+        'file_name,file_type,file_size_bytes,scan_status,is_late,submitted_at,revoked_at';
+
+    /**
+     * Staff listing: tenant + assignment scoped, bounded to the newest 200 rows.
+     * Staff read the whole cohort, so this is a deliberate page cap; no student
+     * version or limit decision is ever made from it.
+     */
     const loadSubmissions = async (tenantId: string, assignmentId: string): Promise<SubmissionRow[]> =>
         db.query<SubmissionRow>(
-            `SELECT id,assignment_id,tenant_id,student_enrollment_id,student_user_id,version,status,
-                    file_name,file_type,file_size_bytes,scan_status,is_late,submitted_at,revoked_at
+            `SELECT ${SUBMISSION_COLUMNS}
              FROM assignment_submissions WHERE assignment_id = ? AND tenant_id = ? ORDER BY version DESC LIMIT 200`,
             [assignmentId, tenantId],
         );
+
+    /**
+     * The caller's own history, filtered in SQL by the verified enrollment id.
+     * Unbounded on purpose: the next version and the resubmission/limit gates
+     * must be computed from the complete history. A tenant-wide window would
+     * hide a student's older versions behind other students' newer rows once
+     * an assignment passes 200 submissions. The per-(assignment, enrollment,
+     * version) UNIQUE key still owns the append race.
+     */
+    const loadEnrollmentSubmissions = async (
+        tenantId: string,
+        assignmentId: string,
+        enrollmentId: string,
+    ): Promise<SubmissionRow[]> =>
+        db.query<SubmissionRow>(
+            `SELECT ${SUBMISSION_COLUMNS}
+             FROM assignment_submissions
+             WHERE assignment_id = ? AND tenant_id = ? AND student_enrollment_id = ?
+             ORDER BY version DESC`,
+            [assignmentId, tenantId, enrollmentId],
+        );
+
+    /** The caller's own submission version, including its private key. */
+    const loadOwnSubmission = async (
+        tenantId: string,
+        assignmentId: string,
+        enrollmentId: string,
+        submissionId: string,
+    ): Promise<SubmissionStorageRow | null> =>
+        db.queryOne<SubmissionStorageRow>(
+            `SELECT ${SUBMISSION_COLUMNS},storage_key
+             FROM assignment_submissions
+             WHERE id = ? AND assignment_id = ? AND tenant_id = ? AND student_enrollment_id = ?
+             LIMIT 1`,
+            [submissionId, assignmentId, tenantId, enrollmentId],
+        );
+
+    /**
+     * The policy view of the caller's own history. The verified size and the
+     * submission instant decide whether an unverified row is still in flight
+     * or abandoned (see `evaluateSubmission`).
+     */
+    const toExistingSubmissions = (rows: SubmissionRow[]): ExistingSubmission[] => rows.map((row) => ({
+        version: Number(row.version),
+        status: row.status,
+        fileSizeBytes: Number(row.file_size_bytes),
+        submittedAtMs: submittedAtMs(row.submitted_at),
+    }));
+
+    /**
+     * Short-lived private upload authorization. The key is already the
+     * server-generated one; the adapter only signs it. When the adapter can
+     * sign a content-length range the store itself refuses an oversize body;
+     * otherwise the response reports that the cap is only verified after the
+     * upload. Any storage error is a hard failure (no fake target, no row
+     * state change).
+     */
+    const buildUploadAuthorization = async (
+        storageKey: string,
+        extension: string,
+        maxBytes: number,
+    ): Promise<UploadAuthorizationProjection | null> => {
+        if (!objectStore) return null;
+        const contentType = expectedContentType(extension);
+        if (!contentType) return null;
+        const expiresAt = new Date(now().getTime() + uploadTtlSeconds * 1000).toISOString();
+        if (objectStore.createUploadAuthorization) {
+            const signed = await objectStore.createUploadAuthorization({
+                objectKey: storageKey,
+                contentType,
+                expiresInSeconds: uploadTtlSeconds,
+                maxBytes,
+            });
+            const post = signed.method === 'POST';
+            return {
+                method: signed.method,
+                url: signed.url,
+                ...(post ? { fields: signed.fields ?? {} } : {}),
+                expires_in_seconds: uploadTtlSeconds,
+                expires_at: expiresAt,
+                required_headers: post ? {} : { 'Content-Type': contentType },
+                max_bytes: maxBytes,
+                max_bytes_enforced: signed.maxBytesEnforced,
+                max_bytes_enforcement: signed.maxBytesEnforced
+                    ? 'signed_content_length_range'
+                    : 'finalize_stat_only',
+            };
+        }
+        const url = await objectStore.createUploadUrl({
+            objectKey: storageKey,
+            contentType,
+            expiresInSeconds: uploadTtlSeconds,
+        });
+        return {
+            method: 'PUT',
+            url,
+            expires_in_seconds: uploadTtlSeconds,
+            expires_at: expiresAt,
+            required_headers: { 'Content-Type': contentType },
+            max_bytes: maxBytes,
+            max_bytes_enforced: false,
+            max_bytes_enforcement: 'finalize_stat_only',
+        };
+    };
+
+    /**
+     * Best-effort removal of a rejected object **version**; a cleanup failure
+     * never hides the denial.
+     *
+     * The delete is bound to the exact version the server verified above, and
+     * it goes through the same capability-gated seam as a quarantine cleanup
+     * (`removeScannedObjectVersion`): a mutable-key delete would destroy
+     * whatever happens to sit at the key when it runs — including a concurrent
+     * re-upload that no verifier ever looked at. When the adapter cannot prove
+     * the version nothing is deleted at all, the row stays unreadable, and the
+     * cleanup is reported as pending for an operator. That is an honest
+     * limitation, never a destructive-cleanup claim.
+     */
+    const removeRejectedObject = async (
+        storageKey: string,
+        version: BoundObjectVersion,
+        submissionId: string,
+    ): Promise<QuarantineCleanup> => {
+        if (!objectStore) return 'unsupported';
+        const cleanup = await removeScannedObjectVersion(
+            objectStore,
+            { objectKey: storageKey, etag: version.etag, sizeBytes: version.sizeBytes },
+            (error) => console.error(
+                `Assignment rejection cleanup failed for submission ${submissionId}:`,
+                error,
+            ),
+        );
+        if (cleanup === 'unsupported' || cleanup === 'failed') {
+            console.error(
+                `Assignment rejection cleanup pending for submission ${submissionId}:`
+                + ' the storage adapter cannot delete by exact object version',
+            );
+        }
+        return cleanup;
+    };
+
+    /**
+     * Cancel cleanup for an abandoned upload. The row never became readable, so
+     * there is no earlier verdict to re-stat against — but the key is still
+     * mutable, and the object has never been verified. The version that is at
+     * the key *now* is therefore proven first, and exactly that version is
+     * deleted. A stat failure, or an adapter that cannot express a version,
+     * deletes nothing and leaves the cleanup pending: never a delete by key,
+     * which could destroy a concurrent re-upload.
+     */
+    const removeCancelledUpload = async (
+        storageKey: string,
+        submissionId: string,
+    ): Promise<QuarantineCleanup> => {
+        if (!objectStore) return 'unsupported';
+        let metadata: AssignmentObjectMetadata | null;
+        try {
+            metadata = await objectStore.statObject(storageKey);
+        } catch (error) {
+            console.error(`Assignment cancel stat failed for submission ${submissionId}:`, error);
+            return 'failed';
+        }
+        const version = boundObjectVersion(metadata);
+        if (!version) {
+            console.error(
+                `Assignment rejection cleanup pending for submission ${submissionId}:`
+                + ' the storage adapter cannot bind the abandoned upload to a version',
+            );
+            return 'unsupported';
+        }
+        return removeRejectedObject(storageKey, version, submissionId);
+    };
+
+    /**
+     * Quarantine cleanup: destroy **exactly** the object version the scan
+     * rejected, never "whatever is at the key now".
+     *
+     * A mutable-key delete here would be a correctness bug: between the final
+     * re-stat and the delete the key can be rewritten by a concurrent upload, so
+     * the delete would destroy bytes no scanner ever looked at. The removal is
+     * therefore only issued when the adapter declares an exact-version
+     * capability. Without it nothing is deleted — the row stays `infected` (and
+     * therefore unreadable) and the version-exact cleanup is reported as pending
+     * for an operator. That is a real limitation, not a silent success.
+     */
+    const quarantineRejectedObject = async (
+        storageKey: string,
+        version: BoundObjectVersion,
+        submissionId: string,
+    ): Promise<QuarantineCleanup> => {
+        if (!objectStore) return 'unsupported';
+        const cleanup = await removeScannedObjectVersion(
+            objectStore,
+            { objectKey: storageKey, etag: version.etag, sizeBytes: version.sizeBytes },
+            (error) => console.error(
+                `Assignment quarantine cleanup failed for submission ${submissionId}:`,
+                error,
+            ),
+        );
+        if (cleanup === 'unsupported') {
+            console.error(
+                `Assignment quarantine cleanup pending for submission ${submissionId}:`
+                + ' the storage adapter cannot delete by exact object version',
+            );
+        }
+        return cleanup;
+    };
 
     /* --------------------------------------------------------------------- */
     /* Projections (private storage_key is never exposed)                     */
@@ -357,10 +656,21 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
         file_name: row.file_name,
         file_type: row.file_type,
         file_size_bytes: Number(row.file_size_bytes),
+        upload_status: deriveUploadStatus(Number(row.file_size_bytes), row.scan_status),
         scan_status: row.scan_status,
         is_late: Boolean(row.is_late),
         submitted_at: toUtcIso(row.submitted_at),
         revoked_at: toUtcIso(row.revoked_at),
+    });
+
+    /** Finalize response: persisted state only, never an object key or URL. */
+    const finalizeProjection = (row: SubmissionRow) => ({
+        id: row.id,
+        version: Number(row.version),
+        upload_status: deriveUploadStatus(Number(row.file_size_bytes), row.scan_status),
+        scan_status: row.scan_status,
+        file_size_bytes: Number(row.file_size_bytes),
+        status: row.status,
     });
 
     const assignmentAudience = (row: AssignmentRow): AssignmentAudienceFacts => ({
@@ -485,9 +795,8 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
 
     /* --------------------------------------------------------------------- */
     /* POST /:id/submissions — enrolled student submit (audited).             */
-    /* Storage identity is server-owned: the key is generated here and the   */
-    /* bytes only come from a verified storage-stat. No verified object yet  */
-    /* means the row is recorded pending_upload (see header).                */
+    /* Creates the append-only version and a short-lived private upload      */
+    /* authorization. No object fact is accepted from the client.            */
     /* --------------------------------------------------------------------- */
     router.post('/:id/submissions', async (req: AuthRequest, res: Response) => {
         try {
@@ -506,10 +815,22 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             };
             const upload = validateUploadRequest(req.body, limits);
             if (!upload.ok) return res.status(400).json({ error: upload.error });
+            if (!objectStore) {
+                return res.status(503).json({
+                    error: 'Private upload storage is not configured',
+                    code: 'upload_unavailable',
+                });
+            }
+            if (!expectedContentType(upload.value.extension)) {
+                return res.status(400).json({
+                    error: 'file type cannot be verified for a secure upload',
+                    code: 'unsupported_file_type',
+                });
+            }
 
-            const existing = (await loadSubmissions(enrollment.tenantId, assignmentId))
-                .filter((row) => row.student_enrollment_id === enrollment.id)
-                .map((row) => ({ version: Number(row.version), status: row.status }));
+            const existing = toExistingSubmissions(
+                await loadEnrollmentSubmissions(enrollment.tenantId, assignmentId, enrollment.id),
+            );
             const decision = evaluateSubmission(submissionInput(assignment), existing, now());
             if (!decision.allowed) {
                 return res.status(403).json({ error: 'Submission is not allowed', code: decision.reason });
@@ -527,21 +848,20 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 return res.status(500).json({ error: 'Failed to generate the private upload target' });
             }
 
-            // The authoritative size is only ever a server-side verification of
-            // the stored object. Nothing verified at the generated key yet (the
-            // normal first ask) records the row as pending_upload with a 0 size
-            // — no client claim is trusted.
-            const storedBytes = await storageStat(storageKey);
-            let fileSizeBytes: number;
-            let pendingUpload: boolean;
-            if (storedBytes === null) {
-                fileSizeBytes = 0;
-                pendingUpload = true;
-            } else {
-                const verified = validateVerifiedUpload(storedBytes, limits);
-                if (!verified.ok) return res.status(400).json({ error: verified.error });
-                fileSizeBytes = verified.value;
-                pendingUpload = false;
+            // Signing is local (no bytes move); a storage-side failure means the
+            // client must not receive a target and no row is written.
+            let authorization: Awaited<ReturnType<typeof buildUploadAuthorization>>;
+            try {
+                authorization = await buildUploadAuthorization(storageKey, upload.value.extension, limits.maxFileBytes);
+            } catch (error) {
+                console.error('Assignment upload authorization error:', error);
+                return res.status(502).json({ error: 'Failed to authorize the upload', code: 'storage_unavailable' });
+            }
+            if (!authorization) {
+                return res.status(503).json({
+                    error: 'Private upload storage is not configured',
+                    code: 'upload_unavailable',
+                });
             }
 
             const status = decision.late ? 'late' : 'submitted';
@@ -555,7 +875,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                         [
                             submissionId, enrollment.tenantId, assignmentId, enrollment.id, enrollment.userId,
                             decision.nextVersion, status, upload.value.fileName, upload.value.fileType,
-                            fileSizeBytes, storageKey, decision.late ? 1 : 0,
+                            0, storageKey, decision.late ? 1 : 0,
                         ],
                     );
                     await recordAudit(tx.execute, {
@@ -568,8 +888,8 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                             assignment_id: assignmentId,
                             version: decision.nextVersion,
                             file_name: upload.value.fileName,
-                            file_size_bytes: fileSizeBytes,
-                            pending_upload: pendingUpload,
+                            file_size_bytes: 0,
+                            upload_status: 'pending_upload',
                             late: decision.late,
                         }),
                     });
@@ -579,16 +899,16 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 // The per-(assignment,enrollment)-version UNIQUE key decided the
                 // race; re-evaluate from committed state for a precise policy
                 // answer instead of a raw 500.
-                const raced = (await loadSubmissions(enrollment.tenantId, assignmentId))
-                    .filter((row) => row.student_enrollment_id === enrollment.id)
-                    .map((row) => ({ version: Number(row.version), status: row.status }));
+                const raced = toExistingSubmissions(
+                    await loadEnrollmentSubmissions(enrollment.tenantId, assignmentId, enrollment.id),
+                );
                 const denial = evaluateSubmission(submissionInput(assignment), raced, now());
                 if (!denial.allowed) {
                     return res.status(403).json({ error: 'Submission is not allowed', code: denial.reason });
                 }
                 return res.status(409).json({ error: 'Submission changed concurrently, please retry' });
             }
-            res.status(201).json(pendingUpload ? {
+            res.status(201).json({
                 id: submissionId,
                 assignment_id: assignmentId,
                 version: decision.nextVersion,
@@ -596,20 +916,475 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 is_late: decision.late,
                 file_size_bytes: 0,
                 upload_status: 'pending_upload',
-                storage_key: storageKey,
                 scan_status: 'pending',
-            } : {
-                id: submissionId,
-                assignment_id: assignmentId,
-                version: decision.nextVersion,
-                status,
-                is_late: decision.late,
-                file_size_bytes: fileSizeBytes,
-                scan_status: 'pending',
+                upload: authorization,
             });
         } catch (error) {
             console.error('Create assignment submission error:', error);
             res.status(500).json({ error: 'Failed to submit assignment' });
+        }
+    });
+
+    /* --------------------------------------------------------------------- */
+    /* POST /:id/submissions/:submissionId/upload-authorization              */
+    /* Re-issues a short-lived private URL for a still-pending own version.  */
+    /* --------------------------------------------------------------------- */
+    router.post('/:id/submissions/:submissionId/upload-authorization', async (req: AuthRequest, res: Response) => {
+        try {
+            const enrollment = await resolveEnrollment(req, res);
+            if (!enrollment) return;
+            const assignmentId = normalizeId(req.params.id);
+            const submissionId = normalizeId(req.params.submissionId);
+            if (!assignmentId || !submissionId) return res.status(404).json({ error: 'Submission not found' });
+            const assignment = await loadAssignmentForEnrollment(enrollment.tenantId, assignmentId);
+            if (!assignment) return res.status(404).json({ error: 'Assignment not found' });
+            if (!enrollmentMatchesAssignment(assignmentAudience(assignment), enrollmentAudience(enrollment))) {
+                return res.status(404).json({ error: 'Assignment not found' });
+            }
+            const row = await loadOwnSubmission(enrollment.tenantId, assignmentId, enrollment.id, submissionId);
+            if (!row) return res.status(404).json({ error: 'Submission not found' });
+            if (row.status === 'revoked') {
+                return res.status(409).json({ error: 'Submission is revoked', code: 'submission_revoked' });
+            }
+            if (Number(row.file_size_bytes) > 0) {
+                return res.status(409).json({ error: 'Submission is already finalized', code: 'already_finalized' });
+            }
+            const window = evaluateSubmissionWindow(submissionInput(assignment), now());
+            if (!window.open) {
+                return res.status(403).json({
+                    error: 'Submission is not open',
+                    code: window.reason === 'deadline_passed' ? 'DEADLINE_PASSED' : 'NOT_OPEN',
+                });
+            }
+            if (!objectStore) {
+                return res.status(503).json({
+                    error: 'Private upload storage is not configured',
+                    code: 'upload_unavailable',
+                });
+            }
+            const parsed = parseSubmissionStorageKey(row.storage_key);
+            const expected = {
+                tenantId: enrollment.tenantId,
+                assignmentId,
+                enrollmentId: enrollment.id,
+                submissionId,
+                fileExtension: parsed?.fileExtension ?? '',
+            };
+            if (!parsed || !verifySubmissionStorageKey(row.storage_key, expected)) {
+                console.error(`Assignment storage binding mismatch for submission ${submissionId}`);
+                return res.status(409).json({
+                    error: 'Stored object reference does not match this submission',
+                    code: 'storage_binding_mismatch',
+                });
+            }
+            let authorization: Awaited<ReturnType<typeof buildUploadAuthorization>>;
+            try {
+                authorization = await buildUploadAuthorization(
+                    row.storage_key, parsed.fileExtension, Number(assignment.max_file_bytes),
+                );
+            } catch (error) {
+                console.error('Assignment upload authorization error:', error);
+                return res.status(502).json({ error: 'Failed to authorize the upload', code: 'storage_unavailable' });
+            }
+            if (!authorization) {
+                return res.status(503).json({
+                    error: 'Private upload storage is not configured',
+                    code: 'upload_unavailable',
+                });
+            }
+            res.json({
+                id: submissionId,
+                assignment_id: assignmentId,
+                version: Number(row.version),
+                upload_status: 'pending_upload',
+                scan_status: 'pending',
+                upload: authorization,
+            });
+        } catch (error) {
+            console.error('Assignment upload authorization error:', error);
+            res.status(500).json({ error: 'Failed to authorize the upload' });
+        }
+    });
+
+    /* --------------------------------------------------------------------- */
+    /* POST /:id/submissions/:submissionId/cancel                            */
+    /* Student cancels an unverified own version. A cancelled (revoked)      */
+    /* version holds no content and no longer counts toward the attempt      */
+    /* budget, so the student can legitimately submit again.                 */
+    /* --------------------------------------------------------------------- */
+    router.post('/:id/submissions/:submissionId/cancel', async (req: AuthRequest, res: Response) => {
+        try {
+            const enrollment = await resolveEnrollment(req, res);
+            if (!enrollment) return;
+            const assignmentId = normalizeId(req.params.id);
+            const submissionId = normalizeId(req.params.submissionId);
+            if (!assignmentId || !submissionId) return res.status(404).json({ error: 'Submission not found' });
+            const assignment = await loadAssignmentForEnrollment(enrollment.tenantId, assignmentId);
+            if (!assignment) return res.status(404).json({ error: 'Assignment not found' });
+            if (!enrollmentMatchesAssignment(assignmentAudience(assignment), enrollmentAudience(enrollment))) {
+                return res.status(404).json({ error: 'Assignment not found' });
+            }
+            const row = await loadOwnSubmission(enrollment.tenantId, assignmentId, enrollment.id, submissionId);
+            if (!row) return res.status(404).json({ error: 'Submission not found' });
+            if (row.status === 'revoked') {
+                // Idempotent: the slot is already free.
+                return res.json({ id: submissionId, status: 'revoked', cancelled: false });
+            }
+            if (Number(row.file_size_bytes) > 0) {
+                return res.status(409).json({
+                    error: 'A verified upload can only be revoked by staff',
+                    code: 'already_finalized',
+                });
+            }
+            const parsed = parseSubmissionStorageKey(row.storage_key);
+            const expected = {
+                tenantId: enrollment.tenantId,
+                assignmentId,
+                enrollmentId: enrollment.id,
+                submissionId,
+                fileExtension: parsed?.fileExtension ?? '',
+            };
+            if (!parsed || !verifySubmissionStorageKey(row.storage_key, expected)) {
+                console.error(`Assignment storage binding mismatch for submission ${submissionId}`);
+                return res.status(409).json({
+                    error: 'Stored object reference does not match this submission',
+                    code: 'storage_binding_mismatch',
+                });
+            }
+
+            let cancelled = false;
+            try {
+                cancelled = await runAtomic(async (tx) => {
+                    const updated = await tx.execute(
+                        `UPDATE assignment_submissions
+                         SET status='revoked', revoked_at=UTC_TIMESTAMP(), revoked_by=?,
+                             revoke_reason='cancelled_by_student'
+                         WHERE id=? AND assignment_id=? AND tenant_id=? AND student_enrollment_id=?
+                           AND status<>'revoked' AND file_size_bytes=0`,
+                        [enrollment.userId, submissionId, assignmentId, enrollment.tenantId, enrollment.id],
+                    );
+                    if ((updated.affectedRows ?? 0) === 0) return false;
+                    await recordAudit(tx.execute, {
+                        actorUserId: enrollment.userId,
+                        tenantId: enrollment.tenantId,
+                        action: 'assignment.submission.cancel',
+                        resourceType: 'assignment_submission',
+                        resourceId: submissionId,
+                        oldValue: snapshotRow({ status: row.status, file_size_bytes: 0 }),
+                        newValue: snapshotRow({ status: 'revoked', reason: 'cancelled_by_student' }),
+                    });
+                    return true;
+                });
+            } catch (error) {
+                console.error(`Assignment cancel write failed for submission ${submissionId}:`, error);
+                return res.status(500).json({ error: 'Failed to cancel the submission' });
+            }
+            if (!cancelled) {
+                const current = await loadOwnSubmission(
+                    enrollment.tenantId, assignmentId, enrollment.id, submissionId,
+                );
+                if (current?.status === 'revoked') {
+                    return res.json({ id: submissionId, status: 'revoked', cancelled: false });
+                }
+                if (current && Number(current.file_size_bytes) > 0) {
+                    return res.status(409).json({
+                        error: 'A verified upload can only be revoked by staff',
+                        code: 'already_finalized',
+                    });
+                }
+                return res.status(409).json({
+                    error: 'Submission changed concurrently, please retry',
+                    code: 'cancel_conflict',
+                });
+            }
+
+            // The row never became readable; the abandoned bytes are removed
+            // best-effort and a cleanup failure never hides the cancellation.
+            // The removal is bound to the exact version proven to be at the key
+            // now, so a concurrent re-upload survives; a version that cannot be
+            // proven leaves the bytes in place and the cleanup pending.
+            await removeCancelledUpload(row.storage_key, submissionId);
+            res.json({ id: submissionId, status: 'revoked', cancelled: true });
+        } catch (error) {
+            console.error('Cancel assignment submission error:', error);
+            res.status(500).json({ error: 'Failed to cancel the submission' });
+        }
+    });
+
+    /* --------------------------------------------------------------------- */
+    /* POST /:id/submissions/:submissionId/finalize                          */
+    /* Server-verifies the stored object, scans it and records the result    */
+    /* atomically. The request body carries no object facts.                 */
+    /* --------------------------------------------------------------------- */
+    router.post('/:id/submissions/:submissionId/finalize', async (req: AuthRequest, res: Response) => {
+        try {
+            const enrollment = await resolveEnrollment(req, res);
+            if (!enrollment) return;
+            const assignmentId = normalizeId(req.params.id);
+            const submissionId = normalizeId(req.params.submissionId);
+            if (!assignmentId || !submissionId) return res.status(404).json({ error: 'Submission not found' });
+            const assignment = await loadAssignmentForEnrollment(enrollment.tenantId, assignmentId);
+            if (!assignment) return res.status(404).json({ error: 'Assignment not found' });
+            if (!enrollmentMatchesAssignment(assignmentAudience(assignment), enrollmentAudience(enrollment))) {
+                return res.status(404).json({ error: 'Assignment not found' });
+            }
+            const row = await loadOwnSubmission(enrollment.tenantId, assignmentId, enrollment.id, submissionId);
+            if (!row) return res.status(404).json({ error: 'Submission not found' });
+            if (row.status === 'revoked') {
+                return res.status(409).json({ error: 'Submission is revoked', code: 'submission_revoked' });
+            }
+
+            // Idempotent retry: a verified object is never re-stat'ed or
+            // re-audited, and a later assignment edit cannot revoke it.
+            if (Number(row.file_size_bytes) > 0) {
+                return res.status(200).json(finalizeProjection(row));
+            }
+
+            const finalizeInput = validateFinalizeRequest(req.body);
+            if (!finalizeInput.ok) {
+                return res.status(400).json({ error: finalizeInput.error, code: 'untrusted_finalize_fields' });
+            }
+            const window = evaluateSubmissionWindow(submissionInput(assignment), now());
+            if (!window.open) {
+                return res.status(403).json({
+                    error: 'Submission is not open for finalization',
+                    code: window.reason === 'deadline_passed' ? 'DEADLINE_PASSED' : 'NOT_OPEN',
+                });
+            }
+            if (!objectStore) {
+                return res.status(503).json({
+                    error: 'Private upload storage is not configured',
+                    code: 'upload_unavailable',
+                });
+            }
+
+            const parsed = parseSubmissionStorageKey(row.storage_key);
+            const expected = {
+                tenantId: enrollment.tenantId,
+                assignmentId,
+                enrollmentId: enrollment.id,
+                submissionId,
+                fileExtension: parsed?.fileExtension ?? '',
+            };
+            if (!parsed || !verifySubmissionStorageKey(row.storage_key, expected)) {
+                console.error(`Assignment storage binding mismatch for submission ${submissionId}`);
+                return res.status(409).json({
+                    error: 'Stored object reference does not match this submission',
+                    code: 'storage_binding_mismatch',
+                });
+            }
+            const extension = parsed.fileExtension;
+            const expectedType = expectedContentType(extension);
+            if (!expectedType) {
+                return res.status(422).json({
+                    error: 'This file type cannot be verified',
+                    code: 'unsupported_file_type',
+                });
+            }
+
+            let metadata: Awaited<ReturnType<AssignmentObjectStore['statObject']>>;
+            try {
+                metadata = await objectStore.statObject(row.storage_key);
+            } catch (error) {
+                console.error(`Assignment object stat failed for submission ${submissionId}:`, error);
+                return res.status(502).json({ error: 'Storage is unavailable', code: 'storage_unavailable' });
+            }
+            if (!metadata) {
+                return res.status(404).json({ error: 'Uploaded object was not found', code: 'object_not_found' });
+            }
+            // Readiness must be bound to one immutable object version. An
+            // adapter that reports no ETag cannot prove which bytes were
+            // verified, so nothing is recorded and nothing is removed.
+            const verifiedVersion = boundObjectVersion(metadata);
+            if (verifiedVersion === null) {
+                console.error(`Assignment storage adapter reported no object version for submission ${submissionId}`);
+                return res.status(503).json({
+                    error: 'The storage adapter cannot bind this object to a version',
+                    code: 'object_version_unbound',
+                });
+            }
+
+            const limits = {
+                maxFileBytes: Number(assignment.max_file_bytes),
+                allowedFileTypes: parseJsonArray(assignment.allowed_file_types),
+            };
+            if (Number.isInteger(metadata.sizeBytes) && metadata.sizeBytes > limits.maxFileBytes) {
+                await removeRejectedObject(row.storage_key, verifiedVersion, submissionId);
+                return res.status(413).json({
+                    error: 'Uploaded file exceeds the assignment size limit',
+                    code: 'file_size_out_of_bounds',
+                });
+            }
+            const verifiedSize = validateVerifiedUpload(metadata.sizeBytes, limits);
+            if (!verifiedSize.ok) {
+                await removeRejectedObject(row.storage_key, verifiedVersion, submissionId);
+                return res.status(400).json({ error: verifiedSize.error, code: 'file_size_out_of_bounds' });
+            }
+
+            const storedType = normalizeContentType(metadata.contentType);
+            if (storedType !== expectedType) {
+                await removeRejectedObject(row.storage_key, verifiedVersion, submissionId);
+                return res.status(422).json({
+                    error: 'Stored content type does not match the declared file type',
+                    code: 'content_type_mismatch',
+                });
+            }
+
+            let prefix: Buffer;
+            try {
+                prefix = await objectStore.readPrefix(row.storage_key, MAX_SIGNATURE_PREFIX_BYTES);
+            } catch (error) {
+                console.error(`Assignment object prefix read failed for submission ${submissionId}:`, error);
+                return res.status(502).json({ error: 'Storage is unavailable', code: 'storage_unavailable' });
+            }
+            const signature = verifyObjectSignature(extension, prefix);
+            if (!signature.ok) {
+                await removeRejectedObject(row.storage_key, verifiedVersion, submissionId);
+                return res.status(422).json({
+                    error: 'Uploaded content does not match its file type',
+                    code: signature.reason === 'unsupported_type' ? 'unsupported_file_type' : 'signature_mismatch',
+                });
+            }
+
+            // Uploaded is not clean. An absent scanner leaves the row in
+            // pending_scan; a scanner that cannot answer is retryable and does
+            // not touch the row; only an explicit clean verdict is recorded.
+            // The scan runs under a hard wall-clock bound, and its input
+            // carries the ETag the server stat'ed, so a verdict is only ever
+            // produced for (and re-checked against) that exact object version.
+            let nextScanStatus = 'pending';
+            let uploadStatus: UploadStatus = 'pending_scan';
+            let responseStatus = 202;
+            if (malwareScanner) {
+                let verdict: Awaited<ReturnType<MalwareScanner['scan']>>;
+                try {
+                    verdict = await runBoundedScan(
+                        malwareScanner,
+                        {
+                            objectKey: row.storage_key,
+                            sizeBytes: verifiedSize.value,
+                            contentType: storedType,
+                            extension,
+                            etag: metadata.etag,
+                        },
+                        scanWindowMs,
+                    );
+                } catch (error) {
+                    const detail = error instanceof ScanTimeoutError ? error.message : error;
+                    console.error(`Assignment malware scan failed for submission ${submissionId}:`, detail);
+                    return res.status(502).json({ error: 'Malware scan is unavailable', code: 'scan_unavailable' });
+                }
+                if (verdict.verdict === 'failed') {
+                    return res.status(502).json({ error: 'Malware scan is unavailable', code: 'scan_unavailable' });
+                }
+                if (verdict.verdict === 'infected') {
+                    nextScanStatus = 'infected';
+                    uploadStatus = 'quarantined';
+                    responseStatus = 422;
+                } else {
+                    nextScanStatus = 'clean';
+                    uploadStatus = 'finalized';
+                    responseStatus = 200;
+                }
+            }
+
+            // A verdict is only meaningful for the exact object version it was
+            // produced from. Between stat/read/scan/finalize the caller could
+            // have replaced the object at the same key, so re-stat and require
+            // the same ETag and size before anything is recorded: a clean
+            // verdict must never authorize a different later object. Fail
+            // closed — the row stays pending and the caller may re-finalize.
+            let current: Awaited<ReturnType<AssignmentObjectStore['statObject']>>;
+            try {
+                current = await objectStore.statObject(row.storage_key);
+            } catch (error) {
+                console.error(`Assignment object re-stat failed for submission ${submissionId}:`, error);
+                return res.status(502).json({ error: 'Storage is unavailable', code: 'storage_unavailable' });
+            }
+            if (!current) {
+                return res.status(404).json({ error: 'Uploaded object was not found', code: 'object_not_found' });
+            }
+            if (current.etag !== metadata.etag || current.sizeBytes !== metadata.sizeBytes) {
+                console.error(`Assignment object was replaced during finalize for submission ${submissionId}`);
+                return res.status(409).json({
+                    error: 'The uploaded object changed during verification, please retry',
+                    code: 'object_replaced',
+                });
+            }
+
+            let recorded = false;
+            try {
+                recorded = await runAtomic(async (tx) => {
+                    const result = await tx.execute(
+                        `UPDATE assignment_submissions
+                         SET file_size_bytes=?, scan_status=?
+                         WHERE id=? AND assignment_id=? AND tenant_id=? AND student_enrollment_id=?
+                           AND file_size_bytes=0 AND scan_status='pending' AND status<>'revoked'`,
+                        [verifiedSize.value, nextScanStatus, submissionId, assignmentId, enrollment.tenantId, enrollment.id],
+                    );
+                    if ((result.affectedRows ?? 0) === 0) return false;
+                    await recordAudit(tx.execute, {
+                        actorUserId: enrollment.userId,
+                        tenantId: enrollment.tenantId,
+                        action: 'assignment.submission.finalize',
+                        resourceType: 'assignment_submission',
+                        resourceId: submissionId,
+                        oldValue: snapshotRow({ file_size_bytes: 0, scan_status: 'pending' }),
+                        newValue: snapshotRow({
+                            file_size_bytes: verifiedSize.value,
+                            scan_status: nextScanStatus,
+                            upload_status: uploadStatus,
+                            late: Boolean(row.is_late),
+                        }),
+                    });
+                    return true;
+                });
+            } catch (error) {
+                console.error(`Assignment finalize write failed for submission ${submissionId}:`, error);
+                return res.status(500).json({ error: 'Failed to finalize the submission' });
+            }
+            if (!recorded) {
+                const current = await loadOwnSubmission(enrollment.tenantId, assignmentId, enrollment.id, submissionId);
+                // Idempotent only when the committed winner recorded exactly
+                // the outcome this attempt computed: the same verified size
+                // *and* the same verdict. A winner that recorded a different
+                // verdict (say `infected` while this attempt scanned `clean`)
+                // is a conflict — answering 200 would report this attempt as
+                // having produced a state it never produced.
+                const sameOutcome = current !== null
+                    && Number(current.file_size_bytes) === verifiedSize.value
+                    && current.scan_status === nextScanStatus;
+                if (current && sameOutcome) {
+                    return res.status(200).json(finalizeProjection(current));
+                }
+                // A revoke that landed between the read and the write owns the
+                // row now; a revoked version must never be reported as ready.
+                if (current?.status === 'revoked') {
+                    return res.status(409).json({ error: 'Submission is revoked', code: 'submission_revoked' });
+                }
+                return res.status(409).json({
+                    error: 'Submission changed concurrently, please retry',
+                    code: 'finalize_conflict',
+                });
+            }
+
+            const finalizedRow: SubmissionRow = {
+                ...row,
+                file_size_bytes: verifiedSize.value,
+                scan_status: nextScanStatus,
+            };
+            if (uploadStatus === 'quarantined') {
+                await quarantineRejectedObject(row.storage_key, verifiedVersion, submissionId);
+                return res.status(422).json({
+                    error: 'Uploaded file failed the malware scan',
+                    code: 'scan_infected',
+                    ...finalizeProjection(finalizedRow),
+                });
+            }
+            res.status(responseStatus).json(finalizeProjection(finalizedRow));
+        } catch (error) {
+            console.error('Finalize assignment submission error:', error);
+            res.status(500).json({ error: 'Failed to finalize the submission' });
         }
     });
 
@@ -627,8 +1402,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             if (!enrollmentMatchesAssignment(assignmentAudience(assignment), enrollmentAudience(enrollment))) {
                 return res.status(404).json({ error: 'Assignment not found' });
             }
-            const rows = (await loadSubmissions(enrollment.tenantId, assignmentId))
-                .filter((row) => row.student_enrollment_id === enrollment.id);
+            const rows = await loadEnrollmentSubmissions(enrollment.tenantId, assignmentId, enrollment.id);
             res.json(rows.map(projectSubmission));
         } catch (error) {
             console.error('Student submissions error:', error);
@@ -962,12 +1736,43 @@ const productionBranchAccess: BranchAccessDeps = {
 };
 
 /**
- * Production storage-stat seam: no object store is integrated in this
- * milestone, so nothing can be verified at a generated key and submissions
- * are recorded pending_upload (documented in the router header). When a
- * storage backend lands, this reports the real object size instead.
+ * Production object-metadata adapter over the existing private MinIO client.
+ * The adapter is lazy: constructing it neither connects nor reads credentials;
+ * the first upload call does. The bucket is `MINIO_BUCKET_ASSIGNMENTS`
+ * (default `assignment-submissions`) and must be provisioned private.
  */
-const productionStorageStat = async (): Promise<number | null> => null;
+const productionObjectStore = createMinioAssignmentObjectStore();
+
+/**
+ * No trusted malware scanner is integrated in this scope. A verified upload
+ * therefore stays `pending_scan` (HTTP 202) and `clean` is unreachable. This is
+ * deliberate fail-closed behavior; wiring a scanner is a separate decision.
+ */
+const productionMalwareScanner: MalwareScanner | undefined = undefined;
+
+/**
+ * Production atomic seam. A submission row and its audit event (and the
+ * staff-side edit/publish/revoke/archive writes) must commit or roll back
+ * together, so a failed audit can never leave an unaudited submission behind.
+ */
+const productionTransaction = async <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>): Promise<T> => {
+    const { withTransaction } = await loadDb();
+    return withTransaction((connection) => fn({
+        query: async <R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R[]> => {
+            const [rows] = await connection.query(sql, params as never);
+            return rows as unknown as R[];
+        },
+        queryOne: async <R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R | null> => {
+            const [rows] = await connection.query(sql, params as never);
+            return (rows as unknown as R[])[0] ?? null;
+        },
+        execute: async (sql: string, params?: unknown[]) => {
+            const [result] = await connection.execute(sql, params as never);
+            const header = result as { insertId?: number; affectedRows?: number };
+            return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+        },
+    }));
+};
 
 export default createAssignmentsRouter({
     db: productionDb,
@@ -977,5 +1782,7 @@ export default createAssignmentsRouter({
     },
     loadActiveTenantAuthority,
     branchAccess: productionBranchAccess,
-    storageStat: productionStorageStat,
+    objectStore: productionObjectStore,
+    malwareScanner: productionMalwareScanner,
+    transaction: productionTransaction,
 });

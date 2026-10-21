@@ -121,12 +121,15 @@ export const createAuditLogsRouter = (deps: AuditLogsDeps): Router => {
                 resourceType: 'audit_events',
                 resourceId: '*',
                 newValue: parsed.value.tenantId
-                    ? { format: 'csv', tenant_id: parsed.value.tenantId, row_count: result.rowCount, cap: MAX_EXPORT_ROWS }
-                    : { format: 'csv', scope: 'platform', row_count: result.rowCount, cap: MAX_EXPORT_ROWS },
+                    ? { format: 'csv', tenant_id: parsed.value.tenantId, row_count: result.rowCount, cap: MAX_EXPORT_ROWS, truncated: result.truncated }
+                    : { format: 'csv', scope: 'platform', row_count: result.rowCount, cap: MAX_EXPORT_ROWS, truncated: result.truncated },
                 reason: 'Audit log CSV export',
             });
             res.set('Content-Type', 'text/csv; charset=utf-8');
             res.set('Content-Disposition', 'attachment; filename="audit-events.csv"');
+            // Single truncation signal (plus the `truncated` field in the export
+            // audit row): the export stops at MAX_EXPORT_ROWS.
+            res.set('X-Results-Truncated', result.truncated ? 'true' : 'false');
             res.send(result.csv);
         } catch (error) {
             console.error('Export audit events error:', error);
@@ -149,6 +152,18 @@ export const createAuditLogsRouter = (deps: AuditLogsDeps): Router => {
 /* Production wiring: real pool, real auth, real platform-capability guard,
    server-derived tenant ownership and the real sealed audit writer run under
    a single-connection transaction so the head-row lock serializes appends. */
+
+/** Verified platform-reader lookup: active super_admin or `audit.read` holder. */
+export const PLATFORM_READER_SQL = `SELECT u.id AS user_id FROM users u
+     WHERE u.id = ? AND u.is_active = 1
+       AND (
+         EXISTS (SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = u.id AND aur.role_code = 'super_admin')
+         OR EXISTS (
+           SELECT 1 FROM admin_user_roles aur2
+           INNER JOIN admin_role_permissions arp ON arp.role_code = aur2.role_code
+           WHERE aur2.user_id = u.id AND arp.permission_key = 'audit.read'
+         )
+       ) LIMIT 1`;
 
 let dbModule: typeof import('../db') | null = null;
 const loadDb = async (): Promise<typeof import('../db')> => {
@@ -202,20 +217,8 @@ export default createAuditLogsRouter({
     requirePlatformPermission: (permission) => requireAdminPermission(permission),
     isPlatformReader: async (userId) => {
         const { queryOne } = await loadDb();
-        const rows = await queryOne<{ user_id: string }>(
-            `SELECT ur.user_id FROM users u
-             WHERE u.id = ? AND u.is_active = 1
-               AND (
-                 EXISTS (SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = u.id AND aur.role_code = 'super_admin')
-                 OR EXISTS (
-                   SELECT 1 FROM admin_user_roles aur2
-                   INNER JOIN admin_role_permissions arp ON arp.role_code = aur2.role_code
-                   WHERE aur2.user_id = u.id AND arp.permission_key = 'audit.read'
-                 )
-               ) LIMIT 1`,
-            [userId],
-        );
-        return Boolean(rows);
+        const row = await queryOne<{ user_id: string }>(PLATFORM_READER_SQL, [userId]);
+        return Boolean(row);
     },
     tenantOwnerTenantId: async (userId, tenantId) => {
         const { queryOne } = await loadDb();

@@ -89,6 +89,51 @@
  *  - videos <-> lectures are linked by lectures.video_url =
  *    CONCAT('video://', videos.id); videos.tenant_id is nullable, so the
  *    resource tenant falls back to the course's tenant.
+ *
+ * Association contract (write time + resolution):
+ *  - The link carries NO uniqueness constraint (no unique index on
+ *    lectures.video_url, and course_materials.file_url is a separate table),
+ *    so several parents may name one video.
+ *  - Resolution therefore reads CANDIDATES: exactly one parent is used, more
+ *    than one is an ambiguity denial. There is no ORDER BY tie-break and no
+ *    "first parent" rule — choosing one would compute teacher/student
+ *    authority from an arbitrary lesson. A bare `LIMIT 1` without ORDER BY is
+ *    not allowed on a parent lookup.
+ *  - Writes validate the reference first (`validateVideoBinding`): the video
+ *    must exist, belong to the writer's tenant and be authorized by this same
+ *    policy; a second parent is refused with 409 rather than silently created.
+ *  - The single-parent rule is an ambiguity rule, not a product rule about
+ *    multi-lesson videos: the schema cannot disambiguate a second parent, so
+ *    the write refuses it. A unique constraint or a binding table (I2) is what
+ *    would let the platform support more than one parent safely.
+ *
+ * Tenant equality (write time, non-negotiable):
+ *  - The DESTINATION tenant is proven from server rows, never from the body:
+ *    the lecture/material's own `course_id` is read inside the write
+ *    transaction and its `courses.tenant_id` is the destination tenant. On
+ *    create the caller passes the server-derived course id; on update the
+ *    validator reads the row's current course, so a course move re-proves the
+ *    binding even when `video_url` is unchanged.
+ *  - The VIDEO tenant is proven from its declared authorities only:
+ *    `videos.tenant_id` and/or `videos.course_id -> courses.tenant_id`. Two
+ *    authorities that disagree are a conflict (deny); no authority at all is
+ *    unproven (deny). The actor's tenant is never used as proof.
+ *  - `destinationTenant === videoTenant` is required EXACTLY, for every actor.
+ *    A verified platform capability satisfies actor authority; it never
+ *    relaxes tenant equality. A missing ACTOR tenant may be legitimate
+ *    platform authority — a missing destination or video tenant never is.
+ *
+ * Reference canonical form (write time):
+ *  - One rule: `video://` followed by a non-empty id containing no whitespace.
+ *    Leading/trailing/internal whitespace and an empty id are rejected with
+ *    400 before any mutation; the id is never silently trimmed. Opaque id
+ *    formats are preserved — no UUID-only rule is imposed.
+ *  - Accepted writes persist the canonical string `video://<id>`, which is
+ *    exactly what the conflict probe and `CONCAT('video://', ?)` resolution
+ *    compare against, so a stored binding is always visible to both.
+ *  - Values stored before this rule (e.g. `video:// x `) are a documented
+ *    legacy gap: they are not rewritten here and remain invisible to the exact
+ *    conflict probe; a later write of the canonical form will not see them.
  */
 
 /** Video row fields the policy needs. */
@@ -117,6 +162,23 @@ export interface VideoAccessCourseRow {
     tenant_id: string | null;
     is_active: boolean | number;
 }
+
+/**
+ * Resolution of the lecture that embeds a video (`lectures.video_url =
+ * CONCAT('video://', videos.id)`).
+ *
+ * The association carries no uniqueness contract, so more than one lecture can
+ * name the same video. Picking one of them (a bare `LIMIT 1` without ORDER BY,
+ * or any other "first parent" rule) would compute teacher/student authority
+ * from an arbitrary lesson. The policy therefore resolves candidates and
+ * refuses to decide when the parent is ambiguous: `ambiguous` is a denial, not
+ * a choice.
+ */
+export type VideoAccessParentResolution =
+    | { kind: 'none' }
+    | { kind: 'single'; lecture: VideoAccessLectureRow }
+    | { kind: 'ambiguous'; candidateCount: number };
+
 
 /** Verified student-enrollment row fields the policy needs. */
 export interface VideoAccessStudentRow {
@@ -150,8 +212,20 @@ export interface VideoAccessRepository {
     loadVideo: (videoId: string) => Promise<VideoAccessVideoRow | null>;
     /** Verified platform capability (active super_admin or seeded key). */
     hasPlatformCapability: (userId: string) => Promise<boolean>;
-    /** Lecture embedding this video (video_url = CONCAT('video://', id)). */
+    /**
+     * Lecture embedding this video (video_url = CONCAT('video://', id)).
+     *
+     * Legacy single-row seam: it cannot express ambiguity, so the policy uses
+     * it only when `loadParentLecture` is absent (injected single-row
+     * fixtures). The production adapter derives it from the ambiguity-aware
+     * resolution below and returns null when the parent is ambiguous.
+     */
     loadLecture: (videoId: string) => Promise<VideoAccessLectureRow | null>;
+    /**
+     * Ambiguity-aware parent resolution used by the policy whenever the
+     * repository provides it. `ambiguous` denies; it never selects a parent.
+     */
+    loadParentLecture?: (videoId: string) => Promise<VideoAccessParentResolution>;
     /** Course the video belongs to (may be null). */
     loadCourse: (courseId: string) => Promise<VideoAccessCourseRow | null>;
     /**
@@ -177,6 +251,20 @@ export interface VideoAccessRepository {
      * enrollment whose premium lecture embeds exactly this video.
      */
     loadStudentPurchase: (studentEnrollmentId: string, videoId: string) => Promise<{ id: string } | null>;
+};
+
+/**
+ * Resolve the lecture that embeds this video. The ambiguity-aware seam is used
+ * whenever the repository provides it; the single-row seam is only a
+ * compatibility path for injected fixtures and is documented as such.
+ */
+const resolveParentLecture = async (
+    videoId: string,
+    repository: VideoAccessRepository,
+): Promise<VideoAccessParentResolution> => {
+    if (repository.loadParentLecture) return repository.loadParentLecture(videoId);
+    const lecture = await repository.loadLecture(videoId);
+    return lecture ? { kind: 'single', lecture } : { kind: 'none' };
 };
 
 /**
@@ -218,7 +306,12 @@ export const evaluateVideoAccess = async (
         ? await repository.loadActiveTenantAuthority(userId, resourceTenantId)
         : null;
 
-    const lecture = await repository.loadLecture(videoId);
+    const parent = await resolveParentLecture(videoId, repository);
+    // An ambiguous parent means no lesson-derived authority can be proven: the
+    // chosen parent would be arbitrary, so the whole evaluation denies instead
+    // of authorizing from the wrong lesson.
+    if (parent.kind === 'ambiguous') return false;
+    const parentLecture = parent.kind === 'single' ? parent.lecture : null;
 
     // Per-resource teacher authority (uploader / own lesson / assigned
     // course), each gated by that live authority so a revoked membership or
@@ -226,7 +319,7 @@ export const evaluateVideoAccess = async (
     if (video.uploaded_by && String(video.uploaded_by) === String(userId) && resourceAuthority) {
         return true;
     }
-    if (lecture?.instructor_id && String(lecture.instructor_id) === String(userId) && resourceAuthority) {
+    if (parentLecture?.instructor_id && String(parentLecture.instructor_id) === String(userId) && resourceAuthority) {
         return true;
     }
     if (course?.is_active && course.instructor_id
@@ -244,7 +337,7 @@ export const evaluateVideoAccess = async (
     }
 
     // Explicit instructor license (verified purchase or approved exchange).
-    if (lecture && (await repository.loadInstructorShare(userId, lecture.id))) {
+    if (parentLecture && (await repository.loadInstructorShare(userId, parentLecture.id))) {
         return true;
     }
 
@@ -260,18 +353,18 @@ export const evaluateVideoAccess = async (
 
     // A published, non-archived lecture inside the student's own tenant
     // scope (an unscoped lecture is not broadcast to every student).
-    if (lecture && video.tenant_id && String(student.tenant_id) === String(video.tenant_id)
-        && lecture.is_published && lecture.archived_at == null
-        && (lecture.instructor_id == null || String(lecture.instructor_id) === String(student.instructor_id))
-        && ((lecture.grade_id != null && String(lecture.grade_id) === String(student.grade_id))
-            || (lecture.group_id != null && String(lecture.group_id) === String(student.group_id)))) {
+    if (parentLecture && video.tenant_id && String(student.tenant_id) === String(video.tenant_id)
+        && parentLecture.is_published && parentLecture.archived_at == null
+        && (parentLecture.instructor_id == null || String(parentLecture.instructor_id) === String(student.instructor_id))
+        && ((parentLecture.grade_id != null && String(parentLecture.grade_id) === String(student.grade_id))
+            || (parentLecture.group_id != null && String(parentLecture.group_id) === String(student.group_id)))) {
         return true;
     }
 
     // A share published to the student's group (tenant-agnostic: the
     // verified license plus the publication is the explicit grant).
-    if (lecture && (await repository.loadSharedPublication(
-        lecture.id, String(student.instructor_id), String(student.group_id),
+    if (parentLecture && (await repository.loadSharedPublication(
+        parentLecture.id, String(student.instructor_id), String(student.group_id),
     ))) {
         return true;
     }
@@ -284,6 +377,26 @@ export const evaluateVideoAccess = async (
 
 /** mysql2-style row reader used by the SQL repository adapter. */
 type RowReader = <T = any>(sql: string, params?: any[]) => Promise<T | null>;
+
+/** Row shape of the aggregate parent read (count + at most one joined row). */
+interface VideoAccessParentRow {
+    candidate_count: number | string | null;
+    id: string | null;
+    instructor_id: string | null;
+    grade_id: string | null;
+    group_id: string | null;
+    is_published: boolean | number | null;
+    archived_at: Date | string | null;
+}
+
+const toLectureRow = (row: VideoAccessParentRow): VideoAccessLectureRow => ({
+    id: String(row.id),
+    instructor_id: row.instructor_id,
+    grade_id: row.grade_id,
+    group_id: row.group_id,
+    is_published: row.is_published ?? 0,
+    archived_at: row.archived_at,
+});
 
 /**
  * Verified instructor-license predicate, shared by the share read and the
@@ -336,7 +449,45 @@ const VERIFIED_INSTRUCTOR_LICENSE_SQL = `
 export const createSqlVideoAccessRepository = (deps: {
     queryOne: RowReader;
     hasPlatformCapability: (userId: string) => Promise<boolean>;
-}): VideoAccessRepository => ({
+}): VideoAccessRepository => {
+    // Candidate resolution of the parent lecture. The aggregate is read in the
+    // same statement as the row, and the row is only joined when the count is
+    // exactly one, so the statement returns at most one row by construction —
+    // no ORDER BY, LIMIT or "first parent" rule is involved. `COUNT(*) = 0`
+    // (no parent) and `COUNT(*) > 1` (ambiguous) both come back as a row with
+    // a null lecture id, which is mapped to `none` / `ambiguous`.
+    const loadParentLecture = async (videoId: string): Promise<VideoAccessParentResolution> => {
+        const row = await deps.queryOne<VideoAccessParentRow>(
+            `SELECT
+                 candidates.candidate_count AS candidate_count,
+                 l.id AS id,
+                 l.instructor_id AS instructor_id,
+                 l.grade_id AS grade_id,
+                 l.group_id AS group_id,
+                 l.is_published AS is_published,
+                 l.archived_at AS archived_at
+             FROM (SELECT COUNT(*) AS candidate_count FROM lectures
+                   WHERE video_url = CONCAT('video://', ?)) AS candidates
+             LEFT JOIN lectures l
+                    ON l.video_url = CONCAT('video://', ?)
+                   AND candidates.candidate_count = 1`,
+            [videoId, videoId],
+        );
+        if (!row) return { kind: 'none' };
+        const count = Number(row.candidate_count);
+        if (!Number.isFinite(count)) {
+            // A result without the aggregate column cannot prove uniqueness.
+            // Only the single-row fixture seam behaves this way; it is treated
+            // as exactly one candidate, never as permission to pick among many.
+            return row.id ? { kind: 'single', lecture: toLectureRow(row) } : { kind: 'none' };
+        }
+        if (count === 0) return { kind: 'none' };
+        if (count > 1) return { kind: 'ambiguous', candidateCount: count };
+        if (!row.id) return { kind: 'none' };
+        return { kind: 'single', lecture: toLectureRow(row) };
+    };
+
+    return {
     loadUser: (userId) => deps.queryOne<{ id: string; role: string; phone: string | null; is_active: boolean | number }>(
         'SELECT id, role, phone, is_active FROM users WHERE id = ?',
         [userId],
@@ -346,11 +497,14 @@ export const createSqlVideoAccessRepository = (deps: {
         [videoId],
     ),
     hasPlatformCapability: (userId) => deps.hasPlatformCapability(userId),
-    loadLecture: (videoId) => deps.queryOne<VideoAccessLectureRow>(
-        `SELECT id, instructor_id, grade_id, group_id, is_published, archived_at FROM lectures
-         WHERE video_url = CONCAT('video://', ?) LIMIT 1`,
-        [videoId],
-    ),
+    loadParentLecture,
+    // Single-row seam derived from the same resolution: it returns the unique
+    // parent and null when the parent is ambiguous (fail closed), so no caller
+    // can obtain an arbitrary parent through it.
+    loadLecture: async (videoId) => {
+        const resolution = await loadParentLecture(videoId);
+        return resolution.kind === 'single' ? resolution.lecture : null;
+    },
     loadCourse: (courseId) => deps.queryOne<VideoAccessCourseRow>(
         'SELECT instructor_id, tenant_id, is_active FROM courses WHERE id = ?',
         [courseId],
@@ -408,10 +562,305 @@ export const createSqlVideoAccessRepository = (deps: {
         [lectureId, instructorId, groupId, instructorId, lectureId],
     ),
     // Exact student purchase license: this enrollment + exactly this video.
+    // This is an EXISTENCE proof, not a parent-authority resolution: every
+    // matching row satisfies the same predicate (this enrollment bought a
+    // premium lecture embedding this video), and no field of the chosen row is
+    // used for authorization. The read is still ordered so it is deterministic
+    // rather than an unordered first-row pick.
     loadStudentPurchase: (studentEnrollmentId, videoId) => deps.queryOne<{ id: string }>(
         `SELECT pla.id FROM premium_lecture_access pla
          INNER JOIN premium_lectures pl ON pl.id = pla.premium_lecture_id
-         WHERE pla.student_id = ? AND pl.video_url = CONCAT('video://', ?) LIMIT 1`,
+         WHERE pla.student_id = ? AND pl.video_url = CONCAT('video://', ?)
+         ORDER BY pla.id ASC
+         LIMIT 1`,
         [studentEnrollmentId, videoId],
     ),
-});
+    };
+};
+
+// ---------------------------------------------------------------------------
+// Write-time `video://` binding
+// ---------------------------------------------------------------------------
+
+/**
+ * Stable machine-readable codes for a rejected `video://` association write.
+ *
+ * Status mapping is fixed and must stay stable for clients:
+ *  - `VIDEO_NOT_FOUND`              404  the video row does not exist;
+ *  - `VIDEO_FOREIGN_TENANT`         403  the video is not in the writer's
+ *                                        server-selected tenant;
+ *  - `VIDEO_UNAUTHORIZED`           403  the actor has no verified grant on
+ *                                        the video (the playback policy says no);
+ *  - `VIDEO_ALREADY_BOUND`          409  the video is already linked to another
+ *                                        lecture or material;
+ *  - `VIDEO_BINDING_UNVERIFIABLE`   503  the check could not be performed (read
+ *                                        error / store unavailable) — fail closed;
+ *  - `VIDEO_LINK_INVALID`           400  the value is not a canonical
+ *                                        `video://<id>` reference;
+ *  - `VIDEO_TENANT_CONFLICT`        409  the video's own tenant and its
+ *                                        course's tenant disagree — the resource
+ *                                        tenant cannot be decided;
+ *  - `VIDEO_TENANT_UNPROVEN`        403  no server row proves the video's tenant
+ *                                        or the destination resource's tenant;
+ *  - `VIDEO_TARGET_TENANT_MISMATCH` 403  the destination resource tenant is not
+ *                                        exactly the video tenant. Applies to
+ *                                        every actor, including a verified
+ *                                        platform operator.
+ */
+export const VIDEO_BINDING_CODES = {
+    NOT_FOUND: 'VIDEO_NOT_FOUND',
+    FOREIGN_TENANT: 'VIDEO_FOREIGN_TENANT',
+    UNAUTHORIZED: 'VIDEO_UNAUTHORIZED',
+    ALREADY_BOUND: 'VIDEO_ALREADY_BOUND',
+    UNVERIFIABLE: 'VIDEO_BINDING_UNVERIFIABLE',
+    INVALID_LINK: 'VIDEO_LINK_INVALID',
+    TENANT_CONFLICT: 'VIDEO_TENANT_CONFLICT',
+    TENANT_UNPROVEN: 'VIDEO_TENANT_UNPROVEN',
+    TARGET_TENANT_MISMATCH: 'VIDEO_TARGET_TENANT_MISMATCH',
+} as const;
+
+export type VideoBindingCode = (typeof VIDEO_BINDING_CODES)[keyof typeof VIDEO_BINDING_CODES];
+
+export type VideoBindingDecision =
+    | { ok: true; videoId: string; videoUrl: string }
+    | { ok: false; status: number; code: VideoBindingCode; error: string };
+
+/** Read seam used by the binding check (a transaction-scoped reader in production). */
+export interface VideoBindingReader {
+    queryOne: <T>(sql: string, params?: unknown[]) => Promise<T | null>;
+}
+
+export interface VideoBindingRequest {
+    /** Transaction-scoped reader: the checks and the write share one transaction. */
+    reader: VideoBindingReader;
+    /** The `video://<id>` value being written. */
+    videoUrl: string;
+    /** Authenticated actor; the tenant is the server-selected one, never a body value. */
+    actorUserId: string;
+    actorTenantId?: string;
+    actorStudentEnrollmentId?: string;
+    /** Id of the row being created/updated; excluded from the conflict probe. */
+    selfId: string;
+    /** Which table receives the association. */
+    target: 'lecture' | 'material';
+    /**
+     * Course the resource will belong to AFTER this write, as derived by the
+     * route from server state (create paths). Update paths omit it: the
+     * validator then reads the target row's own `course_id` inside the
+     * transaction, so a course move is re-proven rather than assumed.
+     */
+    targetCourseId?: string | null;
+    /** Verified platform capability (active super_admin or seeded key). */
+    hasPlatformCapability: (userId: string) => Promise<boolean>;
+}
+
+const VIDEO_REFERENCE_PREFIX = 'video://';
+
+/**
+ * Parse a `video://` reference. ONE canonical rule for every write path:
+ * the prefix, then a non-empty id with no whitespace anywhere. The id is never
+ * trimmed — a value that would need trimming is not canonical and must be
+ * rejected by the caller instead of being stored raw. Opaque id formats are
+ * preserved (no UUID-only rule).
+ */
+export type VideoReferenceParse =
+    | { ok: true; videoId: string; videoUrl: string }
+    | { ok: false; reason: 'not-a-reference' | 'non-canonical' };
+
+export const parseVideoReference = (value: string): VideoReferenceParse => {
+    if (!value.startsWith(VIDEO_REFERENCE_PREFIX)) {
+        return { ok: false, reason: 'not-a-reference' };
+    }
+    const videoId = value.slice(VIDEO_REFERENCE_PREFIX.length);
+    if (videoId.length === 0 || /\s/.test(videoId)) {
+        return { ok: false, reason: 'non-canonical' };
+    }
+    return { ok: true, videoId, videoUrl: `${VIDEO_REFERENCE_PREFIX}${videoId}` };
+};
+
+const bindingDenial = (
+    status: number,
+    code: VideoBindingCode,
+    error: string,
+): VideoBindingDecision => ({ ok: false, status, code, error });
+
+/**
+ * Any OTHER row that already carries this video reference. The association is
+ * single-parent in this codebase's write contract, and the playback policy
+ * resolves a video to one lecture, so a second parent is rejected instead of
+ * being silently created (see the W5 note: this is an ambiguity rule, not a
+ * product rule about multi-lesson videos).
+ */
+const findConflictingBinding = async (
+    request: VideoBindingRequest,
+    videoUrl: string,
+): Promise<{ id: string } | null> => {
+    const lectureSql = request.target === 'lecture'
+        ? 'SELECT id FROM lectures WHERE video_url = ? AND id <> ? ORDER BY id ASC LIMIT 1'
+        : 'SELECT id FROM lectures WHERE video_url = ? ORDER BY id ASC LIMIT 1';
+    const lecture = await request.reader.queryOne<{ id: string }>(
+        lectureSql,
+        request.target === 'lecture' ? [videoUrl, request.selfId] : [videoUrl],
+    );
+    if (lecture) return lecture;
+
+    const materialSql = request.target === 'material'
+        ? 'SELECT id FROM course_materials WHERE file_url = ? AND id <> ? ORDER BY id ASC LIMIT 1'
+        : 'SELECT id FROM course_materials WHERE file_url = ? ORDER BY id ASC LIMIT 1';
+    return request.reader.queryOne<{ id: string }>(
+        materialSql,
+        request.target === 'material' ? [videoUrl, request.selfId] : [videoUrl],
+    );
+};
+
+/**
+ * Course the destination resource belongs to after the write. Create paths
+ * pass the server-derived course id; update paths omit it and the row's own
+ * `course_id` is read inside the transaction (never the request body). The row
+ * is locked so the destination cannot move between proof and write.
+ */
+const resolveDestinationCourseId = async (request: VideoBindingRequest): Promise<string | null> => {
+    if (request.targetCourseId != null && String(request.targetCourseId).length > 0) {
+        return String(request.targetCourseId);
+    }
+    const table = request.target === 'lecture' ? 'lectures' : 'course_materials';
+    const row = await request.reader.queryOne<{ course_id: string | null }>(
+        `SELECT course_id FROM ${table} WHERE id = ? FOR UPDATE`,
+        [request.selfId],
+    );
+    return row?.course_id == null || String(row.course_id).length === 0 ? null : String(row.course_id);
+};
+
+/**
+ * Validate a `video://` association write. The reference must be canonical; the
+ * referenced video must exist, its tenant must be provable from its own
+ * declared authorities, and the DESTINATION resource's tenant — read from
+ * server rows inside the same transaction — must equal it exactly, for every
+ * actor (a verified platform capability authorizes the actor, it never relaxes
+ * tenant equality). The video must also be usable by the actor according to
+ * the SAME playback policy that guards viewing (`evaluateVideoAccess`), and a
+ * conflicting binding is refused explicitly. Any failure to perform the check
+ * refuses the write.
+ *
+ * The caller must run this inside the same transaction as the write, with the
+ * video row read `FOR UPDATE`, so concurrent bindings of one video serialize.
+ */
+export const validateVideoBinding = async (request: VideoBindingRequest): Promise<VideoBindingDecision> => {
+    const reference = parseVideoReference(request.videoUrl);
+    if (!reference.ok) {
+        return bindingDenial(400, VIDEO_BINDING_CODES.INVALID_LINK, 'Video link is not a platform video reference');
+    }
+    const videoId = reference.videoId;
+
+    try {
+        const video = await request.reader.queryOne<{
+            id: string; tenant_id: string | null; course_id: string | null; uploaded_by: string | null;
+        }>(
+            'SELECT id, tenant_id, course_id, uploaded_by FROM videos WHERE id = ? FOR UPDATE',
+            [videoId],
+        );
+        if (!video) {
+            return bindingDenial(404, VIDEO_BINDING_CODES.NOT_FOUND, 'Video not found');
+        }
+
+        // The video's tenant comes from its DECLARED authorities only: its own
+        // tenant_id and/or its course's tenant. Two authorities that disagree
+        // are a conflict; no authority at all is unproven. The actor's tenant
+        // is never substituted for either.
+        const directVideoTenant = video.tenant_id == null ? null : String(video.tenant_id);
+        let courseVideoTenant: string | null = null;
+        if (video.course_id) {
+            const videoCourse = await request.reader.queryOne<{ tenant_id: string | null }>(
+                'SELECT tenant_id FROM courses WHERE id = ?',
+                [video.course_id],
+            );
+            courseVideoTenant = videoCourse?.tenant_id == null ? null : String(videoCourse.tenant_id);
+        }
+        if (directVideoTenant && courseVideoTenant && directVideoTenant !== courseVideoTenant) {
+            return bindingDenial(
+                409,
+                VIDEO_BINDING_CODES.TENANT_CONFLICT,
+                'Video workspace could not be decided: its tenant and course tenant disagree',
+            );
+        }
+        const videoTenantId = directVideoTenant ?? courseVideoTenant;
+        if (!videoTenantId) {
+            return bindingDenial(403, VIDEO_BINDING_CODES.TENANT_UNPROVEN, 'Video workspace could not be verified');
+        }
+
+        // Actor authority to write in the video's workspace. A missing actor
+        // tenant is only legitimate for a verified platform capability.
+        const platformWide = await request.hasPlatformCapability(request.actorUserId);
+        if (!platformWide
+            && (!request.actorTenantId || String(request.actorTenantId) !== videoTenantId)) {
+            return bindingDenial(403, VIDEO_BINDING_CODES.FOREIGN_TENANT, 'Video belongs to another workspace');
+        }
+
+        // The DESTINATION tenant is proven from server rows, inside this
+        // transaction — never from the client body and never from the actor.
+        const destinationCourseId = await resolveDestinationCourseId(request);
+        if (!destinationCourseId) {
+            return bindingDenial(
+                403,
+                VIDEO_BINDING_CODES.TENANT_UNPROVEN,
+                'Destination workspace could not be verified',
+            );
+        }
+        const destinationCourse = await request.reader.queryOne<{ tenant_id: string | null }>(
+            'SELECT tenant_id FROM courses WHERE id = ?',
+            [destinationCourseId],
+        );
+        const destinationTenantId = destinationCourse?.tenant_id == null
+            ? null
+            : String(destinationCourse.tenant_id);
+        if (!destinationTenantId) {
+            return bindingDenial(
+                403,
+                VIDEO_BINDING_CODES.TENANT_UNPROVEN,
+                'Destination workspace could not be verified',
+            );
+        }
+
+        // Exact equality, for everyone. A platform operator keeps the power to
+        // act; it never turns a tenant-A video into a tenant-B resource.
+        if (destinationTenantId !== videoTenantId) {
+            return bindingDenial(
+                403,
+                VIDEO_BINDING_CODES.TARGET_TENANT_MISMATCH,
+                'Video and destination lesson or material belong to different workspaces',
+            );
+        }
+
+        // Actor authority comes from the existing playback policy, over the
+        // same transaction-scoped reads.
+        const repository = createSqlVideoAccessRepository({
+            queryOne: request.reader.queryOne,
+            hasPlatformCapability: request.hasPlatformCapability,
+        });
+        const authorized = await evaluateVideoAccess(
+            request.actorUserId,
+            videoId,
+            { tenantId: request.actorTenantId, studentEnrollmentId: request.actorStudentEnrollmentId },
+            repository,
+        );
+        if (!authorized) {
+            return bindingDenial(403, VIDEO_BINDING_CODES.UNAUTHORIZED, 'You are not authorized to use this video');
+        }
+
+        const conflict = await findConflictingBinding(request, reference.videoUrl);
+        if (conflict) {
+            return bindingDenial(
+                409,
+                VIDEO_BINDING_CODES.ALREADY_BOUND,
+                'This video is already linked to another lesson or material',
+            );
+        }
+
+        // The canonical string is what the routes persist, so a stored binding
+        // is always visible to the exact conflict probe and to resolution.
+        return { ok: true, videoId, videoUrl: reference.videoUrl };
+    } catch {
+        // Fail closed: a link that could not be verified is never accepted.
+        return bindingDenial(503, VIDEO_BINDING_CODES.UNVERIFIABLE, 'Video binding could not be verified');
+    }
+};

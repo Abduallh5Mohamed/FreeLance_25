@@ -12,25 +12,48 @@
  *    the channel. All three are fail-closed: any doubt denies.
  *  - Delivery logs and receipts must never carry PII: contacts are only
  *    ever recorded as HMAC refs or last-4 masks, message bodies are never
- *    logged, and free-text reasons have digit runs masked.
+ *    logged, and free-text reasons are masked (digit runs, emails, credentials
+ *    and quoted payloads) before they reach a log or a receipt.
  */
 
 import { createHmac } from 'crypto';
+import { isConsentPurpose } from './notification-consent';
 
 export interface ChannelSendRequest {
-    /** Real contact (phone); consumed by the adapter, never logged. */
+    /** Real contact (phone/email); consumed by the adapter, never logged. */
     contact: string;
     locale: string;
     /** Provider-approved template id; required and checked by the gate. */
     templateId: string;
     /** Rendered message body; handed to the provider, never logged. */
     bodyText: string;
+    /** Optional email subject; ignored by SMS. */
+    subject?: string | null;
+    /** Optional HTML alternative; ignored by SMS. */
+    bodyHtml?: string | null;
 }
 
+/**
+ * The five outcomes a channel adapter may report. `unknown` and `unavailable`
+ * are first-class so no adapter ever has to fake a success or a failure:
+ *
+ *  - `sent`        the provider accepted the message and returned a receipt id.
+ *  - `failed`      the provider (or the pre-send gate) refused it. `permanent`
+ *                  marks a failure that must not be retried.
+ *  - `bounced`     the provider reported an undeliverable recipient.
+ *  - `unknown`     the request may or may not have been accepted (timeout after
+ *                  write, transport error, receipt without an external id).
+ *                  The outbox quarantines it for reconciliation; it is never
+ *                  retried as if it were definitely unsent.
+ *  - `unavailable` no provider is configured. Nothing was transmitted, so the
+ *                  row is never marked sent and no receipt is invented.
+ */
 export type ChannelSendOutcome =
     | { outcome: 'sent'; proof: Record<string, unknown> }
-    | { outcome: 'failed'; reason: string }
-    | { outcome: 'bounced'; reason: string };
+    | { outcome: 'failed'; reason: string; permanent?: boolean }
+    | { outcome: 'bounced'; reason: string }
+    | { outcome: 'unknown'; reason: string }
+    | { outcome: 'unavailable'; reason: string };
 
 export interface SmsChannelAdapter {
     readonly channel: 'sms';
@@ -101,7 +124,7 @@ export const maskPhone = (phone: string): string => {
     return `••••${digits.slice(-4)}`;
 };
 
-const PII_KEY_PATTERN = /phone|contact|\bto\b|recipient|address|body|message|text|content/i;
+const PII_KEY_PATTERN = /phone|contact|\bto\b|recipient|address|body|message|text|content|otp|\btoken\b|secret|password|\bpin\b/i;
 
 /** Proof records keep only outcome-shaped, non-PII fields. */
 export const sanitizeProof = (proof: unknown): Record<string, string | number | boolean> => {
@@ -123,9 +146,47 @@ export const sanitizeProof = (proof: unknown): Record<string, string | number | 
     return safe;
 };
 
-/** Masks digit runs that look like phone numbers and collapses long text. */
+/** The single mask token every redaction path emits. */
+export const REDACTION_MASK = '••••••';
+
+/** Email-shaped address; the local part and domain are both identifying. */
+const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+/**
+ * A credential leaked in `key=value` / `key: value` form. Only the explicit
+ * separator is matched: masking a bare keyword followed by a word would eat
+ * ordinary diagnostics ("authorization failed") without protecting anything.
+ */
+const SECRET_ASSIGNMENT_PATTERN =
+    /\b(token|otp|passcode|password|secret|pin|api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|bearer)\b\s*[=:]\s*[^\s,;"']+/gi;
+/** `Authorization: Bearer <credential>` without an equals sign. */
+const BEARER_TOKEN_PATTERN = /\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi;
+/**
+ * A quoted fragment. Adapters and providers echo the rendered body back inside
+ * quotes ("..."), so any quoted payload is treated as opaque and masked: a
+ * message body must never be loggable, and the worker cannot tell a benign
+ * quote from a body echo. Single quotes are deliberately excluded — apostrophes
+ * in ordinary English text would match and corrupt the diagnostic.
+ */
+const QUOTED_FRAGMENT_PATTERN = /"[^"]*"/g;
+/** Long digit runs: phone numbers, OTPs, national ids, card fragments. */
+const DIGIT_RUN_PATTERN = /\d{6,}/g;
+
+/**
+ * Masks every PII/secret shape this codebase can observe in free text — email
+ * addresses, `key=value` credentials, bearer tokens, quoted payloads (message
+ * bodies) and digit runs — then collapses whitespace and bounds the length.
+ *
+ * This is the single redaction point for adapter reasons, provider errors,
+ * `last_error` values, receipt details and log lines. It is intentionally
+ * lossy: when a fragment cannot be proven non-PII it is masked.
+ */
 export const redactPiiText = (text: string): string => {
-    const masked = text.replace(/\d{6,}/g, '••••••');
+    const masked = text
+        .replace(EMAIL_PATTERN, REDACTION_MASK)
+        .replace(SECRET_ASSIGNMENT_PATTERN, `$1=${REDACTION_MASK}`)
+        .replace(BEARER_TOKEN_PATTERN, `$1 ${REDACTION_MASK}`)
+        .replace(QUOTED_FRAGMENT_PATTERN, `"${REDACTION_MASK}"`)
+        .replace(DIGIT_RUN_PATTERN, REDACTION_MASK);
     return masked.replace(/\s+/g, ' ').slice(0, 200);
 };
 
@@ -164,3 +225,167 @@ export const sanitizeDeliveryLog = (
     contactRef: entry.contact ? contactRef(entry.contact, hmacKey) : 'ref:none',
     reason: entry.reason ? redactPiiText(entry.reason) : null,
 });
+
+// ---------------------------------------------------------------------------
+// Provider-backed adapters: explicit readiness, explicit unavailability
+// ---------------------------------------------------------------------------
+
+export type AdapterReadiness = { ready: true } | { ready: false; reason: string };
+
+export interface ProviderSendRequest {
+    channel: 'email' | 'sms';
+    /** Real contact; handed to the provider, never logged by this module. */
+    contact: string;
+    locale: string;
+    templateId: string;
+    subject: string | null;
+    bodyText: string;
+    bodyHtml: string | null;
+}
+
+/**
+ * A provider response. `ok: true` MUST carry the provider's external message
+ * id; an accepted send without one is ambiguous and is treated as `unknown`
+ * rather than papered over with a fabricated id.
+ */
+export type ProviderSendResult =
+    | { ok: true; messageId: string; providerStatus?: string }
+    | { ok: false; error: string; retryable: boolean };
+
+/** The injected transport. No SDK, socket or credential lives in this module. */
+export interface ProviderTransport {
+    send(request: ProviderSendRequest): Promise<ProviderSendResult>;
+}
+
+export interface ConfiguredChannelAdapter {
+    readonly channel: 'email' | 'sms';
+    /** Explicit readiness signal: a channel is only claimable when ready. */
+    readiness(): AdapterReadiness;
+    send(request: ChannelSendRequest): Promise<ChannelSendOutcome>;
+}
+
+export interface ChannelAdapterConfig {
+    /** Absent/null means "no provider configured" — never a silent success. */
+    transport?: ProviderTransport | null;
+}
+
+const sendThroughTransport = async (
+    channel: 'email' | 'sms',
+    transport: ProviderTransport | null | undefined,
+    request: ChannelSendRequest,
+): Promise<ChannelSendOutcome> => {
+    if (!transport) return { outcome: 'unavailable', reason: 'no-provider-configured' };
+    if (typeof request.contact !== 'string' || request.contact.trim().length === 0) {
+        return { outcome: 'failed', reason: 'contact-missing', permanent: true };
+    }
+    if (typeof request.templateId !== 'string' || request.templateId.trim().length === 0) {
+        return { outcome: 'failed', reason: 'template-not-approved', permanent: true };
+    }
+    let result: ProviderSendResult;
+    try {
+        result = await transport.send({
+            channel,
+            contact: request.contact,
+            locale: request.locale,
+            templateId: request.templateId,
+            subject: request.subject ?? null,
+            bodyText: request.bodyText,
+            bodyHtml: request.bodyHtml ?? null,
+        });
+    } catch {
+        // The request may already be on the wire: the outcome is unknown, not
+        // a failure, and the reason never carries the transport's message
+        // (which can echo the contact).
+        return { outcome: 'unknown', reason: 'transport-error' };
+    }
+    if (!result.ok) {
+        const reason = redactPiiText(result.error);
+        return result.retryable
+            ? { outcome: 'failed', reason }
+            : { outcome: 'failed', reason, permanent: true };
+    }
+    if (typeof result.messageId !== 'string' || result.messageId.trim().length === 0) {
+        return { outcome: 'unknown', reason: 'provider-receipt-missing' };
+    }
+    const proof: Record<string, unknown> = { message_id: result.messageId };
+    if (typeof result.providerStatus === 'string' && result.providerStatus.length > 0) {
+        proof.provider_status = result.providerStatus;
+    }
+    return { outcome: 'sent', proof };
+};
+
+/** Email adapter. Without a transport every send is `unavailable`. */
+export const createEmailAdapter = (config: ChannelAdapterConfig = {}): ConfiguredChannelAdapter => ({
+    channel: 'email',
+    readiness: () => (config.transport ? { ready: true } : { ready: false, reason: 'no-provider-configured' }),
+    send: (request) => sendThroughTransport('email', config.transport, request),
+});
+
+/**
+ * SMS adapter. Without a transport every send is `unavailable`; an empty
+ * template id is refused before the provider is touched (no free-text SMS).
+ */
+export const createSmsAdapter = (config: ChannelAdapterConfig = {}): ConfiguredChannelAdapter => ({
+    channel: 'sms',
+    readiness: () => (config.transport ? { ready: true } : { ready: false, reason: 'no-provider-configured' }),
+    send: (request) => sendThroughTransport('sms', config.transport, request),
+});
+
+// ---------------------------------------------------------------------------
+// Send-time contact authority (purpose-scoped, never "any contact on file")
+// ---------------------------------------------------------------------------
+
+export interface PurposeContactQuery {
+    tenantId: string | null;
+    userId: string;
+    userType: string;
+    channel: string;
+    /** Purpose of THIS notification; a generic lookup is not allowed. */
+    purpose: string;
+}
+
+export interface StoredContact {
+    contact: string;
+    /** Server-side verified flag (phone/email verification), never client input. */
+    verified: boolean;
+}
+
+/**
+ * Contact source for outbound channels. The store is queried with the
+ * notification's purpose and MUST scope the answer to it — returning a generic
+ * "any contact on file" row violates this contract and is what the purpose
+ * parameter exists to prevent.
+ */
+export interface PurposeContactStore {
+    findContactForPurpose(query: PurposeContactQuery): Promise<StoredContact | null>;
+}
+
+export type ContactResolution =
+    | { ok: true; contact: string; verified: boolean }
+    | { ok: false; reason: 'channel-not-external' | 'unknown-purpose' | 'contact-missing' };
+
+const EXTERNAL_CHANNELS: readonly string[] = ['email', 'whatsapp', 'sms'];
+
+/**
+ * Resolves the contact for one outbound send. Fail-closed: an in-app channel,
+ * an unknown purpose (not a real consent purpose) or an empty contact all deny
+ * before any adapter is reachable.
+ */
+export const resolveContactForSend = async (
+    store: PurposeContactStore,
+    query: PurposeContactQuery,
+): Promise<ContactResolution> => {
+    if (!EXTERNAL_CHANNELS.includes(query.channel)) return { ok: false, reason: 'channel-not-external' };
+    if (!isConsentPurpose(query.purpose)) return { ok: false, reason: 'unknown-purpose' };
+    const found = await store.findContactForPurpose({
+        tenantId: query.tenantId,
+        userId: query.userId,
+        userType: query.userType,
+        channel: query.channel,
+        purpose: query.purpose,
+    });
+    if (!found || typeof found.contact !== 'string' || found.contact.trim().length === 0) {
+        return { ok: false, reason: 'contact-missing' };
+    }
+    return { ok: true, contact: found.contact, verified: found.verified === true };
+};

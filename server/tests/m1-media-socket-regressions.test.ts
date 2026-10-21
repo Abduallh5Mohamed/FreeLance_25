@@ -21,12 +21,22 @@ test.afterEach(restoreConsole);
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Readable, Writable } from 'node:stream';
+import type { RequestHandler, Router } from 'express';
 import type { CourseUploadPolicyReader } from '../src/routes/videos';
 import type {
     DeliveryAccessDeps,
     DeliverySession,
     SessionAccessDeps,
+    SessionEntitlementDecision,
+    VideoLessonAssociation,
+    VideoParentReader,
 } from '../src/routes/secure-video';
+import type {
+    PlaybackEntitlementRecord,
+    PlaybackEntitlementService,
+    PlaybackTokenClaims,
+} from '../src/services/playback-entitlement';
 import { resolveClientAddress, trustedProxyAddresses } from '../src/middleware/rate-limit';
 import { evaluateSuspensionWindow, isUserSuspended } from '../src/services/video-security';
 
@@ -47,6 +57,9 @@ const {
     evaluateDeliveryAccess,
     isMediaSessionBound,
     evaluatePreviewOffer,
+    createSecureVideoDeliveryRouter,
+    evaluateSessionEntitlement,
+    resolveVideoLessonAssociation,
 } = require('../src/routes/secure-video') as typeof import('../src/routes/secure-video');
 
 const src = (relative: string): string =>
@@ -2010,4 +2023,769 @@ test('wiring: manifest, segment, and key delivery recheck the grant before any e
     // Refresh and heartbeat recheck through the same shared preview predicate.
     assert.match(secureVideo, /evaluatePreviewOffer\(session\.offerId, session\.videoId, userId, queryOne\)/);
     assert.match(secureVideo, /evaluatePreviewOffer\(session\.offerId, session\.videoId, session\.userId, queryOne\)/);
+});
+
+// ---------------------------------------------------------------------------
+// F3 part 2 — server-owned playback entitlement on protected byte delivery.
+//
+// These tests drive the REAL session / refresh / manifest / media / key
+// handlers built by createSecureVideoDeliveryRouter over injected seams. The
+// client contract is unchanged: only `sid` + `token` are presented; the server
+// resolves the video's unique lesson and looks up its own entitlement record
+// by the session id captured at issuance.
+// ---------------------------------------------------------------------------
+
+class DeliveryResponse extends Writable {
+    statusCode?: number;
+    body?: unknown;
+    headers: Record<string, string> = {};
+    chunks: Buffer[] = [];
+
+    _write(chunk: unknown, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+        this.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        callback();
+    }
+
+    status(code: number): this {
+        this.statusCode = code;
+        return this;
+    }
+
+    json(payload: unknown): this {
+        this.statusCode ??= 200;
+        this.body = payload;
+        this.end();
+        return this;
+    }
+
+    set(field: string | Record<string, string>, value?: string): this {
+        if (typeof field === 'string') {
+            this.headers[field.toLowerCase()] = value ?? '';
+        } else {
+            for (const [key, headerValue] of Object.entries(field)) {
+                this.headers[key.toLowerCase()] = headerValue;
+            }
+        }
+        return this;
+    }
+
+    send(payload: unknown): this {
+        this.statusCode ??= 200;
+        if (Buffer.isBuffer(payload)) this.chunks.push(payload);
+        else if (typeof payload === 'string') this.chunks.push(Buffer.from(payload));
+        else this.body = payload;
+        this.end();
+        return this;
+    }
+}
+
+interface DeliveryInvocation {
+    method: 'GET' | 'POST';
+    path: string;
+    query?: Record<string, string>;
+    body?: Record<string, unknown>;
+    headers?: Record<string, string>;
+}
+
+const invokeDelivery = async (router: Router, invocation: DeliveryInvocation) => {
+    const response = new DeliveryResponse();
+    const search = invocation.query ? `?${new URLSearchParams(invocation.query).toString()}` : '';
+    const url = `${invocation.path}${search}`;
+    const request: Record<string, unknown> = {
+        method: invocation.method,
+        url,
+        originalUrl: url,
+        headers: { 'user-agent': 'hermetic-agent', ...(invocation.headers ?? {}) },
+        body: invocation.body ?? {},
+        query: invocation.query ?? {},
+        params: {},
+    };
+    (router as unknown as (req: Record<string, unknown>, res: DeliveryResponse, next: () => void) => void)(
+        request, response, () => undefined,
+    );
+    await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('delivery route did not settle')), 2000);
+        const finish = () => { clearTimeout(timer); resolve(); };
+        if (response.writableEnded) return finish();
+        response.once('finish', finish);
+        response.once('close', finish);
+    });
+    return {
+        status: response.statusCode ?? (response.writableEnded ? 200 : 0),
+        body: response.body as Record<string, unknown> | undefined,
+        text: Buffer.concat(response.chunks).toString('utf8'),
+        chunks: response.chunks,
+        headers: response.headers,
+    };
+};
+
+interface TestSession {
+    sessionId: string;
+    userId: string;
+    videoId: string;
+    ip: string;
+    userAgent: string;
+    fingerprint: string;
+    screenRes: string;
+    createdAt: number;
+    lastHeartbeat: number;
+    violationScore: number;
+    isActive: boolean;
+    previewOnly: boolean;
+    offerId?: string;
+    studentEnrollmentId?: string;
+    tenantId?: string;
+    segmentRequests: number[];
+    manifestRequests: number[];
+    keyRequests: number[];
+    activeMediaRequests: number;
+}
+
+const makeTestSession = (overrides: Partial<TestSession> = {}): TestSession => ({
+    sessionId: 'sess-1',
+    userId: 'student-1',
+    videoId: 'video-1',
+    ip: '10.0.0.1',
+    userAgent: 'hermetic-agent',
+    fingerprint: 'fp-1',
+    screenRes: '1920x1080',
+    createdAt: 1_000_000,
+    lastHeartbeat: 1_000_000,
+    violationScore: 0,
+    isActive: true,
+    previewOnly: false,
+    studentEnrollmentId: 'enroll-1',
+    tenantId: 'tenant-1',
+    segmentRequests: [],
+    manifestRequests: [],
+    keyRequests: [],
+    activeMediaRequests: 0,
+    ...overrides,
+});
+
+const makeEntitlementService = (clock: () => number) => {
+    const records = new Map<string, PlaybackEntitlementRecord[]>();
+    const issued: Array<{ tenantId: string; lessonId: string; studentEnrollmentId: string; sessionId: string }> = [];
+    let sequence = 0;
+    const service: PlaybackEntitlementService = {
+        issue: async (expectation, ttlSeconds) => {
+            sequence += 1;
+            const issuedAtMs = clock();
+            const ttl = typeof ttlSeconds === 'number' ? ttlSeconds : 60;
+            const claims: PlaybackTokenClaims = {
+                jti: `jti-${sequence}`,
+                tenantId: expectation.tenantId,
+                lessonId: expectation.lessonId,
+                studentEnrollmentId: expectation.studentEnrollmentId,
+                sessionId: expectation.sessionId,
+                issuedAtMs,
+                expiresAtMs: issuedAtMs + ttl * 1000,
+            };
+            const list = records.get(claims.sessionId) ?? [];
+            list.push({ ...claims, revokedAtMs: null, revokeReason: null });
+            records.set(claims.sessionId, list);
+            issued.push({ ...expectation });
+            return { ok: true, token: `token-${sequence}`, claims, expiresIn: ttl };
+        },
+        verify: async () => ({ allowed: false, reason: 'malformed' }),
+        load: async (jti) => {
+            for (const list of records.values()) {
+                const record = list.find((item) => item.jti === jti);
+                if (record) return { ...record };
+            }
+            return null;
+        },
+        revoke: async (jti) => {
+            for (const list of records.values()) {
+                const record = list.find((item) => item.jti === jti);
+                if (record) {
+                    record.revokedAtMs = clock();
+                    return { revoked: true, tenantId: record.tenantId };
+                }
+            }
+            return { revoked: false, tenantId: null };
+        },
+        findBySessionId: async (sessionId) => (records.get(sessionId) ?? []).map((record) => ({ ...record })),
+    };
+    return { service, records, issued };
+};
+
+const makeEntitlementRecord = (overrides: Partial<PlaybackEntitlementRecord> = {}): PlaybackEntitlementRecord => ({
+    jti: 'jti-seed',
+    tenantId: 'tenant-1',
+    lessonId: 'lesson-1',
+    studentEnrollmentId: 'enroll-1',
+    sessionId: 'sess-1',
+    issuedAtMs: 1_000_000,
+    expiresAtMs: 1_300_000,
+    revokedAtMs: null,
+    revokeReason: null,
+    ...overrides,
+});
+
+interface DeliveryHarnessOptions {
+    session?: TestSession | null;
+    tokenValid?: boolean;
+    hasVideoAccess?: boolean;
+    association?: VideoLessonAssociation;
+    records?: PlaybackEntitlementRecord[];
+    nowMs?: number;
+    issueFails?: boolean;
+    branchAllowed?: boolean;
+    /**
+     * Durable `video_sessions` state for the fixture session. Defaults to
+     * `active` when the fixture has a session (a session that was legitimately
+     * created and persisted) and `missing` otherwise.
+     */
+    durableSession?: DurableSessionState;
+}
+
+type DurableSessionState = 'active' | 'missing' | 'unavailable';
+
+interface DurableSessionRow {
+    sessionId: string;
+    userId: string;
+    videoId: string;
+    isActive: 0 | 1;
+}
+
+/**
+ * In-memory `video_sessions` table for the delivery harness.
+ *
+ * The delivery gate reads exactly one column of this table, so a harness whose
+ * `queryOne` answers `null` for every lookup can only ever exercise the deny
+ * path — it cannot represent a legitimately created session. This table is
+ * written by the same statements production uses (the creation INSERT, the
+ * `killSession` UPDATE by id, the per-user invalidation) and read back by id.
+ * It seeds no default row: an unknown id resolves to `null`, and an inactive
+ * row is returned as `is_active = 0`, so the gate still sees the real column.
+ */
+const createDurableSessionTable = () => {
+    const rows = new Map<string, DurableSessionRow>();
+    let readFailure: Error | null = null;
+
+    const insert = (row: { sessionId: string; userId: string; videoId: string }) => {
+        rows.set(row.sessionId, { ...row, isActive: 1 });
+    };
+
+    const deactivate = (sessionId: string): boolean => {
+        const row = rows.get(sessionId);
+        if (!row) return false;
+        row.isActive = 0;
+        return true;
+    };
+
+    const execute = (sql: string, params: unknown[] = []): { affectedRows: number } | null => {
+        const normalized = sql.replace(/\s+/g, ' ');
+        if (/INSERT INTO video_sessions/.test(normalized)) {
+            insert({ sessionId: String(params[0]), userId: String(params[1]), videoId: String(params[2]) });
+            return { affectedRows: 1 };
+        }
+        if (/UPDATE video_sessions SET is_active\s*=\s*0/.test(normalized)) {
+            if (/WHERE id = \?/.test(normalized)) {
+                return { affectedRows: deactivate(String(params[1])) ? 1 : 0 };
+            }
+            if (/WHERE user_id\s*=\s*\?/.test(normalized)) {
+                for (const row of rows.values()) {
+                    if (row.userId === String(params[0])) row.isActive = 0;
+                }
+                return { affectedRows: 1 };
+            }
+        }
+        return null;
+    };
+
+    const queryOne = (sql: string, params: unknown[] = []): { is_active: number } | null | undefined => {
+        if (!/SELECT is_active FROM video_sessions/.test(sql.replace(/\s+/g, ' '))) return undefined;
+        if (readFailure) throw readFailure;
+        const row = rows.get(String(params[0]));
+        return row ? { is_active: row.isActive } : null;
+    };
+
+    return {
+        rows,
+        insert,
+        deactivate,
+        execute,
+        queryOne,
+        failReads: (error: Error | null) => { readFailure = error; },
+    };
+};
+
+const makeDeliveryHarness = (options: DeliveryHarnessOptions = {}) => {
+    let nowMs = options.nowMs ?? 1_000_000;
+    const session = options.session === undefined ? makeTestSession() : options.session;
+    const kills: Array<{ sessionId: string; reason: string }> = [];
+    const created: Array<Record<string, unknown>> = [];
+    const durableSessions = createDurableSessionTable();
+    const durableState: DurableSessionState = options.durableSession ?? (session ? 'active' : 'missing');
+    if (session && durableState !== 'missing') {
+        durableSessions.insert({ sessionId: session.sessionId, userId: session.userId, videoId: session.videoId });
+    }
+    if (durableState === 'unavailable') durableSessions.failReads(new Error('session store unavailable'));
+    const entitlement = makeEntitlementService(() => nowMs);
+    for (const record of options.records ?? []) {
+        const list = entitlement.records.get(record.sessionId) ?? [];
+        list.push({ ...record });
+        entitlement.records.set(record.sessionId, list);
+    }
+    if (options.issueFails) {
+        entitlement.service.issue = async () => ({ ok: false, reason: 'secret-unavailable' });
+    }
+
+    const deps: import('../src/routes/secure-video').SecureVideoDeliveryDeps = {
+        authenticate: (req, _res, next) => {
+            (req as { user?: unknown }).user = {
+                id: 'student-1',
+                email: null,
+                phone: null,
+                role: 'student',
+                tenantId: 'tenant-1',
+                studentEnrollmentId: 'enroll-1',
+            };
+            next();
+        },
+        queryOne: async <T = unknown>(sql: string, params?: unknown[]): Promise<T | null> => {
+            const durable = durableSessions.queryOne(sql, params ?? []);
+            if (durable !== undefined) return durable as T | null;
+            const normalized = sql.replace(/\s+/g, ' ');
+            if (/FROM video_security_consents/.test(normalized)) return { id: 'consent-1' } as T;
+            if (/SELECT v\.\*/.test(normalized) && /FROM videos v/.test(normalized)) {
+                return { id: 'video-1', is_encrypted: 1, hls_key: 'hls/key', original_key: 'orig/key' } as T;
+            }
+            if (/SELECT name, phone FROM users/.test(normalized)) {
+                return { name: 'Student', phone: '01001234567' } as T;
+            }
+            if (/SELECT s\.name, g\.name as group_name/.test(normalized)) {
+                return { name: 'Student', group_name: 'Group A' } as T;
+            }
+            if (/SELECT \* FROM videos/.test(normalized)) {
+                return { is_encrypted: 1, hls_key: 'hls/key', original_key: 'orig/key' } as T;
+            }
+            if (/SELECT encryption_key, is_encrypted/.test(normalized)) {
+                return { is_encrypted: 1, encryption_key: '00112233' } as T;
+            }
+            return null;
+        },
+        execute: async (sql: string, params?: unknown[]) => durableSessions.execute(sql, params ?? []) ?? { affectedRows: 1 },
+        getActiveSession: () => session,
+        createVideoSession: async (params) => {
+            created.push({ ...params });
+            // The durable write the real `createVideoSession` performs before it
+            // publishes anything; delivery later reads this row back.
+            durableSessions.insert({ sessionId: 'sess-1', userId: params.userId, videoId: params.videoId });
+            return { sessionId: 'sess-1', watermarkSeed: 'watermark-seed' };
+        },
+        killSession: async (sessionId, reason) => { kills.push({ sessionId, reason }); },
+        isUserSuspended: async () => ({ suspended: false }),
+        generateVideoSessionToken: () => 'session-token',
+        verifyVideoSessionToken: (token) => {
+            if (options.tokenValid === false) return { valid: false, reason: 'Device fingerprint mismatch' };
+            if (!token) return { valid: false, reason: 'Invalid token' };
+            return {
+                valid: true,
+                decoded: { sid: session?.sessionId, sub: session?.userId, vid: session?.videoId, po: session?.previewOnly },
+            };
+        },
+        getClientIp: () => '10.0.0.1',
+        hashValue: (value) => `hash:${value}`,
+        recordViolation: async () => ({
+            suspended: false, score: 0, action: 'none', killed: false,
+            restrictions: { qualityCap: null, fullscreenAllowed: true, riskScore: 0 },
+        }),
+        getThumbnailUrl: async () => 'thumbnail.jpg',
+        getUserVideoRestrictions: async () => ({ qualityCap: null, fullscreenAllowed: true, riskScore: 0 }),
+        inspectDeliveryRequest: () => ({ allowed: true, release: () => undefined }),
+        getObjectBuffer: async () => Buffer.from(
+            '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n#EXTINF:4,\n480p/segment_0.ts\n',
+        ),
+        getObjectStream: async () => Readable.from([Buffer.from('segment-bytes')]),
+        hasVideoAccess: async () => options.hasVideoAccess ?? true,
+        hasPreviewOffer: async () => false,
+        resolveBranch: async () => (options.branchAllowed === false
+            ? { kind: 'denied', reason: 'membership-missing' }
+            : { kind: 'allowed', scope: 'tenant', branchId: null, membershipRole: null, membershipVersion: null, legacyUnclassified: false }),
+        resolveVideoLesson: async () => options.association ?? { kind: 'unique', lessonId: 'lesson-1' },
+        entitlement: entitlement.service,
+        now: () => nowMs,
+        issueEntitlementTtlSeconds: 300,
+        renewBeforeMs: 120_000,
+    };
+    return {
+        router: createSecureVideoDeliveryRouter(deps),
+        kills,
+        created,
+        entitlement,
+        session,
+        durableSessions,
+        setNow: (value: number) => { nowMs = value; },
+    };
+};
+
+const mediaQuery = (extra: Record<string, string> = {}) => ({
+    sid: 'sess-1', token: 'session-token', ...extra,
+});
+
+test('entitlement delivery: an unauthenticated manifest request is denied before any read', async () => {
+    const harness = makeDeliveryHarness({ session: null });
+    const result = await invokeDelivery(harness.router, {
+        method: 'GET', path: '/manifest/video-1/playlist.m3u8', query: {},
+    });
+    assert.equal(result.status, 401);
+    assert.equal(result.chunks.length, 0);
+});
+
+test('entitlement delivery: a valid session with no server-owned record is denied on manifest, media and key', async () => {
+    for (const request of [
+        { method: 'GET' as const, path: '/manifest/video-1/playlist.m3u8', query: mediaQuery() },
+        { method: 'GET' as const, path: '/media/video-1', query: mediaQuery({ path: 'segment_0.ts' }) },
+        { method: 'GET' as const, path: '/key/video-1', query: mediaQuery() },
+    ]) {
+        const harness = makeDeliveryHarness();
+        const result = await invokeDelivery(harness.router, request);
+        assert.equal(result.status, 403, `${request.path} must deny without an entitlement`);
+        assert.equal(result.body?.code, 'PLAYBACK_ENTITLEMENT_DENIED');
+        assert.equal(result.body?.reason, 'missing');
+        assert.deepEqual(harness.kills, [{ sessionId: 'sess-1', reason: 'entitlement_denied' }]);
+        assert.equal(result.chunks.length, 0);
+    }
+});
+
+test('entitlement delivery: a revoked record denies the next request', async () => {
+    const harness = makeDeliveryHarness({
+        records: [makeEntitlementRecord({ revokedAtMs: 1_000_001 })],
+    });
+    const result = await invokeDelivery(harness.router, {
+        method: 'GET', path: '/media/video-1', query: mediaQuery({ path: 'segment_0.ts' }),
+    });
+    assert.equal(result.status, 403);
+    assert.equal(result.body?.reason, 'revoked');
+    assert.equal(result.chunks.length, 0);
+});
+
+test('entitlement delivery: an expired record denies', async () => {
+    const harness = makeDeliveryHarness({
+        records: [makeEntitlementRecord({ expiresAtMs: 999_999 })],
+    });
+    const result = await invokeDelivery(harness.router, {
+        method: 'GET', path: '/manifest/video-1/playlist.m3u8', query: mediaQuery(),
+    });
+    assert.equal(result.status, 403);
+    assert.equal(result.body?.reason, 'expired');
+});
+
+test('entitlement delivery: lesson, tenant and enrollment mismatches deny', async () => {
+    const cases: Array<{ record: Partial<PlaybackEntitlementRecord>; reason: string }> = [
+        { record: { lessonId: 'lesson-other' }, reason: 'lesson-mismatch' },
+        { record: { tenantId: 'tenant-other' }, reason: 'tenant-mismatch' },
+        { record: { studentEnrollmentId: 'enroll-other' }, reason: 'student-mismatch' },
+    ];
+    for (const entry of cases) {
+        const harness = makeDeliveryHarness({ records: [makeEntitlementRecord(entry.record)] });
+        const result = await invokeDelivery(harness.router, {
+            method: 'GET', path: '/key/video-1', query: mediaQuery(),
+        });
+        assert.equal(result.status, 403, entry.reason);
+        assert.equal(result.body?.reason, entry.reason);
+    }
+});
+
+test('entitlement delivery: the existing fingerprint/IP/UA token binding is preserved', async () => {
+    const harness = makeDeliveryHarness({
+        tokenValid: false,
+        records: [makeEntitlementRecord()],
+    });
+    const result = await invokeDelivery(harness.router, {
+        method: 'GET', path: '/manifest/video-1/playlist.m3u8', query: mediaQuery(),
+    });
+    assert.equal(result.status, 401);
+    assert.equal(result.chunks.length, 0);
+});
+
+test('entitlement delivery: a valid record serves the manifest, the segment and the key', async () => {
+    const harness = makeDeliveryHarness({ records: [makeEntitlementRecord()] });
+
+    const manifest = await invokeDelivery(harness.router, {
+        method: 'GET', path: '/manifest/video-1/playlist.m3u8', query: mediaQuery(),
+    });
+    assert.equal(manifest.status, 200);
+    assert.match(manifest.text, /\/api\/secure-video\/media\/video-1\?path=480p%2Fsegment_0\.ts/);
+    assert.match(manifest.text, /\/api\/secure-video\/key\/video-1/);
+
+    const segment = await invokeDelivery(harness.router, {
+        method: 'GET', path: '/media/video-1', query: mediaQuery({ path: '480p/segment_0.ts' }),
+    });
+    assert.equal(segment.status, 200);
+    assert.equal(Buffer.concat(segment.chunks).toString('utf8'), 'segment-bytes');
+
+    const key = await invokeDelivery(harness.router, {
+        method: 'GET', path: '/key/video-1', query: mediaQuery(),
+    });
+    assert.equal(key.status, 200);
+    assert.deepEqual(Buffer.concat(key.chunks), Buffer.from('00112233', 'hex'));
+});
+
+test('entitlement delivery: an ambiguous parent association denies even with a valid record', async () => {
+    const harness = makeDeliveryHarness({
+        association: { kind: 'ambiguous', lessonId: null, reason: 'ambiguous-lecture-parents' },
+        records: [makeEntitlementRecord()],
+    });
+    const result = await invokeDelivery(harness.router, {
+        method: 'GET', path: '/manifest/video-1/playlist.m3u8', query: mediaQuery(),
+    });
+    assert.equal(result.status, 403);
+    assert.equal(result.body?.code, 'VIDEO_PARENT_AMBIGUOUS');
+    assert.equal(result.body?.reason, 'ambiguous-parent');
+    assert.deepEqual(harness.kills, [{ sessionId: 'sess-1', reason: 'ambiguous_parent' }]);
+});
+
+test('entitlement delivery: a foreign-tenant grant is still denied by the existing access policy', async () => {
+    const harness = makeDeliveryHarness({
+        hasVideoAccess: false,
+        records: [makeEntitlementRecord()],
+    });
+    const result = await invokeDelivery(harness.router, {
+        method: 'GET', path: '/media/video-1', query: mediaQuery({ path: 'segment_0.ts' }),
+    });
+    assert.equal(result.status, 403);
+    assert.equal(result.body?.error, 'Video access was revoked');
+    assert.deepEqual(harness.kills, [{ sessionId: 'sess-1', reason: 'access_revoked' }]);
+});
+
+test('entitlement delivery: a durable session row that is gone denies the next request', async () => {
+    const harness = makeDeliveryHarness({ records: [makeEntitlementRecord()], durableSession: 'missing' });
+    for (const request of [
+        { method: 'GET' as const, path: '/manifest/video-1/playlist.m3u8', query: mediaQuery() },
+        { method: 'GET' as const, path: '/media/video-1', query: mediaQuery({ path: 'segment_0.ts' }) },
+        { method: 'GET' as const, path: '/key/video-1', query: mediaQuery() },
+    ]) {
+        const result = await invokeDelivery(harness.router, request);
+        assert.equal(result.status, 401, `${request.path} must deny without a durable session row`);
+        assert.equal(result.body?.error, 'session_inactive');
+        assert.equal(result.chunks.length, 0);
+    }
+    const refresh = await invokeDelivery(harness.router, {
+        method: 'POST',
+        path: '/refresh-token',
+        body: { sessionId: 'sess-1', fingerprint: 'fp-1', screenRes: '1920x1080' },
+    });
+    assert.equal(refresh.status, 401);
+    assert.equal(refresh.body?.sessionToken, undefined);
+});
+
+test('entitlement delivery: a durable session killed after issuance denies the next request', async () => {
+    const harness = makeDeliveryHarness({ records: [makeEntitlementRecord()] });
+    assert.equal(harness.durableSessions.rows.get('sess-1')?.isActive, 1);
+    const served = await invokeDelivery(harness.router, {
+        method: 'GET', path: '/manifest/video-1/playlist.m3u8', query: mediaQuery(),
+    });
+    assert.equal(served.status, 200, 'positive control: the persisted row authorizes delivery');
+    assert.equal(harness.durableSessions.deactivate('sess-1'), true);
+    const denied = await invokeDelivery(harness.router, {
+        method: 'GET', path: '/media/video-1', query: mediaQuery({ path: 'segment_0.ts' }),
+    });
+    assert.equal(denied.status, 401);
+    assert.equal(denied.chunks.length, 0);
+});
+
+test('entitlement delivery: an unreadable durable session store denies instead of serving', async () => {
+    const harness = makeDeliveryHarness({ records: [makeEntitlementRecord()], durableSession: 'unavailable' });
+    const denied = await invokeDelivery(harness.router, {
+        method: 'GET', path: '/key/video-1', query: mediaQuery(),
+    });
+    assert.equal(denied.status, 401);
+    assert.equal(denied.chunks.length, 0);
+    harness.durableSessions.failReads(null);
+    const recovered = await invokeDelivery(harness.router, {
+        method: 'GET', path: '/key/video-1', query: mediaQuery(),
+    });
+    assert.equal(recovered.status, 200, 'recovery restores delivery');
+});
+
+test('entitlement session: a unique lesson issues a record bound to tenant, enrollment, lesson and session', async () => {
+    const harness = makeDeliveryHarness();
+    const result = await invokeDelivery(harness.router, {
+        method: 'POST',
+        path: '/session',
+        body: { videoId: 'video-1', fingerprint: 'fp-1', screenRes: '1920x1080' },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(harness.created.length, 1);
+    assert.deepEqual(harness.entitlement.issued, [{
+        tenantId: 'tenant-1',
+        lessonId: 'lesson-1',
+        studentEnrollmentId: 'enroll-1',
+        sessionId: 'sess-1',
+    }]);
+    // Creation is durable: the row the route wrote is the row delivery reads.
+    assert.equal(harness.durableSessions.rows.get('sess-1')?.isActive, 1);
+    const served = await invokeDelivery(harness.router, {
+        method: 'GET', path: '/manifest/video-1/playlist.m3u8', query: mediaQuery(),
+    });
+    assert.equal(served.status, 200);
+    assert.match(served.text, /#EXTM3U/);
+});
+
+test('entitlement session: ambiguous parents deny before a session is created', async () => {
+    const harness = makeDeliveryHarness({
+        association: { kind: 'ambiguous', lessonId: null, reason: 'ambiguous-material-parents' },
+    });
+    const result = await invokeDelivery(harness.router, {
+        method: 'POST',
+        path: '/session',
+        body: { videoId: 'video-1', fingerprint: 'fp-1', screenRes: '1920x1080' },
+    });
+    assert.equal(result.status, 403);
+    assert.equal(result.body?.code, 'VIDEO_PARENT_AMBIGUOUS');
+    assert.equal(harness.created.length, 0);
+    assert.equal(harness.entitlement.issued.length, 0);
+});
+
+test('entitlement session: an issuance failure returns 503 and kills the session', async () => {
+    const harness = makeDeliveryHarness({ issueFails: true });
+    const result = await invokeDelivery(harness.router, {
+        method: 'POST',
+        path: '/session',
+        body: { videoId: 'video-1', fingerprint: 'fp-1', screenRes: '1920x1080' },
+    });
+    assert.equal(result.status, 503);
+    assert.equal(result.body?.code, 'PLAYBACK_UNAVAILABLE');
+    assert.deepEqual(harness.kills, [{ sessionId: 'sess-1', reason: 'entitlement_unavailable' }]);
+});
+
+test('entitlement refresh: a revoked record denies and kills the session', async () => {
+    const harness = makeDeliveryHarness({
+        records: [makeEntitlementRecord({ revokedAtMs: 1_000_001 })],
+    });
+    const result = await invokeDelivery(harness.router, {
+        method: 'POST',
+        path: '/refresh-token',
+        body: { sessionId: 'sess-1', fingerprint: 'fp-1', screenRes: '1920x1080' },
+    });
+    assert.equal(result.status, 403);
+    assert.equal(result.body?.code, 'PLAYBACK_ENTITLEMENT_DENIED');
+    assert.equal(result.body?.reason, 'revoked');
+    assert.deepEqual(harness.kills, [{ sessionId: 'sess-1', reason: 'entitlement_denied' }]);
+});
+
+test('entitlement refresh: a valid record near expiry is renewed', async () => {
+    const harness = makeDeliveryHarness({
+        records: [makeEntitlementRecord({ expiresAtMs: 1_060_000 })],
+    });
+    const result = await invokeDelivery(harness.router, {
+        method: 'POST',
+        path: '/refresh-token',
+        body: { sessionId: 'sess-1', fingerprint: 'fp-1', screenRes: '1920x1080' },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(harness.entitlement.issued.length, 1);
+    assert.equal(harness.entitlement.issued[0].lessonId, 'lesson-1');
+});
+
+test('entitlement refresh: a valid record outside the renewal window is not re-issued', async () => {
+    const harness = makeDeliveryHarness({
+        records: [makeEntitlementRecord({ expiresAtMs: 1_200_000 })],
+    });
+    const result = await invokeDelivery(harness.router, {
+        method: 'POST',
+        path: '/refresh-token',
+        body: { sessionId: 'sess-1', fingerprint: 'fp-1', screenRes: '1920x1080' },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(harness.entitlement.issued.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Video parent association: the mapping cases, resolved from rows only.
+// ---------------------------------------------------------------------------
+
+const parentReader = (fixtures: {
+    video?: {
+        id: string; course_id: string | null; tenant_id: string | null;
+        lecture_id: string | null; material_id: string | null;
+        course_row_id: string | null; course_tenant_id: string | null;
+    } | null;
+    directLecture?: { id: string; course_id: string; tenant_id: string } | null;
+    reverseLectures?: Array<{ id: string; course_id: string; tenant_id: string }>;
+    directMaterial?: { id: string; course_id: string; tenant_id: string } | null;
+    reverseMaterials?: Array<{ id: string; course_id: string; tenant_id: string }>;
+}): VideoParentReader => ({
+    queryOne: async <T = unknown>(sql: string): Promise<T | null> => {
+        const normalized = sql.replace(/\s+/g, ' ');
+        if (/FROM videos v/.test(normalized)) return (fixtures.video ?? null) as T | null;
+        if (/FROM lectures l/.test(normalized)) return (fixtures.directLecture ?? null) as T | null;
+        if (/FROM course_materials cm/.test(normalized)) return (fixtures.directMaterial ?? null) as T | null;
+        return null;
+    },
+    query: async <T = unknown>(sql: string): Promise<T[]> => {
+        const normalized = sql.replace(/\s+/g, ' ');
+        if (/WHERE l\.video_url/.test(normalized)) return (fixtures.reverseLectures ?? []) as T[];
+        if (/WHERE cm\.material_type/.test(normalized)) return (fixtures.reverseMaterials ?? []) as T[];
+        return [];
+    },
+});
+
+const baseVideo = {
+    id: 'video-1',
+    course_id: 'course-1',
+    tenant_id: 'tenant-1',
+    lecture_id: 'lesson-1' as string | null,
+    material_id: null as string | null,
+    course_row_id: 'course-1',
+    course_tenant_id: 'tenant-1',
+};
+
+test('video association: one lecture across both link directions resolves uniquely', async () => {
+    const association = await resolveVideoLessonAssociation('video-1', parentReader({
+        video: baseVideo,
+        directLecture: { id: 'lesson-1', course_id: 'course-1', tenant_id: 'tenant-1' },
+        reverseLectures: [{ id: 'lesson-1', course_id: 'course-1', tenant_id: 'tenant-1' }],
+    }));
+    assert.deepEqual(association, { kind: 'unique', lessonId: 'lesson-1' });
+});
+
+test('video association: two lectures are ambiguous, never "first match"', async () => {
+    const association = await resolveVideoLessonAssociation('video-1', parentReader({
+        video: baseVideo,
+        directLecture: { id: 'lesson-1', course_id: 'course-1', tenant_id: 'tenant-1' },
+        reverseLectures: [
+            { id: 'lesson-1', course_id: 'course-1', tenant_id: 'tenant-1' },
+            { id: 'lesson-2', course_id: 'course-1', tenant_id: 'tenant-1' },
+        ],
+    }));
+    assert.deepEqual(association, { kind: 'ambiguous', lessonId: null, reason: 'ambiguous-lecture-parents' });
+});
+
+test('video association: a dangling lecture id is ambiguous', async () => {
+    const association = await resolveVideoLessonAssociation('video-1', parentReader({
+        video: { ...baseVideo, lecture_id: 'missing-lesson' },
+        directLecture: null,
+        reverseLectures: [],
+    }));
+    assert.deepEqual(association, { kind: 'ambiguous', lessonId: null, reason: 'dangling-lecture-parent' });
+});
+
+test('video association: a lecture in another course is conflicting provenance', async () => {
+    const association = await resolveVideoLessonAssociation('video-1', parentReader({
+        video: baseVideo,
+        directLecture: { id: 'lesson-1', course_id: 'course-2', tenant_id: 'tenant-1' },
+        reverseLectures: [{ id: 'lesson-1', course_id: 'course-2', tenant_id: 'tenant-1' }],
+    }));
+    assert.deepEqual(association, { kind: 'ambiguous', lessonId: null, reason: 'conflicting-course-provenance' });
+});
+
+test('video association: a course-only (tenant-level) video has no lesson and stays on the access policy', async () => {
+    const association = await resolveVideoLessonAssociation('video-1', parentReader({
+        video: { ...baseVideo, lecture_id: null },
+    }));
+    assert.deepEqual(association, { kind: 'none', lessonId: null, reason: 'course-only' });
+});
+
+test('video association: a material-only video has no lesson and stays on the access policy', async () => {
+    const association = await resolveVideoLessonAssociation('video-1', parentReader({
+        video: { ...baseVideo, lecture_id: null, material_id: 'material-1' },
+        directMaterial: { id: 'material-1', course_id: 'course-1', tenant_id: 'tenant-1' },
+        reverseMaterials: [{ id: 'material-1', course_id: 'course-1', tenant_id: 'tenant-1' }],
+    }));
+    assert.deepEqual(association, { kind: 'none', lessonId: null, reason: 'material-only' });
 });

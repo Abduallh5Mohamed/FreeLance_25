@@ -32,6 +32,8 @@ import {
     type ConsentEventRow,
     type NotificationDataAccess,
 } from '../src/services/notification-consent';
+import { NOTIFICATION_CHANNELS } from '../src/services/notification-preferences';
+import { signSecureLink } from '../src/services/notification-outbox';
 import { invokeRoute, type CapturedResponse, type ExecutedStatement, type RouteRequest } from './helpers/m2-harness';
 import { quietConsole, restoreConsole } from './helpers/quiet-console';
 
@@ -53,9 +55,18 @@ interface FakeState {
     failWith: Error | null;
     /** L2: consumed unsubscribe token jtis (unique, like the table PK). */
     consumedJtis: Set<string>;
+    /** Forces only the consent-ledger writes to fail (token consumption still succeeds). */
+    failConsentWith: Error | null;
 }
 
-const makeState = (): FakeState => ({ events: [], seqCounter: 0, executed: [], failWith: null, consumedJtis: new Set() });
+const makeState = (): FakeState => ({
+    events: [],
+    seqCounter: 0,
+    executed: [],
+    failWith: null,
+    consumedJtis: new Set(),
+    failConsentWith: null,
+});
 
 const makeFakeDb = (state: FakeState): NotificationDataAccess => {
     const record = (sql: string, params: unknown[], kind: ExecutedStatement['kind']): void => {
@@ -95,6 +106,7 @@ const makeFakeDb = (state: FakeState): NotificationDataAccess => {
             return { affectedRows: 1, insertId: 0 };
         }
         if (upper.includes('INSERT INTO NOTIFICATION_CONSENT_EVENTS')) {
+            if (state.failConsentWith) throw state.failConsentWith;
             const [id, tenantId, userId, userType, purpose, channel, action, source, recordedBy, recordedAt] = params;
             state.events.push({
                 id: String(id),
@@ -156,11 +168,25 @@ const buildHarness = (state: FakeState): Harness => {
         (req as AuthRequest).user = { id: user.id, email: null, phone: null, role: user.role, tenantId: user.tenantId };
         next();
     };
+    const transaction = async <T>(fn: (tx: NotificationDataAccess) => Promise<T>): Promise<T> => {
+        const eventsSnapshot = state.events.map((row) => ({ ...row }));
+        const seqSnapshot = state.seqCounter;
+        const jtiSnapshot = new Set(state.consumedJtis);
+        try {
+            return await fn(db);
+        } catch (error) {
+            state.events = eventsSnapshot;
+            state.seqCounter = seqSnapshot;
+            state.consumedJtis = jtiSnapshot;
+            throw error;
+        }
+    };
     const router = createNotificationConsentRouter({
         db,
         authenticate,
         now: () => new Date('2026-10-18T12:00:00.000Z'),
         getLinkSecret: () => linkSecret,
+        transaction,
     });
     return {
         router,
@@ -445,6 +471,73 @@ test('L2: an unsubscribe token is single-use; a replay is an idempotent success 
         assert.deepEqual(replay.body, first.body);
         assert.equal(h.state.events.length, eventsAfterFirst, 'a replay must not append another revoke');
         assert.equal(h.state.consumedJtis.size, 1);
+    });
+});
+
+test('unsubscribe: a failed consent write rolls back token consumption so the same link can be retried', async () => {
+    await withHarness((state) => {
+        state.events.push({
+            id: 'e-a-g', seq: 1, tenant_id: null, user_id: USER_A, user_type: 'student',
+            purpose: 'progress_report', channel: 'email', action: 'grant', source: 'account_settings',
+            recorded_by: USER_A, recorded_at: new Date(),
+        });
+    }, async (h) => {
+        const student = h.tokenFor({ id: USER_A, role: 'student' });
+        const issued = await req(h, 'POST', '/unsubscribe-link', student, { channel: 'email' });
+        const token = (issued.body as { token: string })['token'];
+        const eventsBefore = h.state.events.length;
+        const scope = { userId: USER_A, userType: 'student' };
+
+        // The jti insert succeeds, but the first consent write fails. Without a
+        // real transaction the jti would stay consumed and the link would be
+        // burned even though nothing was revoked.
+        h.state.failConsentWith = new Error('simulated consent ledger outage');
+        const failed = await req(h, 'POST', '/unsubscribe', null, { token });
+        assert.equal(failed.statusCode, 500);
+        assert.equal(h.state.consumedJtis.size, 0, 'a failed ledger write must not consume the jti');
+        assert.equal(h.state.events.length, eventsBefore, 'no partial revoke may survive the failure');
+        assert.equal(await canDeliverTo(h.db, { ...scope, purpose: 'progress_report', channel: 'email' }), true);
+
+        // The same signed link remains usable and a retry applies the revoke.
+        h.state.failConsentWith = null;
+        const retry = await req(h, 'POST', '/unsubscribe', null, { token });
+        assert.equal(retry.statusCode, 200);
+        assert.equal(h.state.consumedJtis.size, 1);
+        const applied = h.state.events.filter((event) => event.source === 'unsubscribe_link');
+        assert.equal(applied.length, 5, 'a channel token revokes every purpose on that channel');
+        assert.equal(await canDeliverTo(h.db, { ...scope, purpose: 'progress_report', channel: 'email' }), false);
+
+        // A successful replay is still idempotent: no second consumption, no re-apply.
+        const eventsAfterRetry = h.state.events.length;
+        const replay = await req(h, 'POST', '/unsubscribe', null, { token });
+        assert.equal(replay.statusCode, 200);
+        assert.deepEqual(replay.body, retry.body);
+        assert.equal(h.state.events.length, eventsAfterRetry);
+        assert.equal(h.state.consumedJtis.size, 1);
+    });
+});
+
+test('unsubscribe: a global signed token revokes every channel and never infers a tenant from the request', async () => {
+    await withHarness(() => undefined, async (h) => {
+        const token = signSecureLink({
+            kind: 'unsubscribe',
+            ref: 'unsubscribe',
+            userId: USER_A,
+            userType: 'student',
+            purpose: null,
+            channel: null,
+        }, LINK_SECRET, { now: () => new Date('2026-10-18T12:00:00.000Z') });
+        const response = await req(h, 'POST', '/unsubscribe', null, { token, tenant_id: 'tenant-attacker' });
+        assert.equal(response.statusCode, 200);
+        assert.deepEqual(response.body, { status: 'unsubscribed', channel: 'all', purpose: 'all' });
+
+        const events = h.state.events.filter((event) => event.user_id === USER_A && event.user_type === 'student');
+        assert.equal(events.length, NOTIFICATION_CHANNELS.length * 5, 'a global token stops every channel across every purpose');
+        const channels = new Set(events.map((event) => event.channel));
+        assert.deepEqual([...channels].sort(), [...NOTIFICATION_CHANNELS].sort());
+        assert.ok(events.every((event) => event.action === 'revoke' && event.source === 'unsubscribe_link'));
+        assert.ok(events.every((event) => event.tenant_id === null), 'the missing tenant must never be guessed from the request');
+        assert.ok(events.every((event) => event.tenant_id !== 'tenant-attacker'));
     });
 });
 

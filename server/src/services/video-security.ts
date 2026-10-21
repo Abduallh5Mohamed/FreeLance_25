@@ -68,6 +68,33 @@ const userSessionMap = new Map<string, string>(); // userId -> sessionId (only 1
 // ═══════════════════════════════════════
 
 /**
+ * Persistence seam for session creation. Production passes the pool-backed
+ * `execute`; tests inject a failing executor to prove the fail-closed path.
+ */
+export interface VideoSessionPersistence {
+    execute: (sql: string, params?: unknown[]) => Promise<unknown>;
+}
+
+const defaultSessionPersistence: VideoSessionPersistence = {
+    execute: (sql, params) => execute(sql, params),
+};
+
+/**
+ * Raised when the durable `video_sessions` row could not be written.
+ *
+ * A session that is not provably persisted must never become a usable grant:
+ * delivery reads only the row, so an id that exists solely in this process's
+ * cache would be a cache-only success. Creation therefore fails instead of
+ * returning such an id.
+ */
+export class VideoSessionPersistenceError extends Error {
+    constructor() {
+        super('session_persist_failed');
+        this.name = 'VideoSessionPersistenceError';
+    }
+}
+
+/**
  * Create a new video session.
  * Kills any existing session for this user.
  */
@@ -82,7 +109,7 @@ export async function createVideoSession(params: {
     offerId?: string;
     studentEnrollmentId?: string;
     tenantId?: string;
-}): Promise<{ sessionId: string; watermarkSeed: string }> {
+}, persistence: VideoSessionPersistence = defaultSessionPersistence): Promise<{ sessionId: string; watermarkSeed: string }> {
     const { userId, videoId, ip, userAgent, fingerprint, screenRes, previewOnly = false,
         offerId, studentEnrollmentId, tenantId } = params;
 
@@ -124,27 +151,37 @@ export async function createVideoSession(params: {
         activeMediaRequests: 0,
     };
 
-    activeSessions.set(sessionId, session);
-    userSessionMap.set(userId, sessionId);
-
-    // Persist to DB
+    // Persist BEFORE publishing the session to this process's caches. The
+    // previous order published first and logged the insert failure, which left
+    // a usable grant backed by nothing but local memory. A session that cannot
+    // be proven durable is not a session.
     try {
         // Also invalidate sessions created by another process/instance. The
         // generated unique key in the migration is the final race-condition guard.
-        await execute(
+        await persistence.execute(
             `UPDATE video_sessions SET is_active=0,killed_reason='new_session_started',killed_at=NOW()
              WHERE user_id=? AND is_active=1`,
             [userId]
         );
-        await execute(
+        const inserted = await persistence.execute(
             `INSERT INTO video_sessions 
              (id, user_id, video_id, ip_address, user_agent, fingerprint, screen_resolution, watermark_seed, is_active, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
             [sessionId, userId, videoId, ip, userAgent, fingerprint, screenRes, watermarkSeed]
         );
+        const affected = (inserted as { affectedRows?: unknown } | null | undefined)?.affectedRows;
+        if (affected !== undefined && Number(affected) < 1) {
+            throw new Error('video_sessions insert affected no row');
+        }
     } catch (e) {
         console.error('[Security] Failed to persist session:', e);
+        // Nothing was published: no activeSessions entry, no userSessionMap
+        // entry. The caller must treat creation as failed and issue no token.
+        throw new VideoSessionPersistenceError();
     }
+
+    activeSessions.set(sessionId, session);
+    userSessionMap.set(userId, sessionId);
 
     console.log(`[Security] Session created: ${sessionId} for user ${userId}`);
     return { sessionId, watermarkSeed };
@@ -180,6 +217,47 @@ export function getActiveSession(sessionId: string): VideoSession | null {
     const session = activeSessions.get(sessionId);
     if (!session || !session.isActive) return null;
     return session;
+}
+
+/**
+ * Durable liveness of a delivery session, read from `video_sessions`.
+ *
+ * `activeSessions` above is a per-process cache: a session killed by another
+ * instance (or by a request that ran on another instance) still looks alive
+ * here until this process restarts. Byte delivery therefore cannot treat the
+ * map as the authority — it must read the row.
+ *
+ *  - `active`      the row says the session is live;
+ *  - `revoked`     the row says it was killed (`is_active = 0`);
+ *  - `unknown`     no row was found. The session was never provably persisted
+ *                  (the insert at creation failed) or the row is gone, so it
+ *                  is NOT a grant: callers must deny, including on the process
+ *                  that created it;
+ *  - `unavailable` the read failed — callers must deny.
+ */
+export type DurableSessionStatus = 'active' | 'revoked' | 'unknown' | 'unavailable';
+
+export interface DurableSessionReader {
+    queryOne: <T = unknown>(sql: string, params?: unknown[]) => Promise<T | null>;
+}
+
+export async function readDurableSessionStatus(
+    reader: DurableSessionReader,
+    sessionId: string,
+): Promise<DurableSessionStatus> {
+    if (!sessionId) return 'unknown';
+    let row: { is_active: number | string | boolean | null } | null;
+    try {
+        row = await reader.queryOne<{ is_active: number | string | boolean | null }>(
+            'SELECT is_active FROM video_sessions WHERE id = ? LIMIT 1',
+            [sessionId],
+        );
+    } catch (e) {
+        console.error('[Security] Failed to read durable session status:', e);
+        return 'unavailable';
+    }
+    if (!row) return 'unknown';
+    return Number(row.is_active) === 1 ? 'active' : 'revoked';
 }
 
 /**

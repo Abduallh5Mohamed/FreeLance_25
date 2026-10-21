@@ -1,13 +1,23 @@
 /**
  * M5 G2 schedules/calendar routes.
  *
- * Authority + audience model:
+ * Authority + audience model (exact-assignment boundaries, 2026-10-19):
  *  - Staff (verified tenant owner or active instructor membership in the
  *    server-selected tenant) create recurring series and manage the concrete
  *    sessions they are entitled to. Authority is resolved from server rows
  *    only; a client-supplied tenant/branch/group is a request, never evidence.
  *  - Branch/group targets are validated to belong to the caller's tenant; a
  *    non-owner instructor may only target a group they own.
+ *  - A tenant or branch membership ALONE never grants an ordinary instructor
+ *    every group/session: a non-owner's row-level visibility is the live
+ *    assigned-group subquery (`groups.instructor_id`, re-checked on every
+ *    request, so a reassignment or revocation takes effect immediately) plus
+ *    sessions they created themselves. Only the tenant owner keeps the
+ *    tenant-wide owner exception. A branch/group selector on a list can only
+ *    narrow, never widen, that predicate.
+ *  - A recurrence whose authored local wall time does not exist in the target
+ *    timezone (DST spring-forward gap) is denied with an explicit 400 BEFORE
+ *    any write; it is never silently scheduled an hour earlier.
  *  - Cancel/reschedule require a reason and are audited (actor from the
  *    verified principal, time from the mutation, reason from the request) in
  *    the same transaction as the write; a failed audit aborts the mutation.
@@ -17,6 +27,13 @@
  *  - Students only ever receive sessions inside their own audience: a tenant
  *    session for their tenant, a branch session whose branch they are proven
  *    to belong to, or a group session for their own group.
+ *  - Every list feed is bounded and explicit: validated `from`/`to` UTC range
+ *    filters, deterministic ordering (time column, then id), the page-size cap
+ *    the contract already defines, and truncation metadata in one response
+ *    header, `X-Results-Truncated: true|false`. Every list returns exactly its
+ *    pre-batch top-level shape: the pre-existing bare arrays stay bare arrays.
+ *    Feeds are never silently future-only; history stays reachable through
+ *    explicit ranges.
  *
  * Exports `createSchedulesRouter(deps)` and a production default-wired router.
  * Mounting happens in a later task. No runtime DDL.
@@ -29,9 +46,11 @@ import { recordAudit, snapshotRow } from '../security/audit';
 import {
     AudienceViewer,
     ScheduleAudience,
+    buildTimeRangeConditions,
     buildVisibleScheduleFilter,
-    expandRecurrence,
+    expandRecurrenceDetailed,
     normalizeId,
+    parseTimeRangeFilter,
     sessionDurationMinutes,
     toMysqlUtc,
     validateCancelInput,
@@ -76,11 +95,21 @@ export interface SchedulesDeps {
 
 const STAFF_AUTHORITIES = new Set(['owner', 'instructor']);
 
+/**
+ * Page-size caps already defined by the existing list contracts. Each feed
+ * fetches one row past its cap so the response can expose an explicit
+ * `X-Results-Truncated` header instead of silently dropping rows past the
+ * limit. History stays reachable through the validated `from`/`to` range
+ * filters, and each list keeps exactly its pre-batch response shape.
+ */
+const STUDENT_FEED_PAGE_CAP = 100;
+const STAFF_SESSIONS_PAGE_CAP = 500;
+const SERIES_LIST_PAGE_CAP = 200;
+
 interface StaffScope {
     tenantId: string;
     userId: string;
     isOwner: boolean;
-    branchId: string | null;
 }
 
 interface SeriesRow {
@@ -149,7 +178,6 @@ export const createSchedulesRouter = (deps: SchedulesDeps): Router => {
             tenantId: user.tenantId,
             userId: user.id,
             isOwner: authority.authority === 'owner',
-            branchId: user.branchId ?? null,
         };
     };
 
@@ -173,22 +201,20 @@ export const createSchedulesRouter = (deps: SchedulesDeps): Router => {
     };
 
     /**
-     * Row-level session visibility. The owner sees every session in the tenant;
-     * a non-owner only sees sessions for a group they own, a branch they are
-     * entitled to, or a session they themselves created. Deny by default.
+     * Row-level session visibility under the exact-assignment policy. The
+     * owner sees every session in the tenant; a non-owner only sees sessions
+     * for a group they are verifiably assigned to (the subquery is evaluated
+     * live on every request, so a group reassignment or revoked assignment
+     * takes effect immediately) or a session they themselves created. A
+     * tenant or branch membership alone is never a grant. Deny by default.
      */
     const buildSessionVisibility = (scope: StaffScope, alias: string): { sql: string; params: unknown[] } => {
         if (scope.isOwner) return { sql: '1=1', params: [] };
         const ownedGroups = `${alias}.group_id IN (SELECT id FROM \`groups\` WHERE instructor_id = ?)`;
-        const params: unknown[] = [scope.userId];
-        let sql = `(${ownedGroups} OR ${alias}.created_by = ?`;
-        params.push(scope.userId);
-        if (scope.branchId) {
-            sql += ` OR ${alias}.branch_id = ?`;
-            params.push(scope.branchId);
-        }
-        sql += ')';
-        return { sql, params };
+        return {
+            sql: `(${ownedGroups} OR ${alias}.created_by = ?)`,
+            params: [scope.userId, scope.userId],
+        };
     };
 
     const loadStaffSession = async (scope: StaffScope, sessionId: string): Promise<SessionRow | null> => {
@@ -217,15 +243,22 @@ export const createSchedulesRouter = (deps: SchedulesDeps): Router => {
         try {
             const scope = await resolveStaffScope(req, res);
             if (!scope) return;
+            const range = parseTimeRangeFilter(req.query);
+            if (!range.ok) return res.status(400).json({ error: range.error });
             const visibility = buildSessionVisibility(scope, 'schedule_series');
-            res.json(await db.query(
+            const timeRange = buildTimeRangeConditions('starts_on', range.value);
+            const rows = await db.query(
                 `SELECT id, tenant_id, branch_id, group_id, title, audience, timezone, recurrence,
                         weekdays, day_of_month, starts_on, ends_on, start_time, duration_minutes, status, created_at
                  FROM schedule_series
-                 WHERE tenant_id = ? AND ${visibility.sql}
-                 ORDER BY starts_on DESC LIMIT 200`,
-                [scope.tenantId, ...visibility.params],
-            ));
+                 WHERE tenant_id = ? AND ${visibility.sql}${timeRange.sql}
+                 ORDER BY starts_on DESC, id DESC
+                 LIMIT ${SERIES_LIST_PAGE_CAP + 1}`,
+                [scope.tenantId, ...visibility.params, ...timeRange.params],
+            );
+            const truncated = rows.length > SERIES_LIST_PAGE_CAP;
+            res.set('X-Results-Truncated', truncated ? 'true' : 'false');
+            res.json(truncated ? rows.slice(0, SERIES_LIST_PAGE_CAP) : rows);
         } catch (error) {
             console.error('List schedule series error:', error);
             res.status(500).json({ error: 'Failed to list schedule series' });
@@ -247,7 +280,7 @@ export const createSchedulesRouter = (deps: SchedulesDeps): Router => {
                 return res.status(403).json({ error: 'Group is outside this tenant' });
             }
 
-            const occurrences = expandRecurrence({
+            const expansion = expandRecurrenceDetailed({
                 kind: value.recurrence,
                 weekdays: value.weekdays,
                 dayOfMonth: value.dayOfMonth,
@@ -257,6 +290,15 @@ export const createSchedulesRouter = (deps: SchedulesDeps): Router => {
                 durationMinutes: value.durationMinutes,
                 timezone: value.timezone,
             }, maxOccurrences);
+            if (expansion.nonexistentDates.length > 0) {
+                // A DST spring-forward gap: that local time never happens in
+                // the timezone. Deny before any write instead of silently
+                // scheduling the shifted earlier instant.
+                return res.status(400).json({
+                    error: `start_time ${value.startTime} does not exist in ${value.timezone} on ${expansion.nonexistentDates[0]}; choose another time or timezone`,
+                });
+            }
+            const occurrences = expansion.occurrences;
             if (occurrences.length === 0) {
                 return res.status(400).json({ error: 'The recurrence produces no sessions' });
             }
@@ -339,6 +381,8 @@ export const createSchedulesRouter = (deps: SchedulesDeps): Router => {
         try {
             const scope = await resolveStaffScope(req, res);
             if (!scope) return;
+            const range = parseTimeRangeFilter(req.query);
+            if (!range.ok) return res.status(400).json({ error: range.error });
             const visibility = buildSessionVisibility(scope, 'schedule_sessions');
             const params: unknown[] = [scope.tenantId, ...visibility.params];
             let sql = `SELECT id, series_id, tenant_id, branch_id, group_id, title, audience, timezone,
@@ -352,8 +396,13 @@ export const createSchedulesRouter = (deps: SchedulesDeps): Router => {
                 sql += ' AND group_id = ?';
                 params.push(groupId);
             }
-            sql += ' ORDER BY starts_at ASC LIMIT 500';
-            res.json(await db.query(sql, params));
+            const timeRange = buildTimeRangeConditions('starts_at', range.value);
+            sql += `${timeRange.sql} ORDER BY starts_at ASC, id ASC LIMIT ${STAFF_SESSIONS_PAGE_CAP + 1}`;
+            params.push(...timeRange.params);
+            const rows = await db.query(sql, params);
+            const truncated = rows.length > STAFF_SESSIONS_PAGE_CAP;
+            res.set('X-Results-Truncated', truncated ? 'true' : 'false');
+            res.json(truncated ? rows.slice(0, STAFF_SESSIONS_PAGE_CAP) : rows);
         } catch (error) {
             console.error('List schedule sessions error:', error);
             res.status(500).json({ error: 'Failed to list schedule sessions' });
@@ -536,15 +585,21 @@ export const createSchedulesRouter = (deps: SchedulesDeps): Router => {
         try {
             const resolved = await resolveStudentViewer(req, res);
             if (!resolved) return;
+            const range = parseTimeRangeFilter(req.query);
+            if (!range.ok) return res.status(400).json({ error: range.error });
             const filter = buildVisibleScheduleFilter(resolved.viewer);
+            const timeRange = buildTimeRangeConditions('starts_at', range.value);
             const rows = await db.query(
                 `SELECT id, series_id, title, audience, branch_id, group_id, timezone, starts_at, ends_at, status
                  FROM schedule_sessions
-                 WHERE tenant_id=? AND status='scheduled' AND ${filter.sql}
-                 ORDER BY starts_at ASC LIMIT 100`,
-                [resolved.tenantId, ...filter.params],
+                 WHERE tenant_id=? AND status='scheduled' AND ${filter.sql}${timeRange.sql}
+                 ORDER BY starts_at ASC, id ASC
+                 LIMIT ${STUDENT_FEED_PAGE_CAP + 1}`,
+                [resolved.tenantId, ...filter.params, ...timeRange.params],
             );
-            res.json(rows);
+            const truncated = rows.length > STUDENT_FEED_PAGE_CAP;
+            res.set('X-Results-Truncated', truncated ? 'true' : 'false');
+            res.json(truncated ? rows.slice(0, STUDENT_FEED_PAGE_CAP) : rows);
         } catch (error) {
             console.error('Student schedule sessions error:', error);
             res.status(500).json({ error: 'Failed to load schedule sessions' });
@@ -597,6 +652,30 @@ const loadActiveTenantAuthority = async (userId: string, tenantId: string) => {
     return queryOne<{ authority: string }>(TENANT_AUTHORITY_SQL, [tenantId, userId, userId, tenantId]);
 };
 
+/**
+ * Production atomic seam: series materialization, cancel and reschedule each
+ * write several rows (series/sessions + audit + notification bookkeeping)
+ * under an optimistic version guard; they must commit or roll back together.
+ */
+const productionTransaction = async <T>(fn: (tx: SchedulesDataAccess) => Promise<T>): Promise<T> => {
+    const { withTransaction } = await loadDb();
+    return withTransaction((connection) => fn({
+        query: async <R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R[]> => {
+            const [rows] = await connection.query(sql, params as never);
+            return rows as unknown as R[];
+        },
+        queryOne: async <R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R | null> => {
+            const [rows] = await connection.query(sql, params as never);
+            return (rows as unknown as R[])[0] ?? null;
+        },
+        execute: async (sql: string, params?: unknown[]) => {
+            const [result] = await connection.execute(sql, params as never);
+            const header = result as { insertId?: number; affectedRows?: number };
+            return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+        },
+    }));
+};
+
 export default createSchedulesRouter({
     db: productionDb,
     authenticate: async (req, res, next) => {
@@ -604,4 +683,5 @@ export default createSchedulesRouter({
         return authenticateToken(req, res, next);
     },
     loadActiveTenantAuthority,
+    transaction: productionTransaction,
 });

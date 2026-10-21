@@ -15,6 +15,7 @@ import { IdentityOtpService, type IdentityOtpDeps, type OtpChallengeRow, type Ot
 import { createParentLinksRouter, type ParentLinksDataAccess } from '../src/routes/parent-links';
 import {
     canonicalContact,
+    createSqlParentLinksStore,
     isStudentEnrollmentActive,
     normalizeParentViewTtl,
     parseLinkRequestInput,
@@ -22,6 +23,7 @@ import {
     signParentViewToken,
     verifyParentViewToken,
     type ParentLinkRow,
+    type ParentLinksStore,
     type ParentViewTokenRecord,
     type StudentContactRow,
 } from '../src/services/parent-links';
@@ -58,6 +60,10 @@ interface FakeState {
     executed: { sql: string; params: unknown[]; kind: 'query' | 'queryOne' | 'execute' }[];
     failWith: Error | null;
     authority: Map<string, string>;
+    /** Audit inserts captured verbatim so tests can inspect the whole payload. */
+    audit: { params: unknown[] }[];
+    /** Forces only the audit_events insert to fail (domain writes still succeed). */
+    failAudit: boolean;
 }
 
 const makeState = (): FakeState => ({
@@ -68,6 +74,8 @@ const makeState = (): FakeState => ({
     executed: [],
     failWith: null,
     authority: new Map(),
+    audit: [],
+    failAudit: false,
 });
 
 const seedStudent = (state: FakeState): StudentContactRow => {
@@ -208,6 +216,11 @@ const makeFakeDb = (state: FakeState, clock: Clock): ParentLinksDataAccess => {
             link.version += 1;
             return { affectedRows: 1, insertId: 0 };
         }
+        if (upper.includes('INSERT INTO AUDIT_EVENTS')) {
+            if (state.failAudit) throw new Error('simulated audit outage');
+            state.audit.push({ params: [...params] });
+            return { affectedRows: 1, insertId: 0 };
+        }
         if (upper.includes('INSERT INTO PARENT_VIEW_TOKENS')) {
             const [jti, link_id, tenant_id, student_enrollment_id, parent_user_id, issued_at, expires_at] = params;
             state.tokens.push({
@@ -297,6 +310,28 @@ const buildHarness = async (state: FakeState): Promise<Harness> => {
         state.authority.set(`${userId}:${tenantId}`, authority);
     };
 
+    const transactionalStore = createSqlParentLinksStore(db);
+    // Simulated single-connection transaction: domain writes (link, view
+    // token, audit) roll back together, while the OTP consumption that
+    // happened before BEGIN stays consumed, exactly like the production seam.
+    const transaction = async <T>(
+        fn: (store: ParentLinksStore, txExecute?: (sql: string, params?: unknown[]) => Promise<{ insertId?: number; affectedRows?: number }>) => Promise<T>,
+    ): Promise<T> => {
+        const snapshot = {
+            links: state.links.map((row) => ({ ...row })),
+            tokens: state.tokens.map((row) => ({ ...row })),
+            audit: state.audit.map((row) => ({ params: [...row.params] })),
+        };
+        try {
+            return await fn(transactionalStore, db.execute);
+        } catch (error) {
+            state.links = snapshot.links;
+            state.tokens = snapshot.tokens;
+            state.audit = snapshot.audit;
+            throw error;
+        }
+    };
+
     const router = createParentLinksRouter({
         db,
         authenticate,
@@ -307,6 +342,7 @@ const buildHarness = async (state: FakeState): Promise<Harness> => {
         getOtpService: () => (otpAvailable ? otpService : null),
         getSecret: () => secret,
         now: () => clock.now(),
+        transaction,
     });
 
     return { router, state, clock, sent, tokenFor, setSecret, setOtpAvailable, setAuthority, close: async () => undefined };
@@ -615,6 +651,133 @@ test('session: a revoked link cannot mint a token', async () => {
     }, async (h) => {
         const response = await request(h, 'POST', '/link-1/session', h.tokenFor({ id: PARENT, role: 'student' }));
         assert.equal(response.statusCode, 404);
+    });
+});
+
+test('audit: creating a verified link writes exactly one audit row without contact, OTP or secret values', async () => {
+    await withHarness(seedStudent, async (h) => {
+        const token = h.tokenFor({ id: PARENT, role: 'student' });
+        await request(h, 'POST', '/request', token, { student_enrollment_id: ENROLLMENT, contact: GUARDIAN_PHONE });
+        const code = h.sent[0].code;
+        const response = await request(h, 'POST', '/verify', token, {
+            challenge_id: h.state.otp[0].id, code, student_enrollment_id: ENROLLMENT, contact: GUARDIAN_PHONE,
+        });
+        assert.equal(response.statusCode, 201);
+        assert.equal(h.state.audit.length, 1);
+        const [id, actor, tenant, action, resourceType, resourceId, oldValue, newValue, reason] = h.state.audit[0].params;
+        assert.ok(id);
+        assert.equal(actor, PARENT);
+        assert.equal(tenant, TENANT);
+        assert.equal(action, 'parent_link.verified');
+        assert.equal(resourceType, 'parent_link');
+        assert.equal(resourceId, h.state.links[0].id);
+        assert.equal(oldValue, null);
+        assert.equal(newValue, null);
+        assert.equal(reason, null);
+        const serialized = JSON.stringify(h.state.audit[0].params);
+        for (const forbidden of [GUARDIAN_PHONE, GUARDIAN_EMAIL, code, VIEW_SECRET, h.state.links[0].contact_hash]) {
+            assert.equal(serialized.includes(forbidden), false, `audit payload must not contain ${forbidden}`);
+        }
+    });
+});
+
+test('audit: verifying an existing active link writes exactly one audit row and hides contact data', async () => {
+    await withHarness(seedStudent, async (h) => {
+        const token = h.tokenFor({ id: PARENT, role: 'student' });
+        await request(h, 'POST', '/request', token, { student_enrollment_id: ENROLLMENT, contact: GUARDIAN_PHONE });
+        const code = h.sent[0].code;
+        h.state.links.push({
+            id: 'link-existing', tenant_id: TENANT, student_enrollment_id: ENROLLMENT, parent_user_id: PARENT,
+            contact_hash: 'existing-hash', status: 'active', version: 0, revoked_at: null, revoked_by: null,
+        });
+        const response = await request(h, 'POST', '/verify', token, {
+            challenge_id: h.state.otp[0].id, code, student_enrollment_id: ENROLLMENT, contact: GUARDIAN_PHONE,
+        });
+        assert.equal(response.statusCode, 200);
+        assert.equal(h.state.audit.length, 1);
+        assert.equal(h.state.audit[0].params[1], PARENT);
+        assert.equal(h.state.audit[0].params[2], TENANT);
+        assert.equal(h.state.audit[0].params[3], 'parent_link.verified');
+        assert.equal(h.state.audit[0].params[4], 'parent_link');
+        assert.equal(h.state.audit[0].params[5], 'link-existing');
+        const serialized = JSON.stringify(h.state.audit[0].params);
+        for (const forbidden of [GUARDIAN_PHONE, GUARDIAN_EMAIL, code, VIEW_SECRET, 'existing-hash']) {
+            assert.equal(serialized.includes(forbidden), false, `audit payload must not contain ${forbidden}`);
+        }
+    });
+});
+
+test('audit: revoking a link writes exactly one audit row and a replay writes none', async () => {
+    await withHarness((state) => {
+        seedStudent(state);
+        state.links.push({ id: 'link-1', tenant_id: TENANT, student_enrollment_id: ENROLLMENT, parent_user_id: PARENT, contact_hash: 'hash-1', status: 'active', version: 0, revoked_at: null, revoked_by: null });
+    }, async (h) => {
+        const token = h.tokenFor({ id: PARENT, role: 'student' });
+        const response = await request(h, 'POST', '/link-1/revoke', token);
+        assert.equal(response.statusCode, 200);
+        assert.equal(h.state.audit.length, 1);
+        assert.equal(h.state.audit[0].params[1], PARENT);
+        assert.equal(h.state.audit[0].params[2], TENANT);
+        assert.equal(h.state.audit[0].params[3], 'parent_link.revoked');
+        assert.equal(h.state.audit[0].params[4], 'parent_link');
+        assert.equal(h.state.audit[0].params[5], 'link-1');
+        const serialized = JSON.stringify(h.state.audit[0].params);
+        for (const forbidden of [GUARDIAN_PHONE, GUARDIAN_EMAIL, VIEW_SECRET, 'hash-1']) {
+            assert.equal(serialized.includes(forbidden), false, `audit payload must not contain ${forbidden}`);
+        }
+        const replay = await request(h, 'POST', '/link-1/revoke', token);
+        assert.equal(replay.statusCode, 409);
+        assert.equal(h.state.audit.length, 1);
+    });
+});
+
+test('audit: a failed audit write rolls back a new parent link and its view token', async () => {
+    await withHarness(seedStudent, async (h) => {
+        const token = h.tokenFor({ id: PARENT, role: 'student' });
+        await request(h, 'POST', '/request', token, { student_enrollment_id: ENROLLMENT, contact: GUARDIAN_PHONE });
+        h.state.failAudit = true;
+        const response = await request(h, 'POST', '/verify', token, {
+            challenge_id: h.state.otp[0].id, code: h.sent[0].code, student_enrollment_id: ENROLLMENT, contact: GUARDIAN_PHONE,
+        });
+        assert.equal(response.statusCode, 500);
+        assert.equal(h.state.links.length, 0, 'the link insert must roll back with the failed audit');
+        assert.equal(h.state.tokens.length, 0, 'the view token insert must roll back with the failed audit');
+        assert.equal(h.state.audit.length, 0);
+    });
+});
+
+test('audit: a failed audit write rolls back a view token minted for an existing link', async () => {
+    await withHarness(seedStudent, async (h) => {
+        const token = h.tokenFor({ id: PARENT, role: 'student' });
+        await request(h, 'POST', '/request', token, { student_enrollment_id: ENROLLMENT, contact: GUARDIAN_PHONE });
+        h.state.links.push({
+            id: 'link-existing', tenant_id: TENANT, student_enrollment_id: ENROLLMENT, parent_user_id: PARENT,
+            contact_hash: 'existing-hash', status: 'active', version: 0, revoked_at: null, revoked_by: null,
+        });
+        h.state.failAudit = true;
+        const response = await request(h, 'POST', '/verify', token, {
+            challenge_id: h.state.otp[0].id, code: h.sent[0].code, student_enrollment_id: ENROLLMENT, contact: GUARDIAN_PHONE,
+        });
+        assert.equal(response.statusCode, 500);
+        assert.equal(h.state.tokens.length, 0, 'a token minted alongside a failed audit must roll back');
+        assert.equal(h.state.links[0].status, 'active');
+        assert.equal(h.state.audit.length, 0);
+    });
+});
+
+test('audit: a failed audit write rolls back a parent-link revocation', async () => {
+    await withHarness((state) => {
+        seedStudent(state);
+        state.links.push({ id: 'link-1', tenant_id: TENANT, student_enrollment_id: ENROLLMENT, parent_user_id: PARENT, contact_hash: 'hash-1', status: 'active', version: 0, revoked_at: null, revoked_by: null });
+    }, async (h) => {
+        const token = h.tokenFor({ id: PARENT, role: 'student' });
+        h.state.failAudit = true;
+        const response = await request(h, 'POST', '/link-1/revoke', token);
+        assert.equal(response.statusCode, 500);
+        assert.equal(h.state.links[0].status, 'active');
+        assert.equal(h.state.links[0].version, 0);
+        assert.equal(h.state.links[0].revoked_at, null);
+        assert.equal(h.state.audit.length, 0);
     });
 });
 

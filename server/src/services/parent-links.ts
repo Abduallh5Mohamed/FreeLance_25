@@ -19,6 +19,7 @@
 
 import crypto from 'crypto';
 import { normalizeEgyptianPhone } from '../security/phone';
+import { recordAudit } from '../security/audit';
 import { normalizeId } from './announcements';
 import { DeliveryNotConfiguredError, type IdentityOtpService } from '../security/identity-otp';
 
@@ -318,7 +319,8 @@ export interface ParentLinksDeps {
     getSecret: () => string | undefined;
     now?: () => Date;
     idFactory?: () => string;
-    transaction?: <T>(fn: (store: ParentLinksStore) => Promise<T>) => Promise<T>;
+    execute?: (sql: string, params?: unknown[]) => Promise<{ insertId?: number; affectedRows?: number }>;
+    transaction?: <T>(fn: (store: ParentLinksStore, txExecute?: (sql: string, params?: unknown[]) => Promise<{ insertId?: number; affectedRows?: number }>) => Promise<T>) => Promise<T>;
 }
 
 const LINK_COLUMNS = 'id, tenant_id, student_enrollment_id, parent_user_id, contact_hash, status, version, revoked_at, revoked_by, created_at';
@@ -330,9 +332,11 @@ function normalizeLinkStatus(value: unknown): ParentLinkStatus {
 export function createParentLinksService(deps: ParentLinksDeps): ParentLinksService {
     const now = deps.now ?? (() => new Date());
     const idFactory = deps.idFactory ?? (() => crypto.randomUUID());
-    const runAtomic = deps.transaction ?? (<T>(fn: (store: ParentLinksStore) => Promise<T>) => fn(deps.store));
+    const runAtomic = deps.transaction
+        ?? (<T>(fn: (store: ParentLinksStore, txExecute?: (sql: string, params?: unknown[]) => Promise<{ insertId?: number; affectedRows?: number }>) => Promise<T>) =>
+            fn(deps.store, deps.execute));
 
-    const mintToken = async (link: ParentLinkRow): Promise<{ token: string; expiresAt: Date }> => {
+    const mintToken = async (link: ParentLinkRow, store: ParentLinksStore = deps.store): Promise<{ token: string; expiresAt: Date }> => {
         const secret = deps.getSecret()?.trim();
         if (!secret || Buffer.byteLength(secret, 'utf8') < MIN_PARENT_VIEW_SECRET_BYTES) {
             throw new ParentViewSecretUnavailableError();
@@ -349,7 +353,7 @@ export function createParentLinksService(deps: ParentLinksDeps): ParentLinksServ
             exp: expiresAt.getTime(),
         };
         const token = signParentViewToken(secret, claims);
-        await deps.store.insertViewToken({
+        await store.insertViewToken({
             jti: claims.jti,
             link_id: link.id,
             tenant_id: link.tenant_id,
@@ -417,8 +421,23 @@ export function createParentLinksService(deps: ParentLinksDeps): ParentLinksServ
 
             const existing = await deps.store.findActiveLink(tenantId, student.id, input.parentId);
             if (existing) {
-                const token = await mintToken(existing);
-                return { kind: 'already-linked', link: existing, token: token.token, expiresAt: token.expiresAt };
+                // The token mint and its audit row share one transaction: an
+                // audit failure must not leave an unaudited view token behind.
+                const minted = await runAtomic(async (store, txExecute) => {
+                    const token = await mintToken(existing, store);
+                    const exec = txExecute ?? deps.execute;
+                    if (exec) {
+                        await recordAudit(exec, {
+                            actorUserId: input.parentId,
+                            tenantId: existing.tenant_id,
+                            action: 'parent_link.verified',
+                            resourceType: 'parent_link',
+                            resourceId: existing.id,
+                        });
+                    }
+                    return token;
+                });
+                return { kind: 'already-linked', link: existing, token: minted.token, expiresAt: minted.expiresAt };
             }
 
             const link: ParentLinkRow = {
@@ -432,7 +451,7 @@ export function createParentLinksService(deps: ParentLinksDeps): ParentLinksServ
                 revoked_at: null,
                 revoked_by: null,
             };
-            const minted = await runAtomic(async (store) => {
+            const minted = await runAtomic(async (store, txExecute) => {
                 await store.insertLink(link);
                 const secret = deps.getSecret()?.trim();
                 if (!secret || Buffer.byteLength(secret, 'utf8') < MIN_PARENT_VIEW_SECRET_BYTES) {
@@ -460,6 +479,16 @@ export function createParentLinksService(deps: ParentLinksDeps): ParentLinksServ
                     revoked_at: null,
                     revoked_reason: null,
                 });
+                const exec = txExecute ?? deps.execute;
+                if (exec) {
+                    await recordAudit(exec, {
+                        actorUserId: input.parentId,
+                        tenantId: link.tenant_id,
+                        action: 'parent_link.verified',
+                        resourceType: 'parent_link',
+                        resourceId: link.id,
+                    });
+                }
                 return { token: signParentViewToken(secret, claims), expiresAt };
             });
             return {
@@ -475,7 +504,22 @@ export function createParentLinksService(deps: ParentLinksDeps): ParentLinksServ
         getLinkById: async (linkId) => deps.store.findLinkById(linkId),
 
         revokeLink: async (link, actorUserId) => {
-            const affected = await deps.store.revokeLink(link.tenant_id, link.id, actorUserId, now());
+            const affected = await runAtomic(async (store, txExecute) => {
+                const result = await store.revokeLink(link.tenant_id, link.id, actorUserId, now());
+                if (result > 0) {
+                    const exec = txExecute ?? deps.execute;
+                    if (exec) {
+                        await recordAudit(exec, {
+                            actorUserId,
+                            tenantId: link.tenant_id,
+                            action: 'parent_link.revoked',
+                            resourceType: 'parent_link',
+                            resourceId: link.id,
+                        });
+                    }
+                }
+                return result;
+            });
             return affected > 0;
         },
 

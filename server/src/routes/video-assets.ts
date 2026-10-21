@@ -237,6 +237,7 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
                 tenantId: typeof body.tenant_id === 'string' ? body.tenant_id : null,
                 detail: typeof body.detail === 'string' ? body.detail : null,
                 error: typeof body.error === 'string' ? body.error : null,
+                storageBytes: typeof body.storage_bytes === 'number' ? body.storage_bytes : null,
             });
             if (result.status === 'ignored') return res.status(202).json({ outcome: 'ignored', reason: result.reason });
             if (result.status === 'rejected') {
@@ -553,17 +554,35 @@ function constantTimeEqualHex(expectedHex: string, suppliedHex: string): boolean
 function verifyProviderCallbackFromEnv(callback: ProviderCallbackInput): boolean {
     const secret = process.env.VIDEO_CALLBACK_SECRET?.trim();
     if (!secret || !callback.signature) return false;
+    const payload = [callback.provider, callback.callbackId, callback.providerAssetId, String(callback.targetState), callback.tenantId ?? ''];
+    // Byte-bearing callbacks bind the size into the signature so a replay with a
+    // mutated `storage_bytes` cannot pass. Byte-less callbacks keep the original
+    // payload shape for backward compatibility.
+    if (typeof callback.storageBytes === 'number') payload.push(String(callback.storageBytes));
     const expected = crypto.createHmac('sha256', secret)
-        .update([callback.provider, callback.callbackId, callback.providerAssetId, String(callback.targetState), callback.tenantId ?? ''].join('\n'))
+        .update(payload.join('\n'))
         .digest('hex');
     return constantTimeEqualHex(expected, callback.signature);
 }
 
-function verifyUsageCallbackFromEnv(callback: UsageCallbackInput): boolean {
+/**
+ * HMAC verifier for the usage callback. The signed payload covers the NUMBERS
+ * as well as the identity: a signature that only covered provider/event/tenant/
+ * kind would let anyone who captured one valid callback replay it with a
+ * rewritten byte or second count, and the meter would then record an
+ * unverified number. Values are prefixed so the two optional numeric fields
+ * cannot be confused with each other. Callbacks that carry neither a byte nor
+ * a second count keep the original four-field payload shape.
+ */
+export function verifyUsageCallbackFromEnv(callback: UsageCallbackInput): boolean {
     const secret = process.env.VIDEO_CALLBACK_SECRET?.trim();
     if (!secret || !callback.signature) return false;
+    const payload = [callback.provider, callback.eventId, callback.tenantId, callback.kind];
+    if (typeof callback.storageBytes === 'number') payload.push(`bytes=${callback.storageBytes}`);
+    if (typeof callback.watchSeconds === 'number') payload.push(`seconds=${callback.watchSeconds}`);
+    if (typeof callback.assetId === 'string' && callback.assetId) payload.push(`asset=${callback.assetId}`);
     const expected = crypto.createHmac('sha256', secret)
-        .update([callback.provider, callback.eventId, callback.tenantId, callback.kind].join('\n'))
+        .update(payload.join('\n'))
         .digest('hex');
     return constantTimeEqualHex(expected, callback.signature);
 }
@@ -658,6 +677,18 @@ export default createVideoAssetsRouter({
         const { authenticateToken } = await import('../middleware/auth');
         return authenticateToken(req, res, next);
     },
+    // Storage metering is deliberately NOT composed here. The durable
+    // per-asset transition ledger and its counter table do not exist in the
+    // current schema, and the only byte-bearing table (`video_usage_events`)
+    // has no transition discriminator and is already summed as absolute
+    // observations by `GET /usage/summary` — writing deltas into it would
+    // invent column semantics and corrupt that sum. Composing the in-memory
+    // adapter here would report `recorded` while losing the number on restart,
+    // which is exactly the false success the rules forbid. So the omission is
+    // explicit instead of silent: a byte-bearing `ready` callback is audited as
+    // `video.asset.metering_unconfigured` and answered with
+    // `metering: 'unconfigured'`. Wiring `meterStorage` becomes a one-line
+    // addition once I2 provides the tables.
     lifecycle: createVideoAssetLifecycle({
         store: createSqlVideoAssetStore(lazyDb),
         verifyCallbackSignature: verifyProviderCallbackFromEnv,

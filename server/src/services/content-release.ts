@@ -115,6 +115,14 @@ function timeZoneOffsetMs(timeZone: string, instant: Date): number {
  * zone offset (and a second pass so DST boundaries resolve to the correct
  * offset). Returns null for an invalid wall time. Invalid zones fall back to
  * UTC deterministically.
+ *
+ * Nonexistent local times (a spring-forward gap such as 2026-03-08 02:30
+ * America/New_York, when clocks jump 02:00 -> 03:00) are detected by a
+ * roundtrip: formatting the resolved instant back into the zone never returns
+ * the authored fields. They return null so callers deny BEFORE any write
+ * instead of silently scheduling an earlier hour. A fall-back overlap
+ * (2026-11-01 01:30 America/New_York, which exists twice) resolves to the
+ * FIRST (earlier-offset) instant, which roundtrips and stays preserved.
  */
 export function localWallTimeToInstant(local: unknown, timeZone: string): Date | null {
     const wall = parseLocalWallTime(local);
@@ -125,7 +133,15 @@ export function localWallTimeToInstant(local: unknown, timeZone: string): Date |
     let instantMs = naive - firstOffset;
     const secondOffset = timeZoneOffsetMs(zone, new Date(instantMs));
     if (secondOffset !== firstOffset) instantMs = naive - secondOffset;
-    return new Date(instantMs);
+    const instant = new Date(instantMs);
+    const roundTrip = formatInZone(instant, zone);
+    const exists = roundTrip.year === wall.year
+        && roundTrip.month === wall.month
+        && roundTrip.day === wall.day
+        && roundTrip.hour === wall.hour
+        && roundTrip.minute === wall.minute
+        && roundTrip.second === wall.second;
+    return exists ? instant : null;
 }
 
 /** Normalize a MySQL TIMESTAMP (Date or string) to an ISO UTC instant. */

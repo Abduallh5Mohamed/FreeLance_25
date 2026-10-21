@@ -1,21 +1,35 @@
 /**
  * M5 G3 manual attendance routes.
  *
- * Authority + integrity model:
+ * Authority + integrity model (exact-assignment boundaries, 2026-10-19):
  *  - Staff (verified tenant owner or active instructor membership in the
  *    server-selected tenant) may mark attendance only for a session they are
- *    entitled to: a non-owner has access to sessions in a group they own, a
- *    branch they belong to, or a session they created. The session is loaded
- *    under that visibility predicate, so a cross-tenant or foreign session is
- *    indistinguishable from not-found.
+ *    entitled to. A tenant or branch membership ALONE is never a grant: a
+ *    non-owner's row-level access is the live assigned-group subquery
+ *    (`groups.instructor_id`, re-checked on every request) plus sessions they
+ *    created; only the tenant owner keeps the tenant-wide exception. The
+ *    session is loaded under that visibility predicate, so a cross-tenant or
+ *    foreign session is indistinguishable from not-found.
  *  - Only students truly enrolled in that tenant/session are accepted. A group
  *    session accepts only that group's students, a branch session only that
  *    branch's students; any other id is `403` and nothing is written.
  *  - Duplicate marking for the same (session, student) is idempotent: an
- *    identical re-mark is a no-op and a changed state becomes an audited
- *    correction with before/after, actor, time and reason.
+ *    identical re-mark is a no-op. A CHANGED state is a correction and
+ *    requires a meaningful reason (blank/whitespace is denied with no writes)
+ *    wherever it is requested: the mark/bulk paths and the dedicated
+ *    correction endpoint, which audits before/after, actor, time and reason.
  *  - Bulk marking is atomic: the whole batch is applied in one transaction and
  *    audited per record; any rejection or audit failure writes nothing.
+ *  - A correction stores the correction reason in BOTH `reason` and
+ *    `correction_reason`, exactly like a changed re-mark through the mark/bulk
+ *    paths, so the stored row and the audit's before/after never disagree.
+ *  - Every list feed is bounded and explicit: validated `from`/`to` UTC range
+ *    filters, deterministic ordering (sort column, then id), the page-size cap
+ *    the contract already defines, and truncation metadata in one response
+ *    header, `X-Results-Truncated: true|false`. The pre-existing list
+ *    envelopes (staff `{ session_id, records }`, student `{ student_id,
+ *    records }`) keep exactly their pre-batch keys. History stays reachable
+ *    through explicit ranges.
  *
  * Exports `createAttendanceRecordsRouter(deps)` and a production default-wired
  * router. Mounting happens in a later task. No runtime DDL.
@@ -33,6 +47,7 @@ import {
     validateMarkInput,
 } from '../services/attendance-records';
 import { normalizeId } from '../services/announcements';
+import { buildTimeRangeConditions, parseTimeRangeFilter } from '../services/schedules';
 
 export interface AttendanceDataAccess {
     query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>;
@@ -50,6 +65,16 @@ export interface AttendanceDeps {
 
 const STAFF_AUTHORITIES = new Set(['owner', 'instructor']);
 
+/**
+ * Page-size caps already defined by the existing list contracts. Each list
+ * fetches one row past its cap so the response can expose an explicit
+ * `X-Results-Truncated` header instead of silently dropping rows past the
+ * limit; validated `from`/`to` UTC range filters keep full history reachable,
+ * and each list keeps exactly its pre-batch envelope keys.
+ */
+const STAFF_RECORDS_PAGE_CAP = 500;
+const STUDENT_RECORDS_PAGE_CAP = 200;
+
 /** mysql2 duplicate-key error (the UNIQUE (session_id, student_id) guard fired). */
 const isDuplicateKeyError = (error: unknown): boolean => {
     if (typeof error !== 'object' || error === null) return false;
@@ -58,11 +83,16 @@ const isDuplicateKeyError = (error: unknown): boolean => {
     return code === 'ER_DUP_ENTRY' || errno === 1062;
 };
 
+/** Thrown inside the atomic section when the version guard loses; rolls back and maps to 409. */
+class AttendanceConflictError extends Error {}
+
+/** Thrown before any write when a payload is semantically invalid for the stored row; maps to 400. */
+class AttendanceValidationError extends Error {}
+
 interface StaffScope {
     tenantId: string;
     userId: string;
     isOwner: boolean;
-    branchId: string | null;
 }
 
 interface SessionRow {
@@ -124,21 +154,21 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
             tenantId: user.tenantId,
             userId: user.id,
             isOwner: authority.authority === 'owner',
-            branchId: user.branchId ?? null,
         };
     };
 
-    /** Row-level session visibility. Deny by default for a non-owner. */
+    /**
+     * Row-level session visibility under the exact-assignment policy. Deny by
+     * default for a non-owner: only groups they are verifiably assigned to
+     * (evaluated live, so reassignment/revocation applies immediately) and
+     * sessions they created. A tenant or branch membership alone never grants
+     * access to every group/session of the branch.
+     */
     const buildSessionVisibility = (scope: StaffScope, alias: string): { sql: string; params: unknown[] } => {
         if (scope.isOwner) return { sql: '1=1', params: [] };
         const params: unknown[] = [scope.userId];
-        let sql = `(${alias}.group_id IN (SELECT id FROM \`groups\` WHERE instructor_id = ?) OR ${alias}.created_by = ?`;
+        const sql = `(${alias}.group_id IN (SELECT id FROM \`groups\` WHERE instructor_id = ?) OR ${alias}.created_by = ?)`;
         params.push(scope.userId);
-        if (scope.branchId) {
-            sql += ` OR ${alias}.branch_id = ?`;
-            params.push(scope.branchId);
-        }
-        sql += ')';
         return { sql, params };
     };
 
@@ -188,10 +218,13 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
         session: SessionRow,
         entry: ValidatedMark,
     ): Promise<MarkOutcome> => {
-        const findRecordRow = (studentId: string) => tx.queryOne<RecordRow>(
+        // `forUpdate` makes the read a locking read, which bypasses the
+        // transaction's REPEATABLE READ snapshot: after a duplicate-key loss it
+        // must see the winner's row committed by the other transaction.
+        const findRecordRow = (studentId: string, forUpdate = false) => tx.queryOne<RecordRow>(
             `SELECT id, tenant_id, session_id, student_id, state, reason, version
              FROM attendance_records
-             WHERE tenant_id=? AND session_id=? AND student_id=? LIMIT 1`,
+             WHERE tenant_id=? AND session_id=? AND student_id=? LIMIT 1${forUpdate ? ' FOR UPDATE' : ''}`,
             [scope.tenantId, session.id, studentId],
         );
 
@@ -202,6 +235,13 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
         }
 
         if (existing) {
+            if (entry.reason === null) {
+                // A changed state is an audited correction: the backlog
+                // requires a meaningful reason. Deny BEFORE any write rather
+                // than storing a null reason over the saved one. An exact-same
+                // mark never reaches this branch (handled above as a no-op).
+                throw new AttendanceValidationError('reason is required when changing an existing attendance state');
+            }
             const updated = await tx.execute(
                 `UPDATE attendance_records
                  SET state=?, reason=?, corrected_at=UTC_TIMESTAMP(), corrected_by=?, correction_reason=?,
@@ -209,7 +249,7 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
                  WHERE id=? AND tenant_id=? AND version=?`,
                 [entry.state, entry.reason, scope.userId, entry.reason, existing.id, scope.tenantId, existing.version],
             );
-            if ((updated.affectedRows ?? 0) === 0) throw new Error('attendance record changed concurrently');
+            if ((updated.affectedRows ?? 0) === 0) throw new AttendanceConflictError('attendance record changed concurrently');
             await recordAudit(tx.execute, {
                 actorUserId: scope.userId,
                 tenantId: scope.tenantId,
@@ -236,7 +276,7 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
             // Two concurrent first marks lost the "no existing record" window;
             // the UNIQUE (session_id, student_id) guard decided the race. The
             // winner's committed row is authoritative: report it idempotently.
-            const racedRow = await findRecordRow(entry.studentId);
+            const racedRow = await findRecordRow(entry.studentId, true);
             if (!racedRow) throw error;
             return {
                 id: racedRow.id,
@@ -266,15 +306,22 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
             if (!scope) return;
             const sessionId = normalizeId(req.params.sessionId);
             if (!sessionId) return res.status(404).json({ error: 'Session not found' });
+            const range = parseTimeRangeFilter(req.query);
+            if (!range.ok) return res.status(400).json({ error: range.error });
             const session = await loadStaffSession(scope, sessionId);
             if (!session) return res.status(404).json({ error: 'Session not found' });
+            const timeRange = buildTimeRangeConditions('marked_at', range.value);
             const rows = await db.query(
                 `SELECT id, student_id, state, reason, marked_by, marked_at, corrected_at, corrected_by, correction_reason
                  FROM attendance_records
-                 WHERE tenant_id=? AND session_id=? ORDER BY student_id ASC LIMIT 500`,
-                [scope.tenantId, sessionId],
+                 WHERE tenant_id=? AND session_id=?${timeRange.sql}
+                 ORDER BY student_id ASC, id ASC
+                 LIMIT ${STAFF_RECORDS_PAGE_CAP + 1}`,
+                [scope.tenantId, sessionId, ...timeRange.params],
             );
-            res.json({ session_id: sessionId, records: rows });
+            const truncated = rows.length > STAFF_RECORDS_PAGE_CAP;
+            res.set('X-Results-Truncated', truncated ? 'true' : 'false');
+            res.json({ session_id: sessionId, records: truncated ? rows.slice(0, STAFF_RECORDS_PAGE_CAP) : rows });
         } catch (error) {
             console.error('List attendance records error:', error);
             res.status(500).json({ error: 'Failed to list attendance records' });
@@ -312,6 +359,12 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
                 session_id: sessionId,
             });
         } catch (error) {
+            if (error instanceof AttendanceValidationError) {
+                return res.status(400).json({ error: error.message });
+            }
+            if (error instanceof AttendanceConflictError) {
+                return res.status(409).json({ error: 'Attendance record changed concurrently' });
+            }
             console.error('Mark attendance error:', error);
             res.status(500).json({ error: 'Failed to mark attendance' });
         }
@@ -362,6 +415,12 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
                 records: outcomes,
             });
         } catch (error) {
+            if (error instanceof AttendanceValidationError) {
+                return res.status(400).json({ error: error.message });
+            }
+            if (error instanceof AttendanceConflictError) {
+                return res.status(409).json({ error: 'Attendance record changed concurrently' });
+            }
             console.error('Bulk mark attendance error:', error);
             res.status(500).json({ error: 'Failed to mark attendance' });
         }
@@ -395,10 +454,10 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
             const result = await runAtomic(async (tx) => {
                 const updated = await tx.execute(
                     `UPDATE attendance_records
-                     SET state=?, corrected_at=UTC_TIMESTAMP(), corrected_by=?, correction_reason=?,
+                     SET state=?, reason=?, corrected_at=UTC_TIMESTAMP(), corrected_by=?, correction_reason=?,
                          version=version+1, updated_at=CURRENT_TIMESTAMP
                      WHERE id=? AND tenant_id=? AND version=?`,
-                    [validated.value.state, scope.userId, validated.value.reason, recordId, scope.tenantId, existing.version],
+                    [validated.value.state, validated.value.reason, scope.userId, validated.value.reason, recordId, scope.tenantId, existing.version],
                 );
                 if ((updated.affectedRows ?? 0) === 0) return false;
                 await recordAudit(tx.execute, {
@@ -431,6 +490,8 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
             if (!user) return res.status(401).json({ error: 'Authentication required' });
             if (user.role !== 'student') return res.status(403).json({ error: 'Student access required' });
             if (!user.tenantId) return res.status(403).json({ error: 'An active student workspace is required' });
+            const range = parseTimeRangeFilter(req.query);
+            if (!range.ok) return res.status(400).json({ error: range.error });
             const student = await db.queryOne<{ id: string; tenant_id: string }>(
                 `SELECT id, tenant_id FROM students
                  WHERE user_id=? AND tenant_id=? AND is_active=1 AND approval_status='approved'
@@ -441,16 +502,20 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
                 [user.id, user.tenantId],
             );
             if (!student) return res.status(404).json({ error: 'Student workspace not found' });
+            const timeRange = buildTimeRangeConditions('ss.starts_at', range.value);
             const rows = await db.query(
                 `SELECT a.id, a.session_id, a.state, a.reason, a.marked_at, a.corrected_at,
                         ss.title, ss.starts_at, ss.ends_at, ss.timezone
                  FROM attendance_records a
                  INNER JOIN schedule_sessions ss ON ss.id = a.session_id
-                 WHERE a.student_id=? AND a.tenant_id=?
-                 ORDER BY ss.starts_at DESC LIMIT 200`,
-                [student.id, student.tenant_id],
+                 WHERE a.student_id=? AND a.tenant_id=?${timeRange.sql}
+                 ORDER BY ss.starts_at DESC, ss.id DESC
+                 LIMIT ${STUDENT_RECORDS_PAGE_CAP + 1}`,
+                [student.id, student.tenant_id, ...timeRange.params],
             );
-            res.json({ student_id: student.id, records: rows });
+            const truncated = rows.length > STUDENT_RECORDS_PAGE_CAP;
+            res.set('X-Results-Truncated', truncated ? 'true' : 'false');
+            res.json({ student_id: student.id, records: truncated ? rows.slice(0, STUDENT_RECORDS_PAGE_CAP) : rows });
         } catch (error) {
             console.error('Student attendance error:', error);
             res.status(500).json({ error: 'Failed to load attendance' });
@@ -503,6 +568,30 @@ const loadActiveTenantAuthority = async (userId: string, tenantId: string) => {
     return queryOne<{ authority: string }>(TENANT_AUTHORITY_SQL, [tenantId, userId, userId, tenantId]);
 };
 
+/**
+ * Production atomic seam: a mark/correction and its audit event, and a whole
+ * bulk batch with its per-record audits, must commit or roll back together.
+ * It also makes the duplicate-key re-read see the winner's committed row.
+ */
+const productionTransaction = async <T>(fn: (tx: AttendanceDataAccess) => Promise<T>): Promise<T> => {
+    const { withTransaction } = await loadDb();
+    return withTransaction((connection) => fn({
+        query: async <R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R[]> => {
+            const [rows] = await connection.query(sql, params as never);
+            return rows as unknown as R[];
+        },
+        queryOne: async <R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R | null> => {
+            const [rows] = await connection.query(sql, params as never);
+            return (rows as unknown as R[])[0] ?? null;
+        },
+        execute: async (sql: string, params?: unknown[]) => {
+            const [result] = await connection.execute(sql, params as never);
+            const header = result as { insertId?: number; affectedRows?: number };
+            return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+        },
+    }));
+};
+
 export default createAttendanceRecordsRouter({
     db: productionDb,
     authenticate: async (req, res, next) => {
@@ -510,4 +599,5 @@ export default createAttendanceRecordsRouter({
         return authenticateToken(req, res, next);
     },
     loadActiveTenantAuthority,
+    transaction: productionTransaction,
 });

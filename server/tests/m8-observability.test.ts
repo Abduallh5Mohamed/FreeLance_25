@@ -13,6 +13,8 @@ import {
 } from '../src/services/logger';
 import {
     DEFAULT_DURATION_BUCKETS,
+    HTTP_METHOD_FALLBACK,
+    boundedHttpMethod,
     createHttpObserver,
     createMetricsRegistry,
     statusClass,
@@ -548,4 +550,213 @@ test('mountObservability: attaches context, observability and the ops router', a
     const opsRes = await invoke(handlers[2] as Handler, { url: '/healthz' });
     assert.equal(opsRes.statusCode, 200);
     assert.deepEqual(opsRes.body, { status: 'ok' });
+});
+
+/* -------------------------------------------------------------------------- */
+/* W7 hardening: bounded probes, explicit readiness, bounded labels,          */
+/* Error depth/cycle handling and no-store denials.                           */
+/* -------------------------------------------------------------------------- */
+
+/** Count of live timer handles, used to prove a probe clears its timeout. */
+const activeTimeoutCount = (): number =>
+    process.getActiveResourcesInfo().filter((resource) => resource === 'Timeout').length;
+
+test('ops: a dependency check that never resolves is cut off and reports not_ready', async () => {
+    let checks = 0;
+    const { deps } = makeOpsDeps({
+        readiness: [{
+            name: 'database',
+            check: () => { checks += 1; return new Promise<boolean>(() => { /* never settles */ }); },
+        }],
+        checkTimeoutMs: 40,
+        readinessBudgetMs: 500,
+    });
+    const started = Date.now();
+    const response = await invoke(createOpsRouter(deps) as unknown as Handler, { url: '/readyz' });
+    const elapsed = Date.now() - started;
+
+    assert.equal(checks, 1, 'the check is started once');
+    assert.equal(response.statusCode, 503);
+    assert.deepEqual(response.body, { status: 'not_ready' });
+    assert.ok(elapsed < 1000, `a hung dependency must not hang the probe (took ${elapsed}ms)`);
+});
+
+test('ops: a resolved check clears its timeout handle (no leaked timer)', async () => {
+    const before = activeTimeoutCount();
+    const { deps } = makeOpsDeps({
+        readiness: [{ name: 'database', check: async () => true }],
+        checkTimeoutMs: 60_000,
+    });
+    const response = await invoke(createOpsRouter(deps) as unknown as Handler, { url: '/readyz' });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.body, { status: 'ready' });
+    assert.equal(activeTimeoutCount(), before, 'the probe must clear its timeout handle');
+});
+
+test('ops: liveness that never resolves is bounded and reports unavailable', async () => {
+    const { deps } = makeOpsDeps({
+        liveness: () => new Promise<boolean>(() => { /* never settles */ }),
+        checkTimeoutMs: 40,
+    });
+    const started = Date.now();
+    const response = await invoke(createOpsRouter(deps) as unknown as Handler, { url: '/healthz' });
+    const elapsed = Date.now() - started;
+
+    assert.equal(response.statusCode, 503);
+    assert.deepEqual(response.body, { status: 'unavailable' });
+    assert.ok(elapsed < 1000, `liveness must be bounded (took ${elapsed}ms)`);
+});
+
+test('ops: empty readiness is not_ready unless the operator opts in explicitly', async () => {
+    const explicitEmpty = createOpsRouter(makeOpsDeps({ readiness: [] }).deps);
+    const emptyResponse = await invoke(explicitEmpty as unknown as Handler, { url: '/readyz' });
+    assert.equal(emptyResponse.statusCode, 503, 'zero checks is not evidence of readiness');
+    assert.deepEqual(emptyResponse.body, { status: 'not_ready' });
+
+    const absent = createOpsRouter(makeOpsDeps().deps);
+    const absentResponse = await invoke(absent as unknown as Handler, { url: '/readyz' });
+    assert.equal(absentResponse.statusCode, 503, 'an unwired deployment must not look ready');
+    assert.deepEqual(absentResponse.body, { status: 'not_ready' });
+
+    const optedIn = createOpsRouter(makeOpsDeps({ readiness: [], readinessOptIn: true }).deps);
+    const optedInResponse = await invoke(optedIn as unknown as Handler, { url: '/readyz' });
+    assert.equal(optedInResponse.statusCode, 200);
+    assert.deepEqual(optedInResponse.body, { status: 'ready' });
+
+    const optedInWithCheck = createOpsRouter(makeOpsDeps({
+        readiness: [{ name: 'database', check: () => false }],
+        readinessOptIn: true,
+    }).deps);
+    const failingResponse = await invoke(optedInWithCheck as unknown as Handler, { url: '/readyz' });
+    assert.equal(failingResponse.statusCode, 503, 'opt-in never overrides a failing check');
+});
+
+test('ops: /healthz stays live while a readiness dependency fails or hangs', async () => {
+    let checks = 0;
+    const { deps } = makeOpsDeps({
+        readiness: [{
+            name: 'database',
+            check: () => { checks += 1; throw new Error('database down'); },
+        }],
+        checkTimeoutMs: 40,
+    });
+    const router = createOpsRouter(deps);
+
+    const health = await invoke(router as unknown as Handler, { url: '/healthz' });
+    assert.equal(health.statusCode, 200, 'liveness is independent of dependency readiness');
+    assert.deepEqual(health.body, { status: 'ok' });
+    assert.equal(checks, 0, 'liveness must never run a dependency check');
+
+    const ready = await invoke(router as unknown as Handler, { url: '/readyz' });
+    assert.equal(ready.statusCode, 503);
+    assert.deepEqual(ready.body, { status: 'not_ready' });
+    assert.equal(checks, 1);
+
+    const hungDeps = makeOpsDeps({
+        readiness: [{ name: 'queue', check: () => new Promise<boolean>(() => { /* never settles */ }) }],
+        checkTimeoutMs: 40,
+    }).deps;
+    const hungRouter = createOpsRouter(hungDeps);
+    assert.equal((await invoke(hungRouter as unknown as Handler, { url: '/healthz' })).statusCode, 200);
+    assert.equal((await invoke(hungRouter as unknown as Handler, { url: '/readyz' })).statusCode, 503);
+});
+
+test('metrics: unknown HTTP methods collapse into one bounded fallback bucket', () => {
+    assert.equal(boundedHttpMethod('GET'), 'GET');
+    assert.equal(boundedHttpMethod('get'), 'GET');
+    assert.equal(boundedHttpMethod('PATCH'), 'PATCH');
+    assert.equal(boundedHttpMethod('FROBNICATE-abc'), HTTP_METHOD_FALLBACK);
+    assert.equal(boundedHttpMethod(''), HTTP_METHOD_FALLBACK);
+    assert.equal(boundedHttpMethod(undefined), HTTP_METHOD_FALLBACK);
+    assert.equal(boundedHttpMethod(42), HTTP_METHOD_FALLBACK);
+    assert.equal(boundedHttpMethod({ method: 'GET' }), HTTP_METHOD_FALLBACK);
+
+    const registry = createMetricsRegistry();
+    const observer = createHttpObserver(registry);
+    observer.observe({ method: 'GET', route: '/api/widgets', status: 200, durationMs: 1 });
+    observer.observe({ method: 'get', route: '/api/widgets', status: 200, durationMs: 1 });
+    observer.observe({ method: 'FROBNICATE-abc', route: '/api/widgets', status: 200, durationMs: 1 });
+    observer.observe({ method: 'zzz-1', route: '/api/widgets', status: 200, durationMs: 1 });
+    observer.observe({ method: 'zzz-2', route: '/api/widgets', status: 200, durationMs: 1 });
+
+    const output = registry.render();
+    const series = output.split('\n').filter((line) => line.startsWith('http_requests_total{'));
+    assert.equal(series.length, 2, 'arbitrary verbs must not create new series');
+    assert.ok(output.includes('http_requests_total{method="GET",route="/api/widgets",status_class="2xx"} 2'));
+    assert.ok(output.includes(`http_requests_total{method="${HTTP_METHOD_FALLBACK}",route="/api/widgets",status_class="2xx"} 3`));
+});
+
+test('logger: a cyclic Error is logged without throwing and without expanding', () => {
+    const error = new Error('boom');
+    Object.assign(error, { cause: error, code: 'E_BOOM' });
+    const lines: string[] = [];
+    const logger = createLogger({
+        level: 'debug',
+        now: () => new Date('2026-10-19T10:00:00.000Z'),
+        write: (line) => lines.push(line),
+    });
+
+    logger.error('failed', { error });
+
+    assert.equal(lines.length, 1);
+    const record = JSON.parse(lines[0]) as Record<string, unknown>;
+    const logged = record.error as Record<string, unknown>;
+    assert.equal(logged.name, 'Error');
+    assert.equal(logged.message, 'boom');
+    assert.equal(logged.cause, CIRCULAR);
+    assert.equal(logged.code, 'E_BOOM');
+    assert.ok(!lines[0].includes('[object Object]'));
+});
+
+test('logger: an Error past maxDepth is bounded and its cause chain is cut', () => {
+    let error = new Error('leaf');
+    for (let index = 0; index < 20; index += 1) {
+        error = Object.assign(new Error(`level-${index}`), { cause: error });
+    }
+
+    const redacted = redactValue({ error }, { maxDepth: 4 }) as { error: Record<string, unknown> };
+    const serialized = JSON.stringify(redacted);
+    assert.ok(serialized.includes(MAX_DEPTH_MARKER), 'the depth bound must apply to Error values');
+    assert.ok(serialized.length < 4096, `Error serialization must stay bounded (got ${serialized.length} bytes)`);
+
+    assert.equal(redactValue(new Error('root'), { maxDepth: 0 }), MAX_DEPTH_MARKER);
+
+    const lines: string[] = [];
+    createLogger({
+        level: 'debug',
+        now: () => new Date('2026-10-19T10:00:00.000Z'),
+        write: (line) => lines.push(line),
+    }).error('deep failure', { error });
+    assert.equal(lines.length, 1);
+    assert.ok(lines[0].includes(MAX_DEPTH_MARKER));
+    assert.ok(lines[0].length < 4096, `log line must stay bounded (got ${lines[0].length} bytes)`);
+});
+
+test('ops: metrics denials carry no-store', async () => {
+    const missing = await invoke(createOpsRouter(makeOpsDeps().deps) as unknown as Handler, { url: '/metrics' });
+    assert.equal(missing.statusCode, 401);
+    assert.equal(missing.headers['cache-control'], 'no-store');
+
+    const malformed = await invoke(
+        createOpsRouter(makeOpsDeps().deps) as unknown as Handler,
+        { url: '/metrics', headers: { authorization: 'Basic abc' } },
+    );
+    assert.equal(malformed.statusCode, 401);
+    assert.equal(malformed.headers['cache-control'], 'no-store');
+
+    const wrong = await invoke(
+        createOpsRouter(makeOpsDeps().deps) as unknown as Handler,
+        { url: '/metrics', headers: { authorization: 'Bearer wrong-token' } },
+    );
+    assert.equal(wrong.statusCode, 401);
+    assert.equal(wrong.headers['cache-control'], 'no-store');
+
+    const unconfigured = await invoke(
+        createOpsRouter(makeOpsDeps({ metricsToken: undefined }).deps) as unknown as Handler,
+        { url: '/metrics' },
+    );
+    assert.equal(unconfigured.statusCode, 503);
+    assert.equal(unconfigured.headers['cache-control'], 'no-store');
+    assert.deepEqual(unconfigured.body, { error: 'Metrics endpoint is not configured' });
 });

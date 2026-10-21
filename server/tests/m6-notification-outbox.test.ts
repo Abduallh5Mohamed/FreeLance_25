@@ -14,15 +14,19 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     claimDueOutboxIds,
+    claimDueOutboxIdsInScope,
     dispatchOutboxRow,
     enqueueOutboxRow,
     enqueueParentReportDelivery,
     LinkSecretMissingError,
     outboxBackoffSeconds,
     outboxRowRenderer,
+    recoverStaleSendingRows,
     renderOutboxTemplate,
     resolveLinkSecret,
     signSecureLink,
+    STALE_SENDING_MARKER,
+    UNKNOWN_OUTCOME_MARKER,
     validateEnqueueInput,
     verifySecureLink,
     buildParentReportVars,
@@ -54,17 +58,33 @@ const NOW = () => new Date('2026-10-18T12:00:00.000Z');
 // In-memory outbox store
 // ---------------------------------------------------------------------------
 
+/** The real row also carries the schema-managed `updated_at` claim timestamp. */
+type FakeOutboxRow = OutboxRow & { updated_at: Date };
+
 interface OutboxState {
-    rows: OutboxRow[];
+    rows: FakeOutboxRow[];
     receipts: { outbox_id: string; outcome: string; proof: string | null; detail: string | null }[];
     executed: { sql: string; params: unknown[]; kind: 'query' | 'queryOne' | 'execute' }[];
     failWith: Error | null;
     seq: number;
     /** L4: simulate a concurrent enqueue where the INSERT loses the unique key. */
     race: { key: string; committed: boolean } | null;
+    /** Simulates a lost connection/crash between the adapter result and the state write. */
+    failTerminalStatus: boolean;
+    /** Simulates a receipt store outage after the terminal state was persisted. */
+    failReceipts: boolean;
 }
 
-const makeState = (): OutboxState => ({ rows: [], receipts: [], executed: [], failWith: null, seq: 0, race: null });
+const makeState = (): OutboxState => ({
+    rows: [],
+    receipts: [],
+    executed: [],
+    failWith: null,
+    seq: 0,
+    race: null,
+    failTerminalStatus: false,
+    failReceipts: false,
+});
 
 const makeDb = (state: OutboxState): NotificationDataAccess => {
     const record = (sql: string, params: unknown[], kind: 'query' | 'queryOne' | 'execute'): void => {
@@ -74,12 +94,26 @@ const makeDb = (state: OutboxState): NotificationDataAccess => {
 
     const query = async <T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> => {
         record(sql, params, 'query');
-        if (sql.toUpperCase().includes('FROM NOTIFICATION_OUTBOX')) {
+        const upper = sql.replace(/\s+/g, ' ').toUpperCase();
+        const limitMatch = sql.match(/LIMIT (\d+)/i);
+        const limit = limitMatch ? Number(limitMatch[1]) : 25;
+        if (upper.includes('FROM NOTIFICATION_OUTBOX') && upper.includes("STATUS = 'SENDING'")) {
+            const cutoff = params[0] instanceof Date ? params[0].getTime() : new Date(String(params[0])).getTime();
+            return state.rows
+                .filter((row) => row.status === 'sending' && row.updated_at.getTime() <= cutoff)
+                .sort((a, b) => a.updated_at.getTime() - b.updated_at.getTime())
+                .slice(0, limit) as T[];
+        }
+        if (upper.includes('FROM NOTIFICATION_OUTBOX')) {
             const nowParam = params[0] instanceof Date ? params[0].getTime() : 0;
-            const limitMatch = sql.match(/LIMIT (\d+)/i);
-            const limit = limitMatch ? Number(limitMatch[1]) : 25;
+            // B2-W9: a tenant-scoped claim binds the tenant as the second param
+            // and any channel filter after it.
+            const tenant = typeof params[1] === 'string' ? params[1] : null;
+            const channels = params.slice(2).map((value) => String(value));
             return state.rows
                 .filter((row) => row.status === 'pending' && new Date(row.next_attempt_at as string).getTime() <= nowParam)
+                .filter((row) => tenant === null || row.tenant_id === tenant)
+                .filter((row) => channels.length === 0 || channels.includes(row.channel))
                 .sort((a, b) => String(a.next_attempt_at).localeCompare(String(b.next_attempt_at)))
                 .slice(0, limit) as T[];
         }
@@ -119,7 +153,7 @@ const makeDb = (state: OutboxState): NotificationDataAccess => {
                 recipient_user_id: String(recipientId), recipient_user_type: String(recipientType),
                 channel: String(channel), locale: String(locale), template_id: templateId === null ? null : String(templateId),
                 payload: String(payload), status: 'pending', attempts: 0, max_attempts: Number(maxAttempts),
-                next_attempt_at: nextAt, last_error: null, delivered_at: null,
+                next_attempt_at: nextAt as Date, last_error: null, delivered_at: null, updated_at: NOW(),
             });
             return { affectedRows: 1, insertId: 0 };
         }
@@ -131,20 +165,40 @@ const makeDb = (state: OutboxState): NotificationDataAccess => {
             if (new Date(row.next_attempt_at as string).getTime() > notAfterMs) return { affectedRows: 0, insertId: 0 };
             row.status = 'sending';
             row.attempts += 1;
+            row.updated_at = notAfter instanceof Date ? notAfter : new Date(String(notAfter));
+            return { affectedRows: 1, insertId: 0 };
+        }
+        if (upper.includes('SET LAST_ERROR = ?')) {
+            const [marker, id, expected, quarantined] = params;
+            const row = state.rows.find((candidate) => candidate.id === id);
+            if (!row || row.status !== 'sending') return { affectedRows: 0, insertId: 0 };
+            if (row.last_error === expected) return { affectedRows: 0, insertId: 0 };
+            // B2-W9: an already-quarantined unknown outcome keeps its marker.
+            if (quarantined !== undefined && row.last_error === quarantined) return { affectedRows: 0, insertId: 0 };
+            row.last_error = String(marker);
+            row.updated_at = NOW();
             return { affectedRows: 1, insertId: 0 };
         }
         if (upper.includes('UPDATE NOTIFICATION_OUTBOX SET STATUS')) {
             const [status, nextAttemptAt, lastError, sentStatus, id] = params;
+            if (state.failTerminalStatus && status !== 'pending') {
+                throw new Error('connection lost before the terminal state write');
+            }
             const row = state.rows.find((candidate) => candidate.id === id);
             if (!row || row.status !== 'sending') return { affectedRows: 0, insertId: 0 };
-            if (upper.includes('ATTEMPTS = ATTEMPTS + 1')) row.attempts += 1;
+            // Real column contract: next_attempt_at is TIMESTAMP(3) NOT NULL.
+            if (nextAttemptAt === null && !upper.includes('NEXT_ATTEMPT_AT = COALESCE(?, NEXT_ATTEMPT_AT)')) {
+                throw new Error("Column 'next_attempt_at' cannot be null");
+            }
             row.status = String(status);
-            row.next_attempt_at = nextAttemptAt ?? row.next_attempt_at;
+            if (nextAttemptAt !== null) row.next_attempt_at = nextAttemptAt as Date;
             row.last_error = lastError === null ? null : String(lastError);
+            row.updated_at = NOW();
             if (sentStatus === 'sent') row.delivered_at = NOW();
             return { affectedRows: 1, insertId: 0 };
         }
         if (upper.includes('INSERT INTO NOTIFICATION_DELIVERY_RECEIPTS')) {
+            if (state.failReceipts) throw new Error('receipt store unavailable');
             const [id, outboxId, tenantId, channel, outcome, proof, detail] = params;
             state.receipts.push({
                 id: String(id), outbox_id: String(outboxId), tenant_id: tenantId === null ? null : String(tenantId),
@@ -158,8 +212,8 @@ const makeDb = (state: OutboxState): NotificationDataAccess => {
     return { query, queryOne, execute };
 };
 
-const seedRow = (state: OutboxState, overrides: Partial<OutboxRow> = {}): OutboxRow => {
-    const row: OutboxRow = {
+const seedRow = (state: OutboxState, overrides: Partial<FakeOutboxRow> = {}): FakeOutboxRow => {
+    const row: FakeOutboxRow = {
         id: `outbox-${++state.seq}`,
         idempotency_key: `key-${state.seq}`,
         tenant_id: 'tenant-a',
@@ -180,6 +234,7 @@ const seedRow = (state: OutboxState, overrides: Partial<OutboxRow> = {}): Outbox
         next_attempt_at: NOW(),
         last_error: null,
         delivered_at: null,
+        updated_at: NOW(),
         ...overrides,
     };
     state.rows.push(row);
@@ -494,6 +549,214 @@ test('a broken or throwing adapter never crashes the outbox and still logs witho
 });
 
 // ---------------------------------------------------------------------------
+// Crash / lost-response recovery and claim races
+// ---------------------------------------------------------------------------
+
+/** Holds both dispatchers at the pre-claim read so they race the claim UPDATE. */
+const gateFirstRead = (db: NotificationDataAccess): NotificationDataAccess => {
+    let arrivals = 0;
+    const waiting: (() => void)[] = [];
+    return {
+        query: db.query,
+        execute: db.execute,
+        queryOne: async <T>(sql: string, params?: unknown[]): Promise<T | null> => {
+            const result = await db.queryOne<T>(sql, params);
+            if (sql.includes('WHERE id = ?')) {
+                arrivals += 1;
+                if (arrivals >= 2) {
+                    waiting.splice(0).forEach((release) => release());
+                } else {
+                    await new Promise<void>((release) => waiting.push(release));
+                }
+            }
+            return result;
+        },
+    };
+};
+
+const waitUntilSending = async (state: OutboxState): Promise<void> => {
+    for (let tick = 0; tick < 50 && state.rows[0]!.status !== 'sending'; tick += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(state.rows[0]!.status, 'sending');
+};
+
+test('two dispatchers racing one row: exactly one claim wins, one send and one receipt', async () => {
+    const state = makeState();
+    seedRow(state);
+    const db = gateFirstRead(makeDb(state));
+    const { adapter, calls } = makeAdapter('email', [{ outcome: 'sent', proof: { message_id: 'm1' } }]);
+    const results = await Promise.all([
+        dispatchOutboxRow(db, state.rows[0]!.id, [adapter], makeDispatchOptions(true), HMAC_KEY),
+        dispatchOutboxRow(db, state.rows[0]!.id, [adapter], makeDispatchOptions(true), HMAC_KEY),
+    ]);
+    assert.deepEqual(
+        results.map((result) => result.outcome).sort(),
+        ['sent', 'skipped'],
+    );
+    assert.equal(calls.length, 1, 'the losing dispatcher must never reach the adapter');
+    assert.equal(state.receipts.length, 1, 'exactly one delivery receipt for one external send');
+    assert.equal(state.rows[0]!.status, 'sent');
+    assert.equal(state.rows[0]!.attempts, 1);
+    assert.equal(state.rows[0]!.delivered_at !== null, true);
+    assert.equal(state.rows[0]!.next_attempt_at instanceof Date, true, 'NOT NULL next_attempt_at must stay populated');
+});
+
+test('a crash after the claim leaves the row in sending; recovery flags it and never resends', async () => {
+    const state = makeState();
+    seedRow(state);
+    const db = makeDb(state);
+    const { adapter, calls } = makeAdapter('email', [{ outcome: 'sent', proof: { message_id: 'm1' } }]);
+    state.failTerminalStatus = true;
+    await assert.rejects(
+        () => dispatchOutboxRow(db, state.rows[0]!.id, [adapter], makeDispatchOptions(true), HMAC_KEY),
+        /connection lost/,
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(state.rows[0]!.status, 'sending');
+    assert.equal(state.receipts.length, 0);
+    state.failTerminalStatus = false;
+
+    // The claim timestamp is now older than the recovery lease.
+    state.rows[0]!.updated_at = new Date(NOW().getTime() - 20 * 60 * 1000);
+    const recovery = await recoverStaleSendingRows(db, { now: NOW });
+    assert.equal(recovery.scanned, 1);
+    assert.equal(recovery.flagged.length, 1);
+    assert.equal(recovery.flagged[0]!.outboxId, state.rows[0]!.id);
+    assert.equal(recovery.flagged[0]!.attempts, 1);
+    assert.equal(state.rows[0]!.status, 'sending', 'an unknown external outcome must not be resolved as sent or failed');
+    assert.equal(state.rows[0]!.last_error, STALE_SENDING_MARKER);
+    assert.equal(state.rows[0]!.delivered_at, null);
+    assert.equal(calls.length, 1, 'recovery must never call the adapter again');
+    assert.equal(state.receipts.length, 0, 'recovery must not invent a delivery outcome');
+
+    // The row stays unclaimable: no unsafe automatic resend of an unknown send.
+    assert.deepEqual(
+        await dispatchOutboxRow(db, state.rows[0]!.id, [adapter], makeDispatchOptions(true), HMAC_KEY),
+        { dispatched: false, outcome: 'skipped' },
+    );
+    assert.equal(calls.length, 1);
+});
+
+test('a stale flag does not steal a delayed in-flight adapter result', async () => {
+    const state = makeState();
+    seedRow(state);
+    const db = makeDb(state);
+    let releaseSend: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => { releaseSend = resolve; });
+    let deliveries = 0;
+    const adapter: DeliveryAdapter = {
+        channel: 'email',
+        deliver: async () => {
+            deliveries += 1;
+            await gate;
+            return { outcome: 'sent', proof: { message_id: 'late-1' } };
+        },
+    };
+    const inFlight = dispatchOutboxRow(db, state.rows[0]!.id, [adapter], makeDispatchOptions(true), HMAC_KEY);
+    await waitUntilSending(state);
+
+    // The adapter is still running well past the lease.
+    state.rows[0]!.updated_at = new Date(NOW().getTime() - 20 * 60 * 1000);
+    const recovery = await recoverStaleSendingRows(db, { now: NOW });
+    assert.equal(recovery.flagged.length, 1);
+    assert.equal(state.rows[0]!.status, 'sending', 'recovery must not release a claim that may still be in flight');
+
+    releaseSend!();
+    assert.deepEqual(await inFlight, { dispatched: true, outcome: 'sent' });
+    assert.equal(deliveries, 1);
+    assert.equal(state.rows[0]!.status, 'sent');
+    assert.equal(state.rows[0]!.last_error, null, 'the authoritative result clears the stale flag');
+    assert.equal(state.receipts.length, 1);
+    assert.equal(state.receipts[0]!.outcome, 'sent');
+});
+
+test('a failed receipt insert keeps the terminal sent state and never resends', async () => {
+    const state = makeState();
+    seedRow(state);
+    const db = makeDb(state);
+    const { adapter, calls } = makeAdapter('email', [{ outcome: 'sent', proof: { message_id: 'm1' } }]);
+    const logs: unknown[] = [];
+    state.failReceipts = true;
+    const result = await dispatchOutboxRow(db, state.rows[0]!.id, [adapter], makeDispatchOptions(true, (e) => logs.push(e)), HMAC_KEY);
+    assert.deepEqual(result, { dispatched: true, outcome: 'sent' });
+    assert.equal(state.rows[0]!.status, 'sent');
+    assert.equal(state.rows[0]!.delivered_at !== null, true);
+    assert.equal(state.receipts.length, 0);
+    const alert = logs.map((entry) => JSON.stringify(entry)).find((entry) => entry.includes('receipt-persist-failed'));
+    assert.ok(alert, 'a lost receipt must be surfaced, never swallowed');
+    assert.equal(alert!.includes('+201000000123'), false);
+
+    state.failReceipts = false;
+    assert.deepEqual(
+        await dispatchOutboxRow(db, state.rows[0]!.id, [adapter], makeDispatchOptions(true), HMAC_KEY),
+        { dispatched: false, outcome: 'skipped' },
+    );
+    assert.equal(calls.length, 1, 'a terminal row must never be sent twice');
+    assert.equal(state.receipts.length, 0);
+});
+
+test('a consent ledger failure releases the claim for a bounded retry and never calls the adapter', async () => {
+    const state = makeState();
+    seedRow(state);
+    const db = makeDb(state);
+    const { adapter, calls } = makeAdapter('email', [{ outcome: 'sent', proof: {} }]);
+    const options: DispatchOptions = {
+        ...makeDispatchOptions(true),
+        consent: { canDeliver: async () => { throw new Error('consent ledger down'); } },
+    };
+    const result = await dispatchOutboxRow(db, state.rows[0]!.id, [adapter], options, HMAC_KEY);
+    assert.deepEqual(result, { dispatched: true, outcome: 'retry' });
+    assert.equal(state.rows[0]!.status, 'pending', 'a pre-send failure must not wedge the row in sending');
+    assert.equal(state.rows[0]!.attempts, 1);
+    assert.equal(new Date(state.rows[0]!.next_attempt_at as Date).getTime(), NOW().getTime() + 60 * 1000);
+    assert.match(String(state.rows[0]!.last_error), /consent-check-failed/);
+    assert.equal(calls.length, 0);
+    assert.equal(state.receipts.length, 0);
+});
+
+test('concurrent recovery sweeps flag a stale row once and preserve the claim', async () => {
+    const state = makeState();
+    seedRow(state, { status: 'sending', attempts: 1, updated_at: new Date(NOW().getTime() - 30 * 60 * 1000) });
+    const db = makeDb(state);
+    const { adapter, calls } = makeAdapter('email', [{ outcome: 'sent', proof: {} }]);
+    const sweeps = await Promise.all([
+        recoverStaleSendingRows(db, { now: NOW }),
+        recoverStaleSendingRows(db, { now: NOW }),
+    ]);
+    const flagged = sweeps.flatMap((sweep) => sweep.flagged);
+    assert.equal(flagged.length, 1, 'one durable flag per stale row, even with two sweepers');
+    assert.equal(sweeps.reduce((total, sweep) => total + sweep.alreadyFlagged, 0), 1);
+    assert.equal(state.rows[0]!.status, 'sending');
+    assert.equal(state.rows[0]!.last_error, STALE_SENDING_MARKER);
+
+    const repeat = await recoverStaleSendingRows(db, { now: NOW });
+    assert.equal(repeat.scanned, 0, 'a flagged row is not re-scanned before another lease window');
+    assert.equal(state.receipts.length, 0);
+    assert.deepEqual(
+        await dispatchOutboxRow(db, state.rows[0]!.id, [adapter], makeDispatchOptions(true), HMAC_KEY),
+        { dispatched: false, outcome: 'skipped' },
+    );
+    assert.equal(calls.length, 0);
+});
+
+test('recovery ignores fresh claims and clamps an unsafe lease', async () => {
+    const state = makeState();
+    seedRow(state, { status: 'sending', attempts: 1 });
+    const db = makeDb(state);
+    const fresh = await recoverStaleSendingRows(db, { now: NOW });
+    assert.equal(fresh.scanned, 0);
+    assert.equal(fresh.flagged.length, 0);
+    assert.equal(state.rows[0]!.last_error, null);
+
+    // 30s-old claim: a 0ms lease must be clamped up, so it is still not stale.
+    state.rows[0]!.updated_at = new Date(NOW().getTime() - 30 * 1000);
+    const clamped = await recoverStaleSendingRows(db, { now: NOW, olderThanMs: 0 });
+    assert.equal(clamped.scanned, 0);
+    assert.equal(state.rows[0]!.last_error, null);
+});
+
+// ---------------------------------------------------------------------------
 // P5 — channel gates and PII hygiene
 // ---------------------------------------------------------------------------
 
@@ -644,4 +907,95 @@ test('enqueueInput validation failure paths keep the outbox empty', async () => 
     const result = await enqueueOutboxRow(db, bad as typeof validEnqueue, { now: NOW });
     assert.equal(result.ok, false);
     assert.equal(state.rows.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// B2-W9 — unknown / unavailable / permanent outcomes and tenant-scoped claims
+// ---------------------------------------------------------------------------
+
+test('B2-W9: an unknown provider outcome is quarantined, never retried as unsent', async () => {
+    const state = makeState();
+    seedRow(state);
+    const db = makeDb(state);
+    const { adapter, calls } = makeAdapter('email', [{ outcome: 'unknown', reason: 'gateway timeout after request write' }]);
+    const logs: unknown[] = [];
+    const result = await dispatchOutboxRow(db, state.rows[0]!.id, [adapter], makeDispatchOptions(true, (entry) => logs.push(entry)), HMAC_KEY);
+    assert.deepEqual(result, { dispatched: true, outcome: 'unknown' });
+    const row = state.rows[0]!;
+    assert.equal(row.status, 'sending', 'an unknown outcome stays unclaimable instead of returning to pending');
+    assert.equal(row.last_error, UNKNOWN_OUTCOME_MARKER);
+    assert.equal(row.delivered_at, null);
+    assert.equal(row.next_attempt_at instanceof Date, true, 'NOT NULL next_attempt_at stays populated');
+    assert.equal(state.receipts.at(-1)!.outcome, 'unknown', 'the ambiguous attempt is receipted for reconciliation');
+    assert.equal(JSON.stringify(logs).includes('gateway timeout'), true);
+    assert.equal(JSON.stringify(logs).includes('+201000000123'), false);
+
+    // Unclaimable: a later dispatcher pass cannot re-send it.
+    assert.deepEqual(
+        await dispatchOutboxRow(db, row.id, [adapter], makeDispatchOptions(true), HMAC_KEY),
+        { dispatched: false, outcome: 'skipped' },
+    );
+    assert.equal(calls.length, 1);
+
+    // A stale sweep must not overwrite the quarantine reason with its own marker.
+    row.updated_at = new Date(NOW().getTime() - 20 * 60 * 1000);
+    const sweep = await recoverStaleSendingRows(db, { now: NOW });
+    assert.equal(sweep.flagged.length, 0);
+    assert.equal(row.last_error, UNKNOWN_OUTCOME_MARKER);
+    assert.equal(row.status, 'sending');
+});
+
+test('B2-W9: an unavailable adapter retries and fails at the cap, never sent', async () => {
+    const state = makeState();
+    seedRow(state, { attempts: 0, max_attempts: 2 });
+    const db = makeDb(state);
+    const { adapter, calls } = makeAdapter('email', [{ outcome: 'unavailable', reason: 'no-provider-configured' }]);
+    const first = await dispatchOutboxRow(db, state.rows[0]!.id, [adapter], makeDispatchOptions(true), HMAC_KEY);
+    assert.deepEqual(first, { dispatched: true, outcome: 'unavailable' });
+    const row = state.rows[0]!;
+    assert.equal(row.status, 'pending');
+    assert.equal(row.attempts, 1);
+    assert.equal(row.delivered_at, null);
+    assert.match(String(row.last_error), /no-provider-configured/);
+    assert.equal(state.receipts.length, 0, 'a send that never happened leaves no delivery receipt');
+    assert.equal(new Date(row.next_attempt_at as Date).getTime(), NOW().getTime() + 60 * 1000);
+
+    row.next_attempt_at = NOW();
+    const second = await dispatchOutboxRow(db, row.id, [adapter], makeDispatchOptions(true), HMAC_KEY);
+    assert.deepEqual(second, { dispatched: true, outcome: 'failed' });
+    assert.equal(row.status, 'failed');
+    assert.equal(row.delivered_at, null, 'a failed row is never given a delivery timestamp');
+    assert.equal(state.receipts.at(-1)!.outcome, 'failed');
+    assert.equal(calls.length, 2);
+});
+
+test('B2-W9: a permanent failure is terminal on the first attempt', async () => {
+    const state = makeState();
+    seedRow(state, { attempts: 0, max_attempts: 5 });
+    const db = makeDb(state);
+    const { adapter, calls } = makeAdapter('email', [{ outcome: 'failed', reason: 'recipient rejected', permanent: true }]);
+    const result = await dispatchOutboxRow(db, state.rows[0]!.id, [adapter], makeDispatchOptions(true), HMAC_KEY);
+    assert.deepEqual(result, { dispatched: true, outcome: 'failed' });
+    assert.equal(state.rows[0]!.status, 'failed');
+    assert.equal(state.rows[0]!.attempts, 1, 'a permanent failure must not burn the retry budget');
+    assert.equal(state.receipts.at(-1)!.outcome, 'failed');
+    assert.deepEqual(
+        await dispatchOutboxRow(db, state.rows[0]!.id, [adapter], makeDispatchOptions(true), HMAC_KEY),
+        { dispatched: false, outcome: 'skipped' },
+    );
+    assert.equal(calls.length, 1);
+});
+
+test('B2-W9: claimDueOutboxIdsInScope binds tenant and channel into the claim query', async () => {
+    const state = makeState();
+    seedRow(state, { tenant_id: 'tenant-a', channel: 'email' });
+    seedRow(state, { tenant_id: 'tenant-a', channel: 'sms' });
+    seedRow(state, { tenant_id: 'tenant-b', channel: 'email' });
+    const db = makeDb(state);
+    const ids = await claimDueOutboxIdsInScope(db, { tenantId: 'tenant-a', channels: ['email'], limit: 10, now: NOW });
+    assert.deepEqual(ids, [state.rows[0]!.id]);
+    const claim = state.executed.find((entry) => entry.kind === 'query');
+    assert.ok(claim);
+    assert.ok(claim!.sql.includes('tenant_id = ?'));
+    assert.deepEqual(claim!.params.slice(1), ['tenant-a', 'email']);
 });

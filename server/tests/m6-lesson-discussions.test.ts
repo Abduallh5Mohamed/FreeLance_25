@@ -20,6 +20,7 @@ import {
     MAX_TITLE_LENGTH,
     clampListLimit,
     computeRetentionExpiry,
+    createSqlLessonDiscussionsStore,
     createUserRateLimiter,
     isThreadVisibleToStudent,
     normalizeRetentionDays,

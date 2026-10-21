@@ -281,6 +281,43 @@ export function validateUploadRequest(body: unknown, limits: SubmissionLimits): 
     return { ok: true, value: { fileName, fileType, extension } };
 }
 
+export type UploadStatus = 'pending_upload' | 'pending_scan' | 'finalized' | 'quarantined';
+
+/**
+ * The persisted lifecycle state. `file_size_bytes` only becomes positive once
+ * the server has verified a stored object, so a zero size always means
+ * "nothing verified yet" regardless of the scan column. Uploaded is not clean:
+ * a positive size with a pending scan is `pending_scan`, never `finalized`.
+ */
+export function deriveUploadStatus(fileSizeBytes: number, scanStatus: string): UploadStatus {
+    if (!Number.isFinite(fileSizeBytes) || fileSizeBytes <= 0) return 'pending_upload';
+    if (scanStatus === 'clean') return 'finalized';
+    if (scanStatus === 'infected' || scanStatus === 'failed') return 'quarantined';
+    return 'pending_scan';
+}
+
+/**
+ * Finalize accepts no object facts from the client. The key, size, content
+ * type, checksum and scan verdict are all server-owned; an empty body (or an
+ * absent one) is the only accepted shape. Rejecting unknown fields keeps a
+ * future caller from silently reintroducing a trusted client fact.
+ */
+export function validateFinalizeRequest(body: unknown): ValidationResult<null> {
+    if (body === undefined || body === null) return { ok: true, value: null };
+    if (!isRecord(body)) return { ok: false, error: 'finalize accepts no request body' };
+    const supplied = Object.keys(body).filter((field) => {
+        const value = body[field];
+        return value !== undefined && value !== null && value !== '';
+    });
+    if (supplied.length > 0) {
+        return {
+            ok: false,
+            error: `finalize facts are server-owned; rejected fields: ${supplied.join(', ')}`,
+        };
+    }
+    return { ok: true, value: null };
+}
+
 /**
  * Validate the server-verified byte size of the stored object against the
  * assignment's bounds. The verifier (an injected storage-stat dependency)
@@ -341,6 +378,8 @@ export interface SubmissionWindowAssignment {
 export interface EvaluateSubmissionInput extends SubmissionWindowAssignment {
     resubmissionPolicy: string;
     maxSubmissions: number;
+    /** Override the abandoned-upload window (tests/deployment); clamped by the caller. */
+    pendingUploadTtlMs?: number;
 }
 
 export type WindowDecision =
@@ -366,6 +405,44 @@ export function evaluateSubmissionWindow(assignment: SubmissionWindowAssignment,
 export interface ExistingSubmission {
     version: number;
     status: string;
+    /**
+     * Verified byte size, `0` while nothing has been verified. Optional so a
+     * caller that only knows the version/status keeps the historical
+     * accounting (an unknown row is treated as in flight, never as abandoned).
+     */
+    fileSizeBytes?: number;
+    /** `submitted_at` as epoch milliseconds, or null when unparseable. */
+    submittedAtMs?: number | null;
+}
+
+/**
+ * How long an unverified `pending_upload` row may stay untouched before it is
+ * treated as abandoned. The upload authorization is short-lived (at most 600 s,
+ * see `assignment-storage.MAX_UPLOAD_URL_TTL_SECONDS`); this window adds a
+ * grace period so a slow but legitimate upload is never reclaimed. A row
+ * younger than this is still in flight and keeps counting.
+ */
+export const ABANDONED_PENDING_UPLOAD_AFTER_MS = 15 * 60 * 1000;
+
+/**
+ * An abandoned upload: a non-revoked row that never had an object verified and
+ * whose authorization can no longer be valid. It holds no content, so it must
+ * not consume the resubmission/limit budget; the student may resume it (a new
+ * upload authorization) or cancel it explicitly at any time.
+ *
+ * An unknown `submitted_at` is NOT treated as abandoned: without a timestamp
+ * the row cannot be proven stale, so it keeps counting (conservative).
+ */
+export function isAbandonedPendingUpload(
+    submission: ExistingSubmission,
+    nowMs: number,
+    ttlMs: number = ABANDONED_PENDING_UPLOAD_AFTER_MS,
+): boolean {
+    if (submission.status === 'revoked') return false;
+    if ((submission.fileSizeBytes ?? 0) > 0) return false;
+    const submittedAtMs = submission.submittedAtMs ?? null;
+    if (submittedAtMs === null || !Number.isFinite(submittedAtMs)) return false;
+    return nowMs - submittedAtMs >= ttlMs;
 }
 
 export type SubmitDenialReason = 'NOT_OPEN' | 'DEADLINE_PASSED' | 'RESUBMISSION_BLOCKED' | 'SUBMISSION_LIMIT_REACHED';
@@ -377,8 +454,11 @@ export type SubmitDecision =
 /**
  * Whether an enrolled student may submit (or resubmit) right now. A revoked
  * submission is invalidated and never counts toward the resubmission/limit
- * gates, so a teacher revocation re-opens the slot. The next version is
- * `max(version) + 1` and is always monotonically increasing.
+ * gates, so a teacher revocation re-opens the slot. An abandoned
+ * `pending_upload` (see `isAbandonedPendingUpload`) is equally excluded: it
+ * carries no verified object, so it can never permanently burn the budget. The
+ * next version is `max(version) + 1` over the complete history and is always
+ * monotonically increasing.
  */
 export function evaluateSubmission(
     assignment: EvaluateSubmissionInput,
@@ -389,7 +469,9 @@ export function evaluateSubmission(
     if (!window.open) {
         return { allowed: false, reason: window.reason === 'deadline_passed' ? 'DEADLINE_PASSED' : 'NOT_OPEN' };
     }
-    const active = existing.filter((submission) => submission.status !== 'revoked');
+    const ttlMs = assignment.pendingUploadTtlMs ?? ABANDONED_PENDING_UPLOAD_AFTER_MS;
+    const active = existing.filter((submission) => submission.status !== 'revoked'
+        && !isAbandonedPendingUpload(submission, now.getTime(), ttlMs));
     if (assignment.resubmissionPolicy === 'block' && active.length > 0) {
         return { allowed: false, reason: 'RESUBMISSION_BLOCKED' };
     }

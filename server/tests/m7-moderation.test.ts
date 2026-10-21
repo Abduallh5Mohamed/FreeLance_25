@@ -4,18 +4,21 @@ import type { Router } from 'express';
 import { createAuthenticateToken } from '../src/middleware/auth';
 import {
     MAX_LIST_LIMIT,
+    createSqlModerationStore,
     hashContent,
 } from '../src/services/moderation';
 import type {
     ModerationAppealRow,
     ModerationCaseRow,
     ModerationContentGateway,
+    ModerationDataAccess,
     ModerationDecision,
     ModerationHistoryRow,
     ModerationReport,
     ModerationStore,
 } from '../src/services/moderation';
 import { createModerationRouter } from '../src/routes/moderation';
+import { createModerationContentGateway } from '../src/routes/moderation';
 import type { SealedAuditRecordInput } from '../src/services/audit-log';
 import { TEST_SECRET, invokeRoute, makeRepository, tokenFor } from './helpers/m2-harness';
 
@@ -92,6 +95,7 @@ interface StoreHarness {
     byReport: Map<string, string>;
     history: ModerationHistoryRow[];
     appeals: Map<string, ModerationAppealRow>;
+    reports: Map<string, { tenant_id: string; status: string; reviewed_by: string | null; reviewed_at: Date | null }>;
     /** Method names that return 0 affected rows exactly once (concurrency). */
     failOnce: Set<string>;
 }
@@ -103,6 +107,7 @@ const memoryStore = (): StoreHarness => {
     const byReport = new Map<string, string>();
     const history: ModerationHistoryRow[] = [];
     const appeals = new Map<string, ModerationAppealRow>();
+    const reports = new Map<string, { tenant_id: string; status: string; reviewed_by: string | null; reviewed_at: Date | null }>();
     const failOnce = new Set<string>();
     const consume = (method: string): boolean => {
         if (!failOnce.has(method)) return false;
@@ -169,10 +174,11 @@ const memoryStore = (): StoreHarness => {
             appeals.set(caseId, { ...row, status: 'resolved', reviewed_by_user_id: reviewerUserId, reviewed_at: at });
             return 1;
         },
-        assignCase: async (caseId, tenantId, reviewerUserId, at) => {
+        assignCase: async (caseId, tenantId, reviewerUserId, at, expectedReviewerUserId) => {
             if (consume('assignCase')) return 0;
             const row = cases.get(caseId);
             if (!row || row.tenant_id !== tenantId || (row.status !== 'open' && row.status !== 'in_review')) return 0;
+            if ((row.assigned_reviewer_user_id ?? null) !== expectedReviewerUserId) return 0;
             cases.set(caseId, {
                 ...row,
                 status: 'in_review',
@@ -205,7 +211,7 @@ const memoryStore = (): StoreHarness => {
             return 1;
         },
     };
-    return { store, cases, byReport, history, appeals, failOnce };
+    return { store, cases, byReport, history, appeals, reports, failOnce };
 };
 
 /* -------------------------------------------------------------------------- */
@@ -224,6 +230,8 @@ interface Fixture {
     actionAffected?: number;
     seed?: ModerationCaseRow[];
     seedAppeals?: ModerationAppealRow[];
+    /** Explicit report rows; seeded cases default their report to `open`. */
+    seedReports?: Record<string, { tenant_id: string; status?: string }>;
     notifyError?: boolean;
 }
 
@@ -272,13 +280,21 @@ const buildHarness = (fixture: Fixture = {}) => {
     for (const row of fixture.seed ?? []) {
         memory.cases.set(row.id, row);
         memory.byReport.set(row.report_id, row.id);
+        if (!memory.reports.has(row.report_id)) {
+            memory.reports.set(row.report_id, { tenant_id: row.tenant_id, status: 'open', reviewed_by: null, reviewed_at: null });
+        }
+    }
+    for (const [reportId, row] of Object.entries(fixture.seedReports ?? {})) {
+        memory.reports.set(reportId, {
+            tenant_id: row.tenant_id, status: row.status ?? 'open', reviewed_by: null, reviewed_at: null,
+        });
     }
     for (const appeal of fixture.seedAppeals ?? []) {
         memory.appeals.set(appeal.case_id, appeal);
     }
 
     const gateway: ModerationContentGateway = {
-        snapshotEvidence: async (targetType, targetId) => {
+        snapshotEvidence: async (_tenantId, targetType, targetId) => {
             content.snapshots.push({ targetType, targetId });
             if (fixture.snapshotNull) return null;
             return {
@@ -440,6 +456,47 @@ test('POST /cases: cross-tenant, unknown report, missing target, duplicate, vali
     // denial
     assert.equal((await request(buildHarness(base).router, { method: 'POST', url: '/cases', token: STAFF_A, body: { report_id: 'report-b' } })).statusCode, 403);
     assert.equal((await request(buildHarness(base).router, { method: 'POST', url: '/cases', body: { report_id: 'report-b' } })).statusCode, 401);
+});
+
+test('POST /cases: the production evidence gateway binds the report tenant (a target from another tenant never resolves)', async () => {
+    // The report tenant (tenant-b) disagrees with the stored target's real tenant
+    // (tenant-c). An id-only lookup would return tenant-c's content and open a
+    // case about it; the tenant-bound lookup must not.
+    const foreignThread = { id: 'thread-c', lecture_id: 'lecture-c', author_user_id: 'author-c', status: 'open', body: 'foreign body' };
+    const seen: Array<{ sql: string; params: unknown[] }> = [];
+    const db: ModerationDataAccess = {
+        query: async () => [],
+        queryOne: async (sql, params) => {
+            seen.push({ sql, params: params ?? [] });
+            if (/FROM lesson_discussion_threads/.test(sql)) {
+                const requestedTenant = params?.[1];
+                return (requestedTenant === undefined || requestedTenant === 'tenant-c' ? foreignThread : null) as never;
+            }
+            return null;
+        },
+        execute: async () => ({ affectedRows: 1 }),
+    };
+    const memory = memoryStore();
+    const router = createModerationRouter({
+        store: memory.store,
+        authenticate: createAuthenticateToken(authRepository()),
+        reports: { findReportById: async () => report('report-x', 'tenant-b', 'owner-b', 'thread-c') },
+        content: createModerationContentGateway(db),
+        isPlatformModerator: async (userId) => userId === 'admin-a',
+        loadActiveTenantAuthority: async () => null,
+        notifyTenantOwner: async () => undefined,
+        recordAudit: async () => undefined,
+        now: () => BASE_TIME,
+        idFactory: () => 'id-e1',
+    });
+    const res = await request(router, { method: 'POST', url: '/cases', token: PLATFORM, body: { report_id: 'report-x' } });
+    assert.equal(res.statusCode, 404);
+    assert.equal(memory.cases.size, 0);
+
+    const threadQuery = seen.find((q) => /FROM lesson_discussion_threads/.test(q.sql));
+    assert.ok(threadQuery, 'the thread evidence query must run');
+    assert.match(threadQuery.sql, /tenant_id = \?/);
+    assert.equal(threadQuery.params[1], 'tenant-b');
 });
 
 /* -------------------------------------------------------------------------- */
@@ -685,4 +742,137 @@ test('POST /cases/:id/appeal-decision: a notification failure never fails the ac
     });
     assert.equal(res.statusCode, 200);
     assert.equal(h.memory.cases.get('case-a')?.status, 'closed');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Correctness audit 2026-10-19: proven defects                                */
+/* -------------------------------------------------------------------------- */
+
+test('POST /cases/:id/appeal-decision: the report reporter cannot resolve the appeal (conflict of interest)', async () => {
+    // owner-a is a verified moderator who reported the content; the author appealed.
+    const h = buildHarness({
+        seed: [appealedCase({ reporter_user_id: 'owner-a' })],
+        seedAppeals: [pendingAppeal({ appellant_user_id: 'author-a' })],
+    });
+    const res = await request(h.router, {
+        method: 'POST', url: '/cases/case-a/appeal-decision', token: OWNER_A, body: decisionBody('dismiss', 'reporter review'),
+    });
+    assert.equal(res.statusCode, 403);
+    assert.equal(h.memory.cases.get('case-a')?.status, 'appealed');
+    assert.equal(h.memory.history.length, 0);
+    assert.equal(h.content.actions.length, 0);
+});
+
+test('POST /cases/:id/assign: the reporter and the content author cannot be assigned as reviewer', async () => {
+    const selfReporter = buildHarness({ seed: [seedCase({ id: 'case-a', reporter_user_id: 'owner-a' })] });
+    assert.equal((await request(selfReporter.router, {
+        method: 'POST', url: '/cases/case-a/assign', token: OWNER_A, body: {},
+    })).statusCode, 403);
+    assert.equal(selfReporter.memory.cases.get('case-a')?.status, 'open');
+
+    const author = buildHarness({ seed: [seedCase({ id: 'case-a' })] });
+    assert.equal((await request(author.router, {
+        method: 'POST', url: '/cases/case-a/assign', token: OWNER_A, body: { reviewer_user_id: 'author-a' },
+    })).statusCode, 400);
+    assert.equal(author.memory.cases.get('case-a')?.assigned_reviewer_user_id, null);
+    assert.equal(author.auditRecords.length, 0);
+
+    const reporter = buildHarness({ seed: [seedCase({ id: 'case-a', reporter_user_id: 'instructor-a' })] });
+    assert.equal((await request(reporter.router, {
+        method: 'POST', url: '/cases/case-a/assign', token: OWNER_A, body: { reviewer_user_id: 'instructor-a' },
+    })).statusCode, 400);
+
+    const ok = buildHarness({ seed: [seedCase({ id: 'case-a' })] });
+    assert.equal((await request(ok.router, {
+        method: 'POST', url: '/cases/case-a/assign', token: OWNER_A, body: { reviewer_user_id: 'instructor-a' },
+    })).statusCode, 200);
+});
+
+test('a unique-key violation while recording a decision is a 409, not a 500', async () => {
+    const h = buildHarness({ seed: [seedCase({ id: 'case-a' })] });
+    h.memory.store.appendHistory = async () => {
+        const error = new Error('Duplicate entry') as Error & { code?: string };
+        error.code = 'ER_DUP_ENTRY';
+        throw error;
+    };
+    const res = await request(h.router, {
+        method: 'POST', url: '/cases/case-a/decision', token: OWNER_A, body: decisionBody('dismiss', 'concurrent decision'),
+    });
+    assert.equal(res.statusCode, 409);
+});
+
+test('SQL store: decision, appeal and assignment writes are guarded by the expected state (optimistic concurrency)', async () => {
+    const statements: Array<{ sql: string; params: unknown[] }> = [];
+    const store = createSqlModerationStore({
+        query: async () => [],
+        queryOne: async () => null,
+        execute: async (sql, params) => { statements.push({ sql, params: params ?? [] }); return { affectedRows: 1 }; },
+    });
+    const at = new Date('2026-10-19T10:00:00.000Z');
+    await store.recordDecision('c1', 't1', 'dismiss', 'reason', 'u1', at, 'decided');
+    await store.recordDecision('c1', 't1', 'dismiss', 'reason', 'u1', at, 'closed');
+    await store.setStatus('c1', 't1', 'appealed', at);
+    await store.assignCase('c1', 't1', 'u2', at, 'u1');
+    const [decide, appealDecide, appeal, assign] = statements.map((s) => s.sql.replace(/\s+/g, ' '));
+    assert.match(decide, /AND status IN \('open','in_review'\)/);
+    assert.match(appealDecide, /AND status = 'appealed'/);
+    assert.match(appeal, /AND status = 'decided'/);
+    assert.match(assign, /assigned_reviewer_user_id <=> \?/);
+    assert.deepEqual(statements[3].params.slice(-1), ['u1']);
+});
+
+test('POST /cases/:id/assign: a stale reassignment (reviewer changed since the read) is a 409', async () => {
+    const h = buildHarness({ seed: [seedCase({ id: 'case-a' })] });
+    const originalFind = h.memory.store.findCaseById;
+    h.memory.store.findCaseById = async (id) => {
+        const row = await originalFind(id);
+        // A concurrent request wins the assignment right after this read.
+        const live = h.memory.cases.get(id);
+        if (live && live.assigned_reviewer_user_id === null) {
+            h.memory.cases.set(id, { ...live, status: 'in_review', assigned_reviewer_user_id: 'instructor-a' });
+        }
+        return row;
+    };
+    const res = await request(h.router, { method: 'POST', url: '/cases/case-a/assign', token: OWNER_A, body: {} });
+    assert.equal(res.statusCode, 409);
+    assert.equal(h.memory.cases.get('case-a')?.assigned_reviewer_user_id, 'instructor-a');
+});
+
+test('decision: the content action runs inside the same transaction as the case update and audit', async () => {
+    const txMarker: ModerationDataAccess = {
+        query: async () => [{ max_revision: 0 }] as never,
+        queryOne: async () => null,
+        execute: async () => ({ affectedRows: 1 }),
+    };
+    const seen: Array<ModerationDataAccess | undefined> = [];
+    const memory = memoryStore();
+    memory.cases.set('case-a', seedCase({ id: 'case-a' }));
+    memory.byReport.set('report-open', 'case-a');
+    let rolledBack = false;
+    const router = createModerationRouter({
+        db: txMarker,
+        store: memory.store,
+        authenticate: createAuthenticateToken(authRepository()),
+        reports: { findReportById: async () => null },
+        content: {
+            snapshotEvidence: async () => null,
+            applyAction: async (input) => { seen.push(input.db); return 1; },
+        },
+        isPlatformModerator: async (userId) => userId === 'admin-a',
+        loadActiveTenantAuthority: async (userId, tenantId) => AUTHORITY[`${userId}:${tenantId}`] ?? null,
+        notifyTenantOwner: async () => undefined,
+        recordAudit: async () => { throw new Error('audit sink down'); },
+        now: () => BASE_TIME,
+        idFactory: () => 'id-x',
+        transaction: async (fn) => {
+            try { return await fn(txMarker); } catch (error) { rolledBack = true; throw error; }
+        },
+    });
+    const res = await request(router, {
+        method: 'POST', url: '/cases/case-a/decision', token: OWNER_A, body: decisionBody('hide_content'),
+    });
+    assert.equal(res.statusCode, 500);
+    assert.equal(rolledBack, true);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0], txMarker, 'content action must use the transaction connection so an audit failure rolls it back');
 });

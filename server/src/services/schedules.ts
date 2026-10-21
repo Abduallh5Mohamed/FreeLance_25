@@ -87,6 +87,23 @@ interface CalendarDate {
 
 const CALENDAR_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const WALL_TIME_RE = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/;
+/** Storable year range: the session columns are DATETIME (1000..9999). */
+const MIN_STORABLE_YEAR = 1000;
+const MAX_STORABLE_YEAR = 9999;
+/** Requires an explicit time of day after the date (a bare date would silently become midnight). */
+const WALL_TIME_OF_DAY_RE = /^\s*\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/;
+
+function isStorableInstant(instant: Date): boolean {
+    const year = instant.getUTCFullYear();
+    return Number.isFinite(instant.getTime()) && year >= MIN_STORABLE_YEAR && year <= MAX_STORABLE_YEAR;
+}
+
+/** Whole number from a JSON number or a plain digit string; booleans/arrays/blank are rejected. */
+function strictWholeNumber(value: unknown): number {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string' && /^\s*\d+\s*$/.test(value)) return Number(value);
+    return Number.NaN;
+}
 
 export function daysInMonth(year: number, month: number): number {
     return new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -100,6 +117,7 @@ export function parseCalendarDate(value: unknown): CalendarDate | null {
     const year = Number(match[1]);
     const month = Number(match[2]);
     const day = Number(match[3]);
+    if (year < MIN_STORABLE_YEAR || year > MAX_STORABLE_YEAR) return null;
     if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) return null;
     return { year, month, day };
 }
@@ -119,7 +137,8 @@ function normalizeWallTime(value: unknown): string | null {
     const hour = Number(match[1]);
     const minute = Number(match[2]);
     const second = Number(match[3] ?? '0');
-    if (hour > 23 || minute > 59 || second > 59) return null;
+    // Seconds are not representable in the HH:MM recurrence; never drop them silently.
+    if (hour > 23 || minute > 59 || second !== 0) return null;
     return `${pad(hour)}:${pad(minute)}`;
 }
 
@@ -156,52 +175,90 @@ export interface Occurrence {
     endsAt: string;
 }
 
-function buildOccurrence(
+/**
+ * Resolution of one candidate date inside a recurrence rule:
+ *  - `occurrence`          : a storable UTC occurrence;
+ *  - `nonexistent-wall-time`: the authored local time does not exist in the
+ *    timezone (DST spring-forward gap), so no instant may be scheduled;
+ *  - `unstorable-instant`  : the instant falls outside the DATETIME-safe
+ *    year range and is skipped.
+ */
+type OccurrenceResolution =
+    | { kind: 'occurrence'; occurrence: Occurrence }
+    | { kind: 'nonexistent-wall-time' }
+    | { kind: 'unstorable-instant' };
+
+function resolveOccurrence(
     date: CalendarDate,
     time: string,
     timezone: string,
     durationMinutes: number,
-): Occurrence | null {
+): OccurrenceResolution {
     const instant = localWallTimeToInstant(`${formatCalendarDate(date)} ${time}`, timezone);
-    if (!instant) return null;
+    if (!instant) return { kind: 'nonexistent-wall-time' };
     const endsAt = new Date(instant.getTime() + durationMinutes * 60_000);
-    return { startsAt: instant.toISOString(), endsAt: endsAt.toISOString() };
+    if (!isStorableInstant(instant) || !isStorableInstant(endsAt)) return { kind: 'unstorable-instant' };
+    return { kind: 'occurrence', occurrence: { startsAt: instant.toISOString(), endsAt: endsAt.toISOString() } };
+}
+
+export interface RecurrenceExpansion {
+    occurrences: Occurrence[];
+    /**
+     * Dates inside [startsOn, endsOn] whose authored local wall time does not
+     * exist in the rule's timezone (a DST spring-forward gap). A non-empty
+     * list must be rejected by the caller BEFORE any write: scheduling the
+     * silently-shifted earlier instant would move the session without the
+     * author ever authoring that time.
+     */
+    nonexistentDates: string[];
 }
 
 /**
- * Expand a recurrence rule into absolute UTC occurrences, ordered ascending.
- * Bounded by `limit` (capped at HARD_MAX_OCCURRENCES) so a caller can never
- * request an unbounded expansion. An invalid rule yields `[]` (deny-by-default
- * rather than a partially-materialized schedule).
+ * Expand a recurrence rule into absolute UTC occurrences, ordered ascending,
+ * and report any DST-gap dates separately. Bounded by `limit` (capped at
+ * HARD_MAX_OCCURRENCES) so a caller can never request an unbounded expansion.
+ * An invalid rule yields no occurrences (deny-by-default rather than a
+ * partially-materialized schedule).
  */
-export function expandRecurrence(rule: RecurrenceRule, limit: number = DEFAULT_MAX_OCCURRENCES): Occurrence[] {
+export function expandRecurrenceDetailed(rule: RecurrenceRule, limit: number = DEFAULT_MAX_OCCURRENCES): RecurrenceExpansion {
     const cap = Math.min(Math.max(0, Math.floor(limit)), HARD_MAX_OCCURRENCES);
-    if (cap === 0) return [];
+    const occurrences: Occurrence[] = [];
+    const nonexistentDates: string[] = [];
+    if (cap === 0) return { occurrences, nonexistentDates };
 
     const start = parseCalendarDate(rule.startsOn);
-    if (!start) return [];
+    if (!start) return { occurrences, nonexistentDates };
     const end = rule.endsOn === null ? null : parseCalendarDate(rule.endsOn);
-    if (rule.endsOn !== null && !end) return [];
-    if (end && compareCalendarDates(end, start) < 0) return [];
+    if (rule.endsOn !== null && !end) return { occurrences, nonexistentDates };
+    if (end && compareCalendarDates(end, start) < 0) return { occurrences, nonexistentDates };
 
     const time = normalizeWallTime(rule.startTime);
-    if (!time) return [];
-    if (!isValidTimeZone(rule.timezone)) return [];
-    if (!Number.isInteger(rule.durationMinutes) || rule.durationMinutes <= 0 || rule.durationMinutes > MAX_DURATION_MINUTES) return [];
-    if (!Number.isInteger(limit) && !Number.isFinite(limit)) return [];
+    if (!time) return { occurrences, nonexistentDates };
+    if (!isValidTimeZone(rule.timezone)) return { occurrences, nonexistentDates };
+    if (!Number.isInteger(rule.durationMinutes) || rule.durationMinutes <= 0 || rule.durationMinutes > MAX_DURATION_MINUTES) return { occurrences, nonexistentDates };
+    if (!Number.isInteger(limit) && !Number.isFinite(limit)) return { occurrences, nonexistentDates };
 
-    const occurrences: Occurrence[] = [];
     const pushDate = (date: CalendarDate): boolean => {
-        const occurrence = buildOccurrence(date, time, rule.timezone, rule.durationMinutes);
-        if (occurrence) occurrences.push(occurrence);
-        return occurrences.length >= cap;
+        const resolution = resolveOccurrence(date, time, rule.timezone, rule.durationMinutes);
+        if (resolution.kind === 'nonexistent-wall-time') {
+            nonexistentDates.push(formatCalendarDate(date));
+            return false;
+        }
+        if (resolution.kind === 'occurrence') {
+            occurrences.push(resolution.occurrence);
+            return occurrences.length >= cap;
+        }
+        return false;
     };
 
     if (rule.kind === 'weekly') {
         const weekdays = new Set(rule.weekdays);
-        if (weekdays.size === 0) return [];
+        if (weekdays.size === 0) return { occurrences, nonexistentDates };
         const cursorStart = Date.UTC(start.year, start.month - 1, start.day);
         const cursorEnd = end ? Date.UTC(end.year, end.month - 1, end.day) : null;
+        // A weekly rule needs at most one occurrence per week; the slack also
+        // covers the (at most one or two per year per weekday) DST-gap dates a
+        // real IANA zone can produce before the cap is reached.
         const maxIterations = cap * 7 + 7;
 
         for (let i = 0; i < maxIterations; i += 1) {
@@ -214,12 +271,12 @@ export function expandRecurrence(rule: RecurrenceRule, limit: number = DEFAULT_M
             }
             if (cursorEnd === null && occurrences.length >= cap) break;
         }
-        return occurrences;
+        return { occurrences, nonexistentDates };
     }
 
     // monthly with month-end clamping
     if (!Number.isInteger(rule.dayOfMonth) || rule.dayOfMonth === null || rule.dayOfMonth < 1 || rule.dayOfMonth > 31) {
-        return [];
+        return { occurrences, nonexistentDates };
     }
     let year = start.year;
     let month = start.month;
@@ -241,7 +298,19 @@ export function expandRecurrence(rule: RecurrenceRule, limit: number = DEFAULT_M
             year += 1;
         }
     }
-    return occurrences;
+    return { occurrences, nonexistentDates };
+}
+
+/**
+ * Expand a recurrence rule into absolute UTC occurrences, ordered ascending.
+ * Bounded by `limit` (capped at HARD_MAX_OCCURRENCES) so a caller can never
+ * request an unbounded expansion. An invalid rule yields `[]` (deny-by-default
+ * rather than a partially-materialized schedule). Use
+ * `expandRecurrenceDetailed` when the caller must also reject DST-gap dates
+ * before writing.
+ */
+export function expandRecurrence(rule: RecurrenceRule, limit: number = DEFAULT_MAX_OCCURRENCES): Occurrence[] {
+    return expandRecurrenceDetailed(rule, limit).occurrences;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +355,7 @@ function normalizeWeekdays(value: unknown): number[] | null {
     if (!raw || raw.length === 0) return null;
     const days = new Set<number>();
     for (const item of raw) {
-        const parsed = typeof item === 'number' ? item : Number(String(item).trim());
+        const parsed = strictWholeNumber(item);
         if (!Number.isInteger(parsed) || parsed < 0 || parsed > 6) return null;
         days.add(parsed);
     }
@@ -294,7 +363,7 @@ function normalizeWeekdays(value: unknown): number[] | null {
 }
 
 function normalizeDuration(value: unknown): number | null {
-    const parsed = typeof value === 'number' ? value : Number(value);
+    const parsed = strictWholeNumber(value);
     if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_DURATION_MINUTES) return null;
     return parsed;
 }
@@ -368,7 +437,7 @@ export function validateSeriesInput(body: unknown): ValidationResult<ValidatedSe
         if (!normalized) return { ok: false, error: 'weekdays must list one or more days 0..6 for a weekly schedule' };
         weekdays = normalized;
     } else {
-        const raw = typeof record['day_of_month'] === 'number' ? record['day_of_month'] : Number(record['day_of_month']);
+        const raw = strictWholeNumber(record['day_of_month']);
         if (!Number.isInteger(raw) || raw < 1 || raw > 31) {
             return { ok: false, error: 'day_of_month must be a whole number from 1 to 31 for a monthly schedule' };
         }
@@ -410,8 +479,11 @@ export function validateRescheduleInput(
     if (typeof rawStart !== 'string' || rawStart.trim() === '') {
         return { ok: false, error: 'starts_at is required' };
     }
+    if (!WALL_TIME_OF_DAY_RE.test(rawStart)) return { ok: false, error: 'starts_at must include a time of day' };
     const startInstant = localWallTimeToInstant(rawStart, timezone);
-    if (!startInstant) return { ok: false, error: 'starts_at must be a valid local date/time' };
+    if (!startInstant || !isStorableInstant(startInstant)) {
+        return { ok: false, error: 'starts_at must be a valid local date/time' };
+    }
 
     const duration = Number.isInteger(context.durationMinutes) && context.durationMinutes > 0
         ? context.durationMinutes
@@ -423,13 +495,19 @@ export function validateRescheduleInput(
         if (duration === null) return { ok: false, error: 'ends_at is required' };
         endsAt = new Date(startInstant.getTime() + duration * 60_000);
     } else {
-        if (typeof rawEnd !== 'string') return { ok: false, error: 'ends_at must be a valid local date/time' };
+        if (typeof rawEnd !== 'string' || !WALL_TIME_OF_DAY_RE.test(rawEnd)) {
+            return { ok: false, error: 'ends_at must be a valid local date/time' };
+        }
         const endInstant = localWallTimeToInstant(rawEnd, timezone);
         if (!endInstant) return { ok: false, error: 'ends_at must be a valid local date/time' };
         endsAt = endInstant;
     }
+    if (!isStorableInstant(endsAt)) return { ok: false, error: 'ends_at must be a valid local date/time' };
     if (endsAt.getTime() <= startInstant.getTime()) {
         return { ok: false, error: 'ends_at must be after starts_at' };
+    }
+    if (endsAt.getTime() - startInstant.getTime() > MAX_DURATION_MINUTES * 60_000) {
+        return { ok: false, error: `a session must not be longer than ${MAX_DURATION_MINUTES} minutes` };
     }
 
     const reason = resolveReason(record['reason']);
@@ -462,4 +540,91 @@ export function sessionDurationMinutes(startsAt: string | Date, endsAt: string |
     const end = endsAt instanceof Date ? endsAt.getTime() : Date.parse(`${String(endsAt).replace(' ', 'T')}Z`);
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
     return Math.round((end - start) / 60_000);
+}
+
+// ---------------------------------------------------------------------------
+// Bounded time-range list filters
+// ---------------------------------------------------------------------------
+
+/**
+ * A validated UTC time range for list feeds. `fromUtc`/`toUtc` are normalized
+ * `YYYY-MM-DD HH:MM:SS` MySQL UTC literals, or null when the bound is absent.
+ * The range is bounded by the storable DATETIME year range (1000..9999); no
+ * arbitrary duration policy is imposed.
+ */
+export interface TimeRangeFilter {
+    fromUtc: string | null;
+    toUtc: string | null;
+}
+
+const TIME_RANGE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/;
+
+/**
+ * Parse one `from`/`to` query bound into a normalized UTC datetime literal.
+ * Accepts `YYYY-MM-DD[ HH:MM[:SS]]` only; anything else (non-string, offset
+ * suffix, impossible calendar time, unstorable year) yields null.
+ */
+function parseTimeRangeBound(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > 19) return null;
+    const match = TIME_RANGE_PATTERN.exec(trimmed);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const hour = Number(match[4] ?? '00');
+    const minute = Number(match[5] ?? '00');
+    const second = Number(match[6] ?? '00');
+    if (year < MIN_STORABLE_YEAR || year > MAX_STORABLE_YEAR) return null;
+    if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) return null;
+    if (hour > 23 || minute > 59 || second > 59) return null;
+    return `${match[1]}-${match[2]}-${match[3]} ${pad(hour)}:${pad(minute)}:${pad(second)}`;
+}
+
+/**
+ * Validate the `from`/`to` query bounds of a list feed. Both are optional; a
+ * present bound must be a real UTC `YYYY-MM-DD[ HH:MM[:SS]]` instant inside
+ * the storable year range, and `from` must not be after `to`. Deny-by-default:
+ * a malformed bound is a 400, never a silently ignored filter.
+ */
+export function parseTimeRangeFilter(query: Record<string, unknown>): ValidationResult<TimeRangeFilter> {
+    const fromRaw = query['from'];
+    const toRaw = query['to'];
+    let fromUtc: string | null = null;
+    let toUtc: string | null = null;
+    if (fromRaw !== undefined && fromRaw !== null && fromRaw !== '') {
+        fromUtc = parseTimeRangeBound(fromRaw);
+        if (fromUtc === null) return { ok: false, error: 'from must be a valid YYYY-MM-DD[ HH:MM[:SS]]' };
+    }
+    if (toRaw !== undefined && toRaw !== null && toRaw !== '') {
+        toUtc = parseTimeRangeBound(toRaw);
+        if (toUtc === null) return { ok: false, error: 'to must be a valid YYYY-MM-DD[ HH:MM[:SS]]' };
+    }
+    if (fromUtc !== null && toUtc !== null && fromUtc > toUtc) {
+        return { ok: false, error: 'from must not be after to' };
+    }
+    return { ok: true, value: { fromUtc, toUtc } };
+}
+
+/**
+ * AND-fragments applying a validated time range to a column, mirroring the
+ * audit-log `from`/`to` contract (`created_at >= ?` / `created_at <= ?`). The
+ * column name is a server-side literal, never client input.
+ */
+export function buildTimeRangeConditions(
+    column: string,
+    range: TimeRangeFilter,
+): { sql: string; params: unknown[] } {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (range.fromUtc !== null) {
+        conditions.push(`${column} >= ?`);
+        params.push(range.fromUtc);
+    }
+    if (range.toUtc !== null) {
+        conditions.push(`${column} <= ?`);
+        params.push(range.toUtc);
+    }
+    return { sql: conditions.length > 0 ? ` AND ${conditions.join(' AND ')}` : '', params };
 }

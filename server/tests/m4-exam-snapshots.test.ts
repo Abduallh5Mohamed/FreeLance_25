@@ -20,6 +20,7 @@ import {
     type SnapshotTiming,
 } from '../src/services/exam-snapshots';
 import { createExamVersionsRouter, type ExamVersionsDataAccess } from '../src/routes/exam-versions';
+import { computeGradingFingerprint } from '../src/services/exam-grading';
 import {
     ExecutedStatement,
     TEST_SECRET,
@@ -223,11 +224,16 @@ test('enrollmentMatchesExam: same tenant, then deny-by-default audience match', 
 
 const INSTRUCTOR_A = tokenFor({ id: 'instructor-a', role: 'instructor', tv: 0, tenant_id: 'tenant-a' });
 const INSTRUCTOR_B = tokenFor({ id: 'instructor-b', role: 'instructor', tv: 0, tenant_id: 'tenant-b' });
+const INSTRUCTOR_C = tokenFor({ id: 'instructor-c', role: 'instructor', tv: 0, tenant_id: 'tenant-a' });
+const INSTRUCTOR_BR_A = tokenFor({ id: 'instructor-br-a', role: 'instructor', tv: 0, tenant_id: 'tenant-a', branch_id: 'br-1' });
+const OWNER_A = tokenFor({ id: 'owner-a', role: 'instructor', tv: 0, tenant_id: 'tenant-a' });
 const STUDENT_A = tokenFor({ id: 'student-a', role: 'student', tv: 0, student_enrollment_id: 'enr-a' });
 
 const AUTHORITY: Record<string, { tenant: string; authority: string }> = {
     'instructor-a': { tenant: 'tenant-a', authority: 'instructor' },
     'owner-a': { tenant: 'tenant-a', authority: 'owner' },
+    'instructor-c': { tenant: 'tenant-a', authority: 'instructor' },
+    'instructor-br-a': { tenant: 'tenant-a', authority: 'instructor' },
 };
 
 const VERSION_ROW = {
@@ -269,6 +275,11 @@ interface Fixtures {
     enrollment?: Record<string, unknown> | null;
     targets?: Record<string, unknown>[];
     qbankVersion?: Record<string, unknown> | null;
+    storedAnswers?: Record<string, unknown>[] | null;
+    teachingGroups?: Record<string, unknown>[] | null;
+    courseGroupsInBranch?: Record<string, unknown>[] | null;
+    branchMembership?: Record<string, unknown> | null;
+    branchRow?: Record<string, unknown> | null;
 }
 
 interface BuildOptions {
@@ -276,6 +287,8 @@ interface BuildOptions {
     now?: Date;
     /** Simulates the DB losing the UNIQUE (exam_id, enrollment) insert race. */
     attemptInsertDuplicate?: boolean;
+    /** Forces UPDATE exam_versioned_attempts to affect zero rows (lost race). */
+    attemptUpdateAffected?: number;
 }
 
 const validBody = (overrides: Record<string, unknown> = {}) => ({
@@ -288,14 +301,35 @@ const validBody = (overrides: Record<string, unknown> = {}) => ({
 const build = (fixtures: Fixtures = {}, opts: BuildOptions = {}) => {
     const responder = (sql: string, params: unknown[]): unknown[] | null => {
         if (sql.includes('FROM exams e INNER JOIN courses c')) {
-            return fixtures.exam === null ? [] : [fixtures.exam ?? { id: params[0] }];
+            return fixtures.exam === null
+                ? []
+                : [fixtures.exam ?? { id: params[0], tenant_id: 'tenant-a', instructor_id: 'instructor-a' }];
+        }
+        if (sql.includes("`groups` g INNER JOIN courses c ON c.id = g.course_id WHERE g.course_id=? AND g.instructor_id=?")) {
+            return fixtures.teachingGroups === undefined ? [] : (fixtures.teachingGroups ?? []);
+        }
+        if (sql.includes("g.branch_scope='branch'")) {
+            return fixtures.courseGroupsInBranch === undefined ? [] : (fixtures.courseGroupsInBranch ?? []);
+        }
+        if (sql.includes('FROM branch_memberships')) {
+            return fixtures.branchMembership === undefined || fixtures.branchMembership === null
+                ? [] : [fixtures.branchMembership];
+        }
+        if (sql.includes('FROM branches')) {
+            return fixtures.branchRow === undefined || fixtures.branchRow === null
+                ? [] : [fixtures.branchRow];
         }
         if (sql.includes('COALESCE(MAX(version)')) return [{ next_version: 1 }];
         if (sql.includes('FROM exam_version_questions')) return fixtures.questions === null ? [] : (fixtures.questions ?? QUESTION_ROWS);
-        if (sql.includes('FROM exam_versioned_answers')) return [];
+        if (sql.includes('FROM exam_versioned_answers')) {
+            return fixtures.storedAnswers === undefined ? [] : (fixtures.storedAnswers ?? []);
+        }
         if (sql.includes('exam_grading_runs')) return [];
         if (sql.includes('FROM exam_versioned_attempts')) {
-            if (sql.includes('WHERE id = ?')) return fixtures.attempt === null ? [] : [fixtures.attempt ?? ATTEMPT_ROW];
+            if (sql.includes('WHERE id = ?')) {
+                if (fixtures.attempt !== undefined) return [fixtures.attempt];
+                return [ATTEMPT_ROW];
+            }
             return fixtures.existingAttempt ? [fixtures.existingAttempt] : [];
         }
         if (sql.includes('ORDER BY version DESC')) return fixtures.list === null ? [] : (fixtures.list ?? [VERSION_ROW]);
@@ -314,6 +348,10 @@ const build = (fixtures: Fixtures = {}, opts: BuildOptions = {}) => {
             dup.errno = 1062;
             throw dup;
         }
+        if (opts.attemptUpdateAffected !== undefined && sql.includes('UPDATE exam_versioned_attempts')) {
+            base.executed.push({ sql, params, kind: 'execute' });
+            return { affectedRows: opts.attemptUpdateAffected };
+        }
         if (opts.updateAffected !== undefined && sql.includes('UPDATE exam_versions')) {
             base.executed.push({ sql, params, kind: 'execute' });
             return { affectedRows: opts.updateAffected };
@@ -326,6 +364,8 @@ const build = (fixtures: Fixtures = {}, opts: BuildOptions = {}) => {
             'instructor-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' },
             'owner-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' },
             'instructor-b': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' },
+            'instructor-c': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' },
+            'instructor-br-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' },
             'student-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'student' },
         },
         {
@@ -333,11 +373,15 @@ const build = (fixtures: Fixtures = {}, opts: BuildOptions = {}) => {
                 'instructor-a': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
                 'owner-a': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
                 'instructor-b': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
+                'instructor-c': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
+                'instructor-br-a': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
             },
             memberships: {
                 'instructor-a': [{ tenant_id: 'tenant-a' }],
                 'owner-a': [{ tenant_id: 'tenant-a' }],
                 'instructor-b': [{ tenant_id: 'tenant-b' }],
+                'instructor-c': [{ tenant_id: 'tenant-a' }],
+                'instructor-br-a': [{ tenant_id: 'tenant-a' }],
             },
             enrollments: {
                 'student-a': [{ id: 'enr-a', user_id: 'student-a', tenant_id: 'tenant-a', instructor_id: 'instructor-a', group_id: 'grp-1', grade_id: null }],
@@ -346,7 +390,17 @@ const build = (fixtures: Fixtures = {}, opts: BuildOptions = {}) => {
     );
     const router = createExamVersionsRouter({
         db,
-        authenticate: createAuthenticateToken(repository),
+        authenticate: createAuthenticateToken({
+            ...repository,
+            findBranchSession: async (branchId: string, userId: string) => {
+                if (userId !== 'instructor-br-a' || branchId !== 'br-1') return null;
+                return {
+                    branch_id: 'br-1', branch_tenant_id: 'tenant-a', branch_status: 'active',
+                    branch_version: 0, membership_status: 'active', membership_version: 0,
+                    membership_role: 'instructor',
+                };
+            },
+        }),
         loadActiveTenantAuthority: async (userId, tenantId) => {
             const entry = AUTHORITY[userId];
             return entry && entry.tenant === tenantId ? { authority: entry.authority } : null;
@@ -570,4 +624,213 @@ test('read attempt: past the grace deadline the touch expires the attempt (serve
     assert.equal(expiry!.params[7], 1, 'auto_submitted is set by the server, never by the client');
     assert.ok(executed.some((e) => e.sql.includes('INSERT IGNORE INTO exam_grading_runs')), 'the expired attempt is graded in the same pass');
     assert.ok(auditAction(executed, 'exam_attempt.expire'));
+});
+
+/* ------------------------------------------------------------------------- */
+/* T2 — G-A4-2: staff authority over an exam is server-verified (course/instr) */
+/* ------------------------------------------------------------------------- */
+
+/** An exam whose course teacher is someone else than the calling instructor. */
+const UNRELATED_COURSE_EXAM = { id: 'exam-1', tenant_id: 'tenant-a', instructor_id: 'instructor-x' };
+
+test('staff exam authority: create is denied 403 for a tenant instructor who does not teach the course', async () => {
+    const { router, executed } = build({ exam: UNRELATED_COURSE_EXAM });
+    const response = await invokeRoute(router, { method: 'POST', url: '/exams/exam-1/versions', token: INSTRUCTOR_C, body: validBody() });
+    assert.equal(response.statusCode, 403);
+    assert.equal(executed.some((e) => e.sql.includes('INSERT INTO exam_versions')), false);
+});
+
+test('staff exam authority: reading the answer key without teaching the course is denied 403', async () => {
+    const { router } = build({ exam: UNRELATED_COURSE_EXAM });
+    const response = await invokeRoute(router, { method: 'GET', url: '/exams/exam-1/versions/ver-1', token: INSTRUCTOR_C });
+    assert.equal(response.statusCode, 403);
+    const body = response.body as { questions?: unknown };
+    assert.equal(body.questions, undefined, 'no answer key leaks to an instructor outside the course');
+});
+
+test('staff exam authority: publish is denied 403 for an instructor outside the course', async () => {
+    const { router, executed } = build({ exam: UNRELATED_COURSE_EXAM, version: { ...VERSION_ROW, status: 'draft' } });
+    const response = await invokeRoute(router, { method: 'POST', url: '/exams/exam-1/versions/ver-1/publish', token: INSTRUCTOR_C });
+    assert.equal(response.statusCode, 403);
+    assert.equal(executed.some((e) => e.sql.includes('UPDATE exam_versions')), false);
+});
+
+test('staff exam authority: regrade is denied 403 for an instructor outside the course', async () => {
+    const { router, executed } = build({
+        exam: UNRELATED_COURSE_EXAM,
+        attempt: { ...ATTEMPT_ROW, status: 'graded', version: 3 },
+    });
+    const response = await invokeRoute(router, { method: 'POST', url: '/attempts/attempt-1/regrade', token: INSTRUCTOR_C });
+    assert.equal(response.statusCode, 403);
+    assert.equal(executed.some((e) => e.sql.includes('UPDATE exam_versioned_attempts')), false);
+});
+
+test('staff exam authority: listing versions and reading a staff attempt are denied 403 outside the course', async () => {
+    const listed = build({ exam: UNRELATED_COURSE_EXAM });
+    assert.equal((await invokeRoute(listed.router, { method: 'GET', url: '/exams/exam-1/versions', token: INSTRUCTOR_C })).statusCode, 403);
+    const attempter = build({ exam: UNRELATED_COURSE_EXAM, attempt: { ...ATTEMPT_ROW, status: 'graded', version: 3 } });
+    const readout = await invokeRoute(attempter.router, { method: 'GET', url: '/attempts/attempt-1', token: INSTRUCTOR_C });
+    assert.equal(readout.statusCode, 403);
+    const body = readout.body as { questions?: unknown };
+    assert.equal(body.questions, undefined, 'the staff read must not serve the answer key outside the course');
+});
+
+test('staff exam authority: a foreign-tenant exam stays not-found 404 for a same-tenant authority', async () => {
+    const { router } = build({ exam: { id: 'exam-1', tenant_id: 'tenant-b', instructor_id: 'instructor-x' } });
+    const response = await invokeRoute(router, { method: 'GET', url: '/exams/exam-1/versions/ver-1', token: INSTRUCTOR_C });
+    assert.equal(response.statusCode, 404);
+});
+
+test('staff exam authority: the tenant owner and the course instructor keep access', async () => {
+    const owner = build({ exam: UNRELATED_COURSE_EXAM });
+    const ownerRead = await invokeRoute(owner.router, { method: 'GET', url: '/exams/exam-1/versions/ver-1', token: OWNER_A });
+    assert.equal(ownerRead.statusCode, 200);
+    const ownerBody = ownerRead.body as { questions?: Array<Record<string, unknown>> };
+    assert.deepEqual(ownerBody.questions?.[0].correct_answers, ['4'], 'the owner still sees the answer key');
+
+    const courseInstructor = build({});
+    assert.equal((await invokeRoute(courseInstructor.router, { method: 'POST', url: '/exams/exam-1/versions', token: INSTRUCTOR_A, body: validBody() })).statusCode, 201);
+});
+
+test('staff exam authority: an instructor teaching a group of the course passes', async () => {
+    const { router } = build({
+        exam: { id: 'exam-1', tenant_id: 'tenant-a', instructor_id: null },
+        teachingGroups: [{ id: 'g-1' }],
+    });
+    const response = await invokeRoute(router, { method: 'GET', url: '/exams/exam-1/versions/ver-1', token: INSTRUCTOR_A });
+    assert.equal(response.statusCode, 200);
+});
+
+test('staff exam authority: a branch-scoped instructor passes only for their own course branch', async () => {
+    const membership = { id: 'bm-1', branch_id: 'br-1', user_id: 'instructor-br-a', role: 'instructor', status: 'active', version: 1 };
+    const branch = { ...UNRELATED_COURSE_EXAM, instructor_id: null };
+    const allowed = await invokeRoute(build({
+        exam: branch,
+        branchRow: { id: 'br-1', tenant_id: 'tenant-a', status: 'active', version: 1 },
+        branchMembership: membership,
+        courseGroupsInBranch: [{ id: 'g-1' }],
+    }).router, { method: 'GET', url: '/exams/exam-1/versions/ver-1', token: INSTRUCTOR_BR_A });
+    assert.equal(allowed.statusCode, 200);
+
+    const denied = await invokeRoute(build({
+        exam: branch,
+        branchRow: { id: 'br-1', tenant_id: 'tenant-a', status: 'active', version: 1 },
+        branchMembership: membership,
+    }).router, { method: 'GET', url: '/exams/exam-1/versions/ver-1', token: INSTRUCTOR_BR_A });
+    assert.equal(denied.statusCode, 403, 'a course with no group in the instructor branch is denied');
+});
+
+/* ------------------------------------------------------------------------- */
+/* T2 — G-A2-3: regrade preserves the terminal expired/auto_submitted state   */
+/* ------------------------------------------------------------------------- */
+
+const EXPIRED_ATTEMPT = {
+    ...ATTEMPT_ROW,
+    status: 'expired',
+    auto_submitted: 1,
+    auto_score: 0,
+    score: 0,
+    grading_fingerprint: 'expired-fingerprint-that-differs',
+    graded_at: '2026-06-01 11:00:00',
+    version: 3,
+};
+
+test('regrade: an expired, auto-submitted attempt keeps status expired and is guarded by the expected state and version', async () => {
+    const { router, executed } = build({
+        attempt: { ...EXPIRED_ATTEMPT },
+        storedAnswers: [
+            { id: 'a1', question_ref: 'eq-1', question_type: 'single_choice', response: '"3"', awarded_points: '0.00', is_correct: 0, manual_review: 0 },
+        ],
+    });
+    const response = await invokeRoute(router, { method: 'POST', url: '/attempts/attempt-1/regrade', token: INSTRUCTOR_A });
+    assert.equal(response.statusCode, 200);
+    const body = response.body as Record<string, unknown>;
+    assert.equal(body.applied, true, 'the changed fingerprint re-applies the grade');
+    assert.equal(body.status, 'expired', 'the terminal expired state survives the regrade');
+    assert.equal(body.auto_score, 0);
+
+    const update = executed.find((e) => e.sql.includes('UPDATE exam_versioned_attempts'));
+    assert.ok(update, 'the regrade writes the recomputed grade');
+    assert.equal(update!.params[0], 'expired', 'status is preserved, never reset to graded');
+    assert.equal(update!.sql.includes('AND status = ? AND version = ?'), true, 'the UPDATE is guarded by the expected state and version');
+    assert.equal(update!.params[9], 'expired', 'the guard carries the expected status');
+    assert.equal(update!.params[10], 3, 'the guard carries the expected version');
+    assert.equal(update!.sql.includes('auto_submitted'), false, 'auto_submitted is never flipped by a regrade');
+
+    const ledger = executed.find((e) => e.sql.includes('UPDATE exam_versioned_answers'));
+    assert.ok(ledger, 'the award ledger is re-applied');
+    assert.ok(auditAction(executed, 'exam_attempt.regrade'));
+});
+
+test('regrade: a manually submitted graded attempt still re-applies and stays graded', async () => {
+    const { router, executed } = build({
+        attempt: { ...ATTEMPT_ROW, status: 'graded', auto_submitted: 0, grading_fingerprint: 'old', score: '0.00', auto_score: 0, version: 3 },
+        storedAnswers: [
+            { id: 'a1', question_ref: 'eq-1', question_type: 'single_choice', response: '"4"', awarded_points: '0.00', is_correct: 0, manual_review: 0 },
+        ],
+    });
+    const response = await invokeRoute(router, { method: 'POST', url: '/attempts/attempt-1/regrade', token: INSTRUCTOR_A });
+    assert.equal(response.statusCode, 200);
+    const body = response.body as Record<string, unknown>;
+    assert.equal(body.applied, true);
+    assert.equal(body.status, 'graded');
+    const update = executed.find((e) => e.sql.includes('UPDATE exam_versioned_attempts'));
+    assert.ok(update);
+    assert.equal(update!.params[0], 'graded');
+    assert.equal(update!.params[10], 3, 'the version guard carries the expected version');
+});
+
+test('regrade: a concurrent change (zero affected rows) is 409 with the state guard', async () => {
+    const { router, executed } = build({
+        attempt: { ...EXPIRED_ATTEMPT },
+        storedAnswers: [
+            { id: 'a1', question_ref: 'eq-1', question_type: 'single_choice', response: '"3"', awarded_points: '0.00', is_correct: 0, manual_review: 0 },
+        ],
+    }, { attemptUpdateAffected: 0 });
+    const response = await invokeRoute(router, { method: 'POST', url: '/attempts/attempt-1/regrade', token: INSTRUCTOR_A });
+    assert.equal(response.statusCode, 409, 'the losing regrade never applies a partial grade');
+    assert.equal(executed.some((e) => e.sql.includes('INSERT IGNORE INTO exam_grading_runs')), false, 'no run row is written on a lost guard');
+});
+
+/* ------------------------------------------------------------------------- */
+/* T2 — G-A2-4: pinning enforces the existing branch visibility filter only   */
+/* ------------------------------------------------------------------------- */
+
+test('create: a branch-scoped instructor resolves pins through question_bank_questions with the branch visibility filter', async () => {
+    const { router, executed } = build({
+        exam: { id: 'exam-1', tenant_id: 'tenant-a', instructor_id: null },
+        branchRow: { id: 'br-1', tenant_id: 'tenant-a', status: 'active', version: 1 },
+        branchMembership: { id: 'bm-1', branch_id: 'br-1', user_id: 'instructor-br-a', role: 'instructor', status: 'active', version: 1 },
+        courseGroupsInBranch: [{ id: 'g-1' }],
+    });
+    const response = await invokeRoute(router, { method: 'POST', url: '/exams/exam-1/versions', token: INSTRUCTOR_BR_A, body: validBody() });
+    assert.equal(response.statusCode, 201);
+    const pin = executed.find((e) => e.sql.includes('FROM question_bank_versions'));
+    assert.ok(pin, 'the pin resolver runs');
+    assert.equal(pin!.sql.includes('INNER JOIN question_bank_questions'), true, 'visibility is resolved from the branch-scoped question head');
+    assert.equal(
+        pin!.sql.includes("(branch_scope='tenant' OR (branch_scope='branch' AND branch_id=?))"),
+        true,
+        'the existing branch visibility filter is enforced on the pin query',
+    );
+    assert.deepEqual(pin!.params, ['tenant-a', 'q1', 1, 'br-1'], 'the branch filter is bound to the principal branch');
+});
+
+test('create: a tenant instructor without branch claims may only pin tenant-scope question versions', async () => {
+    const { router, executed } = build({});
+    const response = await invokeRoute(router, { method: 'POST', url: '/exams/exam-1/versions', token: INSTRUCTOR_A, body: validBody() });
+    assert.equal(response.statusCode, 201);
+    const pin = executed.find((e) => e.sql.includes('FROM question_bank_versions'));
+    assert.ok(pin);
+    assert.equal(pin!.sql.includes("branch_scope='tenant'"), true);
+    assert.deepEqual(pin!.params, ['tenant-a', 'q1', 1], 'no branch scalar is bound for a non-owner without a branch');
+});
+
+test('create: the owner pin query sees every branch of the tenant (filter 1=1)', async () => {
+    const { router, executed } = build({});
+    const response = await invokeRoute(router, { method: 'POST', url: '/exams/exam-1/versions', token: OWNER_A, body: validBody() });
+    assert.equal(response.statusCode, 201);
+    const pin = executed.find((e) => e.sql.includes('FROM question_bank_versions'));
+    assert.ok(pin);
+    assert.equal(pin!.sql.includes('1=1'), true);
 });

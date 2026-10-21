@@ -85,19 +85,47 @@ const seedSeqOf = (leaf: { chain_seq: number | string | null } | undefined): num
     return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
 };
 
+/**
+ * MySQL's JSON column normalizes objects on store: keys are ordered by byte
+ * length, then bytewise. The writer hashes the insertion-order string while
+ * verification re-reads the normalized, already-parsed value, so both sides
+ * must hash the same normalized form or an untouched chain fails.
+ */
+const compareMysqlJsonKeys = (a: string, b: string): number => {
+    const left = Buffer.from(a, 'utf8');
+    const right = Buffer.from(b, 'utf8');
+    return left.length - right.length || Buffer.compare(left, right);
+};
+
+const normalizeJson = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(normalizeJson);
+    if (value !== null && typeof value === 'object') {
+        const source = value as Record<string, unknown>;
+        const out: Record<string, unknown> = {};
+        for (const key of Object.keys(source).sort(compareMysqlJsonKeys)) {
+            out[key] = normalizeJson(source[key]);
+        }
+        return out;
+    }
+    return value;
+};
+
 const canonicalizeJson = (value: unknown): string => {
     if (value === null || value === undefined) return '';
+    let parsed: unknown = value;
     if (typeof value === 'string') {
         try {
-            return JSON.stringify(JSON.parse(value));
+            parsed = JSON.parse(value);
         } catch {
             return JSON.stringify(value);
         }
     }
-    if (typeof value === 'object' || typeof value === 'boolean' || typeof value === 'number') {
-        return JSON.stringify(value);
+    // A JSON null is stored and read back exactly like SQL NULL.
+    if (parsed === null) return '';
+    if (typeof parsed === 'object' || typeof parsed === 'boolean' || typeof parsed === 'number' || typeof parsed === 'string') {
+        return JSON.stringify(normalizeJson(parsed));
     }
-    return String(value);
+    return String(parsed);
 };
 
 export interface ChainHashPayload {
@@ -302,6 +330,8 @@ export interface ChainVerification {
     checked: number;
     unsealed: number;
     firstFailure: ChainFailure | null;
+    /** True when sealed rows beyond the scan cap were not walked. */
+    truncated: boolean;
     /** Null when no anchored head row exists (legacy chain; truncation undetectable). */
     headAnchor: ChainHeadAnchor | null;
 }
@@ -324,34 +354,52 @@ export const verifyAuditChain = async (
     const limit = Number.isInteger(requested) && requested > 0 && requested <= MAX_CHAIN_VERIFY_ROWS
         ? requested
         : MAX_CHAIN_VERIFY_ROWS;
-    const rows = await db.query<AuditChainRow>(
+    const fetched = await db.query<AuditChainRow>(
         `SELECT id, actor_user_id, tenant_id, action, resource_type, resource_id,
                 old_value, new_value, reason, entry_hash, prev_entry_hash, chain_seq
          FROM audit_events
          WHERE entry_hash IS NOT NULL
          ORDER BY chain_seq ASC, created_at ASC, id ASC
-         LIMIT ${limit}`,
+         LIMIT ${limit + 1}`,
     );
+    const truncated = fetched.length > limit;
+    const rows = truncated ? fetched.slice(0, limit) : fetched;
     const unsealedRows = await db.query<{ unsealed: number }>(
         'SELECT COUNT(*) AS unsealed FROM audit_events WHERE entry_hash IS NULL',
     );
     const unsealed = Number(unsealedRows[0]?.unsealed ?? 0);
-    const headRows = await db.query<AuditChainHeadRow>(
-        'SELECT head_seq, head_entry_hash, head_row_id FROM audit_chain_head WHERE id = ?',
-        [CHAIN_HEAD_ROW_ID],
-    );
-    const head = headRows[0] ?? null;
-    const leafRows = await db.query<{ id: string; entry_hash: string; chain_seq: number | string | null }>(
-        `SELECT id, entry_hash, chain_seq FROM audit_events
-         WHERE entry_hash IS NOT NULL
-         ORDER BY chain_seq DESC, created_at DESC, id DESC
-         LIMIT 1`,
-    );
-    const leaf = leafRows[0] ?? null;
     const asSeq = (value: number | string | null | undefined): number | null => {
         const parsed = Number(value ?? 0);
         return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : null;
     };
+    const readAnchorPair = async () => {
+        const headRows = await db.query<AuditChainHeadRow>(
+            'SELECT head_seq, head_entry_hash, head_row_id FROM audit_chain_head WHERE id = ?',
+            [CHAIN_HEAD_ROW_ID],
+        );
+        const leafRows = await db.query<{ id: string; entry_hash: string; chain_seq: number | string | null }>(
+            `SELECT id, entry_hash, chain_seq FROM audit_events
+             WHERE entry_hash IS NOT NULL
+             ORDER BY chain_seq DESC, created_at DESC, id DESC
+             LIMIT 1`,
+        );
+        const pairHead = headRows[0] ?? null;
+        const pairLeaf = leafRows[0] ?? null;
+        const consistent = pairHead
+            ? (pairLeaf
+                ? asSeq(pairLeaf.chain_seq) === headSeqOf(pairHead) && (pairLeaf.entry_hash ?? null) === (pairHead.head_entry_hash ?? null)
+                : headSeqOf(pairHead) === 0 && (pairHead.head_entry_hash ?? null) === null)
+            : true;
+        return { head: pairHead, leaf: pairLeaf, consistent };
+    };
+    // The head and the leaf are two separate reads; a sealed append landing
+    // between them is a transient disagreement, not tampering. Only a
+    // mismatch that survives re-reading is reported.
+    let anchorPair = await readAnchorPair();
+    for (let retry = 0; retry < 2 && !anchorPair.consistent; retry += 1) {
+        anchorPair = await readAnchorPair();
+    }
+    const { head, leaf } = anchorPair;
     let previousHash: string | null = null;
     let previousSeq: number | null = null;
     let walkFailure: ChainFailure | null = null;
@@ -445,7 +493,7 @@ export const verifyAuditChain = async (
         }
     }
     const firstFailure = walkFailure ?? anchorFailure;
-    return { ok: firstFailure === null, checked: rows.length, unsealed, firstFailure, headAnchor };
+    return { ok: firstFailure === null, checked: rows.length, unsealed, firstFailure, truncated, headAnchor };
 };
 
 /* ----------------------------------------------------------------------- */
@@ -655,7 +703,7 @@ export const toAuditCsv = (rows: Record<string, unknown>[]): string => {
 export const exportAuditCsv = async (
     db: AuditLogDataAccess,
     filters: AuditLogFilters,
-): Promise<{ csv: string; rowCount: number }> => {
+): Promise<{ csv: string; rowCount: number; truncated: boolean }> => {
     const where = buildAuditWhere(filters);
     const rows = await db.query<Record<string, unknown>>(
         `SELECT id, action, resource_type, resource_id, actor_user_id, tenant_id,
@@ -666,5 +714,5 @@ export const exportAuditCsv = async (
          LIMIT ${MAX_EXPORT_ROWS}`,
         where.params,
     );
-    return { csv: toAuditCsv(rows), rowCount: rows.length };
+    return { csv: toAuditCsv(rows), rowCount: rows.length, truncated: rows.length >= MAX_EXPORT_ROWS };
 };

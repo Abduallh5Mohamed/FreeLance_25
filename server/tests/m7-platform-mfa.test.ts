@@ -4,14 +4,19 @@
  */
 import assert from 'node:assert/strict';
 import test, { after, before } from 'node:test';
-import type { NextFunction, Router } from 'express';
+import type { NextFunction, RequestHandler, Router } from 'express';
 import { createAuthenticateToken } from '../src/middleware/auth';
+import type { AuthRequest } from '../src/middleware/auth';
+import type { SealedAuditRecordInput } from '../src/services/audit-log';
 import {
     DEFAULT_STEPUP_MAX_AGE_SECONDS,
     LOCKOUT_SECONDS,
     MAX_VERIFY_ATTEMPTS,
     MFA_RATE_LIMITS,
+    MfaRow,
+    PlatformMfaDb,
     PlatformMfaStore,
+    STEPUP_PURPOSE,
     base32Decode,
     createSqlPlatformMfaStore,
     generateRecoveryCodes,
@@ -169,10 +174,12 @@ const makeStore = (): StoreFixture => {
             };
         },
         upsertPendingSecret: async (userId, sealedSecret) => {
-            // Mirror of the SQL-store contract: a re-enroll invalidates every
-            // previously issued recovery code before the new secret lands.
-            recoveryHashes.delete(String(userId));
             const previous = rows.get(String(userId));
+            // Mirror of the SQL-store contract: an active enrollment is never
+            // rotated, and a re-enroll invalidates every previously issued
+            // recovery code before the new secret lands.
+            if (previous?.status === 'active') return 0;
+            recoveryHashes.delete(String(userId));
             rows.set(String(userId), {
                 user_id: String(userId),
                 sealed_secret: sealedSecret,
@@ -182,14 +189,18 @@ const makeStore = (): StoreFixture => {
                 locked_until: null,
                 stepup_epoch: (previous?.stepup_epoch ?? 0) + 1,
             });
+            return 1;
         },
-        activate: async (userId) => {
+        activate: async (userId, expectedEpoch) => {
             const row = rows.get(String(userId));
-            if (row && row.status === 'pending') row.status = 'active';
+            if (!row || row.status !== 'pending' || row.stepup_epoch !== expectedEpoch) return 0;
+            row.status = 'active';
+            return 1;
         },
-        markStepUsed: async (userId, step) => {
+        markStepUsed: async (userId, step, expectedEpoch) => {
             const row = rows.get(String(userId));
-            if (!row || row.status === 'disabled' || row.last_used_step >= step) return 0;
+            if (!row || row.status === 'disabled' || row.stepup_epoch !== expectedEpoch) return 0;
+            if (row.last_used_step >= step) return 0;
             row.last_used_step = step;
             return 1;
         },
@@ -229,15 +240,15 @@ const makeStore = (): StoreFixture => {
         },
         disable: async (userId) => {
             const row = rows.get(String(userId));
-            if (row) {
-                row.status = 'disabled';
-                row.sealed_secret = null;
-                row.last_used_step = 0;
-                row.stepup_epoch += 1;
-            }
+            if (!row || (row.status !== 'active' && row.status !== 'pending')) return 0;
+            row.status = 'disabled';
+            row.sealed_secret = null;
+            row.last_used_step = 0;
+            row.stepup_epoch += 1;
             // Mirror of the SQL-store contract: disabling deletes recovery
             // codes so a later re-enroll cannot inherit them.
             recoveryHashes.delete(String(userId));
+            return 1;
         },
     };
     return { store, rows, recoveryHashes };
@@ -259,20 +270,24 @@ interface RouteFixture {
 interface BuildOptions {
     permission?: (userId: string, permission: string) => Promise<boolean>;
     sealKey?: () => Buffer | null;
+    /** Override the SQL seam (used to prove production transaction wiring). */
+    db?: PlatformMfaDb;
+    audit?: (input: SealedAuditRecordInput) => Promise<void>;
+    authenticate?: RequestHandler;
 }
 
-const buildRouter = (store: PlatformMfaStore, options: BuildOptions = {}): RouteFixture => {
+const buildRouter = (store: PlatformMfaStore | undefined, options: BuildOptions = {}): RouteFixture => {
     const audits: AuditEntry[] = [];
     const state = { failAudit: false };
     let rngState = 0;
     const router: Router = createPlatformMfaRouter({
-        db: {
+        db: options.db ?? {
             query: async (): Promise<unknown[]> => [],
             queryOne: async (): Promise<unknown | null> => null,
             execute: async (): Promise<{ affectedRows: number }> => ({ affectedRows: 1 }),
         },
         store,
-        authenticate: createAuthenticateToken(makeRepository({
+        authenticate: options.authenticate ?? createAuthenticateToken(makeRepository({
             'admin-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'admin' },
             'admin-b': { is_active: 1, token_version: 0, suspension_active: 0, role: 'admin' },
             'owner-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' },
@@ -289,7 +304,7 @@ const buildRouter = (store: PlatformMfaStore, options: BuildOptions = {}): Route
             if (allowed) return next();
             res.status(403).json({ error: 'Forbidden' });
         },
-        recordAudit: async (input) => {
+        recordAudit: options.audit ?? (async (input) => {
             if (state.failAudit) throw new Error('audit sink down');
             audits.push({
                 action: input.action,
@@ -297,7 +312,7 @@ const buildRouter = (store: PlatformMfaStore, options: BuildOptions = {}): Route
                 resourceId: input.resourceId,
                 reason: input.reason ?? null,
             });
-        },
+        }),
         sealKey: options.sealKey ?? (() => TEST_KEY),
         now: () => FIXED_NOW,
         // each generated batch must differ from the previous one, so the
@@ -514,7 +529,7 @@ test('mfa verify: a correct totp code issues a step-up token; the used step cann
     });
     assert.equal(response.statusCode, 200);
     const token = (response.body as { step_up_token?: string }).step_up_token ?? '';
-    assert.ok(token.startsWith('su1.'));
+    assert.ok(token.startsWith('su2.'));
     const verified = verifyStepUpToken(token, {
         expectedUserId: 'admin-a', currentEpoch: 1, key: TEST_KEY,
         nowMs: FIXED_NOW, maxAgeSeconds: DEFAULT_STEPUP_MAX_AGE_SECONDS,
@@ -747,4 +762,296 @@ test('mfa disable: an unknown user reaches 404 with no row created', async () =>
     });
     assert.equal(response.statusCode, 404);
     assert.equal(fixture.rows.size, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Simultaneous-request hardening: replay, recovery consumption, activation,
+// enrollment swap, production transaction wiring.
+// ---------------------------------------------------------------------------
+
+/** Row shape the SQL store expects from `findRow`. */
+const mfaRow = (
+    userId: string,
+    secret: string,
+    status: 'pending' | 'active',
+    epoch = 1,
+): MfaRow => ({
+    user_id: userId,
+    sealed_secret: sealValue(secret, TEST_KEY),
+    status,
+    last_used_step: 0,
+    failed_attempts: 0,
+    locked_until: null,
+    stepup_epoch: epoch,
+});
+
+interface TransactionalDbFixture {
+    db: PlatformMfaDb;
+    /** Statements that reached the committed (outer) connection. */
+    committed: string[];
+}
+
+/**
+ * SQL seam double: `transaction` buffers every write and only publishes it
+ * when the callback resolves, which is exactly the rollback contract the
+ * production `withTransaction` seam provides.
+ */
+const makeTransactionalDb = (row: MfaRow | null): TransactionalDbFixture => {
+    const committed: string[] = [];
+    const queryOne = async <T = Record<string, unknown>>(): Promise<T | null> =>
+        (row ? ({ ...row } as unknown as T) : null);
+    const db: PlatformMfaDb = {
+        query: async <T = Record<string, unknown>>(): Promise<T[]> => [],
+        queryOne,
+        execute: async (sql: string): Promise<{ affectedRows: number }> => {
+            committed.push(sql);
+            return { affectedRows: 1 };
+        },
+        transaction: async <T>(fn: (tx: PlatformMfaDb) => Promise<T>): Promise<T> => {
+            const staged: string[] = [];
+            const tx: PlatformMfaDb = {
+                query: async <R = Record<string, unknown>>(): Promise<R[]> => [],
+                queryOne,
+                execute: async (sql: string): Promise<{ affectedRows: number }> => {
+                    staged.push(sql);
+                    return { affectedRows: 1 };
+                },
+            };
+            const result = await fn(tx);
+            committed.push(...staged);
+            return result;
+        },
+    };
+    return { db, committed };
+};
+
+const NO_STORE_WRITE = /platform_mfa_secrets|platform_mfa_recovery_codes/;
+
+test('mfa verify: parallel submissions of the same totp code allow exactly one', async () => {
+    const fixture = makeStore();
+    seedRow(fixture.rows, 'admin-a', { secret: SECRET32, epoch: 1 });
+    const { router } = buildRouter(fixture.store);
+    const code = codeFor(SECRET32, currentStep);
+    const responses = await Promise.all([
+        invoke(router, { method: 'POST', url: '/verify', token: ADMIN_A, body: { code } }),
+        invoke(router, { method: 'POST', url: '/verify', token: ADMIN_A, body: { code } }),
+    ]);
+    assert.deepEqual(responses.map((response) => response.statusCode).sort(), [200, 400]);
+    assert.equal(fixture.rows.get('admin-a')?.last_used_step, currentStep);
+});
+
+test('mfa verify: parallel submissions of the same recovery code allow exactly one', async () => {
+    const fixture = makeStore();
+    seedRow(fixture.rows, 'admin-a', { secret: SECRET32, epoch: 1 });
+    let counter = 0;
+    const codes = generateRecoveryCodes(undefined, (length) => Buffer.alloc(length, (counter += 1) % 256));
+    await fixture.store.saveRecoveryCodeHashes('admin-a', codes.map(recoveryCodeHash));
+    const { router } = buildRouter(fixture.store);
+    const responses = await Promise.all([
+        invoke(router, { method: 'POST', url: '/verify', token: ADMIN_A, body: { recovery_code: codes[0] } }),
+        invoke(router, { method: 'POST', url: '/verify', token: ADMIN_A, body: { recovery_code: codes[0] } }),
+    ]);
+    assert.deepEqual(responses.map((response) => response.statusCode).sort(), [200, 400]);
+    assert.equal((fixture.recoveryHashes.get('admin-a') ?? []).length, 9);
+});
+
+test('mfa verify: simultaneous pending activations disclose exactly one recovery batch', async () => {
+    const fixture = makeStore();
+    fixture.rows.set('admin-a', {
+        user_id: 'admin-a',
+        sealed_secret: sealValue(SECRET32, TEST_KEY),
+        status: 'pending',
+        last_used_step: 0,
+        failed_attempts: 0,
+        locked_until: null,
+        stepup_epoch: 1,
+    });
+    const { router, audits } = buildRouter(fixture.store);
+    const responses = await Promise.all([
+        invoke(router, {
+            method: 'POST', url: '/verify', token: ADMIN_A,
+            body: { code: codeFor(SECRET32, currentStep - 1) },
+        }),
+        invoke(router, {
+            method: 'POST', url: '/verify', token: ADMIN_A,
+            body: { code: codeFor(SECRET32, currentStep) },
+        }),
+    ]);
+    assert.deepEqual(responses.map((response) => response.statusCode), [200, 200]);
+    const batches = responses.map((response) => (response.body as { recovery_codes?: string[] }).recovery_codes ?? []);
+    assert.equal(batches.filter((batch) => batch.length > 0).length, 1);
+    assert.equal((fixture.recoveryHashes.get('admin-a') ?? []).length, 10);
+    assert.equal(audits.filter((entry) => entry.action === 'platform_mfa.activated').length, 1);
+});
+
+test('mfa verify: a pending secret replaced mid-verification can never be activated', async () => {
+    const fixture = makeStore();
+    fixture.rows.set('admin-a', {
+        user_id: 'admin-a',
+        sealed_secret: sealValue(SECRET32, TEST_KEY),
+        status: 'pending',
+        last_used_step: 0,
+        failed_attempts: 0,
+        locked_until: null,
+        stepup_epoch: 1,
+    });
+    const replacement = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+    let swapped = false;
+    const racing: PlatformMfaStore = {
+        ...fixture.store,
+        findRow: async (userId) => {
+            const row = await fixture.store.findRow(userId);
+            if (!swapped) {
+                swapped = true;
+                // A concurrent /enroll replaces the pending secret between the
+                // read and the step consumption of this verification.
+                await fixture.store.upsertPendingSecret(String(userId), sealValue(replacement, TEST_KEY));
+            }
+            return row;
+        },
+    };
+    const { router } = buildRouter(racing);
+    const response = await invoke(router, {
+        method: 'POST', url: '/verify', token: ADMIN_A,
+        body: { code: codeFor(SECRET32, currentStep) },
+    });
+    assert.equal(response.statusCode, 400);
+    const row = fixture.rows.get('admin-a');
+    assert.equal(row?.status, 'pending');
+    assert.equal(row?.last_used_step, 0);
+    assert.equal(openSealedValue(row?.sealed_secret ?? '', TEST_KEY), replacement);
+});
+
+test('mfa verify: a missing sealing key denies without consuming the step', async () => {
+    const fixture = makeStore();
+    seedRow(fixture.rows, 'admin-a', { secret: SECRET32, epoch: 1 });
+    const { router } = buildRouter(fixture.store, { sealKey: () => null });
+    const response = await invoke(router, {
+        method: 'POST', url: '/verify', token: ADMIN_A,
+        body: { code: codeFor(SECRET32, currentStep) },
+    });
+    assert.equal(response.statusCode, 503);
+    assert.equal(fixture.rows.get('admin-a')?.last_used_step, 0);
+});
+
+test('mfa verify: a failed audit rolls back the consumed step (production transaction seam)', async () => {
+    const { db, committed } = makeTransactionalDb(mfaRow('admin-a', SECRET32, 'active'));
+    const { router } = buildRouter(undefined, {
+        db,
+        audit: async () => { throw new Error('audit sink down'); },
+    });
+    const response = await invoke(router, {
+        method: 'POST', url: '/verify', token: ADMIN_A,
+        body: { code: codeFor(SECRET32, currentStep) },
+    });
+    assert.equal(response.statusCode, 500);
+    assert.equal(committed.some((sql) => sql.includes('last_used_step')), false);
+});
+
+test('mfa enroll: a failed audit rolls back the pending secret (production transaction seam)', async () => {
+    const { db, committed } = makeTransactionalDb(null);
+    const { router } = buildRouter(undefined, {
+        db,
+        audit: async () => { throw new Error('audit sink down'); },
+    });
+    const response = await invoke(router, {
+        method: 'POST', url: '/enroll', token: ADMIN_A,
+        body: { reason: 'audit failure rollout' },
+    });
+    assert.equal(response.statusCode, 500);
+    assert.equal(committed.some((sql) => NO_STORE_WRITE.test(sql)), false);
+});
+
+test('mfa enroll: a successful mutation commits on the transaction seam', async () => {
+    const { db, committed } = makeTransactionalDb(null);
+    const { router } = buildRouter(undefined, { db });
+    const response = await invoke(router, {
+        method: 'POST', url: '/enroll', token: ADMIN_A,
+        body: { reason: 'sealed enrollment on one connection' },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.ok(committed.some((sql) => sql.includes('INSERT INTO platform_mfa_secrets')));
+});
+
+test('step-up tokens are bound to purpose and session, not just the user', () => {
+    const token = signStepUpToken('admin-a', 3, TEST_KEY, 1_000_000_000, {
+        purpose: STEPUP_PURPOSE,
+        sessionId: 'sess-1',
+    });
+    const base = {
+        expectedUserId: 'admin-a', currentEpoch: 3, key: TEST_KEY,
+        nowMs: 1_000_000_000, maxAgeSeconds: DEFAULT_STEPUP_MAX_AGE_SECONDS,
+        expectedPurpose: STEPUP_PURPOSE, expectedSessionId: 'sess-1',
+    };
+    assert.equal(verifyStepUpToken(token, base).ok, true);
+    const otherSession = verifyStepUpToken(token, { ...base, expectedSessionId: 'sess-2' });
+    assert.equal(otherSession.ok, false);
+    if (!otherSession.ok) assert.equal(otherSession.reason, 'session');
+    const otherPurpose = verifyStepUpToken(token, { ...base, expectedPurpose: 'tenant_admin.step_up' });
+    assert.equal(otherPurpose.ok, false);
+    if (!otherPurpose.ok) assert.equal(otherPurpose.reason, 'purpose');
+    const legacy = verifyStepUpToken(
+        ['su1', Buffer.from('admin-a', 'utf8').toString('base64url'), '3', '1000000000', 'mac'].join('.'),
+        base,
+    );
+    assert.equal(legacy.ok, false);
+    if (!legacy.ok) assert.equal(legacy.reason, 'malformed');
+});
+
+const sessionAuth = (sessionId: string): RequestHandler => (req, _res, next) => {
+    (req as AuthRequest).user = { id: 'admin-a', email: null, phone: null, role: 'admin', sessionId };
+    next();
+};
+
+test('mfa disable: a step-up token from another session is rejected', async () => {
+    const fixture = makeStore();
+    seedRow(fixture.rows, 'admin-a', { secret: SECRET32, epoch: 1 });
+    const foreignSession = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW, { sessionId: 'sess-2' });
+    const bound = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW, { sessionId: 'sess-1' });
+    const { router } = buildRouter(fixture.store, { authenticate: sessionAuth('sess-1') });
+    const denied = await invoke(router, {
+        method: 'POST', url: '/disable', token: ADMIN_A,
+        body: { reason: 'session replay attempt' },
+        headers: { 'x-mfa-step-up': foreignSession },
+    });
+    assert.equal(denied.statusCode, 403);
+    assert.equal((denied.body as { code?: string }).code, 'STEP_UP_SESSION');
+    assert.equal(fixture.rows.get('admin-a')?.status, 'active');
+    const allowed = await invoke(router, {
+        method: 'POST', url: '/disable', token: ADMIN_A,
+        body: { reason: 'same session offboarding' },
+        headers: { 'x-mfa-step-up': bound },
+    });
+    assert.equal(allowed.statusCode, 200);
+    assert.equal(fixture.rows.get('admin-a')?.status, 'disabled');
+});
+
+test('mfa verify: a lockout persisted in the row denies a correct code on a fresh router', async () => {
+    const fixture = makeStore();
+    seedRow(fixture.rows, 'admin-a', { secret: SECRET32, epoch: 1 }, true);
+    const { router } = buildRouter(fixture.store);
+    const response = await invoke(router, {
+        method: 'POST', url: '/verify', token: ADMIN_A,
+        body: { code: codeFor(SECRET32, currentStep) },
+    });
+    assert.equal(response.statusCode, 429);
+    assert.equal((response.body as { code?: string }).code, 'MFA_LOCKED');
+    assert.equal(fixture.rows.get('admin-a')?.last_used_step, 0);
+});
+
+test('mfa disable: a failed audit rolls back the disabled row (production transaction seam)', async () => {
+    const { db, committed } = makeTransactionalDb(mfaRow('admin-a', SECRET32, 'active'));
+    const { router } = buildRouter(undefined, {
+        db,
+        audit: async () => { throw new Error('audit sink down'); },
+    });
+    const token = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW);
+    const response = await invoke(router, {
+        method: 'POST', url: '/disable', token: ADMIN_A,
+        body: { reason: 'audit failure on disable' },
+        headers: { 'x-mfa-step-up': token },
+    });
+    assert.equal(response.statusCode, 500);
+    assert.equal(committed.some((sql) => sql.includes("status = 'disabled'")), false);
+    assert.equal(committed.some((sql) => sql.includes('DELETE FROM platform_mfa_recovery_codes')), false);
 });

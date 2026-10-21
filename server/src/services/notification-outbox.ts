@@ -10,6 +10,22 @@
  * backoff (60s→300s…) and only up to max attempts, idempotently guarded by a
  * conditional claim UPDATE so two concurrent dispatchers cannot both claim.
  *
+ * A claim is a lease, not a promise: `recoverStaleSendingRows` flags rows whose
+ * 'sending' claim outlived the lease (a crash, or an adapter response lost
+ * after the provider accepted the message). It never re-sends and never
+ * resolves the row as sent/failed, because without a provider idempotency key
+ * an unknown outcome cannot be retried safely — it is marked for
+ * reconciliation instead of being silently wedged or double-delivered.
+ *
+ * B2-W9 adds three things on top of that model, without a second state machine:
+ *  - an `unknown` adapter outcome is quarantined (status stays 'sending',
+ *    `last_error` = UNKNOWN_OUTCOME_MARKER) and never retried as unsent;
+ *  - an `unavailable` outcome (no provider) is a pre-send result: bounded
+ *    retry, never a fake `sent`;
+ *  - every claim and every state write is fenced. The claim UPDATE bumps
+ *    `attempts`; the terminal write carries `AND attempts = ?`, so a
+ *    dispatcher whose lease was superseded cannot resolve the row.
+ *
  * STOP/consent is honored immediately: every dispatch re-checks consent right
  * before the adapter fires, so a revoke cancels even already-queued rows.
  *
@@ -109,6 +125,23 @@ const MAX_ATTEMPTS_DEFAULT = 5;
 const MAX_ATTEMPTS_CEILING = 10;
 const MAX_EVENT_LENGTH = 60;
 const MAX_PURPOSE_LENGTH = 50;
+
+/** Pre-adapter failures leave no external trace, so the claim is released. */
+const CONSENT_CHECK_ERROR = 'consent-check-failed';
+const RENDER_ERROR = 'render-failed';
+/** A persisted terminal state whose audit receipt could not be stored. */
+const RECEIPT_PERSIST_ERROR = 'receipt-persist-failed';
+/** The row changed state underneath a dispatcher; its write was not applied. */
+const TRANSITION_REJECTED = 'state-transition-rejected';
+
+/**
+ * Durable marker for a quarantined ambiguous send. The row keeps status
+ * 'sending' (so no dispatcher can claim it and no age-based sweep may resolve
+ * it) and this exact reason, which an operator reconciles against the provider.
+ * No schema column was added: the outbox ENUM has no 'unknown' member and this
+ * batch is forbidden from writing migrations.
+ */
+export const UNKNOWN_OUTCOME_MARKER = 'provider-outcome-unknown';
 
 const isDuplicateError = (error: unknown): boolean =>
     typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ER_DUP_ENTRY';
@@ -487,7 +520,15 @@ export const verifySecureLink = (
 export interface DeliveryAdapter {
     readonly channel: NotificationChannel;
     /** Bounded number of pending rows doled out per tick. */
-    deliver(message: { row: OutboxRow; subject: string; bodyText: string; bodyHtml: string; templateId: string | null }): Promise<ChannelSendOutcome>;
+    deliver(message: {
+        row: OutboxRow;
+        subject: string;
+        bodyText: string;
+        bodyHtml: string;
+        templateId: string | null;
+        /** Resolved at send time by the caller's purpose-scoped resolver. */
+        contact?: string;
+    }): Promise<ChannelSendOutcome>;
 }
 
 export interface OutboxConsentGate {
@@ -503,6 +544,12 @@ export interface DispatchOptions {
     now?: () => Date;
     /** Injected logger; production wires console, tests capture (PII-sanitized). */
     log?: (entry: unknown) => void;
+    /**
+     * B2-W9: binds the fetch and the claim to one tenant. A row whose
+     * `tenant_id` differs is never read into a dispatch decision and is
+     * reported as `tenant-mismatch` instead of being silently skipped.
+     */
+    tenantScope?: string;
 }
 
 export interface OutboxReceipt {
@@ -572,15 +619,59 @@ const finishRow = async (
     status: OutboxStatus,
     nextAttemptAt: Date | null,
     lastError: string | null,
+    /** B2-W9 fence: the attempt number this dispatcher's claim produced. */
+    expectedAttempts: number,
 ): Promise<boolean> => {
     const maskedError = lastError === null ? null : redactPiiText(lastError);
+    // next_attempt_at is TIMESTAMP(3) NOT NULL (migration 20261018_14). Writing
+    // NULL there is rejected by strict MySQL *after* the adapter already sent,
+    // which would wedge the row in 'sending' and invite a duplicate resend. A
+    // terminal state therefore keeps the last scheduled time.
+    //
+    // The `attempts = ?` predicate is the lease fence: the claim UPDATE bumped
+    // `attempts`, so a dispatcher whose claim was superseded (or whose row was
+    // re-claimed after a quarantine) cannot overwrite the authoritative state.
     const update = await db.execute(
-        `UPDATE notification_outbox SET status = ?, next_attempt_at = ?, last_error = ?,
+        `UPDATE notification_outbox SET status = ?, next_attempt_at = COALESCE(?, next_attempt_at), last_error = ?,
          delivered_at = CASE WHEN ? = 'sent' THEN UTC_TIMESTAMP() ELSE delivered_at END
-         WHERE id = ? AND status = 'sending'`,
-        [status, nextAttemptAt, maskedError, status, row.id],
+         WHERE id = ? AND status = 'sending' AND attempts = ?`,
+        [status, nextAttemptAt, maskedError, status, row.id, expectedAttempts],
     );
     return (update.affectedRows ?? 0) === 1;
+};
+
+const errorMessage = (error: unknown): string =>
+    error instanceof Error && error.message.length > 0 ? error.message : 'unknown-error';
+
+/**
+ * Receipts are the audit proof, not the delivery state. Once a terminal state
+ * is persisted a receipt failure must never be rethrown: the caller would
+ * treat a delivered message as undelivered and the row could be re-sent.
+ * The loss is surfaced as a sanitized log line instead.
+ */
+const writeReceiptSafely = async (
+    db: NotificationDataAccess,
+    row: OutboxRow,
+    outcome: string,
+    proof: Record<string, unknown>,
+    reason: string | null,
+    contact: string | null,
+    hmacKey: string,
+    options: DispatchOptions,
+): Promise<boolean> => {
+    try {
+        await writeReceipt(db, row, outcome, proof, reason, contact, hmacKey);
+        return true;
+    } catch (error) {
+        logDispatch(options, hmacKey, {
+            outboxId: row.id,
+            channel: row.channel,
+            eventType: row.event_type,
+            outcome,
+            reason: `${RECEIPT_PERSIST_ERROR}: ${errorMessage(error)}`,
+        });
+        return false;
+    }
 };
 
 /**
@@ -590,79 +681,154 @@ const finishRow = async (
  * is attempted per call. Any state other than a claimed pending row leaves the
  * row untouched.
  */
+export type DispatchOutcome =
+    | 'sent'
+    | 'retry'
+    | 'failed'
+    | 'bounced'
+    | 'cancelled'
+    | 'unknown'
+    | 'unavailable'
+    | 'skipped';
+
+export interface DispatchResult {
+    dispatched: boolean;
+    outcome: DispatchOutcome;
+    /** Set only when the row was refused before any state change. */
+    reason?: 'tenant-mismatch';
+}
+
 export const dispatchOutboxRow = async (
     db: NotificationDataAccess,
     rowId: string,
     adapters: readonly DeliveryAdapter[],
     options: DispatchOptions,
     hmacKey: string,
-): Promise<{ dispatched: boolean; outcome: 'sent' | 'retry' | 'failed' | 'bounced' | 'cancelled' | 'skipped' }> => {
+): Promise<DispatchResult> => {
+    const scoped = options.tenantScope !== undefined;
     const fetched = await db.queryOne<OutboxRow>(
-        'SELECT * FROM notification_outbox WHERE id = ? LIMIT 1',
-        [rowId],
+        scoped
+            ? 'SELECT * FROM notification_outbox WHERE id = ? AND tenant_id = ? LIMIT 1'
+            : 'SELECT * FROM notification_outbox WHERE id = ? LIMIT 1',
+        scoped ? [rowId, options.tenantScope] : [rowId],
     );
     // Treat the fetch as an immutable snapshot: the claim UPDATE below bumps
     // attempts in the database, never in the fetched copy.
     const row: OutboxRow | null = fetched ? { ...fetched } : null;
-    if (!row || row.status !== 'pending') return { dispatched: false, outcome: 'skipped' };
+    if (!row) {
+        if (scoped) {
+            // Distinguish "not this tenant" from "gone" so the worker can
+            // report an exact denial instead of a generic skip.
+            const foreign = await db.queryOne<{ id: string }>(
+                'SELECT id FROM notification_outbox WHERE id = ? LIMIT 1',
+                [rowId],
+            );
+            if (foreign) return { dispatched: false, outcome: 'skipped', reason: 'tenant-mismatch' };
+        }
+        return { dispatched: false, outcome: 'skipped' };
+    }
+    if (row.status !== 'pending') return { dispatched: false, outcome: 'skipped' };
     const now = options.now ?? (() => new Date());
     const claim = await db.execute(
-        `UPDATE notification_outbox SET status = 'sending', attempts = attempts + 1
-         WHERE id = ? AND status = 'pending' AND next_attempt_at <= ?`,
-        [rowId, now()],
+        scoped
+            ? `UPDATE notification_outbox SET status = 'sending', attempts = attempts + 1
+               WHERE id = ? AND status = 'pending' AND next_attempt_at <= ? AND tenant_id = ?`
+            : `UPDATE notification_outbox SET status = 'sending', attempts = attempts + 1
+               WHERE id = ? AND status = 'pending' AND next_attempt_at <= ?`,
+        scoped ? [rowId, now(), options.tenantScope] : [rowId, now()],
     );
     if ((claim.affectedRows ?? 0) === 0) return { dispatched: false, outcome: 'skipped' };
 
-    const consent = await options.consent.canDeliver({
-        userId: row.recipient_user_id,
-        userType: row.recipient_user_type,
-        purpose: row.purpose,
-        channel: row.channel,
-    });
+    const attempts = row.attempts < 0 ? 0 : row.attempts;
+    const maxAttempts = row.max_attempts > 0 ? row.max_attempts : MAX_ATTEMPTS_DEFAULT;
+    // The claim already counted this attempt in the database; the resulting
+    // value is also this dispatcher's fence for every later state write.
+    const cappedAttempts = attempts + 1;
+    const retryAt = (): Date => new Date(now().getTime() + outboxBackoffSeconds(cappedAttempts) * 1000);
+
+    /**
+     * A failure reached before the adapter has no external effect, so the
+     * claim can be released for a bounded retry instead of wedging the row in
+     * 'sending'. At the attempt cap the row is terminally failed — still a
+     * truthful outcome, because nothing was sent.
+     */
+    const releasePreSendFailure = async (
+        reason: string,
+    ): Promise<{ dispatched: boolean; outcome: 'retry' | 'failed' }> => {
+        if (cappedAttempts >= maxAttempts) {
+            await finishRow(db, row, 'failed', null, reason, cappedAttempts);
+            await writeReceiptSafely(db, row, 'failed', {}, reason, null, hmacKey, options);
+            return { dispatched: true, outcome: 'failed' };
+        }
+        await finishRow(db, row, 'pending', retryAt(), reason, cappedAttempts);
+        return { dispatched: true, outcome: 'retry' };
+    };
+
+    let consent: boolean;
+    try {
+        consent = await options.consent.canDeliver({
+            userId: row.recipient_user_id,
+            userType: row.recipient_user_type,
+            purpose: row.purpose,
+            channel: row.channel,
+        });
+    } catch (error) {
+        // Fail closed: an unreadable consent ledger must never fall through to
+        // a send, and must not leave the claim dangling.
+        const reason = `${CONSENT_CHECK_ERROR}: ${errorMessage(error)}`;
+        const released = await releasePreSendFailure(reason);
+        logDispatch(options, hmacKey, {
+            outboxId: row.id, channel: row.channel, eventType: row.event_type, outcome: released.outcome, reason,
+        });
+        return released;
+    }
     if (!consent) {
-        await finishRow(db, row, 'cancelled', null, 'consent-revoked');
-        await writeReceipt(db, row, 'cancelled', {}, 'consent-revoked', null, hmacKey);
+        await finishRow(db, row, 'cancelled', null, 'consent-revoked', cappedAttempts);
+        await writeReceiptSafely(db, row, 'cancelled', {}, 'consent-revoked', null, hmacKey, options);
         logDispatch(options, hmacKey, {
             outboxId: row.id, channel: row.channel, eventType: row.event_type, outcome: 'cancelled', reason: 'consent-revoked',
         });
         return { dispatched: true, outcome: 'cancelled' };
     }
 
-    const attempts = row.attempts < 0 ? 0 : row.attempts;
-    const maxAttempts = row.max_attempts > 0 ? row.max_attempts : MAX_ATTEMPTS_DEFAULT;
     if (attempts >= maxAttempts) {
-        await finishRow(db, row, 'failed', null, 'attempt-cap-reached');
-        await writeReceipt(db, row, 'failed', {}, 'attempt-cap-reached', null, hmacKey);
+        await finishRow(db, row, 'failed', null, 'attempt-cap-reached', cappedAttempts);
+        await writeReceiptSafely(db, row, 'failed', {}, 'attempt-cap-reached', null, hmacKey, options);
         return { dispatched: true, outcome: 'failed' };
     }
 
     const adapter = adapters.find((candidate) => candidate.channel === row.channel);
     if (!adapter) {
         // No adapter configured for this channel: fail closed and retry later.
-        const retryAt = new Date(now().getTime() + outboxBackoffSeconds(attempts + 1) * 1000);
-        const cappedAttempts = attempts + 1;
         if (cappedAttempts >= maxAttempts) {
-            await finishRow(db, row, 'failed', null, 'no-adapter');
+            await finishRow(db, row, 'failed', null, 'no-adapter', cappedAttempts);
             logDispatch(options, hmacKey, {
                 outboxId: row.id, channel: row.channel, eventType: row.event_type, outcome: 'failed', reason: 'no-adapter',
             });
             return { dispatched: true, outcome: 'failed' };
         }
-        await finishRow(db, row, 'pending', retryAt, 'no-adapter');
+        await finishRow(db, row, 'pending', retryAt(), 'no-adapter', cappedAttempts);
         return { dispatched: true, outcome: 'retry' };
     }
 
-    const payload = parseRowPayload(row);
-    const rendered = options.render(row);
+    let rendered: TemplateRenderResult;
+    try {
+        rendered = options.render(row);
+    } catch (error) {
+        const reason = `${RENDER_ERROR}: ${errorMessage(error)}`;
+        const released = await releasePreSendFailure(reason);
+        logDispatch(options, hmacKey, {
+            outboxId: row.id, channel: row.channel, eventType: row.event_type, outcome: released.outcome, reason,
+        });
+        return released;
+    }
     if (!rendered.ok) {
-        const cappedAttempts = attempts + 1;
         if (cappedAttempts >= maxAttempts) {
-            await finishRow(db, row, 'failed', null, rendered.error);
-            await writeReceipt(db, row, 'failed', {}, rendered.error, null, hmacKey);
+            await finishRow(db, row, 'failed', null, rendered.error, cappedAttempts);
+            await writeReceiptSafely(db, row, 'failed', {}, rendered.error, null, hmacKey, options);
             return { dispatched: true, outcome: 'failed' };
         }
-        const retryAt = new Date(now().getTime() + outboxBackoffSeconds(cappedAttempts) * 1000);
-        await finishRow(db, row, 'pending', retryAt, rendered.error);
+        await finishRow(db, row, 'pending', retryAt(), rendered.error, cappedAttempts);
         return { dispatched: true, outcome: 'retry' };
     }
 
@@ -676,39 +842,90 @@ export const dispatchOutboxRow = async (
             templateId: row.template_id,
         });
     } catch (error) {
+        // Legacy direct-dispatch seam: an adapter that throws instead of
+        // reporting is treated as a pre-send failure here. The worker wraps
+        // every adapter and upgrades a throw to `unknown` before it reaches
+        // this path, so production sends are never replayed on a maybe-sent
+        // request (see services/notification-worker.ts).
         outcome = { outcome: 'failed', reason: error instanceof Error ? error.message : 'delivery-threw' };
     }
 
-    if (outcome.outcome === 'sent') {
-        await finishRow(db, row, 'sent', null, null);
-        await writeReceipt(db, row, 'sent', outcome.proof, null, null, hmacKey);
+    /**
+     * Records an outcome the adapter actually reported. The receipt is written
+     * even if the state transition is rejected by a concurrent state change:
+     * the channel evidence is real, and losing it would hide a real send.
+     */
+    const applyTerminalOutcome = async (
+        status: 'sent' | 'bounced' | 'failed',
+        proof: Record<string, unknown>,
+        reason: string | null,
+    ): Promise<void> => {
+        const applied = await finishRow(db, row, status, null, status === 'sent' ? null : reason, cappedAttempts);
+        if (!applied) {
+            logDispatch(options, hmacKey, {
+                outboxId: row.id, channel: row.channel, eventType: row.event_type,
+                outcome: 'skipped', reason: TRANSITION_REJECTED,
+            });
+        }
+        await writeReceiptSafely(db, row, status, proof, reason, null, hmacKey, options);
         logDispatch(options, hmacKey, {
-            outboxId: row.id, channel: row.channel, eventType: row.event_type, outcome: 'sent', contact: null,
+            outboxId: row.id, channel: row.channel, eventType: row.event_type, outcome: status, reason,
         });
+    };
+
+    if (outcome.outcome === 'sent') {
+        await applyTerminalOutcome('sent', outcome.proof, null);
         return { dispatched: true, outcome: 'sent' };
     }
 
     if (outcome.outcome === 'bounced') {
-        await finishRow(db, row, 'bounced', null, outcome.reason);
-        await writeReceipt(db, row, 'bounced', {}, outcome.reason, null, hmacKey);
-        logDispatch(options, hmacKey, {
-            outboxId: row.id, channel: row.channel, eventType: row.event_type, outcome: 'bounced', reason: outcome.reason,
-        });
+        await applyTerminalOutcome('bounced', {}, outcome.reason);
         return { dispatched: true, outcome: 'bounced' };
     }
 
-    const cappedAttempts = attempts + 1;
-    if (cappedAttempts >= maxAttempts) {
-        await finishRow(db, row, 'failed', null, outcome.reason);
-        await writeReceipt(db, row, 'failed', {}, outcome.reason, null, hmacKey);
+    if (outcome.outcome === 'unknown') {
+        // The provider may have accepted the message. Quarantine: keep the row
+        // unclaimable ('sending' + exact marker) so no later pass can replay it
+        // as if it were definitely unsent. Reconciliation resolves it.
+        const applied = await finishRow(db, row, 'sending', null, UNKNOWN_OUTCOME_MARKER, cappedAttempts);
+        if (!applied) {
+            logDispatch(options, hmacKey, {
+                outboxId: row.id, channel: row.channel, eventType: row.event_type,
+                outcome: 'skipped', reason: TRANSITION_REJECTED,
+            });
+        }
+        await writeReceiptSafely(db, row, 'unknown', {}, outcome.reason, null, hmacKey, options);
         logDispatch(options, hmacKey, {
-            outboxId: row.id, channel: row.channel, eventType: row.event_type, outcome: 'failed', reason: outcome.reason,
+            outboxId: row.id, channel: row.channel, eventType: row.event_type, outcome: 'unknown', reason: outcome.reason,
         });
+        return { dispatched: true, outcome: 'unknown' };
+    }
+
+    if (outcome.outcome === 'unavailable') {
+        // No provider is configured: nothing was transmitted, so this is a
+        // pre-send failure with a bounded retry — never a fabricated `sent`.
+        if (cappedAttempts >= maxAttempts) {
+            await applyTerminalOutcome('failed', {}, outcome.reason);
+            return { dispatched: true, outcome: 'failed' };
+        }
+        await finishRow(db, row, 'pending', retryAt(), outcome.reason, cappedAttempts);
+        logDispatch(options, hmacKey, {
+            outboxId: row.id, channel: row.channel, eventType: row.event_type, outcome: 'unavailable', reason: outcome.reason,
+        });
+        return { dispatched: true, outcome: 'unavailable' };
+    }
+
+    if (outcome.permanent === true) {
+        await applyTerminalOutcome('failed', {}, outcome.reason);
         return { dispatched: true, outcome: 'failed' };
     }
-    const retryAt = new Date(now().getTime() + outboxBackoffSeconds(cappedAttempts) * 1000);
-    await finishRow(db, row, 'pending', retryAt, outcome.reason);
-    await writeReceipt(db, row, 'failed', {}, outcome.reason, null, hmacKey);
+
+    if (cappedAttempts >= maxAttempts) {
+        await applyTerminalOutcome('failed', {}, outcome.reason);
+        return { dispatched: true, outcome: 'failed' };
+    }
+    await finishRow(db, row, 'pending', retryAt(), outcome.reason, cappedAttempts);
+    await writeReceiptSafely(db, row, 'failed', {}, outcome.reason, null, hmacKey, options);
     logDispatch(options, hmacKey, {
         outboxId: row.id, channel: row.channel, eventType: row.event_type, outcome: 'retry', reason: outcome.reason,
     });
@@ -728,6 +945,145 @@ export const claimDueOutboxIds = async (
         [now()],
     );
     return rows.map((row) => row.id);
+};
+
+export interface ScopedClaimInput {
+    /** Required: a worker may only claim rows of the tenant it serves. */
+    tenantId: string;
+    /** Channels the caller has a ready adapter for; empty means "all". */
+    channels?: readonly string[];
+    limit?: number;
+    now?: () => Date;
+}
+
+/**
+ * B2-W9: tenant-scoped, channel-filtered claim. The tenant predicate is part
+ * of the SQL, not a post-filter, so a foreign row is never even read into a
+ * dispatch decision. An empty/absent tenant fails closed with no rows.
+ */
+export const claimDueOutboxIdsInScope = async (
+    db: NotificationDataAccess,
+    input: ScopedClaimInput,
+): Promise<string[]> => {
+    if (typeof input.tenantId !== 'string' || input.tenantId.length === 0) return [];
+    const bound = typeof input.limit === 'number' && Number.isSafeInteger(input.limit) && input.limit >= 1
+        ? Math.min(input.limit, 100)
+        : 25;
+    const channels = (input.channels ?? []).filter((channel): channel is string => typeof channel === 'string' && channel.length > 0);
+    const channelClause = channels.length > 0 ? ` AND channel IN (${channels.map(() => '?').join(', ')})` : '';
+    const rows = await db.query<{ id: string }>(
+        `SELECT id FROM notification_outbox
+         WHERE status = 'pending' AND next_attempt_at <= ? AND tenant_id = ?${channelClause}
+         ORDER BY next_attempt_at ASC LIMIT ${bound}`,
+        [(input.now ?? (() => new Date()))(), input.tenantId, ...channels],
+    );
+    return rows.map((row) => row.id);
+};
+
+// ---------------------------------------------------------------------------
+// Stale claim recovery (dispatcher crash / lost adapter response)
+// ---------------------------------------------------------------------------
+
+/**
+ * Durable marker written to `last_error` on a 'sending' row whose claim
+ * outlived the lease. The status is deliberately left at 'sending': without a
+ * provider idempotency key the external outcome is unknown, so the row must
+ * neither be retried (duplicate message) nor closed as sent/failed (false
+ * delivery record). The marker is what stops the row from being silently
+ * wedged — it is queryable, survives restarts and is cleared by an
+ * authoritative late result.
+ */
+export const STALE_SENDING_MARKER = 'stale-claim-unconfirmed';
+
+/** Must exceed the slowest adapter timeout; 15 minutes by default. */
+export const STALE_SENDING_LEASE_MS_DEFAULT = 15 * 60 * 1000;
+const STALE_SENDING_LEASE_MS_MIN = 60 * 1000;
+const STALE_SENDING_LEASE_MS_MAX = 24 * 60 * 60 * 1000;
+const STALE_SENDING_SCAN_DEFAULT = 25;
+const STALE_SENDING_SCAN_MAX = 100;
+
+export interface StaleSendingObservation {
+    outboxId: string;
+    channel: string;
+    eventType: string;
+    /** Attempt number the abandoned claim was counted as. */
+    attempts: number;
+}
+
+export interface StaleSendingRecoveryOptions {
+    /** Age after which a 'sending' claim counts as abandoned (clamped 60s..24h). */
+    olderThanMs?: number;
+    limit?: number;
+    now?: () => Date;
+    /** Injected alert sink; the emitted entry carries no contact or body. */
+    log?: (entry: unknown) => void;
+}
+
+export interface StaleSendingRecoveryResult {
+    scanned: number;
+    /** Rows flagged for reconciliation by this sweep. */
+    flagged: StaleSendingObservation[];
+    /** Rows a concurrent sweep had already flagged. */
+    alreadyFlagged: number;
+}
+
+const clampStaleLeaseMs = (raw: unknown): number => {
+    if (typeof raw !== 'number' || !Number.isSafeInteger(raw)) return STALE_SENDING_LEASE_MS_DEFAULT;
+    return Math.min(Math.max(raw, STALE_SENDING_LEASE_MS_MIN), STALE_SENDING_LEASE_MS_MAX);
+};
+
+/**
+ * Detects abandoned claims and flags them once, without touching `status` and
+ * without calling any adapter. `updated_at` is bumped by the claim UPDATE, so
+ * it is the claim timestamp; a fresh claim is never flagged. The flag itself
+ * is a compare-and-set on `last_error`, so concurrent sweeps (or a repeated
+ * sweep after a restart) record exactly one flag per abandoned claim.
+ *
+ * A dispatcher that is merely slow is unaffected: when its adapter result
+ * arrives, `finishRow` writes the authoritative state and clears the marker.
+ */
+export const recoverStaleSendingRows = async (
+    db: NotificationDataAccess,
+    options: StaleSendingRecoveryOptions = {},
+): Promise<StaleSendingRecoveryResult> => {
+    const now = options.now ?? (() => new Date());
+    const leaseMs = clampStaleLeaseMs(options.olderThanMs);
+    const limit = typeof options.limit === 'number' && Number.isSafeInteger(options.limit) && options.limit >= 1
+        ? Math.min(options.limit, STALE_SENDING_SCAN_MAX)
+        : STALE_SENDING_SCAN_DEFAULT;
+    const emit = options.log ?? ((entry: unknown) => console.warn(entry));
+    const cutoff = new Date(now().getTime() - leaseMs);
+    const rows = await db.query<OutboxRow>(
+        `SELECT id, idempotency_key, tenant_id, event_type, purpose, recipient_user_id, recipient_user_type,
+                channel, locale, template_id, payload, status, attempts, max_attempts, next_attempt_at, last_error, delivered_at
+         FROM notification_outbox
+         WHERE status = 'sending' AND updated_at <= ?
+         ORDER BY updated_at ASC
+         LIMIT ${limit}`,
+        [cutoff],
+    );
+    const flagged: StaleSendingObservation[] = [];
+    let alreadyFlagged = 0;
+    for (const row of rows) {
+        const marked = await db.execute(
+            `UPDATE notification_outbox SET last_error = ?
+             WHERE id = ? AND status = 'sending' AND (last_error IS NULL OR (last_error <> ? AND last_error <> ?))`,
+            [STALE_SENDING_MARKER, row.id, STALE_SENDING_MARKER, UNKNOWN_OUTCOME_MARKER],
+        );
+        if ((marked.affectedRows ?? 0) !== 1) {
+            alreadyFlagged += 1;
+            continue;
+        }
+        const observation: StaleSendingObservation = {
+            outboxId: row.id,
+            channel: row.channel,
+            eventType: row.event_type,
+            attempts: row.attempts,
+        };
+        flagged.push(observation);
+        emit({ ...observation, outcome: 'reconcile-required', reason: STALE_SENDING_MARKER });
+    }
+    return { scanned: rows.length, flagged, alreadyFlagged };
 };
 
 // ---------------------------------------------------------------------------

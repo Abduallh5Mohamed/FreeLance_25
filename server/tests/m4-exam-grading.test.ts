@@ -173,12 +173,17 @@ test('normalizeAnswerMap: prototype-safe, drops dunder keys and non-records', ()
 
 const INSTRUCTOR_A = tokenFor({ id: 'instructor-a', role: 'instructor', tv: 0, tenant_id: 'tenant-a' });
 const INSTRUCTOR_B = tokenFor({ id: 'instructor-b', role: 'instructor', tv: 0, tenant_id: 'tenant-b' });
+const INSTRUCTOR_D = tokenFor({ id: 'instructor-d', role: 'instructor', tv: 0, tenant_id: 'tenant-a' });
 const STUDENT_A = tokenFor({ id: 'student-a', role: 'student', tv: 0, student_enrollment_id: 'enr-a' });
 
 const AUTHORITY: Record<string, { tenant: string; authority: string }> = {
     'instructor-a': { tenant: 'tenant-a', authority: 'instructor' },
+    'instructor-d': { tenant: 'tenant-a', authority: 'instructor' },
     'owner-a': { tenant: 'tenant-a', authority: 'owner' },
 };
+
+/** The exam's course row with an explicit course-instructor teaching relation. */
+const COURSE_TEACHING_RELATION = { id: 'exam-1', tenant_id: 'tenant-a', instructor_id: 'instructor-a' };
 
 const VERSION_ROW = {
     id: 'ver-1', exam_id: 'exam-1', tenant_id: 'tenant-a', version: 1, status: 'published',
@@ -280,6 +285,7 @@ const build = (fixtures: Fixtures = {}, opts: BuildOptions = {}) => {
             'instructor-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' },
             'owner-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' },
             'instructor-b': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' },
+            'instructor-d': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' },
             'student-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'student' },
         },
         {
@@ -287,11 +293,13 @@ const build = (fixtures: Fixtures = {}, opts: BuildOptions = {}) => {
                 'instructor-a': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
                 'owner-a': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
                 'instructor-b': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
+                'instructor-d': { tenant_status: 'active', legacy_compat: 1, allowed: 1 },
             },
             memberships: {
                 'instructor-a': [{ tenant_id: 'tenant-a' }],
                 'owner-a': [{ tenant_id: 'tenant-a' }],
                 'instructor-b': [{ tenant_id: 'tenant-b' }],
+                'instructor-d': [{ tenant_id: 'tenant-a' }],
             },
             enrollments: {
                 'student-a': [{ id: 'enr-a', user_id: 'student-a', tenant_id: 'tenant-a', instructor_id: 'instructor-a', group_id: 'grp-1', grade_id: null }],
@@ -532,21 +540,31 @@ test('submit: an expired submit grades the saved drafts and audits the server-si
 
 // ---- POST /attempts/:attemptId/regrade ------------------------------------
 
-test('regrade: a student is not authorized 403 and a cross-tenant instructor is 403', async () => {
+test('regrade: a student, a cross-tenant actor and an unrelated same-tenant teacher are denied 403 without writes', async () => {
     const student = build({});
     assert.equal((await invokeRoute(student.router, { method: 'POST', url: '/attempts/attempt-1/regrade', token: STUDENT_A })).statusCode, 403);
+    assert.equal(student.executed.some((e) => e.sql.includes('UPDATE exam_versioned_attempts')), false);
+
     const cross = build({});
     assert.equal((await invokeRoute(cross.router, { method: 'POST', url: '/attempts/attempt-1/regrade', token: INSTRUCTOR_B })).statusCode, 403);
+    assert.equal(cross.executed.some((e) => e.sql.includes('UPDATE exam_versioned_attempts')), false);
+
+    const unrelated = build({ exam: COURSE_TEACHING_RELATION });
+    assert.equal((await invokeRoute(unrelated.router, { method: 'POST', url: '/attempts/attempt-1/regrade', token: INSTRUCTOR_D })).statusCode, 403);
+    assert.equal(unrelated.executed.some((e) => e.sql.includes('UPDATE exam_versioned_attempts')), false);
+    assert.equal(unrelated.executed.some((e) => e.sql.includes('INSERT INTO audit_events')), false);
 });
 
 test('regrade: an in-progress attempt is 409', async () => {
-    const { router } = build({});
+    const { router, executed } = build({ exam: COURSE_TEACHING_RELATION });
     const response = await invokeRoute(router, { method: 'POST', url: '/attempts/attempt-1/regrade', token: INSTRUCTOR_A });
     assert.equal(response.statusCode, 409);
+    assert.equal(executed.some((e) => e.sql.includes('UPDATE exam_versioned_attempts')), false);
 });
 
 test('regrade: re-applies a changed fingerprint and audits it', async () => {
     const { router, executed } = build({
+        exam: COURSE_TEACHING_RELATION,
         attempt: { ...ATTEMPT_ROW, status: 'graded', grading_fingerprint: 'old' },
         questions: QUESTION_ROWS,
         storedAnswers: [
@@ -573,6 +591,7 @@ test('regrade: an identical fingerprint is a no-op (no UPDATE) but still audited
         answers: answerMap,
     });
     const { router, executed } = build({
+        exam: COURSE_TEACHING_RELATION,
         attempt: { ...ATTEMPT_ROW, status: 'graded', grading_fingerprint: fingerprint },
         questions: QUESTION_ROWS,
         storedAnswers: [
@@ -592,6 +611,7 @@ test('regrade: an identical fingerprint is a no-op (no UPDATE) but still audited
 test('regrade: a concurrent change (zero affected rows) is 409', async () => {
     const { router } = build(
         {
+            exam: COURSE_TEACHING_RELATION,
             attempt: { ...ATTEMPT_ROW, status: 'graded', grading_fingerprint: 'old' },
             questions: QUESTION_ROWS,
             storedAnswers: [

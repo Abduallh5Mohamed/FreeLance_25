@@ -126,6 +126,60 @@ function divideRoundHalfUp(numerator: bigint, denominator: bigint): bigint {
     return sign * ((magnitude + denominator / 2n) / denominator);
 }
 /**
+ * Legacy weighted percentage: each entry contributes its own weight. Preserved
+ * for courses with no category policy and for uncategorized score records.
+ */
+function weightedEntryPercent(entries: readonly ScoreEntry[]): bigint {
+    let num = 0n;
+    let den = 0n;
+    for (const entry of entries) {
+        const score = toFixedInteger(entry.score, GRADE_SCALE);
+        const maxScore = toFixedInteger(entry.maxScore, GRADE_SCALE);
+        const weightRaw = entry.weight === null || entry.weight === undefined ? 1 : entry.weight;
+        const weight = toFixedInteger(weightRaw, GRADE_SCALE);
+        if (score === null || maxScore === null || maxScore <= 0 || weight === null || weight < 0) continue;
+        const pct = divideRoundHalfUp(BigInt(score) * 100n * BigInt(PERCENT_SCALE), BigInt(maxScore));
+        num += pct * BigInt(weight);
+        den += BigInt(weight);
+    }
+    return den > 0n ? divideRoundHalfUp(num, den) : 0n;
+}
+/**
+ * Category-weighted percentage for the category weights defined by the stored
+ * policy. Every valid score is folded into its category first, then each
+ * non-empty category contributes its own weight. Categories with no valid
+ * scores are excluded from the denominator. Returns null when no weighted
+ * category has scores, which callers use to preserve legacy entry weighting.
+ */
+function weightedCategoryPercent(entries: readonly ScoreEntry[], categories: readonly GradeCategory[]): bigint | null {
+    const weightedCategoryIds = new Set(categories.filter((category) => category.weight > 0).map((category) => category.id));
+    if (weightedCategoryIds.size === 0) return null;
+    const totals = new Map<string, { earned: bigint; possible: bigint }>();
+    for (const entry of entries) {
+        if (!entry.categoryId || !weightedCategoryIds.has(entry.categoryId)) continue;
+        const score = toFixedInteger(entry.score, GRADE_SCALE);
+        const maxScore = toFixedInteger(entry.maxScore, GRADE_SCALE);
+        if (score === null || maxScore === null || maxScore <= 0) continue;
+        const total = totals.get(entry.categoryId) ?? { earned: 0n, possible: 0n };
+        total.earned += BigInt(score);
+        total.possible += BigInt(maxScore);
+        totals.set(entry.categoryId, total);
+    }
+    let num = 0n;
+    let den = 0n;
+    for (const category of categories) {
+        if (category.weight <= 0) continue;
+        const total = totals.get(category.id);
+        if (!total || total.possible <= 0n) continue;
+        const weight = toFixedInteger(category.weight, GRADE_SCALE);
+        if (weight === null || weight <= 0) continue;
+        const pct = divideRoundHalfUp(total.earned * 100n * BigInt(PERCENT_SCALE), total.possible);
+        num += pct * BigInt(weight);
+        den += BigInt(weight);
+    }
+    return den > 0n ? divideRoundHalfUp(num, den) : null;
+}
+/**
  * Recompute a grade from stored score entries.
  *
  * All arithmetic runs on fixed-point integers (scores at `GRADE_SCALE`, the
@@ -153,19 +207,9 @@ export function calculateGrade(entries: readonly ScoreEntry[], policy: { mode?: 
             percentScaled = divideRoundHalfUp(earned * 100n * BigInt(PERCENT_SCALE), possible);
         }
     } else {
-        let num = 0n;
-        let den = 0n;
-        for (const entry of valid) {
-            const score = toFixedInteger(entry.score, GRADE_SCALE);
-            const maxScore = toFixedInteger(entry.maxScore, GRADE_SCALE);
-            const weightRaw = entry.weight === null || entry.weight === undefined ? 1 : entry.weight;
-            const weight = toFixedInteger(weightRaw, GRADE_SCALE);
-            if (score === null || maxScore === null || maxScore <= 0 || weight === null || weight < 0) continue;
-            const pct = divideRoundHalfUp(BigInt(score) * 100n * BigInt(PERCENT_SCALE), BigInt(maxScore));
-            num += pct * BigInt(weight);
-            den += BigInt(weight);
-        }
-        if (den > 0n) percentScaled = divideRoundHalfUp(num, den);
+        const categories = policy.categories ?? [];
+        const categoryPercent = categories.length > 0 ? weightedCategoryPercent(valid, categories) : null;
+        percentScaled = categoryPercent ?? weightedEntryPercent(valid);
     }
     const percent = Number(percentScaled) / PERCENT_SCALE;
     const rounded = applyRounding(percent, rounding, DEFAULT_ROUNDING_DECIMALS);

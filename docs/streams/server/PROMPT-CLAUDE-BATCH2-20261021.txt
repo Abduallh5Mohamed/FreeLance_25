@@ -1,0 +1,28 @@
+ابدأ تنفيذ مسار Claude/OpenCode من الدفعة الثانية. المالك أذن بشغل فعلي جديد، وCodex سجل الموافقة والملكية؛ لا تعِد specs-only أو تطلب نفس الموافقة.
+
+اقرأ:
+docs/streams/server/BATCH2-IMPLEMENTATION-SCOPE-20261021.md
+والملكية الدقيقة:
+C:\Users\abdua\WorkBuddySupervisorBridge\handoff\BATCH2-OWNERSHIP-APPROVAL-20261021.json
+
+نفّذ المهام الأربع بالترتيب التالي، وليس أربعة عمال متزامنين على تبعيات غير جاهزة:
+
+أولًا عاملان مستقلان:
+1. B2-C-SCHEMA: يكتب source migrations الجديدة01/02 فقط، عقد الجداول/types/keys/units، واختبار contract وتقرير. ابدأ بجرد schema القائم وربط ManualGradingStore/PublicationStore، لا ALTER أعمدة متخيلة. ممنوع تنفيذSQL أو تعديل migrations قديمة، وmanifest غير مملوك له. اتفق أنت كمنسق مع عاملledger على العقد، بلا كتابة ملف الآخر.
+2. B2-C-LEDGER: كود دفتر مالي داخلي وحجز/تحرير BigInt، balancedjournals/appendonly/idempotency/tenantauthority؛ فصل receivable وmerchantpending/available/reserved وsubscriptioncredit. لا instructorservicecredit على أنه محفظةسنتر، ولا نقد يزيدwallet، ولا provider أو invoices أو endpointsتحصيل. اختبارات rollback/races/compensation عبر store/transaction حقيقيين في harness.
+
+ثانيًا B2-C-PERSISTENCE بعد توقف العاملين وتجميد العقد ومراجعة تطابقه:
+اكتب SQL adapters فعلية للتصحيح اليدوي الجديد، publication، readmodel التقارير، والledger. استخدم connection-bound withTransaction/audit، CASrevision+attemptversion، latestrevisionfinalize، unique publicationrace، journal/account locks. لا production SQL يشتغل هنا؛ نختبر نصوصadapter/bindings/معاملته بأداة hermetic صريحة. لا fakeعالي المستوى يُوصف MySQL. ولا نتائجgrades صفرية تخفي unsupportedsource أو missingtable.
+
+ثالثًا B2-C-INTEGRATION فقط بعد مراجعة Codex وقبوله المحدود للمخرجات المطلوبة:
+أنت تخصص عاملًا واحدًا لindex.ts/manifest/wiring/tests المحددة، لا يلمسهم أي عامل آخر. يربط productionfactories من SQLadapters ويحافظ على existingauth+tenant+impersonationguardorder، mountsمرةواحدة، X-Results-Truncated CORS exposure، ويسجل hashes للsource migrations. no runtimeDDL أو اتصال عندimport. schemaغيرمطَبق=>503failclosed، لا نجاحكاذب أو تفعيلتحصيلمالي. التسجيل فيmanifest ليس تطبيقًا للـschema. لا يبدأ هذه المهمة تلقائيًا علىreportedفقط؛ سلّم نتائجالثلاثة لـCodex أولًا.
+
+سائر C1/C4 القديمة لا تعاد؛ هذه persistence/integration جديدة. C3a التقرير الحالي يُستهلك منrouterfactory، لا تغيّر مجالالحضور/السياسات. C2 يظل معلقًا حتى تسليم WorkBuddy W4. C5/الفوترةالإنتاجية/المزودون/liveليست مفتوحة بهذاالبرومبت.
+
+WorkBuddy يملك assignments+assignmentstorage/scanworker، notificationoutbox+delivery+notificationworker، videoassetlifecycle+usage/progress/reconciliation. لا تعدّلها. كل ملفاختبار وتقرير له كاتبواحد. سجل allocations قبلlaunch وhashesقبلوبعد، ومراجعةmidtask عندالعقد/الذرية. لا تطلق عاملًا بديلًا فوق عمليةمحتملةبعدquota.
+
+أسماء الملفات والـacceptance كاملة بالنطاق وownershipmanifest؛ التزم بها. لا sourceملفاتإضافية حتى لوإصلاحصغير، ولا سياسة ماليةمنعندك. exactpricing docs19، C35113030،30dayUTC،96hمنطلبالفرق،futurepaidaccessمحمي، لا commission،SMSمؤجل والشهاداتمستبعدة.
+
+راجع أنتdiffsواختباراتكلعامل. لا assertionweakening أو any/tsignore/skip. لا تطبيقSQL/DB/Docker/listeners/network/provider/secrets/install/Gitmutation أوfrontend. مسموح كتابةsource SQLالمحددة فقط. LiveSQL/sandboxلهتفويضمستقل.
+
+سلّم actualtests/tsc/hash/schemaassumptions/contracts وخطواتالتكامل، مع تصريححدودhermetic. fullregression بعدتوقفالفريقينبالتنسيقمعCodex. لا دفعةتالية ولا قبولmilestoneمننفسك.

@@ -232,6 +232,23 @@ export interface PlaybackEntitlementStore {
     isRevoked(jti: string): Promise<boolean>;
     revoke(input: { jti: string; reason: string; revokedAtMs: number }): Promise<void>;
     recordAudit(input: AuditRecordInput): Promise<void>;
+    /**
+     * Session-wide revocation: every record issued for one server session
+     * becomes unusable in a single statement. This is the durable half of a
+     * playback-session revoke — it runs on the caller's transaction handle so
+     * the slot flip, the entitlement flip and the audit row commit together.
+     * Returns the number of records that changed state.
+     */
+    revokeBySessionId?(input: { sessionId: string; reason: string; revokedAtMs: number }): Promise<number>;
+    /**
+     * Optional delivery lookup: the server-owned records issued for one
+     * server session, newest first. Byte-delivery routes use this when the
+     * client cannot present the opaque token (the existing sid/token URL
+     * contract), so the same revocation/expiry/binding rules apply without a
+     * new client parameter. A store without this method fails closed: the
+     * delivery helper reports `store-unavailable`.
+     */
+    findBySessionId?(sessionId: string): Promise<PlaybackEntitlementRecord[]>;
 }
 
 /* =========================================================================
@@ -243,6 +260,12 @@ export interface PlaybackEntitlementService {
     verify(token: unknown, expectation: PlaybackTokenExpectation): Promise<PlaybackEntitlementDecision>;
     load(jti: string): Promise<PlaybackEntitlementRecord | null>;
     revoke(jti: string, reason: string, actorUserId: string | null): Promise<{ revoked: boolean; tenantId: string | null }>;
+    /**
+     * Server-owned records for one session. Optional so existing injected
+     * stores keep compiling; an absent implementation denies delivery rather
+     * than skipping the check.
+     */
+    findBySessionId?(sessionId: string): Promise<PlaybackEntitlementRecord[]>;
 }
 
 export interface PlaybackEntitlementDeps {
@@ -308,6 +331,12 @@ export function createPlaybackEntitlementService(deps: PlaybackEntitlementDeps):
             return safe ? store.load(safe) : null;
         },
 
+        findBySessionId: async (sessionId) => {
+            if (!store.findBySessionId) return [];
+            const safe = normalizeId(sessionId);
+            return safe ? store.findBySessionId(safe) : [];
+        },
+
         revoke: async (jti, reason, actorUserId) => {
             const safe = normalizeId(jti);
             if (!safe) return { revoked: false, tenantId: null };
@@ -360,6 +389,26 @@ function toMysqlUtc(ms: number): string {
     return new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
 }
 
+function mapPlaybackRow(row: PlaybackRow): PlaybackEntitlementRecord | null {
+    const issuedAtMs = toEpochMs(row.issued_at);
+    const expiresAtMs = toEpochMs(row.expires_at);
+    if (issuedAtMs === null || expiresAtMs === null) return null;
+    return {
+        jti: row.jti,
+        tenantId: row.tenant_id,
+        lessonId: row.lesson_id,
+        studentEnrollmentId: row.student_enrollment_id,
+        sessionId: row.session_id,
+        issuedAtMs,
+        expiresAtMs,
+        revokedAtMs: toEpochMs(row.revoked_at),
+        revokeReason: row.revoke_reason ?? null,
+    };
+}
+
+const PLAYBACK_ROW_COLUMNS = `jti, tenant_id, lesson_id, student_enrollment_id, session_id,
+                        issued_at, expires_at, revoked_at, revoke_reason`;
+
 export function createSqlPlaybackEntitlementStore(db: PlaybackEntitlementDb): PlaybackEntitlementStore {
     return {
         save: async (record) => {
@@ -382,26 +431,25 @@ export function createSqlPlaybackEntitlementStore(db: PlaybackEntitlementDb): Pl
 
         load: async (jti) => {
             const row = await db.queryOne<PlaybackRow>(
-                `SELECT jti, tenant_id, lesson_id, student_enrollment_id, session_id,
-                        issued_at, expires_at, revoked_at, revoke_reason
+                `SELECT ${PLAYBACK_ROW_COLUMNS}
                  FROM playback_entitlements WHERE jti = ? LIMIT 1`,
                 [jti],
             );
-            if (!row) return null;
-            const issuedAtMs = toEpochMs(row.issued_at);
-            const expiresAtMs = toEpochMs(row.expires_at);
-            if (issuedAtMs === null || expiresAtMs === null) return null;
-            return {
-                jti: row.jti,
-                tenantId: row.tenant_id,
-                lessonId: row.lesson_id,
-                studentEnrollmentId: row.student_enrollment_id,
-                sessionId: row.session_id,
-                issuedAtMs,
-                expiresAtMs,
-                revokedAtMs: toEpochMs(row.revoked_at),
-                revokeReason: row.revoke_reason ?? null,
-            };
+            return row ? mapPlaybackRow(row) : null;
+        },
+
+        // Delivery lookup for the existing sid/token media URLs. The table
+        // has no session_id index yet (a separate schema task owns
+        // migrations); the bounded read keeps the scan small, and a missing
+        // record denies rather than skipping the check.
+        findBySessionId: async (sessionId) => {
+            const rows = await db.query<PlaybackRow>(
+                `SELECT ${PLAYBACK_ROW_COLUMNS}
+                 FROM playback_entitlements WHERE session_id = ?
+                 ORDER BY issued_at DESC LIMIT 100`,
+                [sessionId],
+            );
+            return rows.map(mapPlaybackRow).filter((row): row is PlaybackEntitlementRecord => row !== null);
         },
 
         isRevoked: async (jti) => {
@@ -419,6 +467,19 @@ export function createSqlPlaybackEntitlementStore(db: PlaybackEntitlementDb): Pl
                  WHERE jti = ? AND revoked_at IS NULL`,
                 [toMysqlUtc(revokedAtMs), reason, jti],
             );
+        },
+
+        // Durable session-wide revocation. One statement so a revoke cannot
+        // leave half a session's records usable, and idempotent so a retried
+        // revoke changes nothing on the second pass.
+        revokeBySessionId: async ({ sessionId, reason, revokedAtMs }) => {
+            const result = await db.execute(
+                `UPDATE playback_entitlements
+                 SET revoked_at = ?, revoke_reason = ?
+                 WHERE session_id = ? AND revoked_at IS NULL`,
+                [toMysqlUtc(revokedAtMs), reason, sessionId],
+            );
+            return result.affectedRows ?? 0;
         },
 
         recordAudit: async (input) => {

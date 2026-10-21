@@ -8,6 +8,9 @@
  *    with `[REDACTED]`;
  *  - masks email and phone values (key-driven, plus email value detection);
  *  - bounds recursion depth (`[MaxDepth]`), array length and string length;
+ *  - treats `Error` values (including `cause` chains) as ordinary objects for
+ *    the depth and cycle guards, so a deep or self-referencing error cannot
+ *    expand past the bound;
  *  - breaks reference cycles (`[Circular]`);
  *  - caps the final record size, replacing an oversized record with a redacted,
  *    truncated preview.
@@ -182,20 +185,13 @@ export function redactValue(
         if (typeof current === 'number' || typeof current === 'boolean') return current;
         if (typeof current === 'bigint') return current.toString();
         if (typeof current === 'function' || typeof current === 'symbol') return undefined;
-        if (current instanceof Date) return current.toISOString();
-        if (current instanceof Error) {
-            const errorRecord: Record<string, unknown> = {
-                name: current.name,
-                message: truncateString(current.message, resolved.maxStringLength),
-            };
-            if (current.stack) errorRecord.stack = truncateString(current.stack, resolved.maxStringLength);
-            return errorRecord;
-        }
         if (typeof current === 'object') {
             if (seen.has(current as object)) return CIRCULAR;
             if (depth >= resolved.maxDepth) return MAX_DEPTH_MARKER;
             seen.add(current as object);
             try {
+                if (current instanceof Date) return current.toISOString();
+                if (current instanceof Error) return walkError(current, depth);
                 if (Array.isArray(current)) {
                     const items = current.slice(0, resolved.maxArrayLength)
                         .map((item) => walk(item, null, depth + 1));
@@ -215,6 +211,29 @@ export function redactValue(
         }
         return String(current);
     };
+
+    /**
+     * Error values are subject to the same cycle and depth guard as any other
+     * object: the Error is already in `seen`, so a self-referencing `cause`
+     * becomes `[Circular]`, and a value past `maxDepth` becomes `[MaxDepth]`
+     * instead of a full record. `cause` and any own enumerable property are
+     * walked (not silently dropped) at `depth + 1`, which also covers
+     * `AggregateError.errors`.
+     */
+    function walkError(error: Error, depth: number): Record<string, unknown> {
+        const record: Record<string, unknown> = {
+            name: error.name,
+            message: truncateString(error.message, resolved.maxStringLength),
+        };
+        if (error.stack) record.stack = truncateString(error.stack, resolved.maxStringLength);
+        for (const [entryKey, entryValue] of Object.entries(error)) {
+            if (entryKey === 'name' || entryKey === 'message' || entryKey === 'stack' || entryKey === 'cause') continue;
+            record[entryKey] = walk(entryValue, entryKey, depth + 1);
+        }
+        const cause = (error as { cause?: unknown }).cause;
+        if (cause !== undefined) record.cause = walk(cause, 'cause', depth + 1);
+        return record;
+    }
 
     return walk(value, null, 0);
 }

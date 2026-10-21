@@ -50,7 +50,10 @@
     "M7 O4 moderation migration 20261018_18 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval.",
     "M7 O6/O9 migration 20261018_19 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval.",
     "L2 migration 20261018_21 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval.",
-    "M2 chain-sequence migration 20261018_22 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval."
+    "M2 chain-sequence migration 20261018_22 is hash-anchored as a reviewed source draft only; it has NOT been executed or validated on MySQL. Fresh staging now includes it and requires separate isolated execution approval.",
+    "2026-10-19: search/export migration23 hash inventoried after source review only; NOT executed or MySQL/idempotency verified. Separate isolated validation required before deployment.",
+    "2026-10-21: B2-C migration 20261021_01 (exam manual answer revisions + progress report publications) hash inventoried after source review only; NOT executed or MySQL/idempotency verified. Separate isolated validation required before deployment.",
+    "2026-10-21: B2-C migration 20261021_02 (internal financial ledger) hash inventoried after source review only; NOT executed or MySQL/idempotency verified. Separate isolated validation required before deployment."
   ],
   "databaseCollationSha256": "60c1bf0c55f3bbb1f76cfdcd8d52b3c532be9616952b85f26a8b9caed1925929",
   "sourceSha256": {
@@ -109,6 +112,9 @@
     "20261018_18_moderation.sql": "7419b47ca6bc70747fc43595dd208de74b5efab0d8e481c87d77831ed7d0e139",
     "20261018_19_platform_mfa_impersonation.sql": "29863121f9010391aab07b7e02e604aefb673000c049b15861708370c1b66c3f",
     "20261018_21_unsubscribe_token_use.sql": "c3bd56ab9cf70d1721a271f4d4c32813f6cc71d02fa59ad3ebf866e76ec5360b",
-    "20261018_22_audit_chain_sequence.sql": "bf1b6af67843c2f114faafe59c9d7563dbf7b23572015a65cf1d8ae390f3465f"
+    "20261018_22_audit_chain_sequence.sql": "bf1b6af67843c2f114faafe59c9d7563dbf7b23572015a65cf1d8ae390f3465f",
+    "20261018_23_search_export.sql": "848010f8a0dadc5aded9007306717d33a77fcfe7a2ed8609bf473863d73bac4a",
+    "20261021_01_exam_manual_publication.sql": "04dae1254675934c99efbf5d48f76ee6649bbdda747e60923128ed7da0051fc2",
+    "20261021_02_internal_financial_ledger.sql": "bf5e169f3ad7e6df0d590aa5377d0295a5a1b1fa4a66a59944fb039f881dfebe"
   }
 }

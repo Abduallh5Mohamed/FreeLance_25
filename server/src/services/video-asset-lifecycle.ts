@@ -187,12 +187,44 @@ export interface ProviderCallbackInput {
     tenantId?: string | null;
     detail?: string | null;
     error?: string | null;
+    /**
+     * Optional byte size carried by the SIGNED payload. It is honoured only
+     * after signature verification and only on a `ready` transition, where the
+     * provider has finished writing the asset. Never read from a client.
+     */
+    storageBytes?: number | null;
 }
+
+/**
+ * Structural port satisfied by `MediaMeteringService`. Kept local so the
+ * lifecycle has no runtime dependency on the metering module.
+ */
+export interface AssetStorageMeterPort {
+    recordVerifiedBytes(input: {
+        tenantId: unknown;
+        assetId: unknown;
+        resultingBytes: unknown;
+        operationId: unknown;
+        source: unknown;
+        occurredAtMs?: unknown;
+    }): Promise<{ recorded: boolean; deduplicated: boolean } | { error: string }>;
+}
+
+/**
+ * How a verified byte count was handled at the lifecycle boundary.
+ *  - `recorded`     — the meter accepted the transition;
+ *  - `deduplicated` — the meter had already seen this operation id;
+ *  - `deferred`     — the meter was composed but failed, so the gap is left for
+ *                     reconciliation (the asset state commit is not rolled back);
+ *  - `unconfigured` — no durable meter is composed in this deployment. The bytes
+ *                     are NOT metered and the fact is audited rather than dropped.
+ */
+export type MeteringOutcome = 'recorded' | 'deduplicated' | 'deferred' | 'unconfigured';
 
 export type SignatureVerifier = (callback: ProviderCallbackInput) => boolean | Promise<boolean>;
 
 export type CallbackResult =
-    | { status: 'applied'; state: AssetState; attempts: number; deadLettered: boolean }
+    | { status: 'applied'; state: AssetState; attempts: number; deadLettered: boolean; metering?: MeteringOutcome }
     | { status: 'duplicate'; state: AssetState }
     | { status: 'ignored'; reason: 'unverified-signature' | 'unknown-asset' | 'unknown-target-state' }
     | { status: 'rejected'; reason: 'cross-tenant' | 'illegal-transition' | 'conflict'; from: AssetState };
@@ -225,6 +257,12 @@ export interface VideoAssetLifecycleDeps {
     now?: () => Date;
     idFactory?: () => string;
     maxAttempts?: number;
+    /**
+     * Optional storage meter. When present, a verified `ready` callback that
+     * carries `storageBytes` records a tenant-scoped storage transition keyed by
+     * the callback id (so a replay is absorbed).
+     */
+    meterStorage?: AssetStorageMeterPort;
 }
 
 const PROVIDER_KEY_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -483,7 +521,74 @@ export function createVideoAssetLifecycle(deps: VideoAssetLifecycleDeps): VideoA
                 newValue: { status: targetState },
                 reason: deadLetterReason ?? undefined,
             });
-            return { status: 'applied', state: targetState, attempts: asset.attempts, deadLettered };
+
+            // Storage metering is bound to the existing lifecycle boundary: the
+            // asset is `ready` and the byte size came from the verified payload.
+            // The state commit above already happened, so a metering failure is
+            // reported as `deferred` (and audited) instead of rolling back the
+            // asset. Reconciliation detects the resulting gap; the durable
+            // outbox that would close it is the I2 item in the delivery note.
+            let metering: MeteringOutcome | null = null;
+            if (targetState === 'ready' && typeof callback.storageBytes === 'number') {
+                if (!deps.meterStorage) {
+                    // No durable meter is composed (the transition ledger does
+                    // not exist yet — I2). A verified byte count that cannot be
+                    // recorded is an explicit, auditable gap; it must never look
+                    // like a successful measurement or vanish silently.
+                    metering = 'unconfigured';
+                    await audit({
+                        actorUserId: null,
+                        tenantId: asset.tenantId,
+                        action: 'video.asset.metering_unconfigured',
+                        resourceType: 'video_asset',
+                        resourceId: asset.id,
+                        reason: 'meter_not_configured',
+                        newValue: { storage_bytes: callback.storageBytes },
+                    });
+                } else {
+                    try {
+                        const metered = await deps.meterStorage.recordVerifiedBytes({
+                            tenantId: asset.tenantId,
+                            assetId: asset.id,
+                            resultingBytes: callback.storageBytes,
+                            operationId: callback.callbackId,
+                            source: 'provider-callback',
+                            occurredAtMs: now().getTime(),
+                        });
+                        if ('error' in metered) {
+                            metering = 'deferred';
+                            await audit({
+                                actorUserId: null,
+                                tenantId: asset.tenantId,
+                                action: 'video.asset.metering_deferred',
+                                resourceType: 'video_asset',
+                                resourceId: asset.id,
+                                reason: metered.error,
+                            });
+                        } else {
+                            metering = metered.recorded ? 'recorded' : 'deduplicated';
+                        }
+                    } catch {
+                        metering = 'deferred';
+                        await audit({
+                            actorUserId: null,
+                            tenantId: asset.tenantId,
+                            action: 'video.asset.metering_deferred',
+                            resourceType: 'video_asset',
+                            resourceId: asset.id,
+                            reason: 'metering_error',
+                        });
+                    }
+                }
+            }
+
+            return {
+                status: 'applied',
+                state: targetState,
+                attempts: asset.attempts,
+                deadLettered,
+                ...(metering === null ? {} : { metering }),
+            };
         },
     };
 }

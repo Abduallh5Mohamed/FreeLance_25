@@ -1,5 +1,5 @@
 import { Router, Request, RequestHandler, Response } from 'express';
-import { query, queryOne, execute } from '../db';
+import { query, queryOne, execute, getPool } from '../db';
 import https from 'https';
 import type { IncomingMessage } from 'http';
 import crypto from 'crypto';
@@ -14,6 +14,7 @@ import {
     type ResourceBranchDeps,
 } from '../security/resource-branch';
 import { recordAudit, snapshotRow } from '../security/audit';
+import { validateVideoBinding, parseVideoReference } from '../security/video-access-policy';
 
 /**
  * Data-access seam for the materials router. Production binds ../db; hermetic
@@ -41,6 +42,13 @@ export interface MaterialsRouterDeps {
     hasVerifiedPlatformCapability: (userId: string) => Promise<boolean>;
     /** Resource-derived branch authority; defaults to the production SQL deps. */
     branchAccess?: ResourceBranchDeps;
+    /**
+     * Run `fn` inside a single DB transaction. Production wires this to a real
+     * pool connection; hermetic tests inject a no-op that invokes `fn` with the
+     * same injected data access. Required for the `video://` binding check to
+     * be atomic with the write (the video row is locked `FOR UPDATE`).
+     */
+    transaction?: <T>(fn: (tx: MaterialsDataAccess) => Promise<T>) => Promise<T>;
 }
 
 /**
@@ -546,35 +554,77 @@ export const createMaterialsRouter = (deps: MaterialsRouterDeps): Router => {
                 return res.status(403).json({ error: 'Course is outside your teaching scope' });
             }
 
-            // Video materials must reference an internally uploaded video.
-            if (material_type === 'video' && (!file_url || !String(file_url).startsWith('video://'))) {
-                return res.status(400).json({
-                    error: 'External video links are not allowed. Upload the video to the platform.'
-                });
+            // Video materials must reference an internally uploaded video, in
+            // the ONE canonical `video://<id>` form (no whitespace, non-empty
+            // id). A non-canonical value is refused before any write and is
+            // never stored raw.
+            if (material_type === 'video') {
+                const videoReference = parseVideoReference(String(file_url ?? ''));
+                if (!videoReference.ok) {
+                    return res.status(400).json({
+                        error: videoReference.reason === 'not-a-reference'
+                            ? 'External video links are not allowed. Upload the video to the platform.'
+                            : 'Video link is not a canonical platform video reference',
+                    });
+                }
             }
 
             // Generate UUID for the new material
             const materialId = crypto.randomUUID();
 
-            const result = await execute(
-                `INSERT INTO course_materials
-                (id, course_id, title, description, material_type, file_url, file_size,
+            // A `video://` link is only written after the video is proven to
+            // exist, belong to this workspace and be usable by the caller, and
+            // to be unbound elsewhere. The check and the INSERT share one
+            // transaction so the video row lock covers the write.
+            const insertMaterial = async (writer: MaterialsDataAccess) => {
+                let storedFileUrl: string | null = file_url || null;
+                if (material_type === 'video') {
+                    const binding = await validateVideoBinding({
+                        reader: writer,
+                        videoUrl: String(file_url),
+                        actorUserId: req.user?.id ?? '',
+                        actorTenantId: selectedTenantId,
+                        actorStudentEnrollmentId: req.user?.studentEnrollmentId,
+                        selfId: materialId,
+                        target: 'material',
+                        // The destination is this material's course, already
+                        // proven to sit in the caller's selected tenant.
+                        targetCourseId: course_id,
+                        hasPlatformCapability: deps.hasVerifiedPlatformCapability,
+                    });
+                    if (!binding.ok) return { kind: 'denied' as const, binding };
+                    storedFileUrl = binding.videoUrl;
+                }
+                await writer.execute(
+                    `INSERT INTO course_materials                (id, course_id, title, description, material_type, file_url, file_size,
                  duration_minutes, display_order, is_free, is_published)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    materialId,
-                    course_id,
-                    title,
-                    description || null,
-                    material_type,
-                    file_url || null,
-                    file_size || null,
-                    duration_minutes || null,
-                    display_order,
-                    is_free,
-                    is_published
-                ]
-            );
+                    [
+                        materialId,
+                        course_id,
+                        title,
+                        description || null,
+                        material_type,
+                        storedFileUrl,
+                        file_size || null,
+                        duration_minutes || null,
+                        display_order,
+                        is_free,
+                        is_published
+                    ]
+                );
+                return { kind: 'inserted' as const };
+            };
+
+            const writeOutcome = deps.transaction
+                ? await deps.transaction(insertMaterial)
+                : await insertMaterial(deps.db);
+            if (writeOutcome.kind === 'denied') {
+                return res.status(writeOutcome.binding.status).json({
+                    error: writeOutcome.binding.error,
+                    code: writeOutcome.binding.code,
+                });
+            }
 
             // Insert material-group relationships if group_ids provided
             if (group_ids && Array.isArray(group_ids) && group_ids.length > 0) {
@@ -657,12 +707,50 @@ export const createMaterialsRouter = (deps: MaterialsRouterDeps): Router => {
             const existingMaterial = await queryOne<any>('SELECT material_type,file_url FROM course_materials WHERE id=?', [req.params.id]);
             const finalType = material_type ?? existingMaterial?.material_type;
             const finalUrl = file_url ?? existingMaterial?.file_url;
-            if (finalType === 'video' && (!finalUrl || !String(finalUrl).startsWith('video://'))) {
-                return res.status(400).json({ error: 'External video links are not allowed. Upload the video to the platform.' });
+            if (finalType === 'video') {
+                if (!finalUrl || !String(finalUrl).startsWith('video://')) {
+                    return res.status(400).json({ error: 'External video links are not allowed. Upload the video to the platform.' });
+                }
+                // A NEW reference must be canonical; an unchanged legacy value
+                // is left alone (no silent rewrite, documented legacy gap).
+                if (file_url !== undefined) {
+                    const videoReference = parseVideoReference(String(file_url));
+                    if (!videoReference.ok) {
+                        return res.status(400).json({
+                            error: videoReference.reason === 'not-a-reference'
+                                ? 'External video links are not allowed. Upload the video to the platform.'
+                                : 'Video link is not a canonical platform video reference',
+                        });
+                    }
+                }
             }
 
-            const result = await execute(
-                `UPDATE course_materials
+            // Only a NEW association is validated: an update that keeps the
+            // stored video reference is not a re-bind.
+            const writesNewVideoBinding = finalType === 'video' && (file_url !== undefined
+                ? String(finalUrl) !== String(existingMaterial?.file_url ?? '')
+                : existingMaterial?.material_type !== 'video');
+
+            const updateMaterial = async (writer: MaterialsDataAccess) => {
+                let storedFileUrl = file_url;
+                if (writesNewVideoBinding) {
+                    const binding = await validateVideoBinding({
+                        reader: writer,
+                        videoUrl: String(finalUrl),
+                        actorUserId: req.user?.id ?? '',
+                        actorTenantId: req.user?.tenantId,
+                        actorStudentEnrollmentId: req.user?.studentEnrollmentId,
+                        selfId: req.params.id,
+                        target: 'material',
+                        // Destination is the material's own course; the
+                        // validator reads it from the row in this transaction.
+                        hasPlatformCapability: deps.hasVerifiedPlatformCapability,
+                    });
+                    if (!binding.ok) return { kind: 'denied' as const, binding };
+                    storedFileUrl = binding.videoUrl;
+                }
+                const updated = await writer.execute(
+                    `UPDATE course_materials
                  SET title = COALESCE(?, title),
                      description = COALESCE(?, description),
                      material_type = COALESCE(?, material_type),
@@ -674,19 +762,32 @@ export const createMaterialsRouter = (deps: MaterialsRouterDeps): Router => {
                      is_published = COALESCE(?, is_published),
                      updated_at = CURRENT_TIMESTAMP
                  WHERE id = ?`,
-                [
-                    title ?? null,
-                    description ?? null,
-                    material_type ?? null,
-                    file_url ?? null,
-                    file_size ?? null,
-                    duration_minutes ?? null,
-                    display_order ?? null,
-                    is_free ?? null,
-                    is_published ?? null,
-                    req.params.id
-                ]
-            );
+                    [
+                        title ?? null,
+                        description ?? null,
+                        material_type ?? null,
+                        storedFileUrl ?? null,
+                        file_size ?? null,
+                        duration_minutes ?? null,
+                        display_order ?? null,
+                        is_free ?? null,
+                        is_published ?? null,
+                        req.params.id
+                    ]
+                );
+                return { kind: 'updated' as const, updated };
+            };
+
+            const updateOutcome = deps.transaction
+                ? await deps.transaction(updateMaterial)
+                : await updateMaterial(deps.db);
+            if (updateOutcome.kind === 'denied') {
+                return res.status(updateOutcome.binding.status).json({
+                    error: updateOutcome.binding.error,
+                    code: updateOutcome.binding.code,
+                });
+            }
+            const result = updateOutcome.updated;
 
             if (result.affectedRows === 0) {
                 return res.status(404).json({ error: 'Material not found' });
@@ -902,4 +1003,41 @@ export default createMaterialsRouter({
     optionalAuthenticate: optionalAuth,
     requireTeachingWriteAccess: requireTeachingWrite('materials'),
     hasVerifiedPlatformCapability: verifiedPlatformCapability,
+    transaction: async <T>(fn: (tx: MaterialsDataAccess) => Promise<T>): Promise<T> => {
+        const pool = getPool();
+        const connection = await pool.getConnection();
+        try {
+            await connection.beginTransaction();
+            const txDb: MaterialsDataAccess = {
+                query: <T = unknown>(sql: string, params?: unknown[]): Promise<T[]> =>
+                    (connection.query as unknown as (s: string, p?: unknown[]) => Promise<[unknown[], unknown]>)(
+                        sql, params,
+                    ).then((res) => res[0] as T[]),
+                queryOne: async <T = unknown>(sql: string, params?: unknown[]): Promise<T | null> => {
+                    const [rows] = await (connection.query as unknown as (s: string, p?: unknown[]) => Promise<[unknown[], unknown]>)(
+                        sql, params,
+                    );
+                    return ((rows as unknown[])[0] as T) ?? null;
+                },
+                execute: (sql: string, params?: unknown[]) =>
+                    (connection.execute as unknown as (s: string, p?: unknown[]) => Promise<[unknown, unknown]>)(
+                        sql, params,
+                    ).then((res) => {
+                        const header = res[0] as { insertId?: number; affectedRows?: number };
+                        return {
+                            insertId: header.insertId ?? 0,
+                            affectedRows: header.affectedRows ?? 0,
+                        } as Awaited<ReturnType<typeof execute>>;
+                    }),
+            };
+            const result = await fn(txDb);
+            await connection.commit();
+            return result;
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            connection.release();
+        }
+    },
 });

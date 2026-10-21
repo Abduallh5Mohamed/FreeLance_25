@@ -795,6 +795,41 @@ test('audit events: tenant-owner export stays scoped and audited', async () => {
     assert.equal(exportAudit.tenantId, 'tenant-a');
 });
 
+test('audit export: reaching MAX_EXPORT_ROWS exposes truncation through one header and the export audit row', async () => {
+    const rows = Array.from({ length: MAX_EXPORT_ROWS }, (_, index) => SAMPLE_ROW('tenant-b', { id: `row-${index}` }));
+    const { router, auditRecords } = buildRouter({ auditRows: rows });
+    const result = await invokeExport(router, {
+        method: 'GET', url: '/export.csv', token: ADMIN, query: { tenant_id: 'tenant-b' },
+    });
+    assert.equal(result.headers['x-results-truncated'], 'true');
+    const truncationHeaders = Object.keys(result.headers).filter((name) => name.includes('truncat'));
+    assert.deepEqual(truncationHeaders, ['x-results-truncated']);
+    const exportAudit = auditRecords.find((record) => record.action === 'audit_log.exported');
+    assert.ok(exportAudit);
+    const newValue = exportAudit.newValue as { row_count?: number; cap?: number; truncated?: boolean };
+    assert.equal(newValue.row_count, MAX_EXPORT_ROWS);
+    assert.equal(newValue.cap, MAX_EXPORT_ROWS);
+    assert.equal(newValue.truncated, true);
+});
+
+test('audit export: below MAX_EXPORT_ROWS exposes truncated=false in the same header and audit row', async () => {
+    const { router, auditRecords } = buildRouter({
+        auditRows: [SAMPLE_ROW('tenant-b')],
+    });
+    const result = await invokeExport(router, {
+        method: 'GET', url: '/export.csv', token: ADMIN, query: { tenant_id: 'tenant-b' },
+    });
+    assert.equal(result.headers['x-results-truncated'], 'false');
+    const truncationHeaders = Object.keys(result.headers).filter((name) => name.includes('truncat'));
+    assert.deepEqual(truncationHeaders, ['x-results-truncated']);
+    const exportAudit = auditRecords.find((record) => record.action === 'audit_log.exported');
+    assert.ok(exportAudit);
+    const newValue = exportAudit.newValue as { row_count?: number; cap?: number; truncated?: boolean };
+    assert.equal(newValue.row_count, 1);
+    assert.equal(newValue.cap, MAX_EXPORT_ROWS);
+    assert.equal(newValue.truncated, false);
+});
+
 // --- append-only + chain verify ---
 test('audit events: reads never update or delete audit rows', async () => {
     const { router, executed } = buildRouter({
@@ -821,7 +856,7 @@ test('audit events: chain verification is platform-only', async () => {
     const ok = await invoke(router, { method: 'GET', url: '/chain/verify', token: ADMIN });
     assert.equal(ok.statusCode, 200);
     // legacy chain (no head row): headAnchor is reported as null
-    assert.deepEqual(ok.body, { ok: true, checked: 0, unsealed: 0, firstFailure: null, headAnchor: null });
+    assert.deepEqual(ok.body, { ok: true, checked: 0, unsealed: 0, firstFailure: null, truncated: false, headAnchor: null });
 });
 
 test('audit events: chain verification reports tampering through the route', async () => {
@@ -854,6 +889,7 @@ test('audit events: the route exposes the anchored-head verdict', async () => {
         ok: false,
         checked: 2,
         unsealed: 0,
+        truncated: false,
         firstFailure: {
             rowIndex: -1,
             rowId: 'row-2',
@@ -869,4 +905,153 @@ test('audit events: the route exposes the anchored-head verdict', async () => {
             ok: false,
         },
     });
+});
+
+// ---------------------------------------------------------------------------
+// Claude audit pass 2026-10-19: proven-defect regressions
+// ---------------------------------------------------------------------------
+
+test('computeEntryHash is stable against MySQL JSON key normalization and null round-trips', () => {
+    // The sealed writer hashes the serialized insertion-order string; MySQL's
+    // JSON column returns an object with normalized key order (shorter keys
+    // first, then bytewise), so verification would otherwise fail on a
+    // perfectly valid, untouched chain.
+    const inserted = JSON.stringify({ title: 'Hello', id: 7, nested: { zz: 1, a: 2 }, list: [{ bb: 1, a: 2 }] });
+    const readBack = { id: 7, list: [{ a: 2, bb: 1 }], title: 'Hello', nested: { a: 2, zz: 1 } };
+    assert.equal(
+        computeEntryHash({ ...hashInput, newValue: inserted }),
+        computeEntryHash({ ...hashInput, newValue: readBack }),
+    );
+    // An explicit JSON null (stored and read back as null) equals SQL NULL.
+    assert.equal(
+        computeEntryHash({ ...hashInput, oldValue: JSON.stringify(null) }),
+        computeEntryHash({ ...hashInput, oldValue: null }),
+    );
+    // Real differences are still detected, including nested and array order.
+    assert.notEqual(
+        computeEntryHash({ ...hashInput, newValue: { a: [1, 2] } }),
+        computeEntryHash({ ...hashInput, newValue: { a: [2, 1] } }),
+    );
+    assert.notEqual(
+        computeEntryHash({ ...hashInput, newValue: { a: 1 } }),
+        computeEntryHash({ ...hashInput, newValue: { a: 2 } }),
+    );
+    // Unicode survives unescaped on both sides.
+    assert.equal(
+        computeEntryHash({ ...hashInput, newValue: JSON.stringify({ n: 'مرحبا ✓' }) }),
+        computeEntryHash({ ...hashInput, newValue: { n: 'مرحبا ✓' } }),
+    );
+});
+
+test('a chain appended with multi-key payloads verifies after MySQL JSON normalization', async () => {
+    const fake = makeChainDb();
+    await recordSealedAuditEvent(fake.db, {
+        ...BASE_INPUT,
+        oldValue: null,
+        newValue: { tenant_id: 'tenant-a', format: 'csv', row_count: 2, cap: 5000 },
+    });
+    const insert = fake.executed.find((e) => e.sql.includes('INSERT INTO audit_events'));
+    assert.ok(insert);
+    const p = insert.params;
+    const row: AuditChainRow = {
+        id: String(p[0]),
+        actor_user_id: p[1] as string,
+        tenant_id: p[2] as string,
+        action: String(p[3]),
+        resource_type: String(p[4]),
+        resource_id: String(p[5]),
+        // what mysql2 hands back for JSON columns: parsed, key order normalized
+        old_value: p[6] === null ? null : JSON.parse(String(p[6])),
+        new_value: { cap: 5000, format: 'csv', row_count: 2, tenant_id: 'tenant-a' },
+        reason: p[8] as string | null,
+        entry_hash: String(p[9]),
+        prev_entry_hash: p[10] as string | null,
+        chain_seq: Number(p[11]),
+    };
+    const result = await verifyAuditChain(verifyChainDb({
+        rows: [row],
+        head: fake.state.head,
+        leaf: { id: row.id, entry_hash: row.entry_hash, chain_seq: 1 },
+    }));
+    assert.equal(result.firstFailure, null);
+    assert.equal(result.ok, true);
+});
+
+test('an explicit null old_value appended by the writer verifies after the JSON round-trip', async () => {
+    const fake = makeChainDb();
+    await recordSealedAuditEvent(fake.db, { ...BASE_INPUT, oldValue: null, newValue: null });
+    const p = fake.executed.find((e) => e.sql.includes('INSERT INTO audit_events'))!.params;
+    const row: AuditChainRow = {
+        id: String(p[0]), actor_user_id: p[1] as string, tenant_id: p[2] as string,
+        action: String(p[3]), resource_type: String(p[4]), resource_id: String(p[5]),
+        old_value: null, new_value: null, reason: p[8] as string | null,
+        entry_hash: String(p[9]), prev_entry_hash: p[10] as string | null, chain_seq: 1,
+    };
+    const result = await verifyAuditChain(verifyChainDb({ rows: [row] }));
+    assert.equal(result.ok, true);
+});
+
+test('verifyAuditChain does not report a false anchor mismatch when an append lands between its reads', async () => {
+    const a = chainRow(1, null, { chain_seq: 1 });
+    const b = chainRow(2, a.entry_hash, { chain_seq: 2 });
+    let headReads = 0;
+    const db = {
+        query: async <T>(sql: string): Promise<T[]> => {
+            if (sql.includes('ORDER BY chain_seq DESC')) {
+                return [{ id: 'row-2', entry_hash: b.entry_hash, chain_seq: 2 }] as unknown as T[];
+            }
+            if (sql.includes('FROM audit_chain_head')) {
+                headReads += 1;
+                // first read predates the concurrent append, later reads see it
+                return [headReads === 1
+                    ? { head_seq: 1, head_entry_hash: a.entry_hash, head_row_id: 'row-1' }
+                    : { head_seq: 2, head_entry_hash: b.entry_hash, head_row_id: 'row-2' }] as unknown as T[];
+            }
+            if (sql.includes('COUNT(*)')) return [{ unsealed: 0 }] as unknown as T[];
+            return [a, b] as unknown as T[];
+        },
+    } as unknown as Pick<AuditLogDataAccess, 'query'>;
+    const result = await verifyAuditChain(db);
+    assert.equal(result.firstFailure, null);
+    assert.equal(result.ok, true);
+});
+
+test('verifyAuditChain reports when the scan cap left sealed rows unverified', async () => {
+    const a = chainRow(1, null);
+    const b = chainRow(2, a.entry_hash);
+    const c = chainRow(3, b.entry_hash);
+    const all = [a, b, c];
+    const db = {
+        query: async <T>(sql: string): Promise<T[]> => {
+            if (sql.includes('ORDER BY chain_seq DESC')) return [] as T[];
+            if (sql.includes('FROM audit_chain_head')) return [] as T[];
+            if (sql.includes('COUNT(*)')) return [{ unsealed: 0 }] as unknown as T[];
+            const limit = Number(/LIMIT (\d+)/.exec(sql)?.[1] ?? all.length);
+            return all.slice(0, limit) as unknown as T[];
+        },
+    } as unknown as Pick<AuditLogDataAccess, 'query'>;
+    const capped = await verifyAuditChain(db, { limit: 2 });
+    assert.equal(capped.checked, 2);
+    assert.equal(capped.truncated, true);
+    const full = await verifyAuditChain(db, { limit: 3 });
+    assert.equal(full.checked, 3);
+    assert.equal(full.truncated, false);
+});
+
+test('the production platform-reader SQL only references declared table aliases', async () => {
+    const { PLATFORM_READER_SQL } = await import('../src/routes/audit-logs');
+    const declared = new Set<string>();
+    const sql = PLATFORM_READER_SQL.replace(/'[^']*'/g, "''");
+    for (const m of sql.matchAll(/\b(?:FROM|JOIN)\s+\w+\s+(?:AS\s+)?(\w+)/gi)) {
+        if (!/^(WHERE|ON|INNER|LEFT|LIMIT|AND|OR)$/i.test(m[1])) declared.add(m[1]);
+    }
+    const referenced = new Set<string>();
+    for (const m of sql.matchAll(/\b([a-z]\w*)\.\w+/gi)) referenced.add(m[1]);
+    assert.ok(referenced.size > 0);
+    for (const alias of referenced) {
+        assert.ok(declared.has(alias), `alias ${alias} is referenced but never declared`);
+    }
+    assert.ok(PLATFORM_READER_SQL.includes("'audit.read'"));
+    assert.ok(PLATFORM_READER_SQL.includes("'super_admin'"));
+    assert.ok(PLATFORM_READER_SQL.includes('is_active = 1'));
 });

@@ -1,0 +1,28 @@
+ابدأ تنفيذ الدفعة الثانية الآن. المالك طلب شغلًا فعليًا جديدًا، وCodex فعّل المهام في الجسر؛ لا دورة specs أو انتظار موافقة مكررة.
+
+اقرأ النطاق الحاكم:
+docs/streams/server/BATCH2-IMPLEMENTATION-SCOPE-20261021.md
+وسجل فصل الملكية:
+C:\Users\abdua\WorkBuddySupervisorBridge\handoff\BATCH2-OWNERSHIP-APPROVAL-20261021.json
+
+اقرأ تعليمات الجسر وdispatch_plan مرة واحدة. شغّل ثلاثة عمال مباشرين حسب السعة، كل عامل يسحب taskId نفسه مرة بمعرّف جديد وفريقه، ولا تحجز نيابة عنه:
+1. server-b2-w4-assignment-upload-lifecycle-20261021-01 — storage
+2. server-b2-w9-notification-worker-20261021-01 — backend
+3. server-b2-w6-media-metering-reconcile-20261021-01 — media
+
+دي مهام تنفيذ كود وليست جردًا جديدًا:
+- W4: دورة تقديم/رفع/finalize وإلغاء المحاولة المعلقة وscan worker محدود ونسخة ملف مثبتة؛ لا clean بلا scanner موثوق ولا ضمان حجم عندPUT من حقل max_bytes في الرد. قدرة مزود ناقصة تحجب الجزء غير الآمن وتوثق، ولا تمنع إكمال الباقي.
+- W9: منفذ outbox فعلي start/stop/runOnce، claim/retry/consent/receipts/unknown outcome، بلا تشغيل عند import ولا index. المزود الغائب unavailable وليس نجاحًا وهميًا.
+- W6: قياس storage/watch ودلتا replace/delete ومصالحة/rebuild من أحداث server-verified، tenant-scoped وidempotent؛ لا احتساب مالي أو خلط بعد الطلاب.
+
+نفّذ كل معيار قبول مكتوب في task والنطاق، لا تختصر المهمة إلى كتابة interface أو تقرير. راجع العقد الموجود قبل إعادة كتابة أساس عامل. أي تخزين دائم يحتاج أعمدة غير موجودة يُرفع عقد I2 ولا يُخترع SQL على أعمدة متخيلة. لا تخفِ الحدود الخارجية تحت كلمةDone.
+
+تحت Claude مهام schema source/ledger/SQL adapters ثم integration؛ لا تلمس ملفاته أو index/auth/db/manifest/migrations. ملفات assignments محجوزة لـW4 بالكامل وClaude C2 معلّق، ولا تسليم ضمني.
+
+كل عامل يسجّل baseline/full hashes والاختبارات والـdiff والمواضع التي عدلها. ابدأ regression يثبت العيب ثم minimalfix؛ لا assertionweakening/skip/any/tsignore. اختبارات production adapter والقيم المربوطة، لا mock يملي قرار السماح مسبقًا ثم يسمى إثباتًا. تزامن عبر seam transaction/CAS فعلًا. اختبارات worker stop/timeout/cleanup مهمة.
+
+ممنوع DB/Docker/native services/listeners/provider/network/secrets/package install/Git mutations. لا تطبيق migration. لا SMS أو شهادات. لا تغيّر أسعار/قواعد منتج غير محسومة. التشغيل تحت injecteddependencies فقط؛ إعداد startup عقد يُسلّم للتكامل بعد المراجعة.
+
+عند429/500 أوقف العامل المتأثر وبلّغ مرة، لا تستبدله قبل إثبات native termination؛ لا polling مستمر أو تبديل حسابات. عند فشل حقيقي خارج النطاق قدّم دليلًا وسؤالًا محددًا، وأكمل الأجزاء المستقلة المسموحة.
+
+المشرف WorkBuddy يراجع كل diff والاختبارات بنفسه، ولا يكتفي بملخص العامل. بعد توقف الثلاثة ارفع التقارير عبر submit_task_report وأكد توقف كل الكتابات. الفحص الشامل فقط بتنسيق Codex بعد توقف Claude أيضًا. لا selfacceptance أو نسبة اكتمال مزعومة.

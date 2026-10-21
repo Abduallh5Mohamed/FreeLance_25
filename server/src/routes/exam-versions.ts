@@ -29,7 +29,14 @@ import { Router, RequestHandler, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { AuthRequest } from '../middleware/auth';
 import { recordAudit, snapshotRow } from '../security/audit';
+import {
+    BranchAccessDeps,
+    BranchMembershipRow,
+    BranchRow,
+    resolveBranchAccess,
+} from '../security/branch-access';
 import { tenantLocalNow, toUtcIso } from '../services/content-release';
+import { buildQuestionVisibilityFilter } from '../services/question-bank';
 import {
     AttemptGrade,
     DEFAULT_SCORING_POLICY,
@@ -69,6 +76,8 @@ export interface ExamVersionsDeps {
     authenticate: RequestHandler;
     /** Server-owned active authority of the principal inside the selected tenant. */
     loadActiveTenantAuthority: (userId: string, tenantId: string) => Promise<{ authority: string } | null>;
+    /** Optional branch-membership seam for the course authority branch leg. */
+    branchAccess?: BranchAccessDeps;
     now?: () => Date;
     /** Optional atomic seam; production supplies a pooled transaction. */
     transaction?: <T>(fn: (tx: ExamVersionsDataAccess) => Promise<T>) => Promise<T>;
@@ -127,6 +136,8 @@ interface AttemptRow {
     grading_fingerprint: string | null;
     graded_at: string | Date | null;
     passed: boolean | number | null;
+    /** Optimistic-concurrency column, guarded on every staff regrade. */
+    version: number | string | null;
 }
 
 interface AnswerRow {
@@ -176,7 +187,7 @@ const QUESTION_COLUMNS =
 
 const ATTEMPT_COLUMNS =
     'id,tenant_id,exam_id,exam_version_id,student_enrollment_id,student_user_id,status,started_at,' +
-    'deadline_at,submitted_at,auto_submitted,auto_score,score,manual_required,grading_fingerprint,graded_at,passed';
+    'deadline_at,submitted_at,auto_submitted,auto_score,score,manual_required,grading_fingerprint,graded_at,passed,version';
 
 function parseJson(value: unknown): unknown {
     if (value === null || value === undefined || value === '') return null;
@@ -394,6 +405,18 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
         ? deps.transaction
         : <T>(fn: (tx: ExamVersionsDataAccess) => Promise<T>): Promise<T> => fn(db);
 
+    /* Branch-membership seam (same default wiring pattern as routes/gradebook.ts). */
+    const branchAccess: BranchAccessDeps = deps.branchAccess ?? {
+        findBranchById: async (branchId: string) => db.queryOne<BranchRow>(
+            'SELECT id, tenant_id, status, version FROM branches WHERE id = ? LIMIT 1',
+            [branchId],
+        ),
+        findMembership: async (branchId: string, memberUserId: string) => db.queryOne<BranchMembershipRow>(
+            'SELECT id, branch_id, user_id, role, status, version FROM branch_memberships WHERE branch_id = ? AND user_id = ? LIMIT 1',
+            [branchId, memberUserId],
+        ),
+    };
+
     // Per-attempt autosave throttle state, kept on the router instance so tests
     // (which rebuild the router) never share it.
     const lastAutosaveAt = new Map<string, number>();
@@ -476,6 +499,81 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
         return Boolean(row);
     };
 
+    /* --------------------------------------------------------------------- */
+    /* Staff course/exam authority (deny-by-default, subsumes examInTenant)   */
+    /* --------------------------------------------------------------------- */
+
+    // The same server-verified relation chain used by routes/gradebook.ts
+    // authorizeCourse: tenant ownership, the course's own instructor, an
+    // instructor who holds a group mapped to the course, or an instructor whose
+    // verified branch membership covers a group of the course. A branch
+    // membership is never by itself a course relation.
+
+    const examCourse = async (examId: string): Promise<{ id: string; tenant_id: string | null; instructor_id: string | null } | null> => {
+        const row = await db.queryOne<{ id: string; tenant_id: string | null; instructor_id: string | null }>(
+            `SELECT c.id, c.tenant_id, c.instructor_id
+             FROM exams e INNER JOIN courses c ON c.id = e.course_id
+             WHERE e.id = ? LIMIT 1`,
+            [examId],
+        );
+        return row;
+    };
+
+    const instructorTeachesCourse = async (tenantId: string, userId: string, courseId: string): Promise<boolean> => {
+        const row = await db.queryOne<{ id: string }>(
+            'SELECT g.id FROM `groups` g INNER JOIN courses c ON c.id = g.course_id WHERE g.course_id=? AND g.instructor_id=? AND c.tenant_id=? LIMIT 1',
+            [courseId, userId, tenantId],
+        );
+        return Boolean(row);
+    };
+
+    const courseHasGroupInBranch = async (tenantId: string, courseId: string, branchId: string): Promise<boolean> => {
+        const row = await db.queryOne<{ id: string }>(
+            `SELECT g.id FROM \`groups\` g INNER JOIN courses c ON c.id = g.course_id
+             WHERE g.course_id=? AND g.branch_id=? AND g.branch_scope='branch' AND c.tenant_id=? LIMIT 1`,
+            [courseId, branchId, tenantId],
+        );
+        return Boolean(row);
+    };
+
+    const authorizeBranchMember = async (
+        scope: StaffScope,
+        branchId: string,
+    ): Promise<boolean> => {
+        const decision = await resolveBranchAccess(branchAccess, {
+            principalUserId: scope.userId,
+            principalTenantId: scope.tenantId,
+            branchId,
+            principalIsTenantOwner: scope.isOwner,
+        });
+        return decision.kind === 'allowed';
+    };
+
+    type ExamStaffDecision = 'ok' | 'not_found' | 'forbidden';
+
+    /**
+     * Deny-by-default staff authority over one exam: every leg is
+     * server-derived (course row, group mapping, active branch membership);
+     * absent or cross-tenant exams are not-found, unrelated staff are
+     * forbidden, never silently mapped to tenant-wide access.
+     */
+    const authorizeExamStaff = async (scope: StaffScope, examId: string): Promise<ExamStaffDecision> => {
+        const course = await examCourse(examId);
+        if (!course || course.tenant_id !== scope.tenantId) return 'not_found';
+        if (scope.isOwner) return 'ok';
+        if (course.instructor_id === scope.userId) return 'ok';
+        if (await instructorTeachesCourse(scope.tenantId, scope.userId, course.id)) return 'ok';
+        if (scope.branchId
+            && await authorizeBranchMember(scope, scope.branchId)
+            && await courseHasGroupInBranch(scope.tenantId, course.id, scope.branchId)) return 'ok';
+        return 'forbidden';
+    };
+
+    const denyExamStaff = (res: Response, decision: ExamStaffDecision, notFoundMessage: string): void => {
+        if (decision === 'not_found') res.status(404).json({ error: notFoundMessage });
+        else res.status(403).json({ error: 'You are not authorized for this exam' });
+    };
+
     const loadVersion = (tenantId: string, examId: string, versionId: string): Promise<ExamVersionRow | null> =>
         loadVersionRow(db, tenantId, examId, versionId);
 
@@ -555,22 +653,35 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             if (!scope) return;
             const examId = normalizeId(req.params.examId);
             if (!examId) return res.status(404).json({ error: 'Exam not found' });
-            if (!(await examInTenant(scope.tenantId, examId))) {
-                return res.status(404).json({ error: 'Exam not found' });
+            const staffDecision = await authorizeExamStaff(scope, examId);
+            if (staffDecision !== 'ok') {
+                return denyExamStaff(res, staffDecision, 'Exam not found');
             }
 
             const validated = validateExamVersionInput(req.body);
             if (!validated.ok) return res.status(400).json({ error: validated.error });
             const value = validated.value;
 
+            // Pin resolution runs under the same staff branch visibility filter
+            // used by the question-bank read surfaces, so a branch-scoped
+            // instructor cannot pin question versions owned by another branch.
+            // Archived-head policy is a held product decision and is NOT
+            // filtered here (see report).
+            const pinVisibility = buildQuestionVisibilityFilter({
+                tenantId: scope.tenantId,
+                branchId: scope.branchId,
+                isOwner: scope.isOwner,
+            });
+
             const sources: { source: SnapshotQuestionSource; position: number; sourceVersionId: string }[] = [];
             for (const pin of value.questions) {
                 const row = await db.queryOne<QuestionBankVersionRow>(
-                    `SELECT id AS source_version_id, question_id, version, question_type, question_text,
-                            options, correct_answers, points, explanation
-                     FROM question_bank_versions
-                     WHERE tenant_id = ? AND question_id = ? AND version = ? LIMIT 1`,
-                    [scope.tenantId, pin.questionId, pin.version],
+                    `SELECT qbv.id AS source_version_id, qbv.question_id, qbv.version, qbv.question_type, qbv.question_text,
+                            qbv.options, qbv.correct_answers, qbv.points, qbv.explanation
+                     FROM question_bank_versions qbv INNER JOIN question_bank_questions q ON q.id = qbv.question_id
+                     WHERE qbv.tenant_id = ? AND qbv.question_id = ? AND qbv.version = ? AND ${pinVisibility.sql}
+                     LIMIT 1`,
+                    [scope.tenantId, pin.questionId, pin.version, ...pinVisibility.params],
                 );
                 if (!row) {
                     return res.status(400).json({ error: `question ${pin.questionId} version ${pin.version} was not found` });
@@ -669,8 +780,9 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             if (!scope) return;
             const examId = normalizeId(req.params.examId);
             if (!examId) return res.status(404).json({ error: 'Exam not found' });
-            if (!(await examInTenant(scope.tenantId, examId))) {
-                return res.status(404).json({ error: 'Exam not found' });
+            const staffDecision = await authorizeExamStaff(scope, examId);
+            if (staffDecision !== 'ok') {
+                return denyExamStaff(res, staffDecision, 'Exam not found');
             }
             const rows = await db.query<ExamVersionRow>(
                 `SELECT ${VERSION_COLUMNS} FROM exam_versions
@@ -694,8 +806,9 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             const examId = normalizeId(req.params.examId);
             const versionId = normalizeId(req.params.versionId);
             if (!examId || !versionId) return res.status(404).json({ error: 'Exam version not found' });
-            if (!(await examInTenant(scope.tenantId, examId))) {
-                return res.status(404).json({ error: 'Exam version not found' });
+            const staffDecision = await authorizeExamStaff(scope, examId);
+            if (staffDecision !== 'ok') {
+                return denyExamStaff(res, staffDecision, 'Exam version not found');
             }
             const version = await loadVersion(scope.tenantId, examId, versionId);
             if (!version) return res.status(404).json({ error: 'Exam version not found' });
@@ -720,8 +833,9 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             const examId = normalizeId(req.params.examId);
             const versionId = normalizeId(req.params.versionId);
             if (!examId || !versionId) return res.status(404).json({ error: 'Exam version not found' });
-            if (!(await examInTenant(scope.tenantId, examId))) {
-                return res.status(404).json({ error: 'Exam version not found' });
+            const staffDecision = await authorizeExamStaff(scope, examId);
+            if (staffDecision !== 'ok') {
+                return denyExamStaff(res, staffDecision, 'Exam version not found');
             }
             const version = await loadVersion(scope.tenantId, examId, versionId);
             if (!version) return res.status(404).json({ error: 'Exam version not found' });
@@ -882,6 +996,10 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             if (!scope) return;
             let attempt = await loadAttempt(scope.tenantId, attemptId);
             if (!attempt) return res.status(404).json({ error: 'Attempt not found' });
+            const staffDecision = await authorizeExamStaff(scope, attempt.exam_id);
+            if (staffDecision !== 'ok') {
+                return denyExamStaff(res, staffDecision, 'Attempt not found');
+            }
             if (attempt.status === 'in_progress') {
                 await expireDueAttempt(db, now, attempt, runAtomic);
                 attempt = (await loadAttempt(scope.tenantId, attemptId)) ?? attempt;
@@ -1037,7 +1155,10 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
     });
 
     /* --------------------------------------------------------------------- */
-    /* POST /attempts/:attemptId/regrade — tenant staff, idempotent (audited) */
+    /* POST /attempts/:attemptId/regrade — authorized tenant staff,           */
+    /* idempotent (audited). The terminal expired/auto_submitted state of the */
+    /* attempt is preserved and the UPDATE is guarded by the expected state   */
+    /* and row version.                                                       */
     /* --------------------------------------------------------------------- */
     router.post('/attempts/:attemptId/regrade', async (req: AuthRequest, res: Response) => {
         try {
@@ -1047,6 +1168,8 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             if (!attemptId) return res.status(404).json({ error: 'Attempt not found' });
             const attempt = await loadAttempt(scope.tenantId, attemptId);
             if (!attempt) return res.status(404).json({ error: 'Attempt not found' });
+            const staffDecision = await authorizeExamStaff(scope, attempt.exam_id);
+            if (staffDecision !== 'ok') return denyExamStaff(res, staffDecision, 'Attempt not found');
             if (attempt.status === 'in_progress') {
                 return res.status(409).json({ error: 'An in-progress attempt cannot be regraded' });
             }
@@ -1073,7 +1196,10 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             });
             const awarded = formatHundredths(grade.autoScoreHundredths);
             const passingHundredths = toHundredths(version.passing_points) ?? 0;
-            const status = grade.manualRequired ? 'pending_review' : 'graded';
+            // G-A2-3: `auto_submitted` marks a server-terminated attempt; its
+            // status is terminal and is never rewritten to graded/pending by a
+            // regrade. Also only the recomputed grade values change.
+            const status = attempt.auto_submitted ? String(attempt.status) : (grade.manualRequired ? 'pending_review' : 'graded');
             const passed = grade.manualRequired ? null : grade.autoScoreHundredths >= passingHundredths;
 
             if (!shouldApplyRegrade(attempt.grading_fingerprint, fingerprint)) {
@@ -1093,11 +1219,12 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
                     `UPDATE exam_versioned_attempts
                      SET status=?, auto_score=?, score=?, manual_required=?, grading_fingerprint=?,
                          graded_at=?, passed=?, version=version+1
-                     WHERE id=? AND tenant_id=?`,
+                     WHERE id=? AND tenant_id=? AND status = ? AND version = ?`,
                     [
                         status, awarded, grade.manualRequired ? null : awarded, grade.manualRequired ? 1 : 0,
                         fingerprint, new Date().toISOString().slice(0, 19).replace('T', ' '),
                         passed === null ? null : (passed ? 1 : 0), attemptId, scope.tenantId,
+                        String(attempt.status), Number(attempt.version ?? 0),
                     ],
                 );
                 if ((updated.affectedRows ?? 0) === 0) return false;
@@ -1189,7 +1316,7 @@ const loadActiveTenantAuthority = async (userId: string, tenantId: string) => {
 
 const ATTEMPT_COLUMNS_QUALIFIED =
     'a.id,a.tenant_id,a.exam_id,a.exam_version_id,a.student_enrollment_id,a.student_user_id,a.status,a.started_at,' +
-    'a.deadline_at,a.submitted_at,a.auto_submitted,a.auto_score,a.score,a.manual_required,a.grading_fingerprint,a.graded_at,a.passed';
+    'a.deadline_at,a.submitted_at,a.auto_submitted,a.auto_score,a.score,a.manual_required,a.grading_fingerprint,a.graded_at,a.passed,a.version';
 
 /** Attempts whose grace window closed and that are still stuck in_progress. */
 const OVERDUE_ATTEMPT_SQL = `
@@ -1214,12 +1341,37 @@ export const runExamAttemptExpiryPass = async (): Promise<number> => {
     let expired = 0;
     for (const attempt of rows) {
         try {
-            if (await expireDueAttempt(db, clock, attempt, (fn) => fn(db))) expired += 1;
+            if (await expireDueAttempt(db, clock, attempt, productionTransaction)) expired += 1;
         } catch (error) {
             console.error('Exam attempt expiry failed:', error);
         }
     }
     return expired;
+};
+
+/**
+ * Production atomic seam. A grading pass writes the attempt row, the
+ * per-question award ledger, the idempotency run row and the audit event as one
+ * unit; the `status='in_progress'` guard is only meaningful when that block
+ * holds a real transaction, so a concurrent submit/expiry cannot double-apply.
+ */
+const productionTransaction = async <T>(fn: (tx: ExamVersionsDataAccess) => Promise<T>): Promise<T> => {
+    const { withTransaction } = await loadDb();
+    return withTransaction((connection) => fn({
+        query: async <R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R[]> => {
+            const [rows] = await connection.query(sql, params as never);
+            return rows as unknown as R[];
+        },
+        queryOne: async <R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R | null> => {
+            const [rows] = await connection.query(sql, params as never);
+            return (rows as unknown as R[])[0] ?? null;
+        },
+        execute: async (sql: string, params?: unknown[]) => {
+            const [result] = await connection.execute(sql, params as never);
+            const header = result as { insertId?: number; affectedRows?: number };
+            return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+        },
+    }));
 };
 
 export default createExamVersionsRouter({
@@ -1229,4 +1381,5 @@ export default createExamVersionsRouter({
         return authenticateToken(req, res, next);
     },
     loadActiveTenantAuthority,
+    transaction: productionTransaction,
 });

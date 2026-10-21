@@ -666,3 +666,336 @@ test('mounting (M7): platform flags, audit logs and moderation deny an anonymous
     }
     assert.equal(db.calls(), 0, 'an anonymous caller must not reach SQL storage');
 });
+
+/* -------------------------------------------------------------------------- */
+/* M8 search / tenant-export / observability mounts (appended 2026-10-20)      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The M8 surfaces mounted by `server/src/index.ts`.
+ *
+ * `/api/search` and `/api/tenant-exports` sit behind the shared `/api` guard
+ * chain. The observability router (`/metrics`, `/healthz`, `/readyz`) is wired
+ * by `mountObservability(app, deps)` at the APPLICATION ROOT — deliberately
+ * outside `/api` — so the probes answer without authentication while the
+ * metrics scrape stays gated by the dedicated `METRICS_TOKEN`.
+ */
+const M8_MOUNTS: ReadonlyArray<readonly [string, string]> = [
+    ['/api/search', 'searchRoutes'],
+    ['/api/tenant-exports', 'tenantExportRoutes'],
+];
+
+const M8_OPS_PATHS: readonly string[] = ['/metrics', '/healthz', '/readyz'];
+
+/** A deployable metrics token (>= 32 bytes), never a production value. */
+const M8_METRICS_TOKEN = 'm8-mounting-test-metrics-token-0123456789abcdef';
+
+test('mounting (M8): search and tenant-export mount after the guard chain, exactly once', () => {
+    const guardIndex = indexSource.indexOf(GUARD_ANCHOR);
+    assert.ok(guardIndex > -1, 'the shared /api guard chain must exist');
+    const notFoundIndex = indexSource.indexOf('// 404 handler');
+    assert.ok(notFoundIndex > guardIndex, 'the 404 handler must follow the guard chain');
+
+    for (const [mountPath, variable] of M8_MOUNTS) {
+        const statement = `app.use('${mountPath}', ${variable})`;
+        assert.equal(
+            indexSource.split(statement).length - 1,
+            1,
+            `${statement} must be mounted exactly once`,
+        );
+        const mountIndex = indexSource.indexOf(statement);
+        assert.ok(mountIndex > guardIndex, `${mountPath} must be mounted after the /api guard chain`);
+        assert.ok(mountIndex < notFoundIndex, `${mountPath} must be mounted before the 404 handler`);
+
+        const parsed = parseMounts(indexSource).find((mount) => mount.path === mountPath);
+        assert.ok(parsed, `${mountPath} must be parsed as an /api mount`);
+        assert.equal(parsed?.variable, variable, `${mountPath} must mount the expected router variable`);
+    }
+});
+
+test('mounting (M8): observability runs before the /api guards and its ops paths stay outside /api', () => {
+    const guardIndex = indexSource.indexOf(GUARD_ANCHOR);
+    assert.ok(guardIndex > -1, 'the shared /api guard chain must exist');
+
+    const observabilityWiring = 'mountObservability(app,';
+    assert.equal(
+        indexSource.split(observabilityWiring).length - 1,
+        1,
+        'mountObservability(app, deps) must be wired exactly once',
+    );
+    const observabilityIndex = indexSource.indexOf(observabilityWiring);
+    assert.ok(
+        observabilityIndex < guardIndex,
+        'mountObservability must be installed BEFORE the /api guards so every request gets a correlation id',
+    );
+
+    // The ops router owns root-relative paths. Mounting it under /api (or as a
+    // second app-level mount) would either put the probes behind authentication
+    // or duplicate the surface.
+    for (const opsPath of M8_OPS_PATHS) {
+        assert.ok(!indexSource.includes(`app.use('${opsPath}'`), `${opsPath} must not be a separate app-level mount`);
+        assert.ok(!indexSource.includes(`app.use('/api${opsPath}'`), `${opsPath} must not be mounted under /api`);
+    }
+
+    // Certificates stay unmounted: owner decision 2026-10-19 (product scope).
+    assert.ok(!indexSource.includes("app.use('/api/certificates"), '/api/certificates must stay unmounted');
+});
+
+test('mounting (M8): the new M8 mount paths collide with no other mount (segment-aware)', () => {
+    const mounts = parseMounts(indexSource);
+    for (const [mountPath] of M8_MOUNTS) {
+        const candidate = segments(mountPath);
+        for (const mount of mounts) {
+            if (mount.path === mountPath) continue;
+            const other = segments(mount.path);
+            const collides = isSegmentPrefix(other, candidate) || isSegmentPrefix(candidate, other);
+            assert.ok(!collides, `${mountPath} would collide with ${mount.path}`);
+        }
+    }
+});
+
+interface M8Surface {
+    app: Router;
+    storageCalls: () => number;
+    readinessChecks: () => number;
+}
+
+interface M8Response {
+    statusCode?: number;
+    body?: unknown;
+    text?: string;
+    headers: Record<string, string>;
+    status(code: number): M8Response;
+    json(payload: unknown): M8Response;
+    send(payload: unknown): M8Response;
+    set(header: string, value: string): M8Response;
+    setHeader(header: string, value: string): M8Response;
+    on(event: string, listener: () => void): M8Response;
+}
+
+interface M8Request {
+    method: string;
+    url: string;
+    headers?: Record<string, string>;
+    body?: unknown;
+}
+
+/**
+ * Mirror `server/src/index.ts` exactly: observability (request context) first,
+ * then the shared /api guard chain, then the M8 business routers, then the
+ * terminal 404 handler. Every dependency is injected over a tripwire, so an
+ * anonymous request that reaches storage fails the assertion instead of
+ * silently passing.
+ */
+async function buildM8Surface(options: { metricsToken?: string } = {}): Promise<M8Surface> {
+    const { createSearchRouter } = await import('../src/routes/search');
+    const { createTenantExportRouter } = await import('../src/routes/tenant-export');
+    const { mountObservability } = await import('../src/routes/ops');
+    const { createLogger } = await import('../src/services/logger');
+    const { createMetricsRegistry } = await import('../src/services/metrics');
+
+    const db = tripwireDb();
+    let readinessRuns = 0;
+    const app = Router();
+
+    const metrics = createMetricsRegistry();
+    metrics.counter('m8_mounting_probe_total', 'Mounting probe counter').inc();
+
+    mountObservability(app as unknown as import('express').Application, {
+        logger: createLogger({ write: () => { /* hermetic: no stdout */ } }),
+        metrics,
+        metricsToken: options.metricsToken,
+        readiness: [{
+            name: 'database',
+            check: () => {
+                readinessRuns += 1;
+                return true;
+            },
+        }],
+    });
+
+    app.use('/api', optionalAuth, enforceTenantAuthorityBoundary, enforceStudentWorkspaceBoundary);
+    app.use('/api/search', createSearchRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: async () => {
+            throw new Error('tenant authority must not resolve for an anonymous caller');
+        },
+        resolveStudentViewer: async () => {
+            throw new Error('student workspace must not resolve for an anonymous caller');
+        },
+    }));
+    app.use('/api/tenant-exports', createTenantExportRouter({
+        db,
+        authenticate: authenticateToken,
+        requirePlatformPermission: () => () => {
+            throw new Error('platform permission guard must not run for an anonymous caller');
+        },
+        hasPlatformPermission: async () => {
+            throw new Error('platform permission must not resolve for an anonymous caller');
+        },
+        tenantOwnerTenantId: async () => {
+            throw new Error('tenant ownership must not resolve for an anonymous caller');
+        },
+        storage: {
+            write: async () => {
+                throw new Error('export storage must not be written for an anonymous caller');
+            },
+            read: async () => {
+                throw new Error('export storage must not be read for an anonymous caller');
+            },
+        },
+        secret: 'm8-mounting-test-export-secret-0123456789abcdef',
+    }));
+    app.use((_req, res) => {
+        res.status(404).json({ error: 'Route not found' });
+    });
+
+    return { app, storageCalls: db.calls, readinessChecks: () => readinessRuns };
+}
+
+/** Invoke the assembled surface with a response that models header + send. */
+async function invokeM8(app: Router, request: M8Request): Promise<M8Response> {
+    const parsed = new URL(request.url, 'http://m8.invalid');
+    const headers: Record<string, string> = {};
+    for (const [key, value] of Object.entries(request.headers ?? {})) {
+        headers[key.toLowerCase()] = value;
+    }
+    const response: M8Response = {
+        headers,
+        status(code) { response.statusCode = code; return response; },
+        json(payload) {
+            if (response.statusCode === undefined) response.statusCode = 200;
+            response.body = payload;
+            return response;
+        },
+        send(payload) {
+            if (response.statusCode === undefined) response.statusCode = 200;
+            response.text = typeof payload === 'string' ? payload : String(payload);
+            return response;
+        },
+        set(header, value) { response.headers[header.toLowerCase()] = value; return response; },
+        setHeader(header, value) { response.headers[header.toLowerCase()] = value; return response; },
+        on() { return response; },
+    };
+    const req: Record<string, unknown> = {
+        method: request.method,
+        url: request.url,
+        originalUrl: request.url,
+        headers,
+        body: request.body ?? {},
+        query: Object.fromEntries(parsed.searchParams.entries()),
+        params: {},
+        ip: '127.0.0.1',
+        socket: { remoteAddress: '127.0.0.1' },
+    };
+    await (app as unknown as (r: unknown, s: unknown, n: () => void) => Promise<void>)(req, response, () => {});
+    const deadline = Date.now() + 5000;
+    while (response.statusCode === undefined && response.body === undefined && response.text === undefined && Date.now() < deadline) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    return response;
+}
+
+test('mounting (M8): search and tenant-export deny an anonymous caller without touching storage', async () => {
+    const surface = await buildM8Surface({ metricsToken: M8_METRICS_TOKEN });
+    const probes: M8Request[] = [
+        { method: 'GET', url: '/api/search?q=math&kind=courses' },
+        { method: 'GET', url: '/api/tenant-exports' },
+        { method: 'POST', url: '/api/tenant-exports', body: { reason: 'anonymous' } },
+    ];
+    for (const probe of probes) {
+        const res = await invokeM8(surface.app, probe);
+        assert.equal(res.statusCode, 401, `${probe.method} ${probe.url} must deny an anonymous caller`);
+        assert.equal(surface.storageCalls(), 0, `${probe.method} ${probe.url} touched storage before denying`);
+    }
+});
+
+test('mounting (M8): /healthz and /readyz answer anonymously while /metrics needs METRICS_TOKEN', async () => {
+    const surface = await buildM8Surface({ metricsToken: M8_METRICS_TOKEN });
+
+    const healthz = await invokeM8(surface.app, { method: 'GET', url: '/healthz' });
+    assert.equal(healthz.statusCode, 200, '/healthz is liveness and must answer without auth');
+    assert.deepEqual(healthz.body, { status: 'ok' });
+    assert.equal(surface.readinessChecks(), 0, 'liveness must not run dependency checks');
+
+    const readyz = await invokeM8(surface.app, { method: 'GET', url: '/readyz' });
+    assert.equal(readyz.statusCode, 200, '/readyz is readiness and must answer without auth');
+    assert.deepEqual(readyz.body, { status: 'ready' });
+    assert.equal(surface.readinessChecks(), 1, 'readiness must run the injected dependency checks');
+
+    const anonymousScrape = await invokeM8(surface.app, { method: 'GET', url: '/metrics' });
+    assert.equal(anonymousScrape.statusCode, 401, '/metrics must deny a scrape with no bearer');
+    assert.equal(anonymousScrape.text, undefined, 'a denied scrape must not render metrics');
+
+    const wrongBearer = await invokeM8(surface.app, {
+        method: 'GET',
+        url: '/metrics',
+        headers: { authorization: 'Bearer not-the-configured-token' },
+    });
+    assert.equal(wrongBearer.statusCode, 401, '/metrics must deny a wrong bearer');
+    assert.equal(wrongBearer.text, undefined, 'a denied scrape must not render metrics');
+
+    const authorized = await invokeM8(surface.app, {
+        method: 'GET',
+        url: '/metrics',
+        headers: { authorization: `Bearer ${M8_METRICS_TOKEN}` },
+    });
+    assert.equal(authorized.statusCode, 200, '/metrics must answer the configured bearer');
+    assert.match(authorized.text ?? '', /m8_mounting_probe_total/, 'an authorized scrape renders the registry');
+
+    // No configured METRICS_TOKEN: the endpoint fails closed even for a bearer.
+    const unconfigured = await buildM8Surface();
+    const failClosed = await invokeM8(unconfigured.app, {
+        method: 'GET',
+        url: '/metrics',
+        headers: { authorization: `Bearer ${M8_METRICS_TOKEN}` },
+    });
+    assert.equal(failClosed.statusCode, 503, 'an unconfigured metrics endpoint must fail closed');
+    assert.equal(failClosed.text, undefined, 'a fail-closed scrape must not render metrics');
+    assert.equal(
+        (await invokeM8(unconfigured.app, { method: 'GET', url: '/healthz' })).statusCode,
+        200,
+        'the health probes stay public even when metrics is unconfigured',
+    );
+
+    assert.equal(surface.storageCalls(), 0, 'the ops surface must not touch tenant storage');
+    assert.equal(unconfigured.storageCalls(), 0, 'the ops surface must not touch tenant storage');
+});
+
+test('mounting (M8): ops paths stay outside /api and every request carries a correlation id', async () => {
+    const { REQUEST_ID_HEADER, REQUEST_ID_PATTERN } = await import('../src/middleware/request-context');
+    const surface = await buildM8Surface({ metricsToken: M8_METRICS_TOKEN });
+
+    // The ops surface is root-mounted: /api/metrics is not a route at all.
+    const apiMetrics = await invokeM8(surface.app, { method: 'GET', url: '/api/metrics' });
+    assert.equal(apiMetrics.statusCode, 404, 'the metrics endpoint must not exist under /api');
+    assert.deepEqual(apiMetrics.body, { error: 'Route not found' });
+
+    // Public probes and denied /api calls alike carry a server-issued id, which
+    // proves the request-context middleware runs BEFORE the /api guards.
+    for (const url of ['/healthz', '/api/search?q=math', '/api/tenant-exports']) {
+        const res = await invokeM8(surface.app, { method: 'GET', url });
+        const requestId = res.headers[REQUEST_ID_HEADER];
+        assert.equal(typeof requestId, 'string', `${url} must carry ${REQUEST_ID_HEADER}`);
+        assert.match(String(requestId), REQUEST_ID_PATTERN, `${url} must carry a safe correlation id`);
+    }
+
+    // A caller-supplied id is echoed only when it is safe; an unsafe value is replaced.
+    const echoed = await invokeM8(surface.app, {
+        method: 'GET',
+        url: '/healthz',
+        headers: { [REQUEST_ID_HEADER]: 'caller-supplied-id-123' },
+    });
+    assert.equal(echoed.headers[REQUEST_ID_HEADER], 'caller-supplied-id-123');
+
+    const replaced = await invokeM8(surface.app, {
+        method: 'GET',
+        url: '/healthz',
+        headers: { [REQUEST_ID_HEADER]: 'bad id, with spaces' },
+    });
+    assert.notEqual(replaced.headers[REQUEST_ID_HEADER], 'bad id, with spaces');
+    assert.match(String(replaced.headers[REQUEST_ID_HEADER]), REQUEST_ID_PATTERN);
+
+    assert.equal(surface.storageCalls(), 0, 'probing the surface must not reach storage');
+});

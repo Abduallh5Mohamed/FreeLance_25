@@ -15,14 +15,22 @@
  *    exactly once and stored only as SHA-256 hashes; each code is single use
  *    (conditional update flips used_at).
  *  - Step-up: a successful verify issues a stateless HMAC token
- *    `su1.<userId>.<epoch>.<issuedAt>.<mac>` with a short accepted age.
- *    `createRequireStepUp` turns it into a guard for sensitive routes; the
- *    epoch is re-read live from the row so disabling MFA immediately
- *    invalidates outstanding tokens.
+ *    `su2.<userId>.<epoch>.<issuedAt>.<purpose>.<sessionId>.<mac>` with a short
+ *    accepted age. `createRequireStepUp` turns it into a guard for sensitive
+ *    routes; the epoch is the enrollment epoch that was verified (a re-enroll
+ *    or disable bumps it, invalidating outstanding tokens), and the purpose and
+ *    session id are checked so a token cannot be repurposed or replayed from a
+ *    different session.
  *
  * Rate limiting and lockout: per-user request limiter (clock injected, fixed
  * window) plus persisted failed-attempt lockout (N bad codes lock the row for
  * a cooldown; the counter survives restarts because it lives in the row).
+ *
+ * Concurrency: every state change is a single conditional statement keyed on
+ * the observed enrollment epoch (`markStepUsed`, `activate`,
+ * `consumeRecoveryCode`), and enroll takes a row lock before replacing a
+ * secret, so simultaneous requests cannot reuse a step/code or activate a
+ * secret that was never proven.
  *
  * No `any`, no ts-ignore, no runtime DDL, no network, no PII in logs.
  */
@@ -41,12 +49,19 @@ export const MAX_VERIFY_ATTEMPTS = 5;
 export const LOCKOUT_SECONDS = 900;
 export const DEFAULT_STEPUP_MAX_AGE_SECONDS = 600;
 export const SEAL_VERSION = 'v1';
-export const STEPUP_TOKEN_VERSION = 'su1';
+export const STEPUP_TOKEN_VERSION = 'su2';
 
 export interface PlatformMfaDb {
     query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>;
     queryOne: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T | null>;
     execute: (sql: string, params?: unknown[]) => Promise<{ insertId?: number; affectedRows?: number }>;
+    /**
+     * Optional single-connection transaction seam. When present the route runs
+     * every state mutation AND its sealed audit entry on the same connection,
+     * so a failed audit rolls the mutation back instead of leaving half of it
+     * committed.
+     */
+    transaction?: <T>(fn: (tx: PlatformMfaDb) => Promise<T>) => Promise<T>;
 }
 
 export class MfaKeyUnavailableError extends Error {
@@ -262,11 +277,24 @@ export interface MfaRow {
 
 export interface PlatformMfaStore {
     findRow(userId: string): Promise<MfaRow | null>;
-    upsertPendingSecret(userId: string, sealedSecret: string): Promise<void>;
-    /** pending -> active transition (no-op unless still pending). */
-    activate(userId: string): Promise<void>;
-    /** Consume the newest time-step; returns affected rows (0 => replayed). */
-    markStepUsed(userId: string, step: number): Promise<number>;
+    /**
+     * Install a new pending secret and purge every recovery code of the
+     * replaced enrollment. Returns 0 (and writes nothing) when the row is
+     * already active, so a concurrent enroll can never rotate an active
+     * enrollment; the check runs under a row lock.
+     */
+    upsertPendingSecret(userId: string, sealedSecret: string): Promise<number>;
+    /**
+     * pending -> active for the enrollment that was just verified. Returns
+     * affected rows; 0 means another request won the transition or the
+     * enrollment was replaced meanwhile.
+     */
+    activate(userId: string, expectedEpoch: number): Promise<number>;
+    /**
+     * Consume the newest time-step for the given enrollment; returns affected
+     * rows (0 => replayed, or the enrollment epoch changed underneath).
+     */
+    markStepUsed(userId: string, step: number, expectedEpoch: number): Promise<number>;
     /**
      * Increment the failure counter; locks the row for `lockoutSeconds` once
      * MAX_VERIFY_ATTEMPTS is exceeded. Returns true when the row is now locked.
@@ -278,7 +306,8 @@ export interface PlatformMfaStore {
     consumeRecoveryCode(userId: string, codeHash: string): Promise<number>;
     currentStepupEpoch(userId: string): Promise<number>;
     bumpStepupEpoch(userId: string): Promise<number>;
-    disable(userId: string): Promise<void>;
+    /** Disable an enrolled row; returns affected rows (0 => nothing enrolled). */
+    disable(userId: string): Promise<number>;
 }
 
 export interface LockoutState {
@@ -304,15 +333,16 @@ export type VerifyDenyReason =
     | 'locked'
     | 'bad_code'
     | 'replayed'
+    | 'stale_enrollment'
     | 'key_unavailable'
     | 'store_error';
 
 export type CodeVerifyResult =
-    | { ok: true; stepUsed: number }
+    | { ok: true; stepUsed: number; epoch: number }
     | { ok: false; reason: VerifyDenyReason; lockedUntil?: string };
 
 export type RecoveryVerifyResult =
-    | { ok: true }
+    | { ok: true; epoch: number }
     | { ok: false; reason: VerifyDenyReason; lockedUntil?: string };
 
 export interface MfaVerifyDeps {
@@ -327,6 +357,11 @@ const rowStepupEpoch = (row: MfaRow): number => Math.max(1, asNumber(row.stepup_
  * Deny-by-default code verification. Reads the live row, refuses when
  * locked/not active, checks the window with replay protection and consumes the
  * step atomically before reporting success.
+ *
+ * The consumption is guarded by the enrollment epoch observed on the row, so a
+ * secret replaced between the read and the update (disable -> re-enroll, or a
+ * concurrent re-enroll) can never be activated by a code that was verified
+ * against the previous secret.
  */
 export const verifyTotpForUser = async (
     deps: MfaVerifyDeps,
@@ -348,12 +383,19 @@ export const verifyTotpForUser = async (
         } catch {
             return { ok: false, reason: 'key_unavailable' };
         }
+        const epoch = rowStepupEpoch(row);
         const currentStep = stepForTime(deps.now());
         const match = verifyTotpReplayChecked(secret, normalizeTotpInput(suppliedCode), currentStep, asNumber(row.last_used_step));
         if (!match.ok || match.step === null) return { ok: false, reason: 'bad_code' };
-        const consumed = await deps.store.markStepUsed(userId, match.step);
-        if (consumed === 0) return { ok: false, reason: 'replayed' };
-        return { ok: true, stepUsed: match.step };
+        const consumed = await deps.store.markStepUsed(userId, match.step, epoch);
+        if (consumed === 0) {
+            // Distinguish an ordinary replay from a secret that was replaced
+            // between the read and the conditional update.
+            const fresh = await deps.store.findRow(userId);
+            const replaced = !fresh || rowStepupEpoch(fresh) !== epoch || fresh.status === 'disabled';
+            return { ok: false, reason: replaced ? 'stale_enrollment' : 'replayed' };
+        }
+        return { ok: true, stepUsed: match.step, epoch };
     } catch (error) {
         console.error('MFA code verification failed:', error);
         return { ok: false, reason: 'store_error' };
@@ -373,7 +415,7 @@ export const verifyRecoveryCodeForUser = async (
         if (state.locked) return { ok: false, reason: 'locked', lockedUntil: state.lockedUntil ?? undefined };
         const consumed = await deps.store.consumeRecoveryCode(userId, recoveryCodeHash(suppliedCode));
         if (consumed === 0) return { ok: false, reason: 'bad_code' };
-        return { ok: true };
+        return { ok: true, epoch: rowStepupEpoch(row) };
     } catch (error) {
         console.error('MFA recovery verification failed:', error);
         return { ok: false, reason: 'store_error' };
@@ -381,30 +423,56 @@ export const verifyRecoveryCodeForUser = async (
 };
 
 /* ----------------------------------------------------------------------- */
-/* Step-up token (HMAC, short-lived, epoch bound to the row).               */
+/* Step-up token (HMAC, short-lived, epoch + session + purpose bound).      */
 /* ----------------------------------------------------------------------- */
 
-export const signStepUpToken = (userId: string, epoch: number, key: Buffer, nowMs: number): string => {
+/** Single purpose a step-up token may carry; anything else is rejected. */
+export const STEPUP_PURPOSE = 'platform_mfa.step_up';
+
+export interface StepUpClaims {
+    purpose?: string;
+    sessionId?: string;
+}
+
+const encodeClaim = (value: string): string => Buffer.from(value, 'utf8').toString('base64url');
+
+export const signStepUpToken = (
+    userId: string,
+    epoch: number,
+    key: Buffer,
+    nowMs: number,
+    claims: StepUpClaims = {},
+): string => {
     const issuedAt = Math.floor(nowMs / 1000);
+    const purpose = claims.purpose ?? STEPUP_PURPOSE;
+    const sessionId = claims.sessionId ?? '';
     const mac = createHmac('sha256', key)
-        .update(`${STEPUP_TOKEN_VERSION}|${userId}|${epoch}|${issuedAt}`)
+        .update(`${STEPUP_TOKEN_VERSION}|${userId}|${epoch}|${issuedAt}|${purpose}|${sessionId}`)
         .digest('base64url');
     return [
         STEPUP_TOKEN_VERSION,
-        Buffer.from(userId, 'utf8').toString('base64url'),
+        encodeClaim(userId),
         String(epoch),
         String(issuedAt),
+        encodeClaim(purpose),
+        encodeClaim(sessionId),
         mac,
     ].join('.');
 };
 
 export interface StepUpParse {
     ok: boolean;
-    reason?: 'malformed' | 'signature' | 'other_user' | 'expired' | 'stale_epoch';
+    reason?: 'malformed' | 'signature' | 'other_user' | 'expired' | 'stale_epoch' | 'purpose' | 'session';
     issuedAt?: number;
 }
 
-/** Constant-time MAC verification; every mismatch path returns a denial. */
+/**
+ * Constant-time MAC verification; every mismatch path returns a denial.
+ * `expectedPurpose` defaults to the only purpose the platform mints, and
+ * `expectedSessionId` to the session the caller is authenticated with ('' when
+ * the auth layer does not carry one), so a token can never be replayed from a
+ * different session or repurposed for another flow.
+ */
 export const verifyStepUpToken = (
     token: unknown,
     options: {
@@ -413,18 +481,24 @@ export const verifyStepUpToken = (
         key: Buffer;
         nowMs: number;
         maxAgeSeconds: number;
+        expectedPurpose?: string;
+        expectedSessionId?: string;
     },
 ): StepUpParse => {
     if (typeof token !== 'string') return { ok: false, reason: 'malformed' };
     const parts = token.split('.');
-    if (parts.length !== 5 || parts[0] !== STEPUP_TOKEN_VERSION) return { ok: false, reason: 'malformed' };
+    if (parts.length !== 7 || parts[0] !== STEPUP_TOKEN_VERSION) return { ok: false, reason: 'malformed' };
     let userId: string;
     let epoch: number;
     let issuedAt: number;
+    let purpose: string;
+    let sessionId: string;
     try {
         userId = Buffer.from(parts[1], 'base64url').toString('utf8');
         epoch = Number(parts[2]);
         issuedAt = Number(parts[3]);
+        purpose = Buffer.from(parts[4], 'base64url').toString('utf8');
+        sessionId = Buffer.from(parts[5], 'base64url').toString('utf8');
     } catch {
         return { ok: false, reason: 'malformed' };
     }
@@ -432,15 +506,17 @@ export const verifyStepUpToken = (
         return { ok: false, reason: 'malformed' };
     }
     const expectedMac = createHmac('sha256', options.key)
-        .update(`${STEPUP_TOKEN_VERSION}|${userId}|${epoch}|${issuedAt}`)
+        .update(`${STEPUP_TOKEN_VERSION}|${userId}|${epoch}|${issuedAt}|${purpose}|${sessionId}`)
         .digest('base64url');
-    const suppliedMac = Buffer.from(parts[4], 'utf8');
+    const suppliedMac = Buffer.from(parts[6], 'utf8');
     const expected = Buffer.from(expectedMac, 'utf8');
     if (suppliedMac.length !== expected.length || !timingSafeEqual(suppliedMac, expected)) {
         return { ok: false, reason: 'signature' };
     }
     if (userId !== options.expectedUserId) return { ok: false, reason: 'other_user' };
     if (epoch !== options.currentEpoch) return { ok: false, reason: 'stale_epoch' };
+    if (purpose !== (options.expectedPurpose ?? STEPUP_PURPOSE)) return { ok: false, reason: 'purpose' };
+    if (sessionId !== (options.expectedSessionId ?? '')) return { ok: false, reason: 'session' };
     const ageSeconds = Math.floor(options.nowMs / 1000) - issuedAt;
     if (ageSeconds < 0 || ageSeconds > options.maxAgeSeconds) return { ok: false, reason: 'expired' };
     return { ok: true, issuedAt };
@@ -449,7 +525,8 @@ export const verifyStepUpToken = (
 export interface MfaVerifier {
     verifyCode(userId: string, code: unknown): Promise<CodeVerifyResult>;
     verifyRecoveryCode(userId: string, code: unknown): Promise<RecoveryVerifyResult>;
-    issueStepUpToken(userId: string): Promise<string>;
+    /** Sign for the enrollment epoch that was actually verified. */
+    issueStepUpToken(userId: string, epoch: number, sessionId?: string): Promise<string>;
     currentStepupEpoch(userId: string): Promise<number>;
 }
 
@@ -463,11 +540,10 @@ export const createMfaVerifier = (deps: MfaVerifyDeps): MfaVerifier => ({
     verifyCode: (userId, code) => verifyTotpForUser(deps, userId, normalizeTotpInput(code)),
     verifyRecoveryCode: (userId, code) =>
         verifyRecoveryCodeForUser(deps, userId, typeof code === 'string' ? code : ''),
-    issueStepUpToken: async (userId) => {
-        const epoch = await deps.store.currentStepupEpoch(userId);
+    issueStepUpToken: async (userId, epoch, sessionId) => {
         const key = deps.sealKey();
         if (!key) throw new MfaKeyUnavailableError();
-        return signStepUpToken(userId, epoch, key, deps.now());
+        return signStepUpToken(userId, epoch, key, deps.now(), { sessionId });
     },
     currentStepupEpoch: (userId) => deps.store.currentStepupEpoch(userId),
 });
@@ -476,8 +552,8 @@ export const STEPUP_HEADER = 'x-mfa-step-up';
 
 export const createRequireStepUp = (
     deps: { store: PlatformMfaStore; sealKey: () => Buffer | null; now: () => number },
-) => (maxAgeSeconds: number = DEFAULT_STEPUP_MAX_AGE_SECONDS) =>
-    async (req: Request & { user?: { id?: string } | null }, res: Response, next: NextFunction): Promise<void> => {
+) => (maxAgeSeconds: number = DEFAULT_STEPUP_MAX_AGE_SECONDS, purpose: string = STEPUP_PURPOSE) =>
+    async (req: Request & { user?: { id?: string; sessionId?: string } | null }, res: Response, next: NextFunction): Promise<void> => {
         const userId = req.user?.id;
         if (!userId) {
             res.status(401).json({ error: 'Authentication required' });
@@ -496,6 +572,8 @@ export const createRequireStepUp = (
                 key,
                 nowMs: deps.now(),
                 maxAgeSeconds,
+                expectedPurpose: purpose,
+                expectedSessionId: req.user?.sessionId ?? '',
             });
             if (verdict.ok) {
                 next();
@@ -521,6 +599,13 @@ export const createSqlPlatformMfaStore = (db: PlatformMfaDb): PlatformMfaStore =
             [userId],
         ),
     upsertPendingSecret: async (userId, sealedSecret) => {
+        // Row lock first: two concurrent enrolls, or an enroll racing an
+        // activation, must not rotate an enrollment that is already active.
+        const current = await db.queryOne<{ status: string }>(
+            `SELECT status FROM platform_mfa_secrets WHERE user_id = ? FOR UPDATE`,
+            [userId],
+        );
+        if (current?.status === 'active') return 0;
         // A re-enroll invalidates every previously issued recovery code: they
         // were bound to the replaced secret/activation and must never remain
         // a valid second factor across disable -> re-enroll -> re-activate.
@@ -538,19 +623,23 @@ export const createSqlPlatformMfaStore = (db: PlatformMfaDb): PlatformMfaStore =
                stepup_epoch = stepup_epoch + 1`,
             [userId, sealedSecret, userId],
         );
+        return 1;
     },
-    activate: async (userId) => {
-        await db.execute(
-            `UPDATE platform_mfa_secrets SET status = 'active' WHERE user_id = ? AND status = 'pending'`,
-            [userId],
+    activate: async (userId, expectedEpoch) => {
+        const result = await db.execute(
+            `UPDATE platform_mfa_secrets SET status = 'active'
+             WHERE user_id = ? AND status = 'pending' AND stepup_epoch = ?`,
+            [userId, expectedEpoch],
         );
+        return result.affectedRows ?? 0;
     },
-    markStepUsed: async (userId, step) => {
+    markStepUsed: async (userId, step, expectedEpoch) => {
         const result = await db.execute(
             `UPDATE platform_mfa_secrets
              SET last_used_step = ?
-             WHERE user_id = ? AND status IN ('active', 'pending') AND last_used_step < ?`,
-            [step, userId, step],
+             WHERE user_id = ? AND status IN ('active', 'pending')
+               AND stepup_epoch = ? AND last_used_step < ?`,
+            [step, userId, expectedEpoch, step],
         );
         return result.affectedRows ?? 0;
     },
@@ -608,19 +697,24 @@ export const createSqlPlatformMfaStore = (db: PlatformMfaDb): PlatformMfaStore =
         return createSqlStoreNextEpoch(db, userId);
     },
     disable: async (userId) => {
-        await db.execute(
+        const result = await db.execute(
             `UPDATE platform_mfa_secrets
              SET sealed_secret = NULL, status = 'disabled', last_used_step = 0,
                  stepup_epoch = stepup_epoch + 1
-             WHERE user_id = ?`,
+             WHERE user_id = ? AND status IN ('active', 'pending')`,
             [userId],
         );
+        const affected = result.affectedRows ?? 0;
         // Disabling MFA must also invalidate outstanding recovery codes so a
-        // later re-enroll cannot inherit them as a second factor.
-        await db.execute(
-            `DELETE FROM platform_mfa_recovery_codes WHERE user_id = ?`,
-            [userId],
-        );
+        // later re-enroll cannot inherit them as a second factor. Skipped when
+        // nothing was enrolled so a stray call cannot clear a fresh row.
+        if (affected > 0) {
+            await db.execute(
+                `DELETE FROM platform_mfa_recovery_codes WHERE user_id = ?`,
+                [userId],
+            );
+        }
+        return affected;
     },
 });
 

@@ -87,6 +87,30 @@ test('wall time -> instant: applies tenant zone offset and falls back to UTC for
     assert.equal(localWallTimeToInstant('nope', 'UTC'), null);
 });
 
+test('wall time -> instant: a nonexistent spring-forward wall time is denied (roundtrip), not shifted an hour earlier', () => {
+    // 2026-03-08 02:30 America/New_York does not exist (clocks jump 02:00 -> 03:00).
+    // The defective two-pass resolution silently mapped it to 06:30Z = 01:30 EST.
+    const gap = localWallTimeToInstant('2026-03-08 02:30:00', 'America/New_York');
+    assert.equal(gap, null);
+    // The surrounding valid wall times still convert, keeping the local hour.
+    const afterGap = localWallTimeToInstant('2026-03-08 03:30:00', 'America/New_York');
+    assert.equal(afterGap?.toISOString(), '2026-03-08T07:30:00.000Z');
+    const beforeGap = localWallTimeToInstant('2026-03-08 01:30:00', 'America/New_York');
+    assert.equal(beforeGap?.toISOString(), '2026-03-08T06:30:00.000Z');
+    // A valid date in a whole-hour offset zone and the UTC fallback are preserved.
+    assert.equal(localWallTimeToInstant('2026-03-08 09:00:00', 'Asia/Riyadh')?.toISOString(), '2026-03-08T06:00:00.000Z');
+    assert.equal(localWallTimeToInstant('2026-03-08 02:30:00', 'UTC')?.toISOString(), '2026-03-08T02:30:00.000Z');
+    // The gap denial also applies to a date-only wall time at midnight.
+    assert.equal(localWallTimeToInstant('2026-03-08', 'America/New_York')?.toISOString(), '2026-03-08T05:00:00.000Z');
+});
+
+test('wall time -> instant: a fall-back overlap resolves to the first (earlier-offset) instant and roundtrips', () => {
+    // 2026-11-01 01:30 America/New_York happens twice; the documented policy is
+    // the first (EDT, 05:30Z) instant.
+    const overlap = localWallTimeToInstant('2026-11-01 01:30:00', 'America/New_York');
+    assert.equal(overlap?.toISOString(), '2026-11-01T05:30:00.000Z');
+});
+
 test('tenantLocalNow: maps a UTC instant to the tenant wall clock', () => {
     const wall = tenantLocalNow(new Date('2026-06-01T06:00:00.000Z'), 'Asia/Riyadh');
     assert.deepEqual(wall, { year: 2026, month: 6, day: 1, hour: 9, minute: 0, second: 0 });
@@ -361,6 +385,22 @@ test('validateReleaseConfig: sequential requires a prerequisite; immediate ignor
     const immediate = validateReleaseConfig({ release_mode: 'immediate', release_at: 'garbage' });
     assert.equal(immediate.ok, true);
     if (immediate.ok) assert.equal(immediate.value.releaseAtUtc, null);
+});
+
+test('validateReleaseConfig: a scheduled release inside the DST gap is denied before any write', () => {
+    const gap = validateReleaseConfig({ release_mode: 'scheduled', release_at: '2026-03-08 02:30:00', release_time_zone: 'America/New_York' });
+    assert.equal(gap.ok, false);
+    if (!gap.ok) assert.match(gap.error, /release_at/);
+});
+
+test('validateReleaseConfig: a valid scheduled release converts to the UTC instant (regression)', () => {
+    const ok = validateReleaseConfig({ release_mode: 'scheduled', release_at: '2026-03-08 03:30:00', release_time_zone: 'America/New_York' });
+    assert.equal(ok.ok, true);
+    if (ok.ok) assert.equal(ok.value.releaseAtUtc, '2026-03-08T07:30:00.000Z');
+    // Fall-back overlap keeps the documented first-instant resolution.
+    const overlap = validateReleaseConfig({ release_mode: 'scheduled', release_at: '2026-11-01 01:30:00', release_time_zone: 'America/New_York' });
+    assert.equal(overlap.ok, true);
+    if (overlap.ok) assert.equal(overlap.value.releaseAtUtc, '2026-11-01T05:30:00.000Z');
 });
 
 /* =========================================================================
@@ -679,6 +719,17 @@ test('release config: the owner schedules a release and it is audited', async ()
     assert.equal((response.body as { release_at_utc?: string }).release_at_utc, '2026-06-01T06:00:00.000Z');
     assert.ok(executed.some((e) => e.sql.includes('INSERT INTO lesson_release_policies')));
     assert.ok(auditFor(executed, 'content.release.configured'), 'content.release.configured audit recorded');
+});
+
+test('release config: a scheduled release inside the DST gap is 400 before any write', async () => {
+    const { router, executed } = buildContentRouter();
+    const response = await invokeRoute(router, {
+        method: 'PUT', url: '/releases/lec-1', token: INSTRUCTOR_A,
+        body: { release_mode: 'scheduled', release_at: '2026-03-08 02:30:00', release_time_zone: 'America/New_York' },
+    });
+    assert.equal(response.statusCode, 400);
+    assert.equal(executed.some((e) => e.sql.includes('INSERT INTO lesson_release_policies')), false);
+    assert.equal(auditFor(executed, 'content.release.configured'), undefined);
 });
 
 test('release config: a missing lecture is 404 with no write', async () => {

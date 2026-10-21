@@ -11,6 +11,8 @@ import {
     type ResourceBranchDeps,
 } from '../security/resource-branch';
 import { recordAudit, snapshotRow } from '../security/audit';
+import { validateVideoBinding, parseVideoReference, type VideoBindingDecision } from '../security/video-access-policy';
+import { getAdminPermissions, isSuperAdmin } from '../security/admin-permissions';
 
 interface Lecture {
     id: string;
@@ -59,6 +61,12 @@ export interface LectureRouterDeps {
      * without a live database.
      */
     transaction?: <T>(fn: (tx: LectureDataAccess) => Promise<T>) => Promise<T>;
+    /**
+     * Verified platform capability (active super_admin or a seeded permission
+     * key). Defaults to deny so an injected harness never grants a
+     * platform-wide path by omission.
+     */
+    hasVerifiedPlatformCapability?: (userId: string) => Promise<boolean>;
 }
 
 /**
@@ -114,6 +122,34 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
     const optionalAuthenticate = deps.optionalAuthenticate;
     const authenticateToken = deps.authenticate;
     const requireTeachingWriteAccess = deps.requireTeachingWriteAccess;
+    const hasPlatformCapability = deps.hasVerifiedPlatformCapability ?? (async () => false);
+
+    /**
+     * Write-time check of a `video://` association. Runs on the transaction
+     * reader so the video row is read `FOR UPDATE` and the conflict probe sees
+     * the same snapshot as the write; the referenced video must exist, belong
+     * to the caller's server-selected tenant, be authorized by the existing
+     * playback policy, and live in the SAME tenant as the destination course.
+     * `targetCourseId` is the server-derived course for a create; on update it
+     * is omitted so the destination is re-read from the lecture row.
+     */
+    const validateLectureVideoBinding = (
+        tx: LectureDataAccess,
+        req: AuthRequest,
+        videoUrl: unknown,
+        lectureId: string,
+        targetCourseId?: string | null,
+    ): Promise<VideoBindingDecision> => validateVideoBinding({
+        reader: tx,
+        videoUrl: String(videoUrl),
+        actorUserId: req.user?.id ?? '',
+        actorTenantId: req.user?.tenantId,
+        actorStudentEnrollmentId: req.user?.studentEnrollmentId,
+        selfId: lectureId,
+        target: 'lecture',
+        targetCourseId,
+        hasPlatformCapability,
+    });
     const getMutationScope = (req: AuthRequest) => {
         const instructorId = instructorScopeId(req);
         if (instructorId) {
@@ -493,8 +529,17 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 });
             }
 
-            if (!String(video_url).startsWith('video://')) {
-                return res.status(400).json({ error: 'External video links are not allowed. Upload the video to the platform.' });
+            // One canonical reference rule for every write path: `video://`
+            // followed by a non-empty id with no whitespace. A non-canonical
+            // value is refused here, before any write (including the default
+            // course), and is never stored raw.
+            const videoReference = parseVideoReference(String(video_url));
+            if (!videoReference.ok) {
+                return res.status(400).json({
+                    error: videoReference.reason === 'not-a-reference'
+                        ? 'External video links are not allowed. Upload the video to the platform.'
+                        : 'Video link is not a canonical platform video reference',
+                });
             }
             if (scopeId && (!Number.isFinite(Number(price)) || Number(price) <= 0)) {
                 return res.status(400).json({ error: 'Instructor videos must have a positive price' });
@@ -566,7 +611,13 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
 
             const lectureId = uuidv4();
             if (!deps.transaction) throw new Error('Lecture creation requires transactional data access');
-            await deps.transaction(async (tx) => {
+            const outcome = await deps.transaction(async (tx) => {
+                // A `video://` link is only accepted once the video is proven
+                // to exist, belong to this workspace and be usable by the
+                // caller, and is not already bound elsewhere.
+                const binding = await validateLectureVideoBinding(tx, req, video_url, lectureId, actualCourseId);
+                if (!binding.ok) return { kind: 'denied' as const, binding };
+
                 await tx.execute(
                 `INSERT INTO lectures
                 (id, course_id, grade_id, group_id, instructor_id, title, description, video_url, duration_minutes, price, display_order, is_free, is_published)
@@ -579,7 +630,7 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                     ownerId,
                     title,
                     description || null,
-                    video_url,
+                    binding.videoUrl,
                     duration_minutes || null,
                     scopeId ? Number(price) : (price ?? null),
                     display_order,
@@ -599,7 +650,15 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                         title, description, video_url, duration_minutes, price, display_order, is_free, is_published,
                     }),
                 });
+                return { kind: 'created' as const };
             });
+
+            if (outcome.kind === 'denied') {
+                return res.status(outcome.binding.status).json({
+                    error: outcome.binding.error,
+                    code: outcome.binding.code,
+                });
+            }
 
             const newLecture = await queryOne(
                 'SELECT * FROM lectures WHERE id = ?',
@@ -726,10 +785,15 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             if (scopeId && price !== undefined && (!Number.isFinite(Number(price)) || Number(price) <= 0)) {
                 return res.status(400).json({ error: 'Video price must be greater than zero' });
             }
-            if (video_url !== undefined && !String(video_url).startsWith('video://')) {
-                return res.status(400).json({ error: 'External video links are not allowed. Upload the video to the platform.' });
-            }
             if (video_url !== undefined) {
+                const videoReference = parseVideoReference(String(video_url));
+                if (!videoReference.ok) {
+                    return res.status(400).json({
+                        error: videoReference.reason === 'not-a-reference'
+                            ? 'External video links are not allowed. Upload the video to the platform.'
+                            : 'Video link is not a canonical platform video reference',
+                    });
+                }
                 const licensed = await queryOne('SELECT id FROM instructor_shared_lectures WHERE lecture_id=? LIMIT 1', [req.params.id]);
                 if (licensed && existing.video_url !== video_url) {
                     return res.status(409).json({ error: 'The video file cannot be replaced after access has been sold' });
@@ -749,6 +813,20 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 );
                 if (!current) return { kind: 'missing' as const };
                 if (current.archived_at) return { kind: 'archived' as const };
+
+                // Only a NEW association is validated: an update that leaves
+                // video_url untouched does not re-bind and must not be blocked
+                // by a legacy link that predates this check. When it does
+                // change, the destination course is re-read from the lecture
+                // row inside this transaction, so a moved course re-proves the
+                // tenant binding.
+                let storedVideoUrl = video_url;
+                if (video_url !== undefined && String(video_url) !== String(current.video_url ?? '')) {
+                    const binding = await validateLectureVideoBinding(tx, req, video_url, req.params.id);
+                    if (!binding.ok) return { kind: 'bindingDenied' as const, binding };
+                    storedVideoUrl = binding.videoUrl;
+                }
+
                 const update = await tx.execute(
                     `UPDATE lectures
                  SET title = COALESCE(?, title),
@@ -764,7 +842,7 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 [
                     title ?? null,
                     description ?? null,
-                    video_url ?? null,
+                    storedVideoUrl ?? null,
                     duration_minutes ?? null,
                     price ?? null,
                     display_order ?? null,
@@ -784,7 +862,7 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                         resourceId: req.params.id,
                         oldValue: snapshotRow(current),
                         newValue: snapshotRow({
-                            title, description, video_url, duration_minutes, price, display_order, is_free, is_published,
+                            title, description, video_url: storedVideoUrl, duration_minutes, price, display_order, is_free, is_published,
                         }),
                     });
                 }
@@ -793,6 +871,12 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
 
             if (outcome.kind === 'missing') return res.status(404).json({ error: 'Lecture not found' });
             if (outcome.kind === 'archived') return res.status(410).json({ error: 'Archived lectures cannot be changed or republished' });
+            if (outcome.kind === 'bindingDenied') {
+                return res.status(outcome.binding.status).json({
+                    error: outcome.binding.error,
+                    code: outcome.binding.code,
+                });
+            }
             if (outcome.affectedRows === 0) return res.status(404).json({ error: 'Lecture not found' });
 
             const updatedLecture = await queryOne(
@@ -873,6 +957,11 @@ export default createLectureRouter({
     optionalAuthenticate: optionalAuth,
     authenticate: authenticateToken,
     requireTeachingWriteAccess: requireTeachingWrite('lectures'),
+    /** Verified platform capability, resolved server-side; never a role claim. */
+    hasVerifiedPlatformCapability: async (userId: string): Promise<boolean> => {
+        if (await isSuperAdmin(userId)) return true;
+        return (await getAdminPermissions(userId)).includes('security.manage');
+    },
     transaction: async <T>(fn: (tx: LectureDataAccess) => Promise<T>): Promise<T> => {
         const pool = getPool();
         const connection = await pool.getConnection();

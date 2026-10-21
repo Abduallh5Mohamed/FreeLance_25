@@ -59,6 +59,10 @@ export interface ConsentRouteDeps {
     now?: () => Date;
     /** Dedicated link secret store; a missing/short secret fails closed. */
     getLinkSecret: () => string | undefined;
+    /** Optional atomic seam (production: pooled transaction). */
+    transaction?: <T>(fn: (tx: NotificationDataAccess) => Promise<T>) => Promise<T>;
+    /** Alias for the atomic seam, mirroring other route families. */
+    withTransaction?: <T>(fn: (tx: NotificationDataAccess) => Promise<T>) => Promise<T>;
 }
 
 interface ChannelBody {
@@ -131,6 +135,12 @@ export const createNotificationConsentRouter = (deps: ConsentRouteDeps): Router 
     const router = Router();
     const { db } = deps;
 
+    const runAtomic = <T>(fn: (tx: NotificationDataAccess) => Promise<T>): Promise<T> => {
+        const txRunner = deps.transaction ?? deps.withTransaction ?? db.transaction;
+        if (txRunner) return txRunner(fn);
+        return fn(db);
+    };
+
     // Signed unsubscribe link: intentionally BEFORE the auth gate so an email
     // link works from a logged-out browser. It still authorizes via the
     // dedicated link secret and only ever appends a revoke to the signed
@@ -151,6 +161,8 @@ export const createNotificationConsentRouter = (deps: ConsentRouteDeps): Router 
             if (!payload.userId || typeof payload.userId !== 'string' || !payload.userType || typeof payload.userType !== 'string') {
                 return res.status(400).json({ error: 'Unsubscribe link is malformed' });
             }
+            const userId: string = payload.userId;
+            const userType: string = payload.userType;
             if (!isConsentUserType(payload.userType)) {
                 return res.status(403).json({ error: 'Account type is not eligible for notification consent' });
             }
@@ -159,52 +171,60 @@ export const createNotificationConsentRouter = (deps: ConsentRouteDeps): Router 
                 channel: payload.channel ?? 'all',
                 purpose: payload.purpose ?? 'all',
             };
-            // L2: consume the token's jti exactly once. A replay (same link
-            // opened twice, or a prefetch/scanner hitting it) is a harmless
-            // idempotent success: the consent state was already applied on the
-            // first, single use and is never re-applied.
-            const firstUse = await consumeUnsubscribeToken(db, {
-                jti: payload.jti,
-                userId: payload.userId,
-                userType: payload.userType,
-                now: deps.now,
-            });
-            if (!firstUse) {
-                return res.json(success);
-            }
-            if (payload.channel && isNotificationChannel(payload.channel)) {
-                if (payload.purpose) {
-                    await recordConsent(db, {
-                        userId: payload.userId,
-                        userType: payload.userType,
-                        purpose: payload.purpose,
-                        channel: payload.channel,
-                        action: 'revoke',
-                        source: UNSUBSCRIBE_SOURCE,
-                        recordedBy: UNSUBSCRIBE_SOURCE,
-                        now: deps.now,
-                    });
+            // L2: consume the token's jti exactly once, in the SAME transaction
+            // as the consent writes. A replay is an idempotent success; a failed
+            // ledger write rolls back the token consumption so the token stays
+            // reusable. The signed token's tenant/global semantics are preserved:
+            // no tenant is guessed from request/client input and a global
+            // unsubscribe is never narrowed.
+            const applied = await runAtomic(async (tx) => {
+                const firstUse = await consumeUnsubscribeToken(tx, {
+                    jti: payload.jti,
+                    userId,
+                    userType,
+                    now: deps.now,
+                });
+                if (!firstUse) return false;
+                const channel = payload.channel;
+                const purpose = payload.purpose;
+                if (channel && isNotificationChannel(channel)) {
+                    if (purpose) {
+                        await recordConsent(tx, {
+                            userId,
+                            userType,
+                            purpose,
+                            channel,
+                            action: 'revoke',
+                            source: UNSUBSCRIBE_SOURCE,
+                            recordedBy: UNSUBSCRIBE_SOURCE,
+                            now: deps.now,
+                        });
+                    } else {
+                        await recordChannelStop(tx, {
+                            userId,
+                            userType,
+                            channel,
+                            source: UNSUBSCRIBE_SOURCE,
+                            recordedBy: UNSUBSCRIBE_SOURCE,
+                            now: deps.now,
+                        });
+                    }
                 } else {
-                    await recordChannelStop(db, {
-                        userId: payload.userId,
-                        userType: payload.userType,
-                        channel: payload.channel,
-                        source: UNSUBSCRIBE_SOURCE,
-                        recordedBy: UNSUBSCRIBE_SOURCE,
-                        now: deps.now,
-                    });
+                    for (const ch of NOTIFICATION_CHANNELS) {
+                        await recordChannelStop(tx, {
+                            userId,
+                            userType,
+                            channel: ch,
+                            source: UNSUBSCRIBE_SOURCE,
+                            recordedBy: UNSUBSCRIBE_SOURCE,
+                            now: deps.now,
+                        });
+                    }
                 }
-            } else {
-                for (const channel of NOTIFICATION_CHANNELS) {
-                    await recordChannelStop(db, {
-                        userId: payload.userId,
-                        userType: payload.userType,
-                        channel,
-                        source: UNSUBSCRIBE_SOURCE,
-                        recordedBy: UNSUBSCRIBE_SOURCE,
-                        now: deps.now,
-                    });
-                }
+                return true;
+            });
+            if (!applied) {
+                return res.json(success);
             }
             return res.json(success);
         } catch (error) {
@@ -356,6 +376,25 @@ const productionDb: NotificationDataAccess = {
     },
 };
 
+const productionTransaction = async <T>(fn: (tx: NotificationDataAccess) => Promise<T>): Promise<T> => {
+    const { withTransaction } = await loadDb();
+    return withTransaction((connection) => fn({
+        query: async <R = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+            const [rows] = await connection.query(sql, params as never);
+            return rows as R[];
+        },
+        queryOne: async <R = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+            const [rows] = await connection.query(sql, params as never);
+            return (rows as R[])[0] ?? null;
+        },
+        execute: async (sql: string, params?: unknown[]) => {
+            const [result] = await connection.execute(sql, params as never);
+            const header = result as { insertId?: number; affectedRows?: number };
+            return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+        },
+    }));
+};
+
 export default createNotificationConsentRouter({
     db: productionDb,
     authenticate: async (req, res, next) => {
@@ -363,4 +402,5 @@ export default createNotificationConsentRouter({
         return authenticateToken(req, res, next);
     },
     getLinkSecret: () => process.env.NOTIFICATION_LINK_SECRET,
+    transaction: productionTransaction,
 });

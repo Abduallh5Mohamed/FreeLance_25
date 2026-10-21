@@ -22,6 +22,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 
+
 export const MAX_ID_LENGTH = 64;
 export const MAX_REASON_LENGTH = 500;
 export const MIN_DECISION_REASON_LENGTH = 3;
@@ -205,6 +206,12 @@ export interface ApplyContentActionInput {
     reason: string;
     actorUserId: string;
     now: Date;
+    /**
+     * The data access of the surrounding decision transaction. A gateway that
+     * writes to the database MUST use it so that a failed history/audit write
+     * rolls the content change back with the case update.
+     */
+    db?: ModerationDataAccess;
 }
 
 /**
@@ -214,7 +221,7 @@ export interface ApplyContentActionInput {
  * change).
  */
 export interface ModerationContentGateway {
-    snapshotEvidence(targetType: ModerationTargetType, targetId: string): Promise<EvidenceSnapshot | null>;
+    snapshotEvidence(tenantId: string, targetType: ModerationTargetType, targetId: string): Promise<EvidenceSnapshot | null>;
     applyAction(input: ApplyContentActionInput): Promise<number>;
 }
 
@@ -303,7 +310,17 @@ export interface ModerationStore {
     /** Inserts the single appeal; returns affected rows (0 when one already exists). */
     insertAppeal(row: ModerationAppealRow): Promise<number>;
     resolveAppeal(caseId: string, reviewerUserId: string, at: Date): Promise<number>;
-    assignCase(caseId: string, tenantId: string, reviewerUserId: string, at: Date): Promise<number>;
+    /**
+     * Assigns the reviewer only while the case still has the reviewer the caller
+     * read (`expectedReviewerUserId`, null = unassigned); 0 on a lost race.
+     */
+    assignCase(
+        caseId: string,
+        tenantId: string,
+        reviewerUserId: string,
+        at: Date,
+        expectedReviewerUserId: string | null,
+    ): Promise<number>;
     setStatus(caseId: string, tenantId: string, status: ModerationCaseStatus, at: Date): Promise<number>;
     recordDecision(
         caseId: string,
@@ -413,13 +430,14 @@ export function createSqlModerationStore(db: ModerationDataAccess): ModerationSt
             );
             return Number(result.affectedRows ?? 0);
         },
-        assignCase: async (caseId, tenantId, reviewerUserId, at) => {
+        assignCase: async (caseId, tenantId, reviewerUserId, at, expectedReviewerUserId) => {
             const result = await db.execute(
                 `UPDATE moderation_cases
                  SET assigned_reviewer_user_id = ?, assigned_at = ?, status = 'in_review',
                      version = version + 1, updated_at = CURRENT_TIMESTAMP
-                 WHERE id = ? AND tenant_id = ? AND status IN ('open','in_review')`,
-                [reviewerUserId, at, caseId, tenantId],
+                 WHERE id = ? AND tenant_id = ? AND status IN ('open','in_review')
+                   AND assigned_reviewer_user_id <=> ?`,
+                [reviewerUserId, at, caseId, tenantId, expectedReviewerUserId],
             );
             return Number(result.affectedRows ?? 0);
         },
@@ -427,7 +445,7 @@ export function createSqlModerationStore(db: ModerationDataAccess): ModerationSt
             const result = await db.execute(
                 `UPDATE moderation_cases
                  SET status = ?, version = version + 1, updated_at = ?
-                 WHERE id = ? AND tenant_id = ?`,
+                 WHERE id = ? AND tenant_id = ?${status === 'appealed' ? " AND status = 'decided'" : ''}`,
                 [status, at, caseId, tenantId],
             );
             return Number(result.affectedRows ?? 0);
@@ -437,7 +455,8 @@ export function createSqlModerationStore(db: ModerationDataAccess): ModerationSt
                 `UPDATE moderation_cases
                  SET decision = ?, decision_reason = ?, decided_by_user_id = ?, decided_at = ?,
                      status = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
-                 WHERE id = ? AND tenant_id = ?`,
+                 WHERE id = ? AND tenant_id = ?
+                   AND status ${status === 'closed' ? "= 'appealed'" : "IN ('open','in_review')"}`,
                 [decision, reason, actorUserId, at, status, caseId, tenantId],
             );
             return Number(result.affectedRows ?? 0);

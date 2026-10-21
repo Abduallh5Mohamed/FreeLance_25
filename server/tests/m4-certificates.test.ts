@@ -249,7 +249,11 @@ test('a cross-tenant instructor cannot act on another tenant', async () => {
 
 test('revoke flips status, audits and is idempotent-safe', async () => {
     const issued = { id: 'cert-1', tenant_id: 'tenant-a', student_enrollment_id: 'enr-1', course_id: 'course-1', verification_id: 'v', status: 'issued', final_score: 90, issued_at: '2026-01-01', issued_by: 'instructor-a', revoked_at: null, revoked_by: null, revoke_reason: null, branding_logo_url: null, branding_primary_color: null, branding_secondary_color: null, branding_accent_color: null, branding_locale: null };
-    const { router, executed } = build({ responder: (sql) => (sql.includes('FROM certificates WHERE tenant_id=? AND id=?') ? [issued] : []) });
+    const { router, executed } = build({ responder: (sql) => {
+        if (sql.includes('FROM certificates WHERE tenant_id=? AND id=?')) return [issued];
+        if (sql.includes('FROM courses')) return [{ id: 'course-1', tenant_id: 'tenant-a', instructor_id: 'instructor-a' }];
+        return [];
+    } });
     const res = await invokeRoute(router, { method: 'POST', url: '/cert-1/revoke', token: INSTRUCTOR_A, body: { reason: 'policy' } });
     assert.equal(res.statusCode, 200);
     const update = executed.find((e: ExecutedStatement) => e.kind === 'execute' && e.sql.includes('UPDATE certificates SET status=?'));
@@ -259,7 +263,11 @@ test('revoke flips status, audits and is idempotent-safe', async () => {
     assert.ok(audit && audit.params.includes('certificate.revoke'));
 
     const already = { ...issued, status: 'revoked' };
-    const second = build({ responder: (sql) => (sql.includes('FROM certificates WHERE tenant_id=? AND id=?') ? [already] : []) });
+    const second = build({ responder: (sql) => {
+        if (sql.includes('FROM certificates WHERE tenant_id=? AND id=?')) return [already];
+        if (sql.includes('FROM courses')) return [{ id: 'course-1', tenant_id: 'tenant-a', instructor_id: 'instructor-a' }];
+        return [];
+    } });
     const res2 = await invokeRoute(second.router, { method: 'POST', url: '/cert-1/revoke', token: INSTRUCTOR_A, body: {} });
     assert.equal(res2.statusCode, 409);
 });
@@ -269,4 +277,159 @@ test('a certificate cannot be revoked through a foreign tenant scope', async () 
     const { router } = build({ responder: (sql) => (sql.includes('FROM certificates WHERE tenant_id=? AND id=?') ? [issued] : []) });
     const res = await invokeRoute(router, { method: 'POST', url: '/cert-1/revoke', token: INSTRUCTOR_B, body: {} });
     assert.equal(res.statusCode, 403);
+});
+
+/**
+ * Branch authority is driven with the verified principal shape the auth
+ * middleware produces (tenant + live branch claim); the middleware itself is
+ * covered by the M1 suites.
+ */
+function buildBranchScopedIssue(opts: { courseHasGroupInBranch: boolean }) {
+    const eligibility = issueResponder();
+    const db = makeFakeDataAccess((sql) => {
+        if (sql.includes('FROM courses')) return [{ id: 'course-1', tenant_id: 'tenant-a', instructor_id: 'another-instructor' }];
+        if (sql.includes('FROM `groups`')) return opts.courseHasGroupInBranch ? [{ id: 'group-1' }] : [];
+        if (sql.includes('FROM branches')) return [{ id: 'branch-1', tenant_id: 'tenant-a', status: 'active', version: 1 }];
+        if (sql.includes('FROM branch_memberships')) {
+            return [{ id: 'bm-1', branch_id: 'branch-1', user_id: 'instructor-d', role: 'instructor', status: 'active', version: 1 }];
+        }
+        return eligibility(sql);
+    });
+    const router = createCertificatesRouter({
+        db,
+        authenticate: (req, _res, next) => {
+            (req as unknown as { user: unknown }).user = {
+                id: 'instructor-d', role: 'instructor', tenantId: 'tenant-a', branchId: 'branch-1',
+            };
+            next();
+        },
+        loadActiveTenantAuthority: async () => ({ authority: 'instructor' }),
+        transaction: async <T>(fn: (tx: CertificatesDataAccess) => Promise<T>) => fn(db),
+    });
+    return { router, executed: db.executed };
+}
+
+test('a branch membership alone does not grant certificate authority over an unrelated course', async () => {
+    const { router, executed } = buildBranchScopedIssue({ courseHasGroupInBranch: false });
+    const res = await invokeRoute(router, {
+        method: 'POST', url: '/',
+        body: { student_enrollment_id: 'enr-1', course_id: 'course-1' },
+    });
+    assert.equal(res.statusCode, 403, 'the course has no group in the caller branch');
+    assert.ok(!executed.some((e) => e.kind === 'execute' && e.sql.includes('INSERT INTO certificates')),
+        'no certificate may be minted without a course relation');
+});
+
+test('a branch membership covers a course that has a group inside that branch', async () => {
+    const { router, executed } = buildBranchScopedIssue({ courseHasGroupInBranch: true });
+    const res = await invokeRoute(router, {
+        method: 'POST', url: '/',
+        body: { student_enrollment_id: 'enr-1', course_id: 'course-1' },
+    });
+    assert.equal(res.statusCode, 201);
+    assert.ok(executed.some((e) => e.kind === 'execute' && e.sql.includes('INSERT INTO certificates')));
+});
+
+// ---------------------------------------------------------------------------
+// Revocation authority (same course relation as issuance)
+// ---------------------------------------------------------------------------
+
+const ISSUED_CERT = {
+    id: 'cert-1', tenant_id: 'tenant-a', student_enrollment_id: 'enr-1', course_id: 'course-1',
+    verification_id: 'v', status: 'issued', final_score: 90, issued_at: '2026-01-01',
+    issued_by: 'instructor-a', revoked_at: null, revoked_by: null, revoke_reason: null,
+    branding_logo_url: null, branding_primary_color: null, branding_secondary_color: null,
+    branding_accent_color: null, branding_locale: null,
+};
+
+test('revoke: the course instructor may revoke under the same authority as issuance, audited', async () => {
+    const { router, executed } = build({ responder: (sql) => {
+        if (sql.includes('FROM certificates WHERE tenant_id=? AND id=?')) return [ISSUED_CERT];
+        if (sql.includes('FROM courses')) return [{ id: 'course-1', tenant_id: 'tenant-a', instructor_id: 'instructor-c' }];
+        return [];
+    } });
+    const res = await invokeRoute(router, { method: 'POST', url: '/cert-1/revoke', token: INSTRUCTOR_C, body: { reason: 'policy' } });
+    assert.equal(res.statusCode, 200);
+    const update = executed.find((e) => e.kind === 'execute' && e.sql.includes('UPDATE certificates SET status=?'));
+    assert.ok(update);
+    assert.equal(update!.params[0], 'revoked');
+    assert.equal(update!.params[1], 'instructor-c', 'the revocation records the acting principal');
+    const audit = executed.find((e) => e.kind === 'execute' && e.sql.includes('INSERT INTO audit_events'));
+    assert.ok(audit && audit.params.includes('certificate.revoke'));
+    assert.equal(audit!.params[1], 'instructor-c', 'the audit event names the revoking principal');
+});
+
+test('revoke: an unrelated instructor is denied and nothing is written', async () => {
+    const { router, executed } = build({ responder: (sql) => {
+        if (sql.includes('FROM certificates WHERE tenant_id=? AND id=?')) return [ISSUED_CERT];
+        if (sql.includes('FROM courses')) return [{ id: 'course-1', tenant_id: 'tenant-a', instructor_id: 'another-instructor' }];
+        return [];
+    } });
+    const res = await invokeRoute(router, { method: 'POST', url: '/cert-1/revoke', token: INSTRUCTOR_C, body: { reason: 'policy' } });
+    assert.equal(res.statusCode, 403, 'a tenant instructor with no relation to the course cannot revoke');
+    assert.equal(executed.some((e) => e.kind === 'execute' && e.sql.includes('UPDATE certificates')), false);
+    assert.equal(executed.some((e) => e.kind === 'execute' && e.sql.includes('INSERT INTO audit_events')), false);
+});
+
+test('revoke: a certificate outside the caller tenant is 404 and never updated', async () => {
+    const { router, executed } = build({ responder: (sql, params) => {
+        if (sql.includes('FROM certificates WHERE tenant_id=? AND id=?')) {
+            // The row exists, but only under tenant-b; the handler must read it
+            // through its own tenant predicate and therefore see nothing.
+            return params[0] === 'tenant-b' ? [ISSUED_CERT] : [];
+        }
+        return [];
+    } });
+    const res = await invokeRoute(router, { method: 'POST', url: '/cert-1/revoke', token: INSTRUCTOR_A, body: {} });
+    assert.equal(res.statusCode, 404);
+    const read = executed.find((e) => e.sql.includes('FROM certificates WHERE tenant_id=? AND id=?'));
+    assert.equal(read!.params[0], 'tenant-a', 'the certificate read is bound to the caller tenant');
+    assert.equal(executed.some((e) => e.kind === 'execute' && e.sql.includes('UPDATE certificates')), false);
+    assert.equal(executed.some((e) => e.kind === 'execute' && e.sql.includes('INSERT INTO audit_events')), false);
+});
+
+// ---------------------------------------------------------------------------
+// Exam gate: no recorded attempt at all
+// ---------------------------------------------------------------------------
+
+test('eligibility: an exam-gated course with no attempt row currently passes the exam gate (documented open policy)', async () => {
+    const catalogueQueries: string[] = [];
+    const { router, executed } = build({ responder: (sql) => {
+        if (sql.includes('FROM students')) return [{ id: 'enr-1' }];
+        if (sql.includes('FROM courses')) return [{ id: 'course-1', tenant_id: 'tenant-a', instructor_id: 'instructor-a' }];
+        if (sql.includes('gradebook_policies')) return [];
+        if (sql.includes('gradebook_scores')) return [{ category_id: null, item_type: 'manual', item_id: null, score: 90, max_score: 100, weight: null }];
+        if (sql.includes('FROM lectures')) return [{ total: 0 }];
+        if (sql.includes('lesson_completions')) return [{ completed: 0 }];
+        if (sql.includes('exam_versioned_attempts')) return [{ total: 0, passed: 0 }];
+        if (/\bFROM exams\b/.test(sql)) {
+            catalogueQueries.push(sql);
+            return [{ id: 'exam-1', course_id: 'course-1', is_published: 1 }];
+        }
+        if (sql.includes('FROM certificates')) return [];
+        return [];
+    } });
+    const res = await invokeRoute(router, {
+        method: 'POST', url: '/', token: INSTRUCTOR_A,
+        body: { student_enrollment_id: 'enr-1', course_id: 'course-1' },
+    });
+    // Characterisation test: the aggregate counts recorded attempts only, so a
+    // student with no attempt row is treated as "all exams passed". The course
+    // exam catalogue is never consulted. Whether every published exam is a
+    // certificate requirement is an open product question; no policy is
+    // invented here.
+    assert.equal(res.statusCode, 201);
+    assert.equal(catalogueQueries.length, 0, 'the route never checks which exams the course requires');
+    assert.ok(executed.some((e) => e.kind === 'execute' && e.sql.includes('INSERT INTO certificates')));
+});
+
+test('eligibility: a recorded but not-passed attempt denies the certificate', async () => {
+    const { router, executed } = build({ responder: issueResponder({ examTotal: 1, examPassed: 0 }) });
+    const res = await invokeRoute(router, {
+        method: 'POST', url: '/', token: INSTRUCTOR_A,
+        body: { student_enrollment_id: 'enr-1', course_id: 'course-1' },
+    });
+    assert.equal(res.statusCode, 400);
+    assert.ok((res.body as { reasons?: string[] }).reasons?.includes('exams_not_passed'));
+    assert.equal(executed.some((e) => e.kind === 'execute' && e.sql.includes('INSERT INTO certificates')), false);
 });

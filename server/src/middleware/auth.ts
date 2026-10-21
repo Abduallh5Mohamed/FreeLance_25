@@ -17,6 +17,7 @@ import {
     selectStudentWorkspaceScope,
 } from '../security/identity-scope';
 import { normalizeBranchId } from '../security/branch-access';
+import type { ImpersonationContext } from '../services/impersonation';
 
 export const getJwtSecret = (): Secret => {
     const secret = process.env.JWT_SECRET;
@@ -50,6 +51,19 @@ export interface AuthRequest extends Request {
     };
     sessionId?: string;
     authResolved?: boolean;
+    /**
+     * Verified impersonation context, attached by
+     * `enforceImpersonationContext` (middleware/impersonation-context.ts) only
+     * after the header's signature, live session row, ACTOR binding and
+     * effective-principal resolution all pass. The bearer of an impersonated
+     * request is the support ACTOR (`started_by`); `user` is then the session
+     * TARGET, resolved server-side from live identity/membership rows, so
+     * downstream authorization runs exactly the target's own scopes. The actor
+     * stays distinguishable from the effective principal through
+     * `impersonation.actorUserId`; handlers and audit writers read the banner
+     * facts from here, never from the raw `x-impersonation` header.
+     */
+    impersonation?: ImpersonationContext;
 }
 
 const supportedRoles = new Set(['admin', 'instructor', 'teacher', 'staff', 'student', 'parent']);
@@ -332,6 +346,46 @@ export const createOptionalAuth = (repository: PrincipalRepository = defaultPrin
  * identity without granting data access.
  */
 export const optionalAuth = createOptionalAuth();
+
+/**
+ * Resolve the EFFECTIVE principal of an impersonation session target.
+ *
+ * The target presents NO JWT: the identity is resolved entirely from
+ * server-side rows. The live users row decides role and liveness (an
+ * inactive, suspended or session-revoked target fails closed — a permission
+ * revocation therefore applies to the very next impersonated request), the
+ * verified session row's tenant is the ONLY tenant selector, and every
+ * membership-scope field is re-derived exactly as a direct login would derive
+ * it. No target JWT is minted, no role is taken from any header or token, and
+ * no membership check is skipped.
+ *
+ * Used by `enforceImpersonationContext` (middleware/impersonation-context.ts);
+ * the authenticated support actor is preserved separately in
+ * `req.impersonation`.
+ */
+export const resolveImpersonationTargetPrincipal = async (
+    targetUserId: string,
+    tenantId: string,
+    req: Request,
+    repository: PrincipalRepository = defaultPrincipalRepository,
+): Promise<PrincipalOutcome> => {
+    const identity = await repository.findUsersIdentity(targetUserId);
+    const claims = {
+        id: targetUserId,
+        tenant_id: tenantId,
+        ...(identity && typeof identity.role === 'string' ? { role: identity.role } : {}),
+    } as TokenClaims;
+    if (identity && identity.role === 'student') {
+        // Anchor the workspace selector to the verified session tenant: the
+        // enrollment must be one of the target's own live rows in that tenant.
+        // Exactly one qualifies; anything else yields no workspace and every
+        // student-scoped surface denies by default.
+        const enrollments = await repository.findStudentEnrollments(targetUserId);
+        const inTenant = enrollments.filter((row) => row.tenant_id === tenantId);
+        if (inTenant.length === 1) claims.student_enrollment_id = inTenant[0].id;
+    }
+    return resolvePrincipal(claims, req, repository);
+};
 
 /**
  * Return the user id when the caller is an 'instructor' role, else null.

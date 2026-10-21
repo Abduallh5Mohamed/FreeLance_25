@@ -1,0 +1,20 @@
+أنت مشرف Claude على وكلاء OpenCode، وCodex يشرف على WorkBuddy.
+اقرأ docs/streams/server/SERVER-CLOSURE-INVENTORY-20261020.md كاملًا قبل تقسيم جديد. الموجة القديمة T1–T5 محفوظة وbaseline المجمّع 2382/2382 وtsc0 وdiff نظيف؛ لا تعِدها أو تعتبرها اكتمال M1–M8.
+
+مسارك C1–C8، شامل تفصيل FIN1–FIN12؛ WorkBuddy يملك W1–W10. التكامل I1–I4 يخصص له مالك واحد لاحقًا بواسطة Codex.
+دفعتك الأولى المقترحة: C1 استكمال التصحيح اليدوي في نظام الامتحانات الجديد، C3 تقارير الحضور والجداول في الجزء ذي السياسة المحسومة، C4 نشر تقارير التقدم وقراءتها للطالب وولي الأمر. يمكن تجهيز FIN1 pure pricing ضمن C7 كملفات جديدة بعد تثبيت مواصفاته؛ لا تربطه بتحصيل حقيقي.
+
+الخطوة الأولى كتابة allocation/specs مفصلة، لا إطلاق كتابة فوري من العناوين العامة:
+لكل مهمة النقص الحالي وfile:line وbacklog ID، allowedPaths محددة بما فيها الاختبارات والتقرير، عقود البيانات وschema prerequisites، اختبارات قبول، policy-held subparts والتبعيات. أرسلها إلى Codex لتثبيت عدم التعارض وموافقة الدفعة حسب docs18. لا تغيّر نطاقًا معتمدًا أو تمنح نفسك shared files.
+
+بعد التثبيت شغّل وكلاء مستقلين بحسب السعة المتاحة. لكل ملف كاتب واحد، ولا تبديل عامل quota قبل تأكيد توقفه. C2 ممنوع أثناء W4 على assignments؛ يبدأ بعد تسليم حصري صريح. C5 وC8 لا يتزامنان على subscription-requests؛ وC7/C8 لا يتزامنان على ملفات الربط المالي. ملفات الاختبارات المشتركة تحجز أيضًا. لا تفرض worktree من HEAD يغفل التغييرات غير المحفوظة.
+
+لا تخمن سياسات D3؛ اعزل الجزء المعتمد ونفّذه وأبلغ عن المحجوب. أعِد استعمال القواعد المعتمدة في docs19: 30يوم UTC، center student once، interval union،96ساعة من إصدار الفرق، credit !=wallet، protected future paid access. center351=13030 وليس13000. لا تعتبر service-credit القديم محفظة سنتر.
+
+الجودة: اختبار يثبت العيب أو قبول الوظيفة، source adapter/permission checks وليس mock شكليًا؛ no assertion weakening/any/ts-ignore؛ حافظ على API envelopes القديمة وX-Results-Truncated؛ أرقام focused tests/hash/diff لكل تسليم، راجعها بنفسك قبل رفعها إلى Codex. مراجعة أثناء كل دفعة ثم مراجعة شاملة نهائية، لا تراكم كل الكود بلا مراجعة.
+
+قيود: لا index/auth/db/helpers/migration/manifest/frontend/bridge writes، لا DB/Docker/native services/listeners أو قراءة أسرار أو تشغيل مزود أو dependency install أو Git mutation/commit/merge/push/deploy. schema يخطط في I2 وتطبيقه الحي له إذن مستقل. SMS مؤجل والشهادات مستبعدة. واجهة المستخدم لمطور آخر.
+
+بعد الدفعة الأولى: C5,C6 وFIN2/schema contracts، ثم C7/C8 بالتسلسل وفق dependencies. لا توزع المال كله على عمال متزامنين. أي vendor/payment/payout/scan/live يحتاج إثبات D2 ولا يعلن اكتماله بـfake.
+
+سلّم حالة العامل الفعلية والملفات والمخاطر والقرارات والنتائج. بعد توقف خطك صرّح بذلك ليُنسّق Codex مع WorkBuddy الفحص المجمّع. لا تعلن قبول milestone أو100%.

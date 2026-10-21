@@ -7,8 +7,10 @@
  * Prometheus text exposition format.
  *
  * Design constraints:
- *  - HTTP metrics are dimensioned by the route TEMPLATE (not the raw path) and
- *    the status CLASS, so cardinality stays bounded.
+ *  - HTTP metrics are dimensioned by the route TEMPLATE (not the raw path), a
+ *    whitelisted METHOD (unknown verbs collapse into one `other` bucket) and the
+ *    status CLASS, so cardinality stays bounded even for caller-controlled
+ *    values.
  *  - Label sets are validated at the call site: an unexpected label is a
  *    programming error and throws, so a stray user value can never create an
  *    unbounded series.
@@ -294,6 +296,27 @@ export interface HttpObserver {
 export const HTTP_REQUESTS_METRIC = 'http_requests_total';
 export const HTTP_DURATION_METRIC = 'http_request_duration_seconds';
 
+/** The single bucket every unrecognized HTTP verb collapses into. */
+export const HTTP_METHOD_FALLBACK = 'other';
+
+/** Standard HTTP methods that may appear as a `method` label value. */
+const BOUNDED_HTTP_METHODS: readonly string[] = [
+    'GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'CONNECT', 'TRACE',
+];
+
+/**
+ * Maps an inbound request method to a bounded label value. The label is
+ * caller-controlled, so anything outside the standard set (a forged verb, a
+ * non-string value, an empty string) collapses into the single
+ * `HTTP_METHOD_FALLBACK` bucket: cardinality stays bounded no matter what a
+ * client sends.
+ */
+export function boundedHttpMethod(method: unknown): string {
+    if (typeof method !== 'string') return HTTP_METHOD_FALLBACK;
+    const normalized = method.toUpperCase();
+    return BOUNDED_HTTP_METHODS.includes(normalized) ? normalized : HTTP_METHOD_FALLBACK;
+}
+
 export function createHttpObserver(
     registry: MetricsRegistry,
     options: { buckets?: readonly number[] } = {},
@@ -312,7 +335,7 @@ export function createHttpObserver(
     return {
         observe(observation) {
             const labels: Labels = {
-                method: observation.method,
+                method: boundedHttpMethod(observation.method),
                 route: observation.route,
                 status_class: statusClass(observation.status),
             };

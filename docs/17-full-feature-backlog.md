@@ -1,6 +1,6 @@
 # 17 — قائمة بناء المنتج الكامل ومعايير القبول
 
-**القرار الحاكم المحدث:** التسعير تدريجي للمدرس والسنتر؛ فوترة المؤسسة كل 30 يومًا مع حساب مدة فعلية بالثواني وتسوية، لا عمولة على الطلاب؛ محفظة السنتر وحده أو المدرس المستقل؛ خصم الاشتراك من المتاح ومهلة 4 أيام. المرجع [19 — القرارات المعتمدة](19-commercial-registration-wallet-agreement-ar.md)، والموافقة قبل التنفيذ في 18. الوثائق ليست دليل تشغيل.
+**القرار الحاكم المحدث:** التسعير تدريجي للمدرس والسنتر؛ فوترة المؤسسة كل 30 يومًا مع حساب مدة فعلية بالثواني وتسوية، لا عمولة على الطلاب؛ محفظة السنتر وحده أو المدرس المستقل؛ خصم الاشتراك من المتاح ومهلة 4 أيام؛ **عد الطالب داخل السنتر مرة واحدة لكل طالب مستخدم فريد داخل الـtenant طالما توجد علاقة مؤهلة نشطة (تصحيح مالك 2026-10-19، التفاصيل في 19)**؛ المرجع [19 — القرارات المعتمدة](19-commercial-registration-wallet-agreement-ar.md)، والموافقة قبل التنفيذ في 18. الوثائق ليست دليل تشغيل.
 
 **شرط التنفيذ الحاكم:** قبل كل دفعة تنفيذ يعرض المنفذ المهام والأثر والاختبارات والاستفسارات في المحادثة، وينتظر قرار المستخدم «نفّذ» أو «متنفّذش» أو تعديلات. لا تكفي موافقة سابقة على مرحلة كاملة. تفاصيل الموافقة ورحلات المستخدم في [18 — الرحلات والموافقة قبل التنفيذ](18-workflows-and-execution-approval-ar.md). لا يبدأ التنفيذ إذا بقي استفسار مؤثر دون حسم.
 
@@ -61,7 +61,9 @@
 | A5 | assignments and file submissions | C5/S6/C10 | deadlines/time zone, private upload scan, resubmission/version/revoke policy |
 | A6 | grading assignments and gradebook | A4/A5 | weighted/points policy visible; calculated grades recomputable, permissions scoped |
 | A7 | student progress and reports | V8/A3/A6 | student sees own/parent sees published scope; teacher filters tenant/branch; export audited |
-| A8 | certificates | A3/A6 | eligibility policy, unique verify ID, revocation, tenant branding, no forged certificate |
+| A8 | certificates ~~(superseded — out of scope)~~ | A3/A6 | eligibility policy, unique verify ID, revocation, tenant branding, no forged certificate |
+
+> **قرار بشري (2026-10-19):** المنتج منصة **مدرسين وطلاب مدارس**، وليس منصة تخَرّج/شهادات. ميزة الشهادات (A8) **مستبعدة من النطاق الحالي بقرار المالك**، ومِلَفّات المصدر والهجرات والبيانات التاريخية **محفوظة غير محذوفة** — أُزيل التركيب العام فقط (`/api/certificates` لم يعد مُركَّبًا في `server/src/index.ts`). هذا القرار **لا يُعدّ مانع إكمال لـ M1/M4**؛ يبقى الشرط التاريخي موثّقًا هنا كـ *superseded* دون إعادة كتابة التاريخ. التفاصيل: `docs/streams/server/TEACHER-SCHOOL-PRODUCT-ALIGNMENT.md`.
 
 ## M5 — Groups, attendance, integrated live
 
@@ -93,7 +95,7 @@
 |---|---|---|---|
 | O1 | tenant create/suspend/restore with reason | S1/S3 | allowed transition/dual authorization as needed; reason/actor/time/status immutable audit |
 | O2 | plans and feature-flag editor | S3/O1 | validation, preview, scoped targeting, version, audit, rollback, server-side enforcement |
-| O3 | قياس الاستخدام والتسجيلات والفوترة | S1/B2/B10 | فترات تفعيل student–teacher، نسخة سعر، تسوية ودين لا يتكرر، مصالحة watch/storage منفصلة |
+| O3 | قياس الاستخدام والتسجيلات والفوترة | S1/B2/B10 | فترات تفعيل student–teacher على أساس الطالب المستخدم الفريد داخل الـtenant (الفترات النشطة المتداخلة تُوحَّد ولا تُجمع؛ لا خصم cross-tenant)؛ نسخة سعر؛ تسوية ودين لا يتكرر؛ مصالحة watch/storage منفصلة |
 | O4 | content moderation/reports | P6/C4 | queue, evidence, decision/reason, appeals, tenant notification, reviewer permissions |
 | O5 | support tickets | S3/O1 | tenant and request identity, assignment/status/priority/private note, audit and export |
 | O6 | impersonation | S2/O5/explicit permission | reason and approval, time bound, visible banner, read/write scope, every action audit, protected actions blocked |
@@ -127,7 +129,7 @@
 | ID | الوظيفة | ترتيب/تبعيات | معيار القبول |
 |---|---|---|---|
 | B1 | تسجيل ذاتي للمدرس/السنتر وبروفايل وsubdomain وcheckout | M2 بعد S1–S9 | تحقق اتصال ودور آمن؛ تأكيد خادمي يفعل الاشتراك؛ callback متكرر لا يكرر التفعيل |
-| B2 | شرائح عدد تسجيلات الطلاب والعروض الخاصة | M2؛ قرار معادلة 19 | طالب عند 3 مدرسين = 3؛ فاتورة بنسخة السعر؛ الخصم محدد المستفيد/المدة؛ الحالات غير المعتمدة لا تفوتر |
+| B2 | شرائح عدد تسجيلات الطلاب والعروض الخاصة | M2؛ قرار معادلة 19 | العد بطالب مستخدم فريد داخل الـtenant: مدرسون مستقلون = مؤسسات منفصلة (كل علاقة تُحتسب في مؤسستها)؛ داخل نفس السنتر عدة مدرسين لا تضاعف العد (200 طالب × 3 مدرسين = 200)؛ فاتورة بنسخة السعر؛ الخصم محدد المستفيد/المدة؛ الحالات غير المعتمدة لا تفوتر |
 | B3 | مدير سنتر فوق مدرسين وفروع وطلاب | M2/S3 | المدرس لا يرى مدرسًا آخر دون capability؛ مدير المؤسسة لا يتجاوز tenant |
 | B4 | نوع طالب وموافقة Offline وسعر شهر المدرس | M2 | Offline يسجل دون checkout وينتظر موافقة؛ Online يدفع قبل التفعيل؛ تغيير السعر لا يعدل الطلب السابق |
 | B5 | دفع Offline إلكتروني اختياري | M2/B4 | المدرس يغلق/يفتح الإعداد؛ دفع Offline لا يحوله إلى Online؛ نقد لا يضيف available wallet |
@@ -141,7 +143,7 @@
 
 | ID | الوظيفة | التبعيات | معيار القبول |
 |---|---|---|---|
-| B10 | عد الفعال عند تغير الأحداث وتسعير تدريجي وتسوية | S1/B2/19 | المدرس 50/51/100/101/150/151/200/201؛ السنتر 200/201/250/251/300/301/350/351؛ الإجمالي لا ينخفض؛ expired/pending مستبعد والمهلة محتسبة؛ علاقات متعددة وعدم ازدواج المقررات |
+| B10 | عد الفعال عند تغير الأحداث وتسعير تدريجي وتسوية | S1/B2/19 | المدرس 50/51/100/101/150/151/200/201؛ السنتر 200/201/250/251/300/301/350/351؛ الإجمالي لا ينخفض؛ expired/pending مستبعد والمهلة محتسبة؛ علاقات متعددة بعدّ الطالب الفريد داخل السنتر/الـtenant واتحاد الفترات النشطة لا جمعها؛ وعدم ازدواج المقررات |
 | B11 | اشتراك ومهلة 4 أيام | B7/B10 | available فقط، حجز اشتراك قبل سحب جديد ويحترم حجز قائم؛ نقص ودفع فرق idempotent؛ 96 ساعة لا تتجدد بالretry؛ حماية كل فترات الطلاب المدفوعة الحالية والمستقبلية ووقف التسجيل/التجديد/النشر الجديد؛ سداد يعيد الصلاحيات |
 | B12 | نقد وطلب استرداد | B4/B7 | إيصال مدقق لا يزيد wallet؛ يقرر المحصل؛ توفير المبلغ ثم حجزه قبل مزود؛ pending funding لا يعلن success؛ اعتراض بنك مسار منفصل |
 | S10 | عزل المدرسين والصلاحيات المالية | S1/S3/B3 | مدرس X لا يقرأ أو يعدل طلاب/محتوى Y في نفس السنتر دون capability؛ لا يسحب من محفظة السنتر دون إذن؛ signup لا يمنح owner لمؤسسة قائمة |

@@ -105,6 +105,7 @@ export const createParentLinksRouter = (deps: ParentLinksRouteDeps): Router => {
         otp: deps.getOtpService() ?? undefined,
         getSecret: deps.getSecret,
         now: deps.now,
+        execute: deps.db.execute,
         transaction: deps.transaction,
     });
 
@@ -333,9 +334,16 @@ const createConnectionStore = (conn: PoolConnection): ParentLinksStore => {
     });
 };
 
-const transaction = async <T>(fn: (store: ParentLinksStore) => Promise<T>): Promise<T> => {
+const transaction = async <T>(fn: (store: ParentLinksStore, txExecute?: (sql: string, params?: unknown[]) => Promise<{ insertId?: number; affectedRows?: number }>) => Promise<T>): Promise<T> => {
     const { withTransaction } = await loadDb();
-    return withTransaction((conn) => fn(createConnectionStore(conn)));
+    return withTransaction((conn) => {
+        const store = createConnectionStore(conn);
+        const txExecute = async (sql: string, params: unknown[] = []) => {
+            const [result] = await conn.execute(sql, params as never);
+            return result as { insertId?: number; affectedRows?: number };
+        };
+        return fn(store, txExecute);
+    });
 };
 
 export default createParentLinksRouter({

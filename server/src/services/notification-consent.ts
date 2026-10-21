@@ -34,6 +34,7 @@ export interface NotificationDataAccess {
     query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>;
     queryOne: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T | null>;
     execute: (sql: string, params?: unknown[]) => Promise<{ insertId?: number; affectedRows?: number }>;
+    transaction?: <T>(fn: (tx: NotificationDataAccess) => Promise<T>) => Promise<T>;
 }
 
 export const CONSENT_PURPOSES = [

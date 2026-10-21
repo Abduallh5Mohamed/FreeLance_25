@@ -96,7 +96,7 @@ test('V5: warning and self/support revoke with audit', async () => {
     // support revoke
     const s2device = registry.registerDevice({ tenantId: 't1', userId: 'u2', fingerprint: 'fp2' });
     await registry.acquireSlot({ tenantId: 't1', userId: 'u2', deviceId: s2device.id, sessionId: 's3', policy });
-    const support = await registry.revokeSession({ sessionId: 's3', actorId: 'admin', actorType: 'support', support: true });
+    const support = await registry.revokeSession({ sessionId: 's3', actorId: 'admin', actorType: 'support', support: true, actorTenantId: 't1' });
     assert.equal(support.revoked, true);
     assert.ok(audits.length > 0);
 });
@@ -334,7 +334,7 @@ test('V5: revokeSession allow/deny/audit/idempotent', async () => {
     assert.equal(again.reason, 'already_ended');
     assert.equal(audits.length, before);
     await reg.acquireSlot({ tenantId: 't1', userId: 'u1', deviceId: d.id, sessionId: 's2', policy });
-    const sup = await reg.revokeSession({ sessionId: 's2', actorId: 'admin', actorType: 'support', support: true });
+    const sup = await reg.revokeSession({ sessionId: 's2', actorId: 'admin', actorType: 'support', support: true, actorTenantId: 't1' });
     assert.equal(sup.revoked, true);
     assert.ok(audits.some((a: any) => a.action === 'playback.session.support_revoke'));
 });
@@ -374,7 +374,7 @@ test('V5: revokeDevice allow/deny/audit/idempotent', () => {
     const reg2 = createPlaybackSessionRegistry({ now: () => new Date('2026-01-01T00:00:00Z') });
     const d2 = reg2.registerDevice({ tenantId: 't1', userId: 'u1', fingerprint: 'fp2' });
     reg2.setPolicy({ maxConcurrentSessions: 2, maxDevices: 3, warningThreshold: 1, selfRevokeAllowed: true, supportRevokeAllowed: false, tenantId: 't1' }, 't1');
-    const supportDeny = reg2.revokeDevice({ deviceId: d2.id, actorId: 'admin', support: true });
+    const supportDeny = reg2.revokeDevice({ deviceId: d2.id, actorId: 'admin', support: true, actorTenantId: 't1' });
     assert.equal(supportDeny.revoked, false);
     assert.equal(supportDeny.reason, 'support_revoke_not_allowed');
     assert.equal(reg2.revokeDevice({ deviceId: 'missing', actorId: 'u1', support: false }).reason, 'device_not_found');
@@ -531,17 +531,32 @@ test('V6: getProgress and completed', () => {
 });
 
 /* ---------- route extended ---------- */
-function makeRouter() {
+interface RouterOptions {
+    /**
+     * Verified `security.manage` holders. The admin token below is an `admin`
+     * principal, and `resolvePrincipal` deliberately derives no tenant for that
+     * role, so support authority must come from this live predicate — the role
+     * label alone never authorizes.
+     */
+    platformOperators?: string[];
+    /** Simulates an unreadable permission store (must deny, never fall back). */
+    capabilityLookupFailure?: boolean;
+}
+
+function makeRouter(options: RouterOptions = {}) {
+    const platformOperators = new Set(options.platformOperators ?? ['admin-a']);
     const db = makeFakeDataAccess(() => []);
     const repository = makeRepository(
         {
             'student-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'student' },
             'admin-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'admin' },
+            'staff-b': { is_active: 1, token_version: 0, suspension_active: 0, role: 'staff' },
         },
         {
             memberships: {
                 'student-a': [{ tenant_id: 'tenant-a' }],
                 'admin-a': [{ tenant_id: 'tenant-a' }],
+                'staff-b': [{ tenant_id: 'tenant-b' }],
             },
             enrollments: {
                 'student-a': [{ id: 'enr-a', tenant_id: 'tenant-a', instructor_id: 'instr-a', group_id: null, grade_id: null }],
@@ -549,11 +564,20 @@ function makeRouter() {
         },
     );
     const authenticate = createAuthenticateToken(repository);
-    const router = createPlaybackSessionsRouter({ db, authenticate, now: () => new Date('2026-01-01T00:00:00Z') });
+    const router = createPlaybackSessionsRouter({
+        db,
+        authenticate,
+        now: () => new Date('2026-01-01T00:00:00Z'),
+        hasPlatformCapability: async (userId) => {
+            if (options.capabilityLookupFailure) throw new Error('admin permissions unavailable');
+            return platformOperators.has(userId);
+        },
+    });
     const studentToken = tokenFor({ id: 'student-a', role: 'student', tv: 0, tenant_id: 'tenant-a', student_enrollment_id: 'enr-a' });
     const adminToken = tokenFor({ id: 'admin-a', role: 'admin', tv: 0, tenant_id: 'tenant-a' });
     const otherToken = tokenFor({ id: 'student-a', role: 'student', tv: 0, tenant_id: 'tenant-b', student_enrollment_id: 'enr-a' });
-    return { router, studentToken, adminToken, otherToken };
+    const foreignStaffToken = tokenFor({ id: 'staff-b', role: 'staff', tv: 0, tenant_id: 'tenant-b' });
+    return { router, studentToken, adminToken, otherToken, foreignStaffToken };
 }
 
 test('route: start requires auth and validation', async () => {
@@ -665,6 +689,68 @@ test('route: support revoke admin only', async () => {
     const ok = await invokeRoute(router, { method: 'POST', url: `/sessions/${sid}/support-revoke`, token: adminToken, body: {} });
     assert.equal(ok.statusCode, 200);
     assert.equal((ok.body as any).revoked, true);
+});
+
+test('route: support revoke requires exact tenant scope or a verified platform capability', async () => {
+    const { router, studentToken, adminToken } = makeRouter({ platformOperators: [] });
+    const start = await invokeRoute(router, { method: 'POST', url: '/sessions', token: studentToken, body: { tenantId: 'tenant-a', userId: 'student-a', fingerprint: 'fp', assetId: 'asset-1' } });
+    const sid = (start.body as { sessionId: string }).sessionId;
+    const deny = await invokeRoute(router, { method: 'POST', url: `/sessions/${sid}/support-revoke`, token: adminToken, body: {} });
+    assert.equal(deny.statusCode, 403);
+    assert.equal((deny.body as { error?: string }).error, 'tenant_required');
+    // Denial is inert: the session is still active and still owned by the student.
+    const hb = await invokeRoute(router, { method: 'POST', url: `/sessions/${sid}/heartbeat`, token: studentToken, body: {} });
+    assert.equal(hb.statusCode, 200);
+    const self = await invokeRoute(router, { method: 'POST', url: `/sessions/${sid}/revoke`, token: studentToken, body: {} });
+    assert.equal(self.statusCode, 200);
+    assert.equal((self.body as { revoked?: boolean }).revoked, true);
+});
+
+test('route: a foreign-tenant support actor is denied by the tenant comparison', async () => {
+    const { router, studentToken, foreignStaffToken } = makeRouter();
+    const start = await invokeRoute(router, { method: 'POST', url: '/sessions', token: studentToken, body: { tenantId: 'tenant-a', userId: 'student-a', fingerprint: 'fp', assetId: 'asset-1' } });
+    const sid = (start.body as { sessionId: string }).sessionId;
+    const deny = await invokeRoute(router, { method: 'POST', url: `/sessions/${sid}/support-revoke`, token: foreignStaffToken, body: {} });
+    assert.equal(deny.statusCode, 403);
+    assert.equal((deny.body as { error?: string }).error, 'tenant_mismatch');
+    const hb = await invokeRoute(router, { method: 'POST', url: `/sessions/${sid}/heartbeat`, token: studentToken, body: {} });
+    assert.equal(hb.statusCode, 200);
+});
+
+test('route: a failed platform capability lookup denies support revoke without mutation', async () => {
+    const { router, studentToken, adminToken } = makeRouter({ capabilityLookupFailure: true });
+    const start = await invokeRoute(router, { method: 'POST', url: '/sessions', token: studentToken, body: { tenantId: 'tenant-a', userId: 'student-a', fingerprint: 'fp', assetId: 'asset-1' } });
+    const sid = (start.body as { sessionId: string }).sessionId;
+    const deny = await invokeRoute(router, { method: 'POST', url: `/sessions/${sid}/support-revoke`, token: adminToken, body: {} });
+    assert.equal(deny.statusCode, 503);
+    assert.equal((deny.body as { error?: string }).error, 'authority_unavailable');
+    const hb = await invokeRoute(router, { method: 'POST', url: `/sessions/${sid}/heartbeat`, token: studentToken, body: {} });
+    assert.equal(hb.statusCode, 200);
+});
+
+test('route: device support revoke applies the same authority contract', async () => {
+    const { router, studentToken, adminToken, foreignStaffToken } = makeRouter();
+    const start = await invokeRoute(router, { method: 'POST', url: '/sessions', token: studentToken, body: { tenantId: 'tenant-a', userId: 'student-a', fingerprint: 'fp', assetId: 'asset-1' } });
+    const devId = (start.body as { deviceId: string }).deviceId;
+
+    const foreign = await invokeRoute(router, { method: 'POST', url: `/devices/${devId}/revoke`, token: foreignStaffToken, body: {} });
+    assert.equal(foreign.statusCode, 403);
+    assert.equal((foreign.body as { error?: string }).error, 'tenant_mismatch');
+
+    const roleOnly = makeRouter({ platformOperators: [] });
+    const roleOnlyStart = await invokeRoute(roleOnly.router, { method: 'POST', url: '/sessions', token: roleOnly.studentToken, body: { tenantId: 'tenant-a', userId: 'student-a', fingerprint: 'fp', assetId: 'asset-1' } });
+    const roleOnlyDeviceId = (roleOnlyStart.body as { deviceId: string }).deviceId;
+    const roleOnlyDeny = await invokeRoute(roleOnly.router, { method: 'POST', url: `/devices/${roleOnlyDeviceId}/revoke`, token: roleOnly.adminToken, body: {} });
+    assert.equal(roleOnlyDeny.statusCode, 403);
+    assert.equal((roleOnlyDeny.body as { error?: string }).error, 'tenant_required');
+    const list = await invokeRoute(roleOnly.router, { method: 'GET', url: '/devices', token: roleOnly.studentToken, query: { tenantId: 'tenant-a' } });
+    assert.equal((list.body as Array<{ status: string }>)[0].status, 'active');
+
+    // The verified platform capability (admin-a is an injected security.manage
+    // holder) authorizes the same call the role label alone could not make.
+    const ok = await invokeRoute(router, { method: 'POST', url: `/devices/${devId}/revoke`, token: adminToken, body: {} });
+    assert.equal(ok.statusCode, 200);
+    assert.equal((ok.body as { revoked?: boolean }).revoked, true);
 });
 
 test('route: devices list and revoke', async () => {

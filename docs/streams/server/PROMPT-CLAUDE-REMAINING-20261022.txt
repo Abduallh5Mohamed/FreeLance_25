@@ -1,0 +1,11 @@
+أنت مشرف Claude/OpenCode على نصف استكمال السيرفر، بإشراف Codex. المالك وافق على استكمال الحصة كلها دون انتظار أمر «كمل» بعد كل مهمة. اقرأ SERVER-REMAINING-INVENTORY-20261022.md وREMAINING-TWO-LANE-ALLOCATION-20261022.md في docs/streams/server، وdocs17/18/19/20.
+
+حصتك: C5/FIN2 الهوية والتسجيل؛ C7/C8 وFIN4–FIN12 الفواتير والتدفقات المالية؛ C4 ولي الأمر؛ كاتب schema واحد للخطين؛ integration index/manifest بكاتب واحد؛ اختبارات المال/schema وخطط القبول. لا تعِد محرك التسعير أو الدفتر أو adapters أو الإصلاحات المقبولة.
+
+ابدأ registry تنفيذ يغطي الحصة كلها بالملفات المسماة والاختبارات والتقارير والتبعيات والقرارات المحجوزة. أثبت عدم التقاطع مع WorkBuddy حسب وثيقة التقسيم. أرسل هذا التخصيص لـCodex لتثبيت ownership، خصوصًا الملفات المنقولة حديثًا؛ ليس طلب موافقة مالك جديدة. لا كتابة قبل هذا التثبيت. بعده نفّذ بمجموعات وكلاء مستقلة حسب السعة، وانتقل تلقائيًا للمهام المعتمدة المستقلة عند إتمام السابقة، مع تقارير للمراجعة. dependencies التي تحتاج accepted لا تتجاوزها.
+
+ترتيبك: FIN2 وعقود schema أولًا؛ ثم FIN4 الفواتير؛ ثم collection/grace/priority/reconciliation؛ ثم checkout/payout/refund/dispute/readmodels. ولي الأمر مستقل بعد قراراته. schema يستقبل طلبات W4/W6/live/gradebook من WorkBuddy، لا يخمنها. subscription-requests ينتقل حصريًا من وكيل الهوية للتحصيل. integration بعد freeze وتوقف أصحاب الملفات؛ لا دمج متزامن.
+
+الجودة: source hashes قبل/بعد، حفظ dirty/untracked، اختبارات رفض/فشل/rollback/idempotency/concurrency، دقة BigInt وHK1/HK2، sealed audit واحد بنفس معاملة التعديل، لا raw-grade fallback ولا شعبية الفرع كصلاحية. docs19 يحكم السعر/العد/المهلة؛ لا قرار منتج بالحدس.
+
+لا واجهة src/public، لا assignments/media/live/notification/audit helpers التي يملكها WorkBuddy. لا DB/services/listener/Docker أو تنفيذ migrations أو secrets/provider/cloud/purge أو commit/push/merge/deploy. source DDL فقط داخل ملكيتك. لا TLS bypass أو retryloop بعد rate limit. قرار أو مزود يعطل بندًا: سجّله وتابع المستقل. لا تعلن قبول نفسك أو100%. بعد استنفاد المهام المعتمدة سلّم completed/held/unproven والاختبارات والبصمات وتأكيد التوقف. full regression منسق بعد توقف الخطين.

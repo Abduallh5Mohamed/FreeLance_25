@@ -38,6 +38,8 @@ export interface CertificatesDeps {
      */
     verifyRateLimit?: RequestHandler;
     now?: () => Date;
+    /** Atomic seam: the certificate row and its audit event commit together. */
+    transaction?: <T>(fn: (tx: CertificatesDataAccess) => Promise<T>) => Promise<T>;
 }
 
 const STAFF_AUTHORITIES = new Set(['owner', 'instructor']);
@@ -68,6 +70,9 @@ export const createCertificatesRouter = (deps: CertificatesDeps): Router => {
     const router = Router();
     const { db } = deps;
     const now = deps.now ?? (() => new Date());
+    const runAtomic = deps.transaction
+        ? deps.transaction
+        : <T>(fn: (tx: CertificatesDataAccess) => Promise<T>): Promise<T> => fn(db);
 
     const branchAccess: BranchAccessDeps = deps.branchAccess ?? {
         findBranchById: async (branchId) => db.queryOne<BranchRow>('SELECT id, tenant_id, status, version FROM branches WHERE id = ? LIMIT 1', [branchId]),
@@ -111,15 +116,33 @@ export const createCertificatesRouter = (deps: CertificatesDeps): Router => {
     };
 
     /**
+     * A branch membership is not by itself a relation to a course: the course
+     * must have a group inside the caller's branch, otherwise a branch-scoped
+     * instructor would be able to issue/revoke certificates for every course in
+     * the tenant.
+     */
+    const courseHasGroupInBranch = async (tenantId: string, courseId: string, branchId: string): Promise<boolean> => {
+        const row = await db.queryOne<{ id: string }>(
+            `SELECT g.id FROM \`groups\` g INNER JOIN courses c ON c.id = g.course_id
+             WHERE g.course_id=? AND g.branch_id=? AND g.branch_scope='branch' AND c.tenant_id=? LIMIT 1`,
+            [courseId, branchId, tenantId],
+        );
+        return Boolean(row);
+    };
+
+    /**
      * Deny-by-default issuer authority over a course: a tenant owner, the
      * course's own instructor, an instructor who owns a group mapped to the
-     * course, or an instructor whose verified branch membership grants access.
+     * course, or an instructor whose verified branch membership covers a group
+     * of this course.
      */
     const hasCourseAuthority = async (scope: { tenantId: string; userId: string; isOwner: boolean; branchId: string | null }, course: CourseRow): Promise<boolean> => {
         if (scope.isOwner) return true;
         if (course.instructor_id === scope.userId) return true;
         if (await instructorTeachesCourse(scope.tenantId, scope.userId, course.id)) return true;
-        return authorizeBranch(scope.tenantId, scope.userId, scope.isOwner, scope.branchId);
+        if (!scope.branchId) return false;
+        if (!(await authorizeBranch(scope.tenantId, scope.userId, scope.isOwner, scope.branchId))) return false;
+        return courseHasGroupInBranch(scope.tenantId, course.id, scope.branchId);
     };
 
     interface EligibilityRow { mode: string; passing_score: number | string | null; rounding: string; categories: string | null; }
@@ -260,11 +283,13 @@ export const createCertificatesRouter = (deps: CertificatesDeps): Router => {
         const verificationId = generateVerificationId(32);
         const id = randomUUID();
         try {
-            await db.execute(
-                'INSERT INTO certificates (id, tenant_id, student_enrollment_id, course_id, verification_id, status, final_score, issued_by, branding_logo_url, branding_primary_color, branding_secondary_color, branding_accent_color, branding_locale) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [id, scope.tenantId, enrollmentId, courseId, verificationId, 'issued', eligibility.finalScore, scope.userId, branding?.logo_url ?? null, branding?.primary_color ?? null, branding?.secondary_color ?? null, branding?.accent_color ?? null, branding?.locale ?? null],
-            );
-            await recordAudit(db.execute.bind(db) as never, { actorUserId: scope.userId, tenantId: scope.tenantId, action: 'certificate.issue', resourceType: 'certificate', resourceId: id, newValue: { enrollmentId, courseId, verificationId, final_score: eligibility.finalScore } });
+            await runAtomic(async (tx) => {
+                await tx.execute(
+                    'INSERT INTO certificates (id, tenant_id, student_enrollment_id, course_id, verification_id, status, final_score, issued_by, branding_logo_url, branding_primary_color, branding_secondary_color, branding_accent_color, branding_locale) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    [id, scope.tenantId, enrollmentId, courseId, verificationId, 'issued', eligibility.finalScore, scope.userId, branding?.logo_url ?? null, branding?.primary_color ?? null, branding?.secondary_color ?? null, branding?.accent_color ?? null, branding?.locale ?? null],
+                );
+                await recordAudit(tx.execute, { actorUserId: scope.userId, tenantId: scope.tenantId, action: 'certificate.issue', resourceType: 'certificate', resourceId: id, newValue: { enrollmentId, courseId, verificationId, final_score: eligibility.finalScore } });
+            });
         } catch (e) {
             res.status(500).json({ error: 'Failed to issue certificate' });
             return;
@@ -279,11 +304,20 @@ export const createCertificatesRouter = (deps: CertificatesDeps): Router => {
         const id = req.params.id.trim();
         const cert = await loadCert(scope.tenantId, id);
         if (!cert) { res.status(404).json({ error: 'Certificate not found' }); return; }
+        // Revocation carries the same course authority as issuance: the tenant
+        // owner may recover administratively, otherwise the caller must be
+        // related to this certificate's course. A tenant instructor with no
+        // relation to the course is denied (no tenant-wide revocation right).
+        const course = await db.queryOne<CourseRow>('SELECT id, tenant_id, instructor_id FROM courses WHERE id=? LIMIT 1', [cert.course_id]);
+        if (!course || course.tenant_id !== scope.tenantId) { res.status(404).json({ error: 'Course not found' }); return; }
+        if (!(await hasCourseAuthority(scope, course))) { res.status(403).json({ error: 'You are not authorized to revoke a certificate for this course' }); return; }
         if (cert.status === 'revoked') { res.status(409).json({ error: 'Already revoked' }); return; }
         const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 255) : null;
         try {
-            await db.execute('UPDATE certificates SET status=?, revoked_at=CURRENT_TIMESTAMP, revoked_by=?, revoke_reason=? WHERE tenant_id=? AND id=? AND status=?', ['revoked', scope.userId, reason, scope.tenantId, id, 'issued']);
-            await recordAudit(db.execute.bind(db) as never, { actorUserId: scope.userId, tenantId: scope.tenantId, action: 'certificate.revoke', resourceType: 'certificate', resourceId: id, oldValue: snapshotRow(cert), newValue: { status: 'revoked', reason } });
+            await runAtomic(async (tx) => {
+                await tx.execute('UPDATE certificates SET status=?, revoked_at=CURRENT_TIMESTAMP, revoked_by=?, revoke_reason=? WHERE tenant_id=? AND id=? AND status=?', ['revoked', scope.userId, reason, scope.tenantId, id, 'issued']);
+                await recordAudit(tx.execute, { actorUserId: scope.userId, tenantId: scope.tenantId, action: 'certificate.revoke', resourceType: 'certificate', resourceId: id, oldValue: snapshotRow(cert), newValue: { status: 'revoked', reason } });
+            });
         } catch (e) {
             res.status(500).json({ error: 'Failed to revoke' });
             return;
@@ -326,11 +360,36 @@ const productionBranchAccess: BranchAccessDeps = {
         return queryOne<BranchMembershipRow>('SELECT id, branch_id, user_id, role, status, version FROM branch_memberships WHERE branch_id = ? AND user_id = ? LIMIT 1', [branchId, userId]);
     },
 };
+/**
+ * Production atomic seam: an issued/revoked certificate row and its audit
+ * event are written on one pooled connection, so a failed audit rolls the
+ * status change back instead of leaving an unaudited certificate mutation.
+ */
+const productionTransaction = async <T>(fn: (tx: CertificatesDataAccess) => Promise<T>): Promise<T> => {
+    const { withTransaction } = await loadDb();
+    return withTransaction((connection) => fn({
+        query: async <R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R[]> => {
+            const [rows] = await connection.query(sql, params as never);
+            return rows as unknown as R[];
+        },
+        queryOne: async <R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R | null> => {
+            const [rows] = await connection.query(sql, params as never);
+            return (rows as unknown as R[])[0] ?? null;
+        },
+        execute: async (sql: string, params?: unknown[]) => {
+            const [result] = await connection.execute(sql, params as never);
+            const header = result as { insertId?: number; affectedRows?: number };
+            return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+        },
+    }));
+};
+
 export default createCertificatesRouter({
     db: productionDb,
     authenticate: async (req, res, next) => { const { authenticateToken } = await import('../middleware/auth'); return authenticateToken(req, res, next); },
     loadActiveTenantAuthority,
     branchAccess: productionBranchAccess,
+    transaction: productionTransaction,
     // Only the public verify endpoint is anonymously reachable: throttle it per
     // client address to bound enumeration of verification ids.
     verifyRateLimit: rateLimit('certificates-verify', 30, 60_000),

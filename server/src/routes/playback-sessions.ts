@@ -7,6 +7,7 @@ import {
     type PlaybackSessionStore,
     type PlaybackDevice,
     type PlaybackStoreDb,
+    type RevokeResult,
 } from '../services/playback-session-registry';
 import {
     createPlaybackProgressService,
@@ -14,6 +15,7 @@ import {
     createSqlPlaybackProgressService,
     type PlaybackProgressStore,
 } from '../services/playback-progress';
+import { createSqlPlaybackEntitlementStore } from '../services/playback-entitlement';
 import {
     generateWatermarkPayload,
     pseudonymizeIdentity,
@@ -21,8 +23,24 @@ import {
     type WatermarkInput,
 } from '../services/playback-watermark';
 import { recordAudit } from '../security/audit';
+import { hasVerifiedPlatformPermission } from '../security/admin-permissions';
 
 export type PlaybackSessionsDb = PlaybackStoreDb;
+
+/**
+ * Roles that may act as support at all. The label alone is never authority:
+ * see `resolveSupportAuthority`.
+ */
+const SUPPORT_REVOKE_ROLES = new Set(['admin', 'super_admin', 'staff']);
+
+/**
+ * The existing platform capability that authorizes cross-tenant reach across
+ * the video surface (`secure-video.ts`, `videos.ts`). No new key is introduced.
+ */
+const PLATFORM_SECURITY_PERMISSION = 'security.manage';
+
+const defaultPlatformCapability = (userId: string): Promise<boolean> =>
+    hasVerifiedPlatformPermission(PLATFORM_SECURITY_PERMISSION, userId);
 
 export interface PlaybackSessionsDeps {
     db?: PlaybackSessionsDb;
@@ -31,6 +49,22 @@ export interface PlaybackSessionsDeps {
     registry?: PlaybackSessionStore;
     progress?: PlaybackProgressStore;
     audit?: (event: Record<string, unknown>) => void | Promise<void>;
+    /**
+     * Secondary local effect of a revoke: close the media-delivery session in
+     * this process. It runs only AFTER the durable revocation committed, and a
+     * failure here is logged rather than reported, because the durable store
+     * already denies the next request — a local failure must never make a
+     * revoked session look alive again.
+     */
+    killDeliverySession?: (sessionId: string, reason: string) => Promise<void>;
+    /**
+     * Verified platform capability (`security.manage`: an active super_admin
+     * row or the permission key granted by `admin_role_permissions`). It is the
+     * ONLY path that authorizes support outside the actor's own tenant.
+     * Production passes the real predicate; hermetic tests inject a fixture.
+     * A rejection or a throw is a denial — never a fallback to the role label.
+     */
+    hasPlatformCapability?: (userId: string) => Promise<boolean>;
 }
 
 const defaultAuthenticate: RequestHandler = (_req, res) => {
@@ -56,6 +90,90 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
     const now = deps.now ?? (() => new Date());
     const registry = deps.registry ?? asPlaybackSessionStore(createPlaybackSessionRegistry({ now, audit: deps.audit }));
     const progress = deps.progress ?? asPlaybackProgressStore(createPlaybackProgressService({ now }));
+    const hasPlatformCapability = deps.hasPlatformCapability ?? defaultPlatformCapability;
+
+    type SupportAuthority =
+        | { allowed: true; platformAuthorized: boolean }
+        | { allowed: false; status: number; body: Record<string, unknown> };
+
+    /**
+     * Resource-scoped authority for a support (non-owner) revoke.
+     *
+     * The tenant is the server-derived scope on the authenticated principal
+     * (`resolvePrincipal`), never a request field. Exact equality with the
+     * target's tenant is sufficient on its own; anything else — a missing
+     * tenant, a foreign tenant, a role label such as `admin`/`super_admin`
+     * without a tenant — needs a LIVE platform capability. A lookup that throws
+     * denies: an unverified actor is never treated as authorized.
+     */
+    const resolveSupportAuthority = async (
+        actor: { id: string; tenantId: string | null },
+        targetTenantId: string,
+    ): Promise<SupportAuthority> => {
+        if (actor.tenantId && actor.tenantId === targetTenantId) {
+            return { allowed: true, platformAuthorized: false };
+        }
+        let platformAuthorized: boolean;
+        try {
+            platformAuthorized = await hasPlatformCapability(actor.id);
+        } catch (error) {
+            console.error('[Playback] Platform capability lookup failed:', error);
+            return { allowed: false, status: 503, body: { error: 'authority_unavailable' } };
+        }
+        if (!platformAuthorized) {
+            return {
+                allowed: false,
+                status: 403,
+                body: { error: actor.tenantId ? 'tenant_mismatch' : 'tenant_required' },
+            };
+        }
+        return { allowed: true, platformAuthorized: true };
+    };
+
+    /**
+     * Commit one revocation and close the local delivery session afterwards.
+     *
+     * The durable part (slot status + session entitlements + audit) is a single
+     * store transaction; if it fails, nothing changed and the caller must not
+     * report success. The local kill is a second, best-effort effect: it can
+     * only ever remove an already-revoked session from this process, so its
+     * failure is logged and swallowed.
+     */
+    const commitRevocation = async (
+        input: {
+            sessionId: string;
+            actorId: string;
+            actorType: 'self' | 'support';
+            reason: string;
+            support: boolean;
+            /**
+             * Server-derived actor scope. The store re-checks it inside the
+             * mutation transaction, so authority is proven against the row it
+             * actually changes (TOCTOU), not only against a pre-read.
+             */
+            actorTenantId?: string | null;
+            platformAuthorized?: boolean;
+        },
+    ): Promise<{ status: number; body: Record<string, unknown> }> => {
+        let result: RevokeResult;
+        try {
+            result = await registry.revokeSession(input);
+        } catch (error) {
+            console.error('[Playback] Durable session revocation failed:', error);
+            return { status: 500, body: { error: 'revoke_failed' } };
+        }
+        if (!result.revoked) {
+            return { status: result.reason === 'session_not_found' ? 404 : 403, body: { ...result } };
+        }
+        if (deps.killDeliverySession) {
+            try {
+                await deps.killDeliverySession(input.sessionId, input.reason);
+            } catch (error) {
+                console.error('[Playback] Local delivery session close failed after a committed revoke:', error);
+            }
+        }
+        return { status: 200, body: { ...result } };
+    };
 
     // POST /sessions  (start a playback session)
     const startHandler = async (req: Request, res: Response) => {
@@ -277,20 +395,14 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         if (slot && slot.userId !== userIdClaim) {
             return res.status(403).json({ error: 'not_authorized' });
         }
-        const result = await registry.revokeSession({
+        const result = await commitRevocation({
             sessionId,
             actorId: str(user.id) ?? '',
             actorType: 'self',
             reason: str(body.reason) ?? 'self_revoke',
             support: false,
         });
-        if (!result.revoked) {
-            const status = result.reason === 'session_not_found' ? 404 : 403;
-            return res.status(status).json(result);
-        }
-        // also release slot
-        await registry.releaseSlot(sessionId, 'self_revoke');
-        return res.json(result);
+        return res.status(result.status).json(result.body);
     };
     router.delete('/sessions/:sessionId', authenticate, selfRevokeHandler);
     router.post('/sessions/:sessionId/revoke', authenticate, selfRevokeHandler);
@@ -303,30 +415,27 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         const sessionId = String(req.params.sessionId || body.sessionId || '');
         if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
         const userRole = str(user.role);
-        if (!(userRole === 'admin' || userRole === 'super_admin' || userRole === 'staff')) {
+        if (!userRole || !SUPPORT_REVOKE_ROLES.has(userRole)) {
             return res.status(403).json({ error: 'forbidden' });
         }
         const slot = await registry.getSession(sessionId);
-        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
-        if (slot && userTenantId && slot.tenantId !== userTenantId && userRole !== 'super_admin') {
-            return res.status(403).json({ error: 'tenant_mismatch' });
-        }
-        const result = await registry.revokeSession({
+        if (!slot) return res.status(404).json({ revoked: false, reason: 'session_not_found' });
+        const actorId = str(user.id) ?? '';
+        const actorTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        const authority = await resolveSupportAuthority({ id: actorId, tenantId: actorTenantId }, slot.tenantId);
+        if (!authority.allowed) return res.status(authority.status).json(authority.body);
+        const result = await commitRevocation({
             sessionId,
-            actorId: str(user.id) ?? '',
+            actorId,
             actorType: 'support',
             reason: str(body.reason) ?? 'support_revoke',
             support: true,
+            actorTenantId,
+            platformAuthorized: authority.platformAuthorized,
         });
-        if (!result.revoked) {
-            const status = result.reason === 'session_not_found' ? 404 : 403;
-            return res.status(status).json(result);
-        }
-        await registry.releaseSlot(sessionId, 'support_revoke');
-        if (deps.audit) {
-            await deps.audit({ action: 'playback.session.support_revoke', sessionId, actorId: str(user.id) });
-        }
-        return res.json(result);
+        // The durable store emits the single meaningful revoke event inside its
+        // transaction; no second event is appended here.
+        return res.status(result.status).json(result.body);
     };
     router.post('/sessions/:sessionId/support-revoke', authenticate, supportRevokeHandler);
 
@@ -357,20 +466,28 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         const body = (req.body ?? {}) as Record<string, unknown>;
         const deviceId = String(req.params.deviceId || body.deviceId || '');
         const userRole = str(user.role);
-        const support = userRole === 'admin' || userRole === 'super_admin' || userRole === 'staff';
+        const support = userRole !== null && SUPPORT_REVOKE_ROLES.has(userRole);
+        const actorId = str(user.id) ?? '';
+        const actorTenantId = str(user.tenantId) ?? str(user.tenant_id);
         const device = await registry.getDevice(deviceId);
-        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
-        if (device && userTenantId && device.tenantId !== userTenantId && userRole !== 'super_admin') {
-            return res.status(403).json({ error: 'tenant_mismatch' });
+        let platformAuthorized = false;
+        if (device && support) {
+            // Same decision contract as the session support-revoke: the exact
+            // server-derived tenant, or a live verified platform capability.
+            const authority = await resolveSupportAuthority({ id: actorId, tenantId: actorTenantId }, device.tenantId);
+            if (!authority.allowed) return res.status(authority.status).json(authority.body);
+            platformAuthorized = authority.platformAuthorized;
         }
-        if (device && !support && device.userId !== (str(user.id) ?? '')) {
+        if (device && !support && device.userId !== actorId) {
             return res.status(403).json({ error: 'not_owner' });
         }
         const result = await registry.revokeDevice({
             deviceId,
-            actorId: str(user.id) ?? '',
+            actorId,
             reason: str(body.reason) ?? (support ? 'support_revoke' : 'self_revoke'),
             support,
+            actorTenantId,
+            platformAuthorized,
         });
         if (!result.revoked) {
             const status = result.reason === 'device_not_found' ? 404 : 403;
@@ -481,10 +598,12 @@ const productionDb: PlaybackSessionsDb = {
     },
 };
 
-const productionAudit = async (event: Record<string, unknown>): Promise<void> => {
-    const { execute } = await loadDb();
+const productionAudit = async (event: Record<string, unknown>, tx?: PlaybackStoreDb): Promise<void> => {
+    // Inside a store transaction the audit row must use the transaction's own
+    // connection, so it commits (or rolls back) with the state change.
+    const run = tx ? tx.execute : (await loadDb()).execute;
     const action = str(event.action) ?? 'playback.audit';
-    await recordAudit(execute, {
+    await recordAudit(run, {
         actorUserId: str(event.actorId) ?? str(event.userId),
         tenantId: str(event.tenantId),
         action,
@@ -493,6 +612,18 @@ const productionAudit = async (event: Record<string, unknown>): Promise<void> =>
         newValue: event,
     });
 };
+
+const productionRegistry = createSqlPlaybackSessionStore(productionDb, {
+    audit: productionAudit,
+    // Session-wide entitlement revocation joins the revocation transaction, so
+    // a revoked slot never keeps a usable delivery record.
+    revokeEntitlements: (tx, input) => {
+        const store = createSqlPlaybackEntitlementStore(tx);
+        const revoke = store.revokeBySessionId;
+        if (!revoke) throw new Error('entitlement store cannot revoke by session');
+        return revoke(input);
+    },
+});
 
 export default createPlaybackSessionsRouter({
     db: productionDb,
@@ -503,6 +634,13 @@ export default createPlaybackSessionsRouter({
     audit: productionAudit,
     // Production default: durable, cross-process state in the migration-07
     // tables. Tests keep the in-memory stores.
-    registry: createSqlPlaybackSessionStore(productionDb, { audit: productionAudit }),
+    registry: productionRegistry,
     progress: createSqlPlaybackProgressService(productionDb),
+    // Local close of the media-delivery session after the durable commit.
+    // Loaded lazily like the pool and the auth middleware above, so importing
+    // this module never builds the delivery engine or its timer.
+    killDeliverySession: async (sessionId, reason) => {
+        const { killSession } = await import('../services/video-security');
+        await killSession(sessionId, reason);
+    },
 });

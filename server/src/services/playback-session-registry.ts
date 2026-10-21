@@ -115,6 +115,43 @@ export interface RevokeResult {
     reason: string;
 }
 
+/**
+ * Resource scope a revoke was authorized with. `platformAuthorized` is the
+ * result of a live `security.manage` check; without it a support actor must
+ * carry the exact server-derived tenant of the row being changed. The stores
+ * re-check this against the row they lock, so the decision cannot be widened
+ * by a caller and cannot drift between the route's read and the mutation.
+ */
+export interface RevokeAuthority {
+    actorTenantId?: string | null;
+    platformAuthorized?: boolean;
+}
+
+export interface RevokeSessionInput extends RevokeAuthority {
+    sessionId: string;
+    actorId: string;
+    actorType?: string;
+    reason?: string;
+    support?: boolean;
+}
+
+export interface RevokeDeviceInput extends RevokeAuthority {
+    deviceId: string;
+    actorId: string;
+    reason?: string;
+    support?: boolean;
+}
+
+function supportAuthorityDenial(
+    rowTenantId: string,
+    input: RevokeAuthority,
+): RevokeResult | null {
+    if (input.platformAuthorized) return null;
+    if (!input.actorTenantId) return { revoked: false, reason: 'tenant_required' };
+    if (rowTenantId !== input.actorTenantId) return { revoked: false, reason: 'tenant_mismatch' };
+    return null;
+}
+
 export interface PlaybackSessionRegistryDeps {
     idFactory?: () => string;
     now?: () => Date;
@@ -128,10 +165,10 @@ export interface PlaybackSessionRegistry {
     registerDevice(input: { tenantId: string; userId: string; fingerprint: string; label?: string | null; now?: Date }): PlaybackDevice;
     getDevice(deviceId: string): PlaybackDevice | null;
     listDevices(tenantId: string, userId?: string): PlaybackDevice[];
-    revokeDevice(input: { deviceId: string; actorId: string; reason?: string; support?: boolean }): RevokeResult;
+    revokeDevice(input: RevokeDeviceInput): RevokeResult;
     acquireSlot(input: { tenantId: string; userId: string; deviceId: string; sessionId: string; policy?: PlaybackPolicy | Record<string, unknown> }): Promise<SlotAcquisitionResult>;
     releaseSlot(sessionId: string, reason?: string): boolean;
-    revokeSession(input: { sessionId: string; actorId: string; actorType?: string; reason?: string; support?: boolean }): Promise<RevokeResult>;
+    revokeSession(input: RevokeSessionInput): Promise<RevokeResult>;
     listSessions(tenantId: string, userId?: string, status?: string): PlaybackSlot[];
     activeSlotCount(tenantId: string, userId: string): number;
     isSessionActive(sessionId: string): boolean;
@@ -217,11 +254,15 @@ export function createPlaybackSessionRegistry(deps: PlaybackSessionRegistryDeps 
     const listDevices = (tenantId: string, userId?: string): PlaybackDevice[] =>
         [...devices.values()].filter((d) => d.tenantId === tenantId && (userId === undefined || d.userId === userId));
 
-    const revokeDevice = (input: { deviceId: string; actorId: string; reason?: string; support?: boolean }): RevokeResult => {
+    const revokeDevice = (input: RevokeDeviceInput): RevokeResult => {
         const device = devices.get(input.deviceId);
         if (!device) return { revoked: false, reason: 'device_not_found' };
         if (device.status === 'revoked') return { revoked: true, reason: 'already_revoked' };
         if (!input.support && input.actorId !== device.userId) return { revoked: false, reason: 'not_owner' };
+        if (input.support) {
+            const denial = supportAuthorityDenial(device.tenantId, input);
+            if (denial) return denial;
+        }
         const policy = getPolicy(device.tenantId);
         if (input.support && !policy.supportRevokeAllowed) return { revoked: false, reason: 'support_revoke_not_allowed' };
         if (!input.support && !policy.selfRevokeAllowed) return { revoked: false, reason: 'self_revoke_not_allowed' };
@@ -310,13 +351,19 @@ export function createPlaybackSessionRegistry(deps: PlaybackSessionRegistryDeps 
         return true;
     };
 
-    const revokeSession = async (input: { sessionId: string; actorId: string; actorType?: string; reason?: string; support?: boolean }): Promise<RevokeResult> => {
+    const revokeSession = async (input: RevokeSessionInput): Promise<RevokeResult> => {
         const slot = slots.get(input.sessionId);
         if (!slot) return { revoked: false, reason: 'session_not_found' };
         const policy = getPolicy(slot.tenantId);
         const isOwner = slot.userId === input.actorId;
-        const isSupport = input.support === true || input.actorType === 'support';
+        // Same proof as the SQL store: support intent AND support actor type,
+        // never one caller-supplied flag on its own.
+        const isSupport = input.support === true && input.actorType === 'support';
         if (!isOwner && !isSupport) return { revoked: false, reason: 'not_authorized' };
+        if (isSupport) {
+            const denial = supportAuthorityDenial(slot.tenantId, input);
+            if (denial) return denial;
+        }
         if (isOwner && !isSupport && !policy.selfRevokeAllowed) return { revoked: false, reason: 'self_revoke_not_allowed' };
         if (isSupport && !policy.supportRevokeAllowed) return { revoked: false, reason: 'support_revoke_not_allowed' };
         if (slot.status !== 'active') return { revoked: false, reason: 'already_ended' };
@@ -384,10 +431,10 @@ export interface PlaybackSessionStore {
     registerDevice(input: { tenantId: string; userId: string; fingerprint: string; label?: string | null; now?: Date }): Promise<PlaybackDevice>;
     getDevice(deviceId: string): Promise<PlaybackDevice | null>;
     listDevices(tenantId: string, userId?: string): Promise<PlaybackDevice[]>;
-    revokeDevice(input: { deviceId: string; actorId: string; reason?: string; support?: boolean }): Promise<RevokeResult>;
+    revokeDevice(input: RevokeDeviceInput): Promise<RevokeResult>;
     acquireSlot(input: { tenantId: string; userId: string; deviceId: string; sessionId: string; policy?: PlaybackPolicy | Record<string, unknown> }): Promise<SlotAcquisitionResult>;
     releaseSlot(sessionId: string, reason?: string): Promise<boolean>;
-    revokeSession(input: { sessionId: string; actorId: string; actorType?: string; reason?: string; support?: boolean }): Promise<RevokeResult>;
+    revokeSession(input: RevokeSessionInput): Promise<RevokeResult>;
     listSessions(tenantId: string, userId?: string, status?: string): Promise<PlaybackSlot[]>;
     activeSlotCount(tenantId: string, userId: string): Promise<number>;
     isSessionActive(sessionId: string): Promise<boolean>;
@@ -437,8 +484,23 @@ export interface PlaybackStoreDb {
 export interface PlaybackSessionStoreDeps {
     idFactory?: () => string;
     now?: () => Date;
-    audit?: (event: Record<string, unknown>) => void | Promise<void>;
+    /**
+     * Audit sink. When the SQL store calls it, the transaction handle is
+     * supplied so the audit row commits with the state change it describes
+     * instead of on a separate pooled connection.
+     */
+    audit?: (event: Record<string, unknown>, tx?: PlaybackStoreDb) => void | Promise<void>;
     policyProvider?: (tenantId: string) => PlaybackPolicy | null | undefined;
+    /**
+     * Durable co-commit for a session revocation: runs inside the SAME
+     * transaction as the slot status flip and the audit row, so a revoked
+     * session can never keep a usable delivery entitlement (or vice versa).
+     * A failure here rolls the whole revocation back.
+     */
+    revokeEntitlements?: (
+        tx: PlaybackStoreDb,
+        input: { sessionId: string; reason: string; revokedAtMs: number },
+    ) => Promise<number>;
 }
 
 interface PlaybackDeviceRow {
@@ -639,31 +701,36 @@ export function createSqlPlaybackSessionStore(db: PlaybackStoreDb, deps: Playbac
             return rows.map(mapDeviceRow);
         },
 
-        revokeDevice: async (input) => {
-            const row = await db.queryOne<PlaybackDeviceRow>(
-                `SELECT ${DEVICE_COLUMNS} FROM playback_devices WHERE id = ? LIMIT 1`,
+        revokeDevice: (input) => withTransaction(async (tx) => {
+            const row = await tx.queryOne<PlaybackDeviceRow>(
+                `SELECT ${DEVICE_COLUMNS} FROM playback_devices WHERE id = ? LIMIT 1 FOR UPDATE`,
                 [input.deviceId],
             );
             if (!row) return { revoked: false, reason: 'device_not_found' };
             if (row.status === 'revoked') return { revoked: true, reason: 'already_revoked' };
             if (!input.support && input.actorId !== row.user_id) return { revoked: false, reason: 'not_owner' };
-            const policy = await loadPolicy(db, row.tenant_id);
+            if (input.support) {
+                // Re-checked against the locked row's own tenant, not a claim.
+                const denial = supportAuthorityDenial(row.tenant_id, input);
+                if (denial) return denial;
+            }
+            const policy = await loadPolicy(tx, row.tenant_id);
             if (input.support && !policy.supportRevokeAllowed) return { revoked: false, reason: 'support_revoke_not_allowed' };
             if (!input.support && !policy.selfRevokeAllowed) return { revoked: false, reason: 'self_revoke_not_allowed' };
             const reason = input.reason ?? (input.support ? 'support_revoke' : 'self_revoke');
-            await db.execute(
+            await tx.execute(
                 `UPDATE playback_devices SET status = 'revoked', revoked_at = NOW(), revoked_by = ?, revoke_reason = ?
                  WHERE id = ? AND status = 'active'`,
                 [input.actorId, reason, input.deviceId],
             );
-            await db.execute(
+            await tx.execute(
                 `UPDATE playback_session_slots SET status = 'revoked', ended_at = NOW(), ended_reason = ?
                  WHERE device_id = ? AND status = 'active'`,
                 [reason, input.deviceId],
             );
-            await audit({ action: input.support ? 'playback.device.support_revoke' : 'playback.device.self_revoke', deviceId: row.id, tenantId: row.tenant_id, userId: row.user_id, actorId: input.actorId, reason });
+            await audit({ action: input.support ? 'playback.device.support_revoke' : 'playback.device.self_revoke', deviceId: row.id, tenantId: row.tenant_id, userId: row.user_id, actorId: input.actorId, reason }, tx);
             return { revoked: true, reason: 'ok' };
-        },
+        }),
 
         acquireSlot: (input) => withTransaction(async (tx) => {
             // Serialize every acquisition for this user by locking their device
@@ -741,25 +808,47 @@ export function createSqlPlaybackSessionStore(db: PlaybackStoreDb, deps: Playbac
             return true;
         },
 
-        revokeSession: async (input) => {
-            const row = await db.queryOne<PlaybackSlotRow>(
-                `SELECT ${SLOT_COLUMNS} FROM playback_session_slots WHERE session_id = ? LIMIT 1`,
+        revokeSession: (input) => withTransaction(async (tx) => {
+            // Lock the slot for the duration of the transaction: the status
+            // flip, the entitlement co-commit and the audit row must describe
+            // one committed state, never a half-applied one.
+            const row = await tx.queryOne<PlaybackSlotRow>(
+                `SELECT ${SLOT_COLUMNS} FROM playback_session_slots WHERE session_id = ? LIMIT 1 FOR UPDATE`,
                 [input.sessionId],
             );
             if (!row) return { revoked: false, reason: 'session_not_found' };
-            const policy = await loadPolicy(db, row.tenant_id);
+            const policy = await loadPolicy(tx, row.tenant_id);
             const isOwner = row.user_id === input.actorId;
-            const isSupport = input.support === true || input.actorType === 'support';
+            // Support authority is never inferred from a single caller flag:
+            // the actor must present BOTH the support intent and the support
+            // actor type, and the tenant policy must still allow it.
+            const isSupport = input.support === true && input.actorType === 'support';
             if (!isOwner && !isSupport) return { revoked: false, reason: 'not_authorized' };
+            if (isSupport) {
+                // The locked row is the authority: a foreign or absent actor
+                // tenant denies before any slot, entitlement or audit change.
+                const denial = supportAuthorityDenial(row.tenant_id, input);
+                if (denial) return denial;
+            }
             if (isOwner && !isSupport && !policy.selfRevokeAllowed) return { revoked: false, reason: 'self_revoke_not_allowed' };
             if (isSupport && !policy.supportRevokeAllowed) return { revoked: false, reason: 'support_revoke_not_allowed' };
             if (row.status !== 'active') return { revoked: false, reason: 'already_ended' };
             const reason = input.reason ?? (isOwner && !isSupport ? 'self_revoke' : 'support_revoke');
-            await db.execute(
+            const update = await tx.execute(
                 `UPDATE playback_session_slots SET status = 'revoked', ended_at = NOW(), ended_reason = ?
                  WHERE session_id = ? AND status = 'active'`,
                 [reason, input.sessionId],
             );
+            // A concurrent revoke/release won the race; report it instead of
+            // emitting a second revoke event for a row this call did not change.
+            if (!update.affectedRows) return { revoked: false, reason: 'already_ended' };
+            if (deps.revokeEntitlements) {
+                await deps.revokeEntitlements(tx, {
+                    sessionId: input.sessionId,
+                    reason,
+                    revokedAtMs: nowFn().getTime(),
+                });
+            }
             await audit({
                 action: isOwner && !isSupport ? 'playback.session.self_revoke' : 'playback.session.support_revoke',
                 tenantId: row.tenant_id,
@@ -768,9 +857,9 @@ export function createSqlPlaybackSessionStore(db: PlaybackStoreDb, deps: Playbac
                 actorId: input.actorId,
                 actorType: isOwner && !isSupport ? 'self' : 'support',
                 reason,
-            });
+            }, tx);
             return { revoked: true, reason: 'ok' };
-        },
+        }),
 
         listSessions: async (tenantId, userId, status) => {
             const params: unknown[] = [tenantId];

@@ -11,7 +11,8 @@
  *    a cross-tenant case id is answered with 404 so cases cannot be enumerated.
  *  - Reviewers must be verified moderators for the case tenant; assignment to an
  *    unknown reviewer is rejected.
- *  - Reports are read through an injected source (never mutated here) and the
+ *  - Reports are read through an injected source; their `open` status is NOT
+ *    changed by a decision (closing mapping held pending an explicit contract);
  *    lesson-discussions content is reached through an injected gateway. Only a
  *    bounded, non-PII evidence snapshot (ids + content hash) is stored.
  *  - A decision (and an appeal decision) is refused to the report's reporter
@@ -317,7 +318,7 @@ export function createModerationRouter(deps: ModerationDeps): Router {
             if (!report || !canModerateTenant(scope, report.tenant_id)) {
                 return res.status(404).json({ error: 'Report not found' });
             }
-            const evidence = await deps.content.snapshotEvidence(report.target_type, report.target_id);
+            const evidence = await deps.content.snapshotEvidence(report.tenant_id, report.target_type, report.target_id);
             if (!evidence) return res.status(404).json({ error: 'Report target not found' });
 
             const existing = await baseStore.findCaseByReportId(reportId);
@@ -390,13 +391,22 @@ export function createModerationRouter(deps: ModerationDeps): Router {
                 return res.status(403).json({ error: 'Only the assigned reviewer may reassign this case' });
             }
             const reviewerUserId = validated.value.reviewerUserId ?? scope.userId;
+            if (reviewerUserId === row.reporter_user_id
+                || (row.target_author_user_id && reviewerUserId === row.target_author_user_id)) {
+                const selfConflict = reviewerUserId === scope.userId;
+                return res.status(selfConflict ? 403 : 400).json({
+                    error: 'A reporter or content author cannot be the reviewer of this case',
+                });
+            }
             if (!(await isReviewerCandidate(reviewerUserId, row.tenant_id))) {
                 return res.status(400).json({ error: 'reviewer_user_id is not a moderator of this tenant' });
             }
             const at = now();
             const previous = row.assigned_reviewer_user_id;
             await runAtomic(async (store, tx) => {
-                const affected = await store.assignCase(row.id, row.tenant_id, reviewerUserId, at);
+                const affected = await store.assignCase(
+                    row.id, row.tenant_id, reviewerUserId, at, previous ?? null,
+                );
                 if (affected === 0) throw new ConcurrentModerationError();
                 await deps.recordAudit(tx, {
                     actorUserId: scope.userId,
@@ -416,7 +426,7 @@ export function createModerationRouter(deps: ModerationDeps): Router {
                 assigned_at: at,
             }));
         } catch (error) {
-            if (error instanceof ConcurrentModerationError) {
+            if (error instanceof ConcurrentModerationError || isDuplicateError(error)) {
                 return res.status(409).json({ error: 'Moderation case changed concurrently' });
             }
             console.error('Assign moderation case error:', error);
@@ -458,7 +468,7 @@ export function createModerationRouter(deps: ModerationDeps): Router {
                 decided_at: now(),
             }));
         } catch (error) {
-            if (error instanceof ConcurrentModerationError) {
+            if (error instanceof ConcurrentModerationError || isDuplicateError(error)) {
                 return res.status(409).json({ error: 'Moderation case changed concurrently' });
             }
             console.error('Record moderation decision error:', error);
@@ -565,6 +575,9 @@ export function createModerationRouter(deps: ModerationDeps): Router {
             if (row.decided_by_user_id === scope.userId) {
                 return res.status(403).json({ error: 'The original reviewer cannot review the appeal' });
             }
+            if (row.reporter_user_id === scope.userId) {
+                return res.status(403).json({ error: 'A reviewer cannot review an appeal about a case they reported' });
+            }
             if (appeal.appellant_user_id === scope.userId) {
                 return res.status(403).json({ error: 'An appellant cannot review their own appeal' });
             }
@@ -584,7 +597,7 @@ export function createModerationRouter(deps: ModerationDeps): Router {
                 appeal: { id: appeal.id, status: 'resolved' },
             });
         } catch (error) {
-            if (error instanceof ConcurrentModerationError) {
+            if (error instanceof ConcurrentModerationError || isDuplicateError(error)) {
                 return res.status(409).json({ error: 'Moderation case changed concurrently' });
             }
             console.error('Resolve moderation appeal error:', error);
@@ -617,6 +630,7 @@ export function createModerationRouter(deps: ModerationDeps): Router {
                     reason,
                     actorUserId: scope.userId,
                     now: at,
+                    db: tx,
                 });
                 if (affected === 0) throw new ConcurrentModerationError();
             }
@@ -710,58 +724,66 @@ const productionTransaction = async <T>(fn: (tx: ModerationDataAccess) => Promis
 /**
  * Production content gateway: snapshots the discussion target (bounded, hashed)
  * through the real lesson-discussions store and applies moderation actions
- * through the same store. The lesson-discussions service is consumed, never
- * edited.
+ * through the same store. Evidence reads are tenant-bound so a target from a
+ * different tenant never resolves.
  */
-const productionContent: ModerationContentGateway = {
-    snapshotEvidence: async (targetType, targetId) => {
-        const db = productionDb;
-        if (targetType === 'thread') {
-            const row = await db.queryOne<{ id: string; lecture_id: string; author_user_id: string; status: string; body: string }>(
-                'SELECT id, lecture_id, author_user_id, status, body FROM lesson_discussion_threads WHERE id = ? LIMIT 1',
-                [targetId],
+const productionContent: ModerationContentGateway = createModerationContentGateway(productionDb);
+
+/**
+ * Builds the content gateway over a given data access so tests can exercise the
+ * exact production SQL. Every evidence read is bound to the report tenant: a
+ * target id from another tenant never resolves.
+ */
+export function createModerationContentGateway(defaultDb: ModerationDataAccess): ModerationContentGateway {
+    return {
+        snapshotEvidence: async (tenantId, targetType, targetId) => {
+            if (targetType === 'thread') {
+                const row = await defaultDb.queryOne<{ id: string; lecture_id: string; author_user_id: string; status: string; body: string }>(
+                    'SELECT id, lecture_id, author_user_id, status, body FROM lesson_discussion_threads WHERE id = ? AND tenant_id = ? LIMIT 1',
+                    [targetId, tenantId],
+                );
+                if (!row) return null;
+                return {
+                    target_type: 'thread',
+                    target_id: row.id,
+                    lecture_id: row.lecture_id,
+                    author_user_id: row.author_user_id,
+                    status: row.status,
+                    content_hash: hashContent(row.body),
+                };
+            }
+            const reply = await defaultDb.queryOne<{ id: string; author_user_id: string; status: string; body: string; thread_id: string }>(
+                'SELECT id, author_user_id, status, body, thread_id FROM lesson_discussion_replies WHERE id = ? AND tenant_id = ? LIMIT 1',
+                [targetId, tenantId],
             );
-            if (!row) return null;
+            if (!reply) return null;
+            const thread = await defaultDb.queryOne<{ lecture_id: string }>(
+                'SELECT lecture_id FROM lesson_discussion_threads WHERE id = ? AND tenant_id = ? LIMIT 1',
+                [reply.thread_id, tenantId],
+            );
             return {
-                target_type: 'thread',
-                target_id: row.id,
-                lecture_id: row.lecture_id,
-                author_user_id: row.author_user_id,
-                status: row.status,
-                content_hash: hashContent(row.body),
+                target_type: 'reply',
+                target_id: reply.id,
+                lecture_id: thread?.lecture_id ?? null,
+                author_user_id: reply.author_user_id,
+                status: reply.status,
+                content_hash: hashContent(reply.body),
             };
-        }
-        const reply = await db.queryOne<{ id: string; author_user_id: string; status: string; body: string; thread_id: string }>(
-            'SELECT id, author_user_id, status, body, thread_id FROM lesson_discussion_replies WHERE id = ? LIMIT 1',
-            [targetId],
-        );
-        if (!reply) return null;
-        const thread = await db.queryOne<{ lecture_id: string }>(
-            'SELECT lecture_id FROM lesson_discussion_threads WHERE id = ? LIMIT 1',
-            [reply.thread_id],
-        );
-        return {
-            target_type: 'reply',
-            target_id: reply.id,
-            lecture_id: thread?.lecture_id ?? null,
-            author_user_id: reply.author_user_id,
-            status: reply.status,
-            content_hash: hashContent(reply.body),
-        };
-    },
-    applyAction: async ({ tenantId, targetType, targetId, action, reason, actorUserId, now }) => {
-        const store = createSqlLessonDiscussionsStore(productionDb);
-        if (action === 'none') return 1;
-        if (targetType === 'thread') {
-            if (action === 'hide') return store.setThreadStatus(tenantId, targetId, 'hidden', reason, actorUserId, now);
-            if (action === 'restore') return store.setThreadStatus(tenantId, targetId, 'open', null, actorUserId, now);
-            return store.softDeleteThread(tenantId, targetId, actorUserId, now, new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000));
-        }
-        if (action === 'hide') return store.setReplyStatus(tenantId, targetId, 'hidden', reason, actorUserId, now);
-        if (action === 'restore') return store.setReplyStatus(tenantId, targetId, 'visible', null, actorUserId, now);
-        return store.softDeleteReply(tenantId, targetId, actorUserId, now, new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000));
-    },
-};
+        },
+        applyAction: async ({ tenantId, targetType, targetId, action, reason, actorUserId, now, db }) => {
+            const store = createSqlLessonDiscussionsStore(db ?? defaultDb);
+            if (action === 'none') return 1;
+            if (targetType === 'thread') {
+                if (action === 'hide') return store.setThreadStatus(tenantId, targetId, 'hidden', reason, actorUserId, now);
+                if (action === 'restore') return store.setThreadStatus(tenantId, targetId, 'open', null, actorUserId, now);
+                return store.softDeleteThread(tenantId, targetId, actorUserId, now, new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000));
+            }
+            if (action === 'hide') return store.setReplyStatus(tenantId, targetId, 'hidden', reason, actorUserId, now);
+            if (action === 'restore') return store.setReplyStatus(tenantId, targetId, 'visible', null, actorUserId, now);
+            return store.softDeleteReply(tenantId, targetId, actorUserId, now, new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000));
+        },
+    };
+}
 
 const MODERATION_PERMISSION_KEY = 'moderation.manage';
 

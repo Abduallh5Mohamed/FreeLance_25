@@ -24,6 +24,19 @@ import { AuditRecordInput, recordAudit } from '../security/audit';
 export const USAGE_KINDS = ['watch', 'storage'] as const;
 export type UsageKind = (typeof USAGE_KINDS)[number];
 
+/**
+ * The unit of each family. They are deliberately distinct and must never be
+ * summed into one number: a byte is not a second, and neither is a student.
+ * `storage` events here are absolute provider observations; the cumulative
+ * storage meter lives in `media-usage-reconciliation.ts` and is not this sum.
+ */
+export const USAGE_UNITS = { watch: 'seconds', storage: 'bytes' } as const;
+export type UsageUnit = (typeof USAGE_UNITS)[UsageKind];
+
+export function unitForUsageKind(kind: UsageKind): UsageUnit {
+    return USAGE_UNITS[kind];
+}
+
 export const MAX_WATCH_SECONDS_PER_EVENT = 3600;
 export const MAX_STORAGE_BYTES_PER_EVENT = 10 * 1024 * 1024 * 1024;
 export const DEFAULT_HEARTBEAT_WINDOW_SECONDS = 30;
@@ -198,6 +211,8 @@ export interface NewUsageEventRow extends NormalizedUsageEvent {
 export interface VideoUsageStore {
     /** Returns false when the (tenant, dedupe_key) pair already exists. */
     insertEvent(row: NewUsageEventRow): Promise<boolean>;
+    /** Ordered ascending by (occurred_at, id); used to rebuild cumulative counters. */
+    listEvents(tenantId: string, kind?: UsageKind): Promise<NewUsageEventRow[]>;
     sumWatchSeconds(tenantId: string): Promise<number>;
     sumStorageBytes(tenantId: string): Promise<number>;
     /** Watch seconds recorded for one enrollment at/after `sinceMs`. */
@@ -226,6 +241,13 @@ export interface VideoUsageEventService {
     record(input: UsageEventInput): Promise<RecordUsageResult>;
     watchSeconds(tenantId: string): Promise<number>;
     storageBytes(tenantId: string): Promise<number>;
+    /**
+     * Cumulative watch counter rebuilt from the recorded watch events. The
+     * materialized aggregate and this rebuild must agree; reconciliation uses
+     * the rebuild as authority. Storage observations are NOT rebuilt here —
+     * they are snapshots, not a cumulative counter.
+     */
+    rebuildWatchSeconds(tenantId: string): Promise<number>;
     /** Anti-inflation gate for watch heartbeats, scoped to one enrollment. */
     heartbeatLimit(input: HeartbeatLimitInput): Promise<HeartbeatLimitDecision>;
 }
@@ -272,6 +294,13 @@ export function createVideoUsageEventService(deps: VideoUsageEventDeps): VideoUs
             return safe ? store.sumStorageBytes(safe) : 0;
         },
 
+        rebuildWatchSeconds: async (tenantId) => {
+            const safe = typeof tenantId === 'string' ? tenantId.trim() : '';
+            if (!safe) return 0;
+            const events = await store.listEvents(safe, 'watch');
+            return events.reduce((sum, event) => sum + event.watchSeconds, 0);
+        },
+
         heartbeatLimit: async (input) => {
             const enrollmentId = typeof input.studentEnrollmentId === 'string' ? input.studentEnrollmentId.trim() : '';
             if (!enrollmentId) return { allowed: true };
@@ -308,6 +337,51 @@ export function isDuplicateUsageError(error: unknown): boolean {
 function toMysqlUtc(ms: number): string {
     return new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
 }
+
+function fromMysqlUtc(value: unknown): number {
+    if (value instanceof Date) return value.getTime();
+    if (typeof value === 'string' && value) {
+        const date = new Date(/[TZ]/.test(value) ? value : `${value.replace(' ', 'T')}Z`);
+        if (Number.isFinite(date.getTime())) return date.getTime();
+    }
+    return 0;
+}
+
+interface VideoUsageRow {
+    id: string;
+    tenant_id: string;
+    asset_id: string | null;
+    kind: string;
+    watch_seconds: number | string;
+    storage_bytes: number | string;
+    dedupe_key: string;
+    session_id: string | null;
+    student_enrollment_id: string | null;
+    source: string;
+    occurred_at: unknown;
+}
+
+function mapUsageRow(row: VideoUsageRow): NewUsageEventRow | null {
+    const kind = normalizeUsageKind(row.kind);
+    if (!kind) return null;
+    const source: UsageSource = row.source === 'heartbeat' || row.source === 'provider' ? row.source : 'other';
+    return {
+        id: row.id,
+        tenantId: row.tenant_id,
+        kind,
+        dedupeKey: row.dedupe_key,
+        sessionId: row.session_id,
+        studentEnrollmentId: row.student_enrollment_id,
+        assetId: row.asset_id,
+        watchSeconds: Number(row.watch_seconds ?? 0),
+        storageBytes: Number(row.storage_bytes ?? 0),
+        source,
+        occurredAtMs: fromMysqlUtc(row.occurred_at),
+    };
+}
+
+const USAGE_COLUMNS = `id, tenant_id, asset_id, kind, watch_seconds, storage_bytes, dedupe_key,
+    session_id, student_enrollment_id, source, occurred_at`;
 
 export function createSqlVideoUsageStore(db: VideoUsageDb): VideoUsageStore {
     const sumFor = async (tenantId: string, column: 'watch_seconds' | 'storage_bytes'): Promise<number> => {
@@ -359,6 +433,23 @@ export function createSqlVideoUsageStore(db: VideoUsageDb): VideoUsageStore {
 
         sumWatchSeconds: (tenantId) => sumFor(tenantId, 'watch_seconds'),
         sumStorageBytes: (tenantId) => sumFor(tenantId, 'storage_bytes'),
+
+        listEvents: async (tenantId, kind) => {
+            const rows = kind === undefined
+                ? await db.query<VideoUsageRow>(
+                    `SELECT ${USAGE_COLUMNS} FROM video_usage_events
+                     WHERE tenant_id = ? ORDER BY occurred_at ASC, id ASC`,
+                    [tenantId],
+                )
+                : await db.query<VideoUsageRow>(
+                    `SELECT ${USAGE_COLUMNS} FROM video_usage_events
+                     WHERE tenant_id = ? AND kind = ? ORDER BY occurred_at ASC, id ASC`,
+                    [tenantId, kind],
+                );
+            return rows
+                .map(mapUsageRow)
+                .filter((row): row is NewUsageEventRow => row !== null);
+        },
 
         sumWatchSecondsForEnrollment: (enrollmentId, sinceMs) => forEnrollment('SUM', enrollmentId, sinceMs),
         countWatchEventsForEnrollment: (enrollmentId, sinceMs) => forEnrollment('COUNT', enrollmentId, sinceMs),

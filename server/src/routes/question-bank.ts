@@ -597,6 +597,32 @@ const loadActiveTenantAuthority = async (userId: string, tenantId: string) => {
     return queryOne<{ authority: string }>(TENANT_AUTHORITY_SQL, [tenantId, userId, userId, tenantId]);
 };
 
+/**
+ * Production atomic seam. Every multi-statement write (head row + version row
+ * + audit, and the version-lock read that must serialize against a concurrent
+ * exam publish) is composed through this one pooled connection: a failure
+ * rolls the whole block back, and `SELECT ... FOR UPDATE` holds its lock for
+ * the duration instead of being released at statement end in autocommit.
+ */
+const productionTransaction = async <T>(fn: (tx: QuestionBankDataAccess) => Promise<T>): Promise<T> => {
+    const { withTransaction } = await loadDb();
+    return withTransaction((connection) => fn({
+        query: async <R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R[]> => {
+            const [rows] = await connection.query(sql, params as never);
+            return rows as unknown as R[];
+        },
+        queryOne: async <R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R | null> => {
+            const [rows] = await connection.query(sql, params as never);
+            return (rows as unknown as R[])[0] ?? null;
+        },
+        execute: async (sql: string, params?: unknown[]) => {
+            const [result] = await connection.execute(sql, params as never);
+            const header = result as { insertId?: number; affectedRows?: number };
+            return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+        },
+    }));
+};
+
 export default createQuestionBankRouter({
     db: productionDb,
     authenticate: async (req, res, next) => {
@@ -604,4 +630,5 @@ export default createQuestionBankRouter({
         return authenticateToken(req, res, next);
     },
     loadActiveTenantAuthority,
+    transaction: productionTransaction,
 });

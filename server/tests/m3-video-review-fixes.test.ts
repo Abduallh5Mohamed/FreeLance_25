@@ -22,6 +22,7 @@ import { enforceTenantAuthorityBoundary } from '../src/middleware/tenant-authori
 import type { AuditRecordInput } from '../src/security/audit';
 import {
     createPlaybackEntitlementService,
+    createSqlPlaybackEntitlementStore,
     verifyPlaybackEntitlement,
     type PlaybackEntitlementRecord,
     type PlaybackEntitlementStore,
@@ -538,4 +539,76 @@ test('F9 runtime: with only JWT_SECRET present, playback issuance fails closed',
         if (originalJwt === undefined) delete process.env.JWT_SECRET;
         else process.env.JWT_SECRET = originalJwt;
     }
+});
+
+/* =========================================================================
+ * F3 part 2 — delivery lookup by session id (server-owned record, no client
+ * token). The delivery route reads the same store; these tests pin the
+ * service delegation and the SQL adapter's bounded newest-first read.
+ * ========================================================================= */
+
+test('F3 delivery lookup: the service delegates findBySessionId and normalizes the id', async () => {
+    const harness = makeEntitlementStore();
+    const seen: string[] = [];
+    harness.store.findBySessionId = async (sessionId) => {
+        seen.push(sessionId);
+        return [{
+            jti: 'jti-1',
+            tenantId: 'tenant-a',
+            lessonId: 'lec-1',
+            studentEnrollmentId: 'enr-a',
+            sessionId,
+            issuedAtMs: 1_000,
+            expiresAtMs: 2_000,
+            revokedAtMs: null,
+            revokeReason: null,
+        }];
+    };
+    const service = createPlaybackEntitlementService({
+        store: harness.store,
+        getSecret: () => TEST_SECRET,
+        now: () => 1_000,
+        idFactory: seqId(),
+    });
+
+    const rows = await service.findBySessionId?.(' sess-1 ');
+    assert.equal(rows?.length, 1);
+    assert.deepEqual(seen, ['sess-1']);
+    // A blank/unusable id never reaches the store.
+    assert.deepEqual(await service.findBySessionId?.('   '), []);
+    assert.deepEqual(seen, ['sess-1']);
+});
+
+test('F3 delivery lookup: the SQL adapter reads the session rows newest-first, bounded', async () => {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+        query: async <T = unknown>(sql: string, params?: unknown[]): Promise<T[]> => {
+            calls.push({ sql, params: params ?? [] });
+            return [
+                {
+                    jti: 'jti-2', tenant_id: 'tenant-a', lesson_id: 'lec-1',
+                    student_enrollment_id: 'enr-a', session_id: 'sess-1',
+                    issued_at: '2026-10-18 10:00:00', expires_at: '2026-10-18 10:05:00',
+                    revoked_at: null, revoke_reason: null,
+                },
+                {
+                    jti: 'jti-1', tenant_id: 'tenant-a', lesson_id: 'lec-1',
+                    student_enrollment_id: 'enr-a', session_id: 'sess-1',
+                    issued_at: '2026-10-18 09:59:00', expires_at: '2026-10-18 10:04:00',
+                    revoked_at: '2026-10-18 09:59:30', revoke_reason: 'stopped',
+                },
+            ] as T[];
+        },
+        queryOne: async <T = unknown>(): Promise<T | null> => null,
+        execute: async (): Promise<{ affectedRows?: number }> => ({ affectedRows: 0 }),
+    };
+    const store = createSqlPlaybackEntitlementStore(db);
+    const rows = await store.findBySessionId?.('sess-1');
+
+    assert.equal(rows?.length, 2);
+    assert.equal(rows?.[0].jti, 'jti-2');
+    assert.equal(rows?.[1].revokedAtMs !== null, true);
+    assert.match(calls[0].sql, /WHERE session_id = \?/);
+    assert.match(calls[0].sql, /ORDER BY issued_at DESC LIMIT 100/);
+    assert.deepEqual(calls[0].params, ['sess-1']);
 });

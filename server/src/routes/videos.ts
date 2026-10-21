@@ -1598,6 +1598,43 @@ router.post('/upload/init', authenticateToken, async (req: AuthRequest, res: Res
         // video id; the client never proposes or receives a storage path.
         const objectKey = uploadObjectKey(videoId, extension);
 
+        // The ownership mirror (`videos.lecture_id` / `videos.material_id`) is a
+        // real write-time link, so the referenced parent must be proven from
+        // server rows to belong to the SAME workspace as the video being
+        // created (the video is written with the caller's server-selected
+        // tenant). A foreign or unprovable reference is refused before the row
+        // exists; the body value is never trusted as proof.
+        if (lecture_id) {
+            const targetLecture = await queryOne<{ tenant_id: string | null }>(
+                `SELECT c.tenant_id AS tenant_id
+                 FROM lectures l
+                 INNER JOIN courses c ON c.id = l.course_id
+                 WHERE l.id = ?`,
+                [lecture_id]
+            );
+            if (!targetLecture) {
+                return res.status(404).json({ error: 'Lecture not found' });
+            }
+            if (targetLecture.tenant_id == null || String(targetLecture.tenant_id) !== String(tenantId)) {
+                return res.status(403).json({ error: 'Lecture is outside this workspace' });
+            }
+        }
+        if (material_id) {
+            const targetMaterial = await queryOne<{ tenant_id: string | null }>(
+                `SELECT c.tenant_id AS tenant_id
+                 FROM course_materials cm
+                 INNER JOIN courses c ON c.id = cm.course_id
+                 WHERE cm.id = ?`,
+                [material_id]
+            );
+            if (!targetMaterial) {
+                return res.status(404).json({ error: 'Material not found' });
+            }
+            if (targetMaterial.tenant_id == null || String(targetMaterial.tenant_id) !== String(tenantId)) {
+                return res.status(403).json({ error: 'Material is outside this workspace' });
+            }
+        }
+
         // Create video record in database
         await execute(
             `INSERT INTO videos

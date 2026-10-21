@@ -74,23 +74,44 @@ export const BUCKETS = {
     HLS: process.env.MINIO_BUCKET_HLS || 'videos-hls',
     THUMBNAILS: process.env.MINIO_BUCKET_THUMBNAILS || 'videos-thumbnails',
     PREVIEWS: process.env.MINIO_BUCKET_PREVIEWS || 'video-previews',
-    PAYMENT_PROOFS: process.env.MINIO_BUCKET_PAYMENT_PROOFS || 'payment-proofs'
+    PAYMENT_PROOFS: process.env.MINIO_BUCKET_PAYMENT_PROOFS || 'payment-proofs',
+    /**
+     * Private assignment submissions. Same key parsing as the assignment
+     * object adapter (`services/assignment-storage.ts`), which never names a
+     * different bucket.
+     */
+    ASSIGNMENTS: process.env.MINIO_BUCKET_ASSIGNMENTS || 'assignment-submissions'
 };
 
 // Signed URL expiry (10 minutes default)
 const SIGNED_URL_EXPIRY = parseInt(process.env.SIGNED_URL_EXPIRY || '600');
 
 /**
- * Initialize MinIO buckets if they don't exist
+ * The subset of the MinIO client bucket provisioning depends on. It is
+ * deliberately missing `setBucketPolicy`: a bucket policy is the only way a
+ * MinIO bucket becomes publicly readable/writable, so the provisioning
+ * adapter has no capability to grant one. `makeBucket` creates a private
+ * bucket (no anonymous access) by default.
  */
-export async function initializeBuckets(): Promise<void> {
+export interface BucketProvisioningClient {
+    bucketExists: (bucket: string) => Promise<boolean>;
+    makeBucket: (bucket: string) => Promise<void>;
+}
+
+/**
+ * Ensure every configured bucket exists. Each bucket — video, payment proofs
+ * and the private assignment bucket — is created without any access policy,
+ * so anonymous principals can never read or write one. Provisioning is
+ * idempotent and never mutates an existing bucket.
+ */
+export const createBucketInitializer = (client: BucketProvisioningClient) => async (): Promise<void> => {
     console.log('[MinIO] Initializing buckets...');
 
     for (const bucket of Object.values(BUCKETS)) {
         try {
-            const exists = await minioClient.bucketExists(bucket);
+            const exists = await client.bucketExists(bucket);
             if (!exists) {
-                await minioClient.makeBucket(bucket);
+                await client.makeBucket(bucket);
                 console.log(`[MinIO] Created bucket: ${bucket}`);
             } else {
                 console.log(`[MinIO] Bucket exists: ${bucket}`);
@@ -100,7 +121,14 @@ export async function initializeBuckets(): Promise<void> {
             throw error;
         }
     }
-}
+};
+
+const defaultBucketClient: BucketProvisioningClient = {
+    bucketExists: (bucket) => minioClient.bucketExists(bucket),
+    makeBucket: (bucket) => minioClient.makeBucket(bucket),
+};
+
+export const initializeBuckets = createBucketInitializer(defaultBucketClient);
 
 /**
  * Initialize a multipart upload for large files

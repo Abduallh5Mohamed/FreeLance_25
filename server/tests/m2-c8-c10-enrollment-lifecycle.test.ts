@@ -9,6 +9,7 @@ import { createAuthenticateToken } from '../src/middleware/auth';
 import {
     createEnrollmentLifecycleHandler,
     createStudentWorkspaceSelectHandler,
+    enrollmentWindowIsValid,
     validateEnrollmentLifecycleInput,
 } from '../src/routes/student-enrollment';
 import {
@@ -280,6 +281,79 @@ test('workspace selection requires active enrollment and enforces [start,end) us
         const denied = await invokeRoute(ineligible.router, { method: 'POST', url: '/enr-1/select', token: STUDENT_A });
         assert.equal(denied.statusCode, 404, 'revoked/expired/not-yet-started/end-boundary enrollment is hidden');
     }
+});
+
+/* ---------------------------------------------------------------------------
+ * Effective window after a PARTIAL update.
+ *
+ * The handler merges the request with the stored row (null = "unchanged"), so
+ * a single-field update can still produce an inverted [start,end) window. The
+ * merged window — not just the request payload — must be validated before the
+ * write, otherwise an instructor can silently make an enrollment permanently
+ * ineffective (start >= end never satisfies start<=now AND end>now).
+ * ------------------------------------------------------------------------- */
+
+const STORED_WINDOW = {
+    id: 'enr-1', tenant_id: 'tenant-a', instructor_id: 'instructor-a', approval_status: 'approved',
+    enrollment_status: 'active', term: null,
+    enrollment_start_date: '2026-01-01 00:00:00', enrollment_end_date: '2026-06-30 00:00:00',
+};
+
+test('window: a merged window with start >= end is invalid (unit)', () => {
+    assert.equal(enrollmentWindowIsValid('2026-01-01', '2026-06-30'), true);
+    assert.equal(enrollmentWindowIsValid(null, '2026-06-30'), true);
+    assert.equal(enrollmentWindowIsValid('2026-01-01', null), true);
+    assert.equal(enrollmentWindowIsValid(null, null), true);
+    assert.equal(enrollmentWindowIsValid('2026-07-01', '2026-06-30'), false);
+    assert.equal(enrollmentWindowIsValid('2026-06-30', '2026-06-30'), false);
+    // Stored DATE columns may arrive as Date objects or with a time component.
+    assert.equal(enrollmentWindowIsValid(new Date('2026-07-01T00:00:00Z'), '2026-06-30 00:00:00'), false);
+    assert.equal(enrollmentWindowIsValid('2026-01-01T00:00:00Z', '2026-06-30'), true);
+});
+
+test('lifecycle: a start-date-only update that inverts the stored window is rejected with no write', async () => {
+    const { router, executed } = buildLifecycleHarness({
+        studentRow: STORED_WINDOW,
+        resolveTenant: () => ({ id: 'tenant-a', business_name: 'A', owner_user_id: 'instructor-a' }),
+    });
+    const response = await invokeRoute(router, {
+        method: 'PUT', url: '/enr-1/lifecycle', token: INSTRUCTOR_A,
+        body: { enrollment_start_date: '2026-07-01' },
+    });
+    assert.equal(response.statusCode, 400);
+    assert.match((response.body as { error?: string }).error ?? '', /start before/i);
+    assert.equal(executed.some((e) => isLifecycleUpdate(e.sql)), false, 'no UPDATE may be attempted');
+    assert.equal(auditAction(executed, 'enrollment.lifecycle'), undefined, 'no audit for a rejected merge');
+});
+
+test('lifecycle: an end-date-only update before the stored start is rejected with no write', async () => {
+    const { router, executed } = buildLifecycleHarness({
+        studentRow: STORED_WINDOW,
+        resolveTenant: () => ({ id: 'tenant-a', business_name: 'A', owner_user_id: 'instructor-a' }),
+    });
+    const response = await invokeRoute(router, {
+        method: 'PUT', url: '/enr-1/lifecycle', token: INSTRUCTOR_A,
+        body: { enrollment_end_date: '2025-12-31' },
+    });
+    assert.equal(response.statusCode, 400);
+    assert.equal(executed.some((e) => isLifecycleUpdate(e.sql)), false);
+});
+
+test('lifecycle: a partial update that keeps the merged window valid still applies', async () => {
+    const { router, executed } = buildLifecycleHarness({
+        studentRow: STORED_WINDOW,
+        resolveTenant: () => ({ id: 'tenant-a', business_name: 'A', owner_user_id: 'instructor-a' }),
+    });
+    const response = await invokeRoute(router, {
+        method: 'PUT', url: '/enr-1/lifecycle', token: INSTRUCTOR_A,
+        body: { enrollment_end_date: '2026-12-31' },
+    });
+    assert.equal(response.statusCode, 200);
+    const update = executed.find((e) => isLifecycleUpdate(e.sql));
+    assert.ok(update);
+    // Only the supplied end date is written; the untouched fields stay null so
+    // COALESCE preserves the stored values.
+    assert.deepEqual(update!.params, [null, null, '2026-12-31', 'active', 'enr-1', 'tenant-a', 'instructor-a']);
 });
 
 test('lifecycle: audit failure fails the lifecycle request instead of committing an unaudited mutation', async () => {

@@ -65,6 +65,9 @@ interface LectureRow {
     archived_at?: string | null;
 }
 interface CourseRow { id: string; tenant_id: string | null; instructor_id: string | null; name?: string }
+interface VideoRow {
+    id: string; tenant_id: string | null; course_id: string | null; uploaded_by: string | null;
+}
 
 interface Fixtures {
     users: Record<string, UsersRow>;
@@ -83,6 +86,8 @@ interface Fixtures {
     courses: Record<string, CourseRow>;
     lectures: Record<string, LectureRow>;
     sharedLectures: Record<string, { id: string }>;
+    /** Owned video rows: a `video://` link is only accepted for a real row. */
+    videos: Record<string, VideoRow>;
 }
 
 const makeFixtures = (): Fixtures => ({
@@ -152,6 +157,20 @@ const makeFixtures = (): Fixtures => ({
         },
     },
     sharedLectures: {},
+    // Real, tenant-consistent video rows. Each create fixture below links one
+    // of these; the row's own tenant and its course tenant agree, and its
+    // uploader is the actor (or the actor is the verified platform operator),
+    // so the create path's binding check has something true to verify.
+    videos: {
+        // instructor-a's own upload in tenant-a / course-a.
+        'video-a-create': { id: 'video-a-create', tenant_id: 'tenant-a', course_id: 'course-a', uploaded_by: 'instructor-a' },
+        // teacher-a's own upload in tenant-a / course-a (tenant teacher path).
+        'video-teacher-a': { id: 'video-teacher-a', tenant_id: 'tenant-a', course_id: 'course-a', uploaded_by: 'teacher-a' },
+        // instructor-a's upload in tenant-b / course-b (multi-tenant path).
+        'video-b-create': { id: 'video-b-create', tenant_id: 'tenant-b', course_id: 'course-b', uploaded_by: 'instructor-a' },
+        // tenant-b upload for the verified platform operator's tenant-b course.
+        'video-platform-b': { id: 'video-platform-b', tenant_id: 'tenant-b', course_id: 'course-b', uploaded_by: 'instructor-b' },
+    },
 });
 
 const makeRepository = (f: Fixtures): PrincipalRepository => ({
@@ -228,6 +247,59 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[], throwOnSql?: (sql: s
             return Object.values(f.lectures).filter((l) =>
                 l.is_published === 1 &&
                 (tenantId === undefined || f.courses[l.course_id]?.tenant_id === tenantId));
+        }
+        // --- video:// binding (validateVideoBinding) + playback policy --------
+        if (sql.includes('FROM videos WHERE id = ?')) {
+            const video = f.videos[String(params[0])];
+            return video ? [{ ...video }] : [];
+        }
+        if (sql.includes('SELECT id, role, phone, is_active FROM users WHERE id = ?')) {
+            const row = f.users[String(params[0])];
+            return row ? [{ id: params[0], role: 'instructor', phone: row.phone, is_active: row.is_active }] : [];
+        }
+        if (sql.includes('SELECT instructor_id, tenant_id, is_active FROM courses WHERE id = ?')) {
+            const course = f.courses[String(params[0])];
+            return course ? [{ instructor_id: course.instructor_id, tenant_id: course.tenant_id, is_active: 1 }] : [];
+        }
+        if (sql.includes('SELECT tenant_id FROM courses WHERE id = ?')) {
+            const course = f.courses[String(params[0])];
+            return course ? [{ tenant_id: course.tenant_id }] : [];
+        }
+        // Destination tenant proof on update: read from the lecture row itself.
+        if (sql.includes('SELECT course_id FROM lectures WHERE id = ?')) {
+            const lecture = lectureById(params[0]);
+            return lecture ? [{ course_id: lecture.course_id }] : [];
+        }
+        if (sql.includes('UNION ALL') && sql.includes('tenant_memberships')) {
+            const [tenantId, ownerUserId, memberUserId, memberTenantId] = params as string[];
+            const ownedTenant = f.tenantsByOwner[String(ownerUserId)];
+            if (ownedTenant && ownedTenant.id === tenantId && ownedTenant.status === 'active') {
+                return [{ authority: 'owner' }];
+            }
+            const membership = (f.memberships[String(memberUserId)] ?? [])
+                .find((m) => m.tenant_id === memberTenantId);
+            return membership ? [{ authority: 'instructor' }] : [];
+        }
+        if (sql.includes('candidate_count')) {
+            const videoId = String(params[0]);
+            const parents = Object.values(f.lectures).filter((l) => l.video_url === `video://${videoId}`);
+            if (parents.length === 1) return [{ candidate_count: 1, ...parents[0] }];
+            return [{
+                candidate_count: parents.length,
+                id: null, instructor_id: null, grade_id: null, group_id: null,
+                is_published: 0, archived_at: null,
+            }];
+        }
+        if (sql.includes('FROM lectures WHERE video_url = ?')) {
+            const url = String(params[0]);
+            const exclude = params.length > 1 ? String(params[1]) : null;
+            const hit = Object.values(f.lectures)
+                .filter((l) => l.video_url === url && l.id !== exclude)
+                .sort((a, b) => (a.id < b.id ? -1 : 1))[0];
+            return hit ? [{ id: hit.id }] : [];
+        }
+        if (sql.includes('FROM instructor_shared_lectures') && sql.includes('sl.instructor_id = ?')) {
+            return [];
         }
         if (sql.includes('SELECT id FROM courses WHERE id = ? AND tenant_id = ?')) {
             const course = f.courses[String(params[0])];
@@ -325,7 +397,12 @@ const teachingWriteStandIn: RequestHandler = (req, res, next) => {
     next();
 };
 
-const makeHarness = (options: { fixtures?: Fixtures; throwOnSql?: (sql: string) => boolean } = {}) => {
+const makeHarness = (options: {
+    fixtures?: Fixtures;
+    throwOnSql?: (sql: string) => boolean;
+    /** Verified platform capability, as production resolves it from server rows. */
+    platformCapable?: (userId: string) => boolean;
+} = {}) => {
     const fixtures = options.fixtures ?? makeFixtures();
     const executed: ExecutedStatement[] = [];
     const db = makeDb(fixtures, executed, options.throwOnSql);
@@ -341,6 +418,7 @@ const makeHarness = (options: { fixtures?: Fixtures; throwOnSql?: (sql: string) 
             const lecture = fixtures.lectures[id];
             return lecture ? fixtures.courses[lecture.course_id]?.tenant_id ?? null : null;
         }),
+        hasVerifiedPlatformCapability: async (userId) => options.platformCapable?.(userId) ?? false,
     };
     return { router: createLectureRouter(deps), executed, fixtures };
 };
@@ -590,7 +668,10 @@ test('instructor create with its own course succeeds and binds its own instructo
     const { router, executed } = makeHarness();
     const response = await invokeRoute(router, {
         method: 'POST', url: '/', token: INSTRUCTOR_A,
-        body: validLectureBody({ course_id: 'course-a', grade_id: 'grade-a', group_id: 'group-a' }),
+        body: validLectureBody({
+            course_id: 'course-a', grade_id: 'grade-a', group_id: 'group-a',
+            video_url: 'video://video-a-create',
+        }),
     });
     assert.equal(response.statusCode, 201);
     const body = response.body as LectureRow;
@@ -617,7 +698,11 @@ test('tenant teacher create derives the lecture owner from the verified principa
     const { router, executed } = makeHarness();
     const response = await invokeRoute(router, {
         method: 'POST', url: '/', token: TEACHER_A,
-        body: validLectureBody({ course_id: 'course-a', instructor_id: 'instructor-b' }),
+        // The video must be one this teacher is authorized on: its own upload
+        // in the same tenant-a course as the destination.
+        body: validLectureBody({
+            course_id: 'course-a', instructor_id: 'instructor-b', video_url: 'video://video-teacher-a',
+        }),
     });
     assert.equal(response.statusCode, 201);
     assert.equal((response.body as LectureRow).instructor_id, 'teacher-a');
@@ -639,7 +724,7 @@ test('instructor create with the default course path succeeds (no course_id)', a
     const { router, executed } = makeHarness();
     const response = await invokeRoute(router, {
         method: 'POST', url: '/', token: INSTRUCTOR_A,
-        body: validLectureBody(),
+        body: validLectureBody({ video_url: 'video://video-a-create' }),
     });
     assert.equal(response.statusCode, 201);
     const body = response.body as LectureRow;
@@ -651,10 +736,13 @@ test('instructor create with the default course path succeeds (no course_id)', a
 });
 
 test('platform admin create keeps the pre-existing platform-wide course path', async () => {
-    const { router } = makeHarness();
+    // A VERIFIED platform operator (capability from server rows) may still
+    // create under any course — the binding check only requires that the video
+    // sits in the destination course's tenant.
+    const { router } = makeHarness({ platformCapable: (id) => id === 'platform-admin' });
     const response = await invokeRoute(router, {
         method: 'POST', url: '/', token: PLATFORM_ADMIN,
-        body: validLectureBody({ course_id: 'course-b' }),
+        body: validLectureBody({ course_id: 'course-b', video_url: 'video://video-platform-b' }),
     });
     assert.equal(response.statusCode, 201);
 });
@@ -701,7 +789,11 @@ test('multi-tenant instructor may create under a course in their selected (non-o
     const { router, executed } = makeHarness({ fixtures: makeMultiTenantFixtures() });
     const response = await invokeRoute(router, {
         method: 'POST', url: '/', token: INSTRUCTOR_A_IN_TENANT_B,
-        body: validLectureBody({ course_id: 'course-b', grade_id: 'grade-b', group_id: 'group-b' }),
+        body: validLectureBody({
+            course_id: 'course-b', grade_id: 'grade-b', group_id: 'group-b',
+            // instructor-a's own upload inside the selected tenant-b course.
+            video_url: 'video://video-b-create',
+        }),
     });
     assert.equal(response.statusCode, 201);
     const body = response.body as LectureRow;
@@ -918,11 +1010,16 @@ test('database failure on single-lecture read surfaces 500 without leaking inter
 });
 
 test('database failure on create surfaces 500', async () => {
-    const { router } = makeHarness({ throwOnSql: (sql) => sql.includes('INSERT INTO lectures') });
+    // The failure is injected on `INSERT INTO lectures` — the statement the
+    // create flow actually executes once the binding check has passed for a
+    // real, tenant-consistent video row.
+    const { router, executed } = makeHarness({ throwOnSql: (sql) => sql.includes('INSERT INTO lectures') });
     const response = await invokeRoute(router, {
         method: 'POST', url: '/', token: INSTRUCTOR_A,
-        body: validLectureBody({ course_id: 'course-a' }),
+        body: validLectureBody({ course_id: 'course-a', video_url: 'video://video-a-create' }),
     });
     assert.equal(response.statusCode, 500);
     assert.equal((response.body as { error?: string }).error, 'Failed to create lecture');
+    assert.ok(executed.some((e) => e.sql.includes('FROM videos WHERE id = ?')),
+        'the binding check ran before the injected write failure');
 });

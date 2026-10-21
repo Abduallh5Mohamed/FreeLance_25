@@ -28,7 +28,7 @@
 import { Router, RequestHandler, Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { requireAdminPermission } from '../security/admin-permissions';
-import { SealedAuditRecordInput } from '../services/audit-log';
+import { AuditLogDataAccess, SealedAuditRecordInput } from '../services/audit-log';
 import {
     DEFAULT_STEPUP_MAX_AGE_SECONDS,
     LOCKOUT_SECONDS,
@@ -49,18 +49,33 @@ import {
     sealValue,
 } from '../services/platform-mfa';
 
+/** Everything one mutation needs, bound to a single transaction/connection. */
+export interface PlatformMfaTransaction {
+    store: PlatformMfaStore;
+    recordAudit: (input: SealedAuditRecordInput) => Promise<void>;
+}
+
 export interface PlatformMfaRouteDeps {
     db: PlatformMfaDb;
     authenticate: RequestHandler;
     requirePlatformPermission: (permission: string) => RequestHandler;
-    recordAudit: (input: SealedAuditRecordInput) => Promise<void>;
+    /**
+     * Sealed audit writer. When the router supplies `db` the writer must use
+     * that connection so the entry commits or rolls back with the mutation;
+     * without it the writer may open its own transaction.
+     */
+    recordAudit: (input: SealedAuditRecordInput, db?: PlatformMfaDb) => Promise<void>;
     /** Production default: MFA_SECRET_KEY from the environment. */
     sealKey?: () => Buffer | null;
     now?: () => number;
     rng?: (length: number) => Buffer;
     store?: PlatformMfaStore;
-    /** Optional atomic seam wrapping store mutations + audit (testable). */
-    transaction?: <T>(fn: () => Promise<T>) => Promise<T>;
+    /**
+     * Optional atomic seam: the state mutations and the sealed audit entry run
+     * on one connection so an audit failure rolls the mutation back. Defaults
+     * to `db.transaction` when the router owns the SQL store.
+     */
+    transaction?: <T>(fn: (tx: PlatformMfaTransaction) => Promise<T>) => Promise<T>;
     stepUpMaxAgeSeconds?: number;
 }
 
@@ -73,6 +88,13 @@ const validateAuditReason = (raw: unknown): { ok: true; value: string } | { ok: 
     return { ok: true, value: trimmed };
 };
 
+/** Audit access over one connection; never carries a nested transaction. */
+const auditAccessOf = (db: PlatformMfaDb): AuditLogDataAccess => ({
+    query: db.query,
+    queryOne: db.queryOne,
+    execute: db.execute,
+});
+
 export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
     const router = Router();
     const now = deps.now ?? (() => Date.now());
@@ -80,7 +102,6 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
     const sealKey = deps.sealKey ?? mfaKeyFromEnv;
     const verifier = createMfaVerifier({ store, sealKey, now });
     const requireStepUpGuard = createRequireStepUp({ store, sealKey, now });
-    const runAtomic = deps.transaction ?? (<T>(fn: () => Promise<T>): Promise<T> => fn());
     const writeAudit = deps.recordAudit;
     const readGuard = deps.requirePlatformPermission('platform_mfa.read');
     const manageGuard = deps.requirePlatformPermission('platform_mfa.manage');
@@ -88,6 +109,24 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
         enroll: createMfaRateLimiter({ ...MFA_RATE_LIMITS.enroll, now }),
         verify: createMfaRateLimiter({ ...MFA_RATE_LIMITS.verify, now }),
         disable: createMfaRateLimiter({ ...MFA_RATE_LIMITS.disable, now }),
+    };
+
+    /**
+     * Runs a mutation and its audit entry atomically. An explicit seam wins;
+     * otherwise a router that owns the SQL store uses `db.transaction` so the
+     * production path is transactional by default. Injected stores (tests)
+     * fall back to running the callback directly.
+     */
+    const runAtomic = <T>(fn: (tx: PlatformMfaTransaction) => Promise<T>): Promise<T> => {
+        if (deps.transaction) return deps.transaction(fn);
+        const dbTransaction = deps.db.transaction;
+        if (!deps.store && dbTransaction) {
+            return dbTransaction((txDb) => fn({
+                store: createSqlPlatformMfaStore(txDb),
+                recordAudit: (input) => writeAudit(input, txDb),
+            }));
+        }
+        return fn({ store, recordAudit: writeAudit });
     };
 
     router.use(deps.authenticate);
@@ -147,9 +186,12 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
             }
             const secret = generateTotpSecret(deps.rng);
             const sealed = sealValue(secret, key);
-            await runAtomic(async () => {
-                await store.upsertPendingSecret(userId, sealed);
-                await writeAudit({
+            const applied = await runAtomic(async (tx) => {
+                // Conditional on the row still not being active (row-locked in
+                // the SQL store), so a concurrent activation cannot be rotated.
+                const written = await tx.store.upsertPendingSecret(userId, sealed);
+                if (written === 0) return false;
+                await tx.recordAudit({
                     actorUserId: userId,
                     tenantId: null,
                     action: 'platform_mfa.enrolled',
@@ -158,7 +200,9 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
                     newValue: { status: 'pending' },
                     reason: reason.value,
                 });
+                return true;
             });
+            if (!applied) return res.status(409).json({ error: 'MFA is already active for this user' });
             res.json({
                 secret,
                 otpauth_uri: otpauthUri(userId, secret),
@@ -188,21 +232,55 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
             if (!totpCode && !recoveryCode) {
                 return res.status(400).json({ error: 'A totp code or a recovery code is required' });
             }
-            const outcome = recoveryCode
-                ? await verifier.verifyRecoveryCode(userId, recoveryCode)
-                : await verifier.verifyCode(userId, totpCode);
-            if (!outcome.ok) {
-                if (outcome.reason === 'bad_code' || outcome.reason === 'replayed') {
-                    await store.recordFailure(userId, LOCKOUT_SECONDS, now());
+            // Verification, step/recovery-code consumption, activation, the
+            // failure counter and the audit entry form one unit: a failed
+            // audit rolls the consumption back instead of burning the code.
+            const outcome = await runAtomic(async (tx) => {
+                const txVerifier = createMfaVerifier({ store: tx.store, sealKey, now });
+                const verdict = recoveryCode
+                    ? await txVerifier.verifyRecoveryCode(userId, recoveryCode)
+                    : await txVerifier.verifyCode(userId, totpCode);
+                if (!verdict.ok) {
+                    if (verdict.reason === 'bad_code' || verdict.reason === 'replayed' || verdict.reason === 'stale_enrollment') {
+                        await tx.store.recordFailure(userId, LOCKOUT_SECONDS, now());
+                    }
+                    return { verdict, recoveryCodes: null, activated: false };
                 }
-                switch (outcome.reason) {
+                const row = await tx.store.findRow(userId);
+                let recoveryCodes: string[] | null = null;
+                let activated = false;
+                if (row && row.status === 'pending') {
+                    // Only the request that wins pending -> active may issue the
+                    // recovery-code batch; a concurrent verify of another valid
+                    // step still succeeds but never discloses a second batch.
+                    const won = await tx.store.activate(userId, verdict.epoch);
+                    if (won > 0) {
+                        activated = true;
+                        recoveryCodes = generateRecoveryCodes(undefined, deps.rng);
+                        await tx.store.saveRecoveryCodeHashes(userId, recoveryCodes.map(recoveryCodeHash));
+                    }
+                }
+                await tx.store.clearFailures(userId);
+                await tx.recordAudit({
+                    actorUserId: userId,
+                    tenantId: null,
+                    action: activated ? 'platform_mfa.activated' : 'platform_mfa.verified',
+                    resourceType: 'platform_mfa_secret',
+                    resourceId: userId,
+                    newValue: activated ? { status: 'active' } : { method: recoveryCode ? 'recovery_code' : 'totp' },
+                    reason: activated ? 'Platform MFA activated with a verified TOTP code' : 'Platform MFA verified',
+                });
+                return { verdict, recoveryCodes, activated };
+            });
+            if (!outcome.verdict.ok) {
+                switch (outcome.verdict.reason) {
                     case 'not_enrolled':
                         return res.status(404).json({ error: 'MFA is not enrolled for this user' });
                     case 'locked':
                         return res.status(429).json({
                             error: 'MFA verification is locked',
                             code: 'MFA_LOCKED',
-                            locked_until: outcome.lockedUntil ?? null,
+                            locked_until: outcome.verdict.lockedUntil ?? null,
                         });
                     case 'key_unavailable':
                         return res.status(503).json({ error: 'MFA encryption is unavailable; verification denied' });
@@ -212,32 +290,16 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
                         return res.status(400).json({ error: 'Invalid or expired MFA code', code: 'MFA_CODE_INVALID' });
                 }
             }
-            const row = await store.findRow(userId);
-            const activating = Boolean(row && row.status === 'pending');
-            let recoveryCodes: string[] | null = null;
-            await runAtomic(async () => {
-                if (activating) {
-                    await store.activate(userId);
-                    recoveryCodes = generateRecoveryCodes(undefined, deps.rng);
-                    await store.saveRecoveryCodeHashes(userId, recoveryCodes.map(recoveryCodeHash));
-                }
-                await store.clearFailures(userId);
-                await writeAudit({
-                    actorUserId: userId,
-                    tenantId: null,
-                    action: activating ? 'platform_mfa.activated' : 'platform_mfa.verified',
-                    resourceType: 'platform_mfa_secret',
-                    resourceId: userId,
-                    newValue: activating ? { status: 'active' } : { method: recoveryCode ? 'recovery_code' : 'totp' },
-                    reason: activating ? 'Platform MFA activated with a verified TOTP code' : 'Platform MFA verified',
-                });
-            });
-            const stepUpToken = await verifier.issueStepUpToken(userId);
+            const stepUpToken = await verifier.issueStepUpToken(userId, outcome.verdict.epoch, req.user?.sessionId);
             res.json({
                 step_up_token: stepUpToken,
-                ...(recoveryCodes ? { recovery_codes: recoveryCodes } : {}),
+                ...(outcome.recoveryCodes ? { recovery_codes: outcome.recoveryCodes } : {}),
             });
         } catch (error) {
+            if (error instanceof MfaKeyUnavailableError) {
+                res.status(503).json({ error: 'MFA encryption is unavailable; verification denied' });
+                return;
+            }
             console.error('MFA verification failed:', error);
             res.status(500).json({ error: 'Failed to verify platform MFA' });
         }
@@ -261,9 +323,10 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
                 if (!existing || (existing.status !== 'active' && existing.status !== 'pending')) {
                     return res.status(404).json({ error: 'MFA is not enrolled for this user' });
                 }
-                await runAtomic(async () => {
-                    await store.disable(userId);
-                    await writeAudit({
+                const disabled = await runAtomic(async (tx) => {
+                    const affected = await tx.store.disable(userId);
+                    if (affected === 0) return false;
+                    await tx.recordAudit({
                         actorUserId: userId,
                         tenantId: null,
                         action: 'platform_mfa.disabled',
@@ -273,7 +336,9 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
                         newValue: { status: 'disabled' },
                         reason: reason.value,
                     });
+                    return true;
                 });
+                if (!disabled) return res.status(404).json({ error: 'MFA is not enrolled for this user' });
                 res.json({ disabled: true });
             } catch (error) {
                 console.error('MFA disable failed:', error);
@@ -308,6 +373,29 @@ const productionDb: PlatformMfaDb = {
         const { execute } = await loadDb();
         return execute(sql, params as never);
     },
+    // One pooled connection per mutation: the MFA row change, the recovery-code
+    // rewrite and the sealed audit append commit or roll back together.
+    transaction: async <T>(fn: (tx: PlatformMfaDb) => Promise<T>): Promise<T> => {
+        const { withTransaction } = await loadDb();
+        return withTransaction(async (connection) => {
+            const tx: PlatformMfaDb = {
+                query: async <R = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+                    const [rows] = await connection.query(sql, params as never);
+                    return rows as R[];
+                },
+                queryOne: async <R = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+                    const [rows] = await connection.query(sql, params as never);
+                    return (rows as R[])[0] ?? null;
+                },
+                execute: async (sql: string, params?: unknown[]) => {
+                    const [result] = await connection.execute(sql, params as never);
+                    const header = result as { insertId?: number; affectedRows?: number };
+                    return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+                },
+            };
+            return fn(tx);
+        });
+    },
 };
 
 export default createPlatformMfaRouter({
@@ -317,10 +405,16 @@ export default createPlatformMfaRouter({
         return authenticateToken(req, res, next);
     },
     requirePlatformPermission: (permission) => requireAdminPermission(permission),
-    recordAudit: async (input) => {
+    recordAudit: async (input, db) => {
         const { recordSealedAuditEvent } = await import('../services/audit-log');
-        // The sealed append runs on one transactional connection so the
-        // audit-chain head lock serializes concurrent appends.
+        if (db) {
+            // Inside the MFA transaction: the audit append shares the caller's
+            // connection, so a failed append rolls the MFA change back.
+            await recordSealedAuditEvent(auditAccessOf(db), input);
+            return;
+        }
+        // Standalone append: one transactional connection so the audit-chain
+        // head lock serializes concurrent appends.
         const { withTransaction } = await loadDb();
         await withTransaction(async (connection) => {
             await recordSealedAuditEvent({

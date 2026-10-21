@@ -1,0 +1,11 @@
+أنت مشرف تنفيذ WorkBuddy على نصف استكمال السيرفر بإشراف Codex. المالك وافق على استكمال حصتك دون انتظار «كمل» بعد كل مهمة. اقرأ docs/streams/server/SERVER-REMAINING-INVENTORY-20261022.md وREMAINING-TWO-LANE-ALLOCATION-20261022.md وتعليمات الجسر وdocs17/18/19/20.
+
+حصتك: C1-R/C2 الامتحانات والواجبات وgradebook؛ C3 الجداول والحضور؛ W4scan/cleanup؛ W6قياس usage؛ W9الإشعارات؛ W10live؛ W8الأمان/MFA وI3DST/audit/moderation؛ بواقيsearch/export/video/observability والأدلة التشغيلية. لا تعِد المهام المقبولة، وحافظ على2873baseline وفصل الموروث عن الجديد.
+
+ابدأ specs تنفيذ لكل حصتك، taskId وallowedPaths محددة بالاسم واختبارات وتقرير وتبعيات وقبول وحدود سياسة وschema/wiring requests. أرسلها لـCodex لتسجيل scopeHash موافقة المالك وتثبيت عدم التقاطع قبل كتابة الملفات المنقولة حديثًا. هذه الوثيقة لا تنشئ claims ولا تعني READY؛ لا self-approval ولا تجاوز gate. بعد التسجيل شغّل مستقلين للمهام READY حسب السعة، كل عامل ownworkerId/claim/token. انتقل تلقائيًا للتالية المعتمدة المستقلة مع تسليم أدلتها؛ لا تنتظر أمرًا روتينيًا من المالك، ولا تتجاوز dependency قبول المشرف.
+
+رتب التخزين والgrading على assignments بالتتابع داخليًا. attendance/live كذلك. source schema ومصانع integration/index/manifest يملكها Claude: قدم له contract/طلبًا، لا تكتبها. billing/enrollment/parent/progress-publication ملك Claude؛ hooks بطلب منسق. auth/db/config/root ملفات محجوزة للمشرف، لا تعديل ضمني.
+
+ابدأ أعمال مستقلة قابلة للقياس: scan durable contract/cleanup، notification producers/startstop plan، grading idempotency، MFA/DST، ثم metering/live وفق schema. لا اختراع جداول في adapter أو claim إنتاجي لمزوّد غير موصول. كل assertion عدائي يحفظ، ولا mutable-key delete fallback. test/source hashes، transaction rollback، tenant/teacher/branch denial، redaction، bounded retries وحالاتunknown outcome.
+
+لا DB/services/listener/Docker أو تنفيذ migrations أو provider/secrets/purge/Git mutation/deploy، ولا ملفات الواجهة src/public. لا تعديل index/manifest أو عقد Claude. rate limit/transportfailure يوقف العامل المتأثر بدليل، لا retryloop أو حساب/موديل بديل أو TLS bypass، ولا إعادة إطلاق على claim حي. قرار أو مزود يعطل بندًا: سجله وتابع المهام المستقلة المعتمدة. إذا لم توجد READY ارفع النقص مرة واحدة ولا polling متكرر. reported ليسaccepted. full regression بعد توقف الخطين فقط؛ سلّم completed/held/unproven وبصمات وتأكيد التوقف.

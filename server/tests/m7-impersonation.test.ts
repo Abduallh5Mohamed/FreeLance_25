@@ -14,6 +14,7 @@ import {
     MIN_IMPERSONATION_REASON_CHARS,
     type ImpersonationSessionRow,
     type ImpersonationStore,
+    type ImpersonationTransactionRunner,
     classifyProtectedAction,
     checkImpersonationSignature,
     createImpersonationService,
@@ -23,6 +24,7 @@ import {
     signImpersonationToken,
     validateStartInput,
 } from '../src/services/impersonation';
+import type { SealedAuditRecordInput } from '../src/services/audit-log';
 import { createImpersonationRouter } from '../src/routes/impersonation';
 import type { PlatformTargetRow } from '../src/routes/impersonation';
 import { makeRepository, TEST_SECRET, tokenFor } from './helpers/m2-harness';
@@ -121,6 +123,10 @@ const makeStore = (): StoreFixture => {
         store: {
             insertSession: async (row) => { rows.set(String(row.id), { ...row, requested_seconds: Number(row.requested_seconds ?? 0), expires_at: row.expires_at ? String(row.expires_at) : null }); },
             findSession: async (sessionId) => (rows.has(sessionId) ? clone(rows.get(sessionId) as ImpersonationSessionRow) : null),
+            lockSession: async (sessionId) => (rows.has(sessionId) ? clone(rows.get(sessionId) as ImpersonationSessionRow) : null),
+            // Every fixture target is a verified users row: the lock is a
+            // no-op here because this file's tests run sequentially.
+            lockTargetUser: async (targetUserId) => ({ id: String(targetUserId) }),
             transitionToActive: async (sessionId, approverId, expiresAt) => {
                 const row = rows.get(sessionId);
                 if (!row || row.status !== 'pending_approval' || String(row.started_by) === String(approverId)) return 0;
@@ -145,6 +151,29 @@ const makeStore = (): StoreFixture => {
     };
 };
 
+/**
+ * Hermetic stand-in for the production one-transaction seam: the whole store
+ * plus the sealed audit, with a throw restoring the row snapshot (equivalent
+ * to ROLLBACK), so a mutation that is not inside the transaction is
+ * observably not rolled back.
+ */
+const makeTransaction = (
+    rows: StoreFixture['rows'],
+    store: ImpersonationStore,
+    recordAudit: (input: SealedAuditRecordInput) => Promise<void>,
+): ImpersonationTransactionRunner => async (work) => {
+    const saved = new Map([...rows.entries()].map(([id, row]) => [id, { ...row }]));
+    try {
+        return await work({ ...store, recordAudit });
+    } catch (error) {
+        rows.clear();
+        for (const [id, row] of saved) rows.set(id, row);
+        throw error;
+    }
+};
+
+const noAudit = async (): Promise<void> => undefined;
+
 const makeSession = (overrides: Partial<ImpersonationSessionRow> = {}): ImpersonationSessionRow & { requested_seconds: number } => ({
     id: SESSION_ID,
     started_by: 'support-a',
@@ -163,7 +192,7 @@ const makeSession = (overrides: Partial<ImpersonationSessionRow> = {}): Imperson
 
 test('service approve: self-approval is denied and racing transitions cannot revive', () => {
     const fixture = makeStore();
-    const service = createImpersonationService({ store: fixture.store, now: () => new Date(FIXED_NOW), idFactory: () => SESSION_ID });
+    const service = createImpersonationService({ store: fixture.store, now: () => new Date(FIXED_NOW), idFactory: () => SESSION_ID, transaction: makeTransaction(fixture.rows, fixture.store, noAudit) });
     return (async () => {
         await service.start('support-a', { targetUserId: 'target-1', tenantId: 'tenant-a', reason: 'x'.repeat(MIN_IMPERSONATION_REASON_CHARS), scope: 'read', durationSeconds: DEFAULT_IMPERSONATION_SECONDS });
         const self = await service.approve(SESSION_ID, 'support-a');
@@ -179,7 +208,7 @@ test('service approve: self-approval is denied and racing transitions cannot rev
 
 test('service approve: the expiry is bounded to 30 minutes and clamps short requests', async () => {
     const fixture = makeStore();
-    const service = createImpersonationService({ store: fixture.store, now: () => new Date(FIXED_NOW), idFactory: () => SESSION_ID });
+    const service = createImpersonationService({ store: fixture.store, now: () => new Date(FIXED_NOW), idFactory: () => SESSION_ID, transaction: makeTransaction(fixture.rows, fixture.store, noAudit) });
     const started = await service.start('support-a', {
         targetUserId: 'target-1', tenantId: 'tenant-a',
         reason: 'x'.repeat(MIN_IMPERSONATION_REASON_CHARS),
@@ -204,7 +233,7 @@ test('service approve: the expiry is bounded to 30 minutes and clamps short requ
 test('service revoke: only active/pending sessions can be revoked once', async () => {
     const fixture = makeStore();
     fixture.rows.set(SESSION_ID, makeSession({ status: 'active', approved_by: 'support-b' }));
-    const service = createImpersonationService({ store: fixture.store, now: () => new Date(FIXED_NOW) });
+    const service = createImpersonationService({ store: fixture.store, now: () => new Date(FIXED_NOW), transaction: makeTransaction(fixture.rows, fixture.store, noAudit) });
     const revoked = await service.revoke(SESSION_ID, 'support-a');
     assert.equal(revoked.ok, true);
     const reRevoked = await service.revoke(SESSION_ID, 'support-a');
@@ -249,6 +278,10 @@ const buildRouter = (rows: StoreFixture['rows'], fixtureStore: ImpersonationStor
     const audits: AuditEntry[] = [];
     const state = { failAudit: false };
     const notifications: Array<{ kind: string; sessionId: string; targetUserId: string | null }> = [];
+    const pushAudit = async (input: SealedAuditRecordInput): Promise<void> => {
+        if (state.failAudit) throw new Error('audit sink down');
+        audits.push({ action: input.action, actorUserId: input.actorUserId, tenantId: input.tenantId, resourceId: input.resourceId, reason: input.reason ?? null });
+    };
     const router = createImpersonationRouter({
         db: {
             query: async (): Promise<unknown[]> => [],
@@ -273,10 +306,7 @@ const buildRouter = (rows: StoreFixture['rows'], fixtureStore: ImpersonationStor
             if (allowed) return next();
             res.status(403).json({ error: 'Forbidden' });
         },
-        recordAudit: async (input) => {
-            if (state.failAudit) throw new Error('audit sink down');
-            audits.push({ action: input.action, actorUserId: input.actorUserId, tenantId: input.tenantId, resourceId: input.resourceId, reason: input.reason ?? null });
-        },
+        transaction: makeTransaction(rows, fixtureStore, pushAudit),
         resolveTargetUser: options.target ?? (async (targetUserId) =>
             ({ userId: targetUserId, tenantId: 'tenant-a', role: 'instructor', isActive: true })),
         isImpersonationManager: options.manager ?? (async (userId) => userId === 'support-b'),
@@ -398,6 +428,9 @@ test('impersonation start: audit failure aborts with 500', async () => {
     harness.state.failAudit = true;
     const response = await invoke(harness.router, { method: 'POST', url: '/start', token: ADMIN_A, body: START_BODY });
     assert.equal(response.statusCode, 500);
+    // The insert rolled back with the failed audit: no phantom pending session.
+    assert.equal(fixture.rows.size, 0);
+    assert.equal(harness.audits.length, 0);
 });
 
 // --- approve ---
