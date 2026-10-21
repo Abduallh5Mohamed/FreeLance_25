@@ -1,0 +1,1779 @@
+{
+  "baseline": "680a44c",
+  "createdAt": "2026-10-21T22:45:48.862Z",
+  "supersedes": "REMAINING-TWO-LANE-ALLOCATION-20261022.md",
+  "rule": "Listed files only; new files require explicit registration; tests follow their listed owner; unlisted root/config/shared docs reserved to Codex.",
+  "files": {
+    "index.html": {
+      "owner": "codex"
+    },
+    "public/favicon.ico": {
+      "owner": "codex"
+    },
+    "public/og-image.png": {
+      "owner": "codex"
+    },
+    "public/placeholder.svg": {
+      "owner": "codex"
+    },
+    "public/robots.txt": {
+      "owner": "codex"
+    },
+    "public/security-sw.js": {
+      "owner": "codex"
+    },
+    "public/site.webmanifest": {
+      "owner": "codex"
+    },
+    "public/sitemap.xml": {
+      "owner": "codex"
+    },
+    "public/tabweb-academy-logo.png": {
+      "owner": "codex"
+    },
+    "server/migrations/20260920_00_legacy_baseline.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260920_01_expand_user_roles.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260920_03_guardian_phone_students.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260920_05_instructor_system.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260920_07_exam_attempts.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260920_08_exam_question_images.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260920_09_staff_auth_columns.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260920_10_premium_lecture_tables.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260920_11_video_system.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260921_saas_foundation.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260921_support_tickets.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260922_00_tenant_media_and_subscription_requests.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260923_admin_scope_hardening.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260923_platform_subscription_duration_and_grace.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260924_billing_notifications.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260924_instructor_topups_auto_renewal.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260924_instructor_video_exchange.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260925_01_student_tenant_enrollment.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260925_02_student_enrollment_backfill_review.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260925_03_free_video_security.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260925_04_web_multidrm.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260925_05_web_multidrm_preview.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260926_student_auth_revocation.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260926_video_deterrence_controls.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260927_course_tenant_ownership_and_instructor_subject.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260928_runtime_schema_replacement.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260929_payment_requests_tenant.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20260930_notification_preferences.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261017_01_grades_tenant_scope.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261017_02_missing_core_tables.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261017_03_missing_columns_enums.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261017_04_tenant_columns_backfill.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261017_05_staff_token_version.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261017_06_branch_membership.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261017_07_identity_otp.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261017_08_resource_branch_scope.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_01_m2_identity_catalog_enrollment.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_02_otp_challenge_submission.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_03_content_release_progress.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_04_tenant_branding_domains.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_05_announcements_import.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_06_video_assets_entitlements.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_07_playback_sessions_progress.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_08_question_bank_assignments.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_09_exam_snapshots_grading.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_10_gradebook_certificates.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_11_schedules_attendance_records.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_13_parent_links.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_14_notification_outbox_consent.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_15_playback_entitlement_indexes.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_16_lesson_discussions.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_17_feature_flags_audit_chain.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_18_moderation.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_19_platform_mfa_impersonation.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_21_unsubscribe_token_use.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_22_audit_chain_sequence.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261018_23_search_export.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261021_01_exam_manual_publication.sql": {
+      "owner": "claude"
+    },
+    "server/migrations/20261021_02_internal_financial_ledger.sql": {
+      "owner": "claude"
+    },
+    "server/src/db.ts": {
+      "owner": "codex"
+    },
+    "server/src/index.ts": {
+      "owner": "codex"
+    },
+    "server/src/middleware/auth.ts": {
+      "owner": "codex"
+    },
+    "server/src/middleware/impersonation-context.ts": {
+      "owner": "codex"
+    },
+    "server/src/middleware/rate-limit.ts": {
+      "owner": "codex"
+    },
+    "server/src/middleware/request-context.ts": {
+      "owner": "codex"
+    },
+    "server/src/middleware/student-workspace-boundary.ts": {
+      "owner": "codex"
+    },
+    "server/src/middleware/teaching-access.ts": {
+      "owner": "codex"
+    },
+    "server/src/middleware/tenant-authority-boundary.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/admin-approvals.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/admin-dashboard.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/admin-insights.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/admin-members.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/admin-work-items.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/ai-chat.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/announcements.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/assignments.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/routes/attendance-records.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/routes/attendance-reports.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/routes/attendance.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/routes/audit-logs.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/auth.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/branches.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/certificates.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/content-access.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/courses.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/exam-manual-grading.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/routes/exam-results.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/routes/exam-versions.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/routes/exams.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/expenses.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/fees.ts": {
+      "owner": "claude"
+    },
+    "server/src/routes/files.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/gradebook.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/routes/grades.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/groups.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/impersonation.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/imports.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/instructor-video-requests.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/routes/instructor-wallet.ts": {
+      "owner": "claude"
+    },
+    "server/src/routes/instructors.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/lectures.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/routes/lesson-discussions.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/manual-grading.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/routes/materials.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/routes/meetings.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/routes/messages.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/moderation.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/notification-consent.ts": {
+      "owner": "workbuddy",
+      "group": "notifications"
+    },
+    "server/src/routes/notifications.ts": {
+      "owner": "workbuddy",
+      "group": "notifications"
+    },
+    "server/src/routes/ops.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/parent-links.ts": {
+      "owner": "claude"
+    },
+    "server/src/routes/parent-views.ts": {
+      "owner": "claude"
+    },
+    "server/src/routes/payment-requests.ts": {
+      "owner": "claude"
+    },
+    "server/src/routes/platform-flags.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/platform-mfa.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/platform-tenants.ts": {
+      "owner": "claude"
+    },
+    "server/src/routes/playback-sessions.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/routes/premium-lectures.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/routes/progress-reports.ts": {
+      "owner": "claude"
+    },
+    "server/src/routes/public-identity.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/question-bank.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/routes/registration-requests.ts": {
+      "owner": "claude"
+    },
+    "server/src/routes/revenues.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/schedules.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/routes/search.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/routes/secure-video.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/routes/staff.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/student-enrollment.ts": {
+      "owner": "claude"
+    },
+    "server/src/routes/student-import.ts": {
+      "owner": "claude"
+    },
+    "server/src/routes/students.ts": {
+      "owner": "claude"
+    },
+    "server/src/routes/subscription-plans.ts": {
+      "owner": "claude"
+    },
+    "server/src/routes/subscription-requests.ts": {
+      "owner": "claude"
+    },
+    "server/src/routes/subscriptions.ts": {
+      "owner": "claude"
+    },
+    "server/src/routes/support-tickets.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/tenant-branding.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/tenant-domains.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/tenant-export.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/routes/tenant-invitations.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/tenant-self.ts": {
+      "owner": "codex"
+    },
+    "server/src/routes/video-assets.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/routes/videos.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/security/admin-permissions.ts": {
+      "owner": "codex"
+    },
+    "server/src/security/audit.ts": {
+      "owner": "codex"
+    },
+    "server/src/security/branch-access.ts": {
+      "owner": "codex"
+    },
+    "server/src/security/identity-otp.ts": {
+      "owner": "codex"
+    },
+    "server/src/security/identity-scope.ts": {
+      "owner": "codex"
+    },
+    "server/src/security/message-access-policy.ts": {
+      "owner": "codex"
+    },
+    "server/src/security/phone.ts": {
+      "owner": "codex"
+    },
+    "server/src/security/principal-repository.ts": {
+      "owner": "codex"
+    },
+    "server/src/security/registration-policy.ts": {
+      "owner": "codex"
+    },
+    "server/src/security/resource-branch.ts": {
+      "owner": "codex"
+    },
+    "server/src/security/suspension-predicate.ts": {
+      "owner": "codex"
+    },
+    "server/src/security/video-access-policy.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/announcements.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/assignment-scan-worker.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/services/assignment-storage.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/services/assignments.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/services/attendance-records.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/services/attendance-reports.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/services/audit-log.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/billing-basis.ts": {
+      "owner": "claude"
+    },
+    "server/src/services/billing-ledger-sql.ts": {
+      "owner": "claude"
+    },
+    "server/src/services/billing-ledger.ts": {
+      "owner": "claude"
+    },
+    "server/src/services/billing-periods.ts": {
+      "owner": "claude"
+    },
+    "server/src/services/billing-pricing.ts": {
+      "owner": "claude"
+    },
+    "server/src/services/billing-reservations.ts": {
+      "owner": "claude"
+    },
+    "server/src/services/certificates.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/content-release.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/delivery-channels.ts": {
+      "owner": "workbuddy",
+      "group": "notifications"
+    },
+    "server/src/services/domain-verification.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/exam-grading.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/services/exam-manual-grading-sql.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/services/exam-manual-grading.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/services/exam-snapshots.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/services/feature-flags.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/gradebook.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/services/impersonation.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/lesson-discussions.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/lesson-progress.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/logger.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/media-usage-reconciliation.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/services/metrics.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/minio.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/moderation.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/notification-consent.ts": {
+      "owner": "workbuddy",
+      "group": "notifications"
+    },
+    "server/src/services/notification-outbox.ts": {
+      "owner": "workbuddy",
+      "group": "notifications"
+    },
+    "server/src/services/notification-preferences.ts": {
+      "owner": "workbuddy",
+      "group": "notifications"
+    },
+    "server/src/services/notification-worker.ts": {
+      "owner": "workbuddy",
+      "group": "notifications"
+    },
+    "server/src/services/parent-links.ts": {
+      "owner": "claude"
+    },
+    "server/src/services/platform-mfa.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/playback-entitlement.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/services/playback-progress.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/services/playback-session-registry.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/services/playback-watermark.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/services/progress-publication-sql.ts": {
+      "owner": "claude"
+    },
+    "server/src/services/progress-publication.ts": {
+      "owner": "claude"
+    },
+    "server/src/services/progress-report-source-sql.ts": {
+      "owner": "claude"
+    },
+    "server/src/services/progress-reports.ts": {
+      "owner": "claude"
+    },
+    "server/src/services/question-bank.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/services/schedules.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/src/services/school-reporting-wiring.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/search.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/services/service-credit.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/socket.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/student-csv-import.ts": {
+      "owner": "claude"
+    },
+    "server/src/services/subscription-lifecycle.ts": {
+      "owner": "claude"
+    },
+    "server/src/services/subscription-renewal.ts": {
+      "owner": "claude"
+    },
+    "server/src/services/tenant-export.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/services/tenant-host.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/vdocipher.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/video-asset-lifecycle.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/services/video-processor.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/services/video-security.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/services/video-usage-events.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/services/whatsapp-baileys.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/whatsapp-free.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/whatsapp.ts": {
+      "owner": "codex"
+    },
+    "server/src/types/ffprobe-static.d.ts": {
+      "owner": "codex"
+    },
+    "server/src/utils/cache-headers.ts": {
+      "owner": "codex"
+    },
+    "server/src/utils/notifications.ts": {
+      "owner": "workbuddy",
+      "group": "notifications"
+    },
+    "server/tests/auth-boundary.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/auth-security.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/b2-production-wiring.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/b2-schema-contract.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/billing-basis.test.ts": {
+      "owner": "claude"
+    },
+    "server/tests/billing-ledger-sql.test.ts": {
+      "owner": "claude"
+    },
+    "server/tests/billing-ledger.test.ts": {
+      "owner": "claude"
+    },
+    "server/tests/billing-periods.test.ts": {
+      "owner": "claude"
+    },
+    "server/tests/billing-pricing.test.ts": {
+      "owner": "claude"
+    },
+    "server/tests/billing-reservations.test.ts": {
+      "owner": "claude"
+    },
+    "server/tests/domain-verification.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/exam-manual-grading-sql.test.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/tests/finance-billing.test.ts": {
+      "owner": "claude"
+    },
+    "server/tests/helpers/m2-harness.ts": {
+      "owner": "codex"
+    },
+    "server/tests/helpers/quiet-console.ts": {
+      "owner": "codex"
+    },
+    "server/tests/helpers/tenant-scope-branch-deps.ts": {
+      "owner": "codex"
+    },
+    "server/tests/identity-hardening.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/integration/m1-branch-resource-live.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/integration/m1-tenant-isolation.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/integration/m7-impersonation-live.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-auth-regressions.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-bootstrap-plan.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-branch-legacy-scope.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-branch-resource-contract.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-branch-video-scope.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m1-ci-boundary.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-close-auth-token-version.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-close-branch-membership.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-close-deep-pass.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-close-enrollment-courses.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-close-identity-otp.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-close-platform-admin.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-close-review-fixes.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-close-staff-revocation.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-expanded-admin-authority.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-expanded-file-authority.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-expanded-finance-records.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-expanded-lecture-authority.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m1-expanded-payment-authority.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-expanded-tenant-admin.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-live-fixture-contract.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-materials-boundary.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m1-media-socket-regressions.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m1-messaging-boundary.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-network-guard.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-schema-columns.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-schema-reconciliation.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-secret-env-required.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-secret-scan.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-security-auth-session.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-security-grades-per-tenant.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-security-grades-plans.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-security-groups-meetings.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m1-security-index-config.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-security-socket-origin.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-security-students.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-security-videos.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m1-sprint-attendance-boundary.test.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/tests/m1-sprint-exam-boundary.test.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/tests/m1-sprint-meeting-boundary.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m1-sprint-notification-support.test.ts": {
+      "owner": "workbuddy",
+      "group": "notifications"
+    },
+    "server/tests/m1-storage-config.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-test-target-safety.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-test-target-safety.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-upload-contract.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m1-video-link-binding.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m1-video-link-policy.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m1-video-processing-recovery.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m1-video-route-boundary.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m2-announcements.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m2-c1-c4-public-identity.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m2-c5-lectures-reorder-audit.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m2-c8-c10-enrollment-lifecycle.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m2-content-release.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m2-enrollment-session-recheck.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m2-m3-mounting.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m2-student-import.test.ts": {
+      "owner": "claude"
+    },
+    "server/tests/m2-tenant-host-branding.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m3-playback-entitlement-indexes.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m3-playback-revocation-delivery.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m3-playback-sessions.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m3-playback-sql-store.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m3-video-lifecycle.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m3-video-review-fixes.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m4-assignment-scan-worker.test.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/tests/m4-assignment-storage.test.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/tests/m4-assignments.test.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/tests/m4-certificates.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m4-exam-grading.test.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/tests/m4-exam-manual-grading.test.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/tests/m4-exam-snapshots.test.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/tests/m4-gradebook.test.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/tests/m4-progress-reports.test.ts": {
+      "owner": "claude"
+    },
+    "server/tests/m4-question-bank.test.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/tests/m5-attendance-records.test.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/tests/m5-attendance-reports.test.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/tests/m5-schedules.test.ts": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "server/tests/m6-delivery-channels.test.ts": {
+      "owner": "workbuddy",
+      "group": "notifications"
+    },
+    "server/tests/m6-lesson-discussions.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m6-notification-consent.test.ts": {
+      "owner": "workbuddy",
+      "group": "notifications"
+    },
+    "server/tests/m6-notification-outbox.test.ts": {
+      "owner": "workbuddy",
+      "group": "notifications"
+    },
+    "server/tests/m6-notification-worker.test.ts": {
+      "owner": "workbuddy",
+      "group": "notifications"
+    },
+    "server/tests/m6-parent-links.test.ts": {
+      "owner": "claude"
+    },
+    "server/tests/m6-parent-views.test.ts": {
+      "owner": "claude"
+    },
+    "server/tests/m7-audit-logs.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m7-feature-flags.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m7-impersonation-expiry.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m7-impersonation-hardening.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m7-impersonation-integration.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m7-impersonation.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m7-moderation.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m7-platform-mfa.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m8-observability.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m8-search.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/m8-stabilization-mounting.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/m8-tenant-export.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/media-usage-reconciliation.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/notify-preferences.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/p0-checklist.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/progress-publication-sql.test.ts": {
+      "owner": "claude"
+    },
+    "server/tests/qa-m1-gate-gaps.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/student-enrollment-security.test.ts": {
+      "owner": "claude"
+    },
+    "server/tests/teacher-school-product-alignment.test.ts": {
+      "owner": "codex"
+    },
+    "server/tests/video-usage-replay.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/video-usage-storage.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "src/App.css": {
+      "owner": "codex"
+    },
+    "src/App.tsx": {
+      "owner": "codex"
+    },
+    "src/assets/Log_Background.jpg": {
+      "owner": "codex"
+    },
+    "src/assets/Tabweb_Academy_Logo.png": {
+      "owner": "codex"
+    },
+    "src/assets/Tabweb_Hero.png": {
+      "owner": "codex"
+    },
+    "src/auth/access-control.test.ts": {
+      "owner": "codex"
+    },
+    "src/auth/access-control.ts": {
+      "owner": "codex"
+    },
+    "src/components/AchievementBadge.tsx": {
+      "owner": "codex"
+    },
+    "src/components/AnimatedCounter.tsx": {
+      "owner": "codex"
+    },
+    "src/components/AnimatedSection.tsx": {
+      "owner": "codex"
+    },
+    "src/components/AuthGuard.tsx": {
+      "owner": "codex"
+    },
+    "src/components/CircularProgress.tsx": {
+      "owner": "codex"
+    },
+    "src/components/CourseCard.tsx": {
+      "owner": "codex"
+    },
+    "src/components/FloatingParticles.tsx": {
+      "owner": "codex"
+    },
+    "src/components/GlassmorphicCard.tsx": {
+      "owner": "codex"
+    },
+    "src/components/HLSVideoPlayer.tsx": {
+      "owner": "codex"
+    },
+    "src/components/Header.tsx": {
+      "owner": "codex"
+    },
+    "src/components/InstructorHeader.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ModernAuthForm.tsx": {
+      "owner": "codex"
+    },
+    "src/components/NotificationBell.tsx": {
+      "owner": "codex"
+    },
+    "src/components/NotificationCard.tsx": {
+      "owner": "codex"
+    },
+    "src/components/PageHeader.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ProtectedVideoSurface.tsx": {
+      "owner": "codex"
+    },
+    "src/components/SearchAndFilter.tsx": {
+      "owner": "codex"
+    },
+    "src/components/SecureVideoPlayer.tsx": {
+      "owner": "codex"
+    },
+    "src/components/SecureVideoPlayer.v3.bak": {
+      "owner": "codex"
+    },
+    "src/components/SecureYouTubePlayer.tsx": {
+      "owner": "codex"
+    },
+    "src/components/SimpleVideoPlayer.tsx": {
+      "owner": "codex"
+    },
+    "src/components/StatsCard.tsx": {
+      "owner": "codex"
+    },
+    "src/components/StatsCardEnhanced.tsx": {
+      "owner": "codex"
+    },
+    "src/components/StudentHeader.tsx": {
+      "owner": "codex"
+    },
+    "src/components/StudentHeader_OLD_BACKUP.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ThemeToggle.tsx": {
+      "owner": "codex"
+    },
+    "src/components/UpcomingClassCard.tsx": {
+      "owner": "codex"
+    },
+    "src/components/UploadNotification.tsx": {
+      "owner": "codex"
+    },
+    "src/components/VideoPlayer.tsx": {
+      "owner": "codex"
+    },
+    "src/components/VideoUploader.tsx": {
+      "owner": "codex"
+    },
+    "src/components/WhatsAppPending.tsx": {
+      "owner": "codex"
+    },
+    "src/components/YouTubePlayer.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/accordion.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/alert-dialog.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/alert.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/aspect-ratio.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/avatar.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/badge.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/breadcrumb.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/button.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/calendar.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/card.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/carousel.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/chart.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/checkbox.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/collapsible.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/command.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/context-menu.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/dialog.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/drawer.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/dropdown-menu.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/enhanced-table.css": {
+      "owner": "codex"
+    },
+    "src/components/ui/form.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/hover-card.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/input-otp.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/input.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/label.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/menubar.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/navigation-menu.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/pagination.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/popover.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/progress.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/radio-group.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/resizable.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/scroll-area.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/select.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/separator.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/sheet.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/sidebar.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/skeleton.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/slider.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/sonner.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/switch.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/table.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/tabs.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/textarea.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/toast.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/toaster.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/toggle-group.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/toggle.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/tooltip.tsx": {
+      "owner": "codex"
+    },
+    "src/components/ui/use-toast.ts": {
+      "owner": "codex"
+    },
+    "src/contexts/UploadContext.tsx": {
+      "owner": "codex"
+    },
+    "src/hooks/use-mobile.tsx": {
+      "owner": "codex"
+    },
+    "src/hooks/use-toast.ts": {
+      "owner": "codex"
+    },
+    "src/hooks/useScreenRecordingPrevention.tsx": {
+      "owner": "codex"
+    },
+    "src/hooks/useSecuritySupervisor.ts": {
+      "owner": "codex"
+    },
+    "src/index.css": {
+      "owner": "codex"
+    },
+    "src/integrations/supabase/client.ts": {
+      "owner": "codex"
+    },
+    "src/integrations/supabase/types.ts": {
+      "owner": "codex"
+    },
+    "src/lib/api-browser.ts": {
+      "owner": "codex"
+    },
+    "src/lib/api-http.ts": {
+      "owner": "codex"
+    },
+    "src/lib/api.ts": {
+      "owner": "codex"
+    },
+    "src/lib/db.ts": {
+      "owner": "codex"
+    },
+    "src/lib/mockDb.ts": {
+      "owner": "codex"
+    },
+    "src/lib/utils.ts": {
+      "owner": "codex"
+    },
+    "src/main.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/AccountStatement.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/AdminApprovals.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/AdminDashboard.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/AdminFinance.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/AdminInstructorOverview.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/AdminInstructors.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/AdminOperations.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/AdminPlatform.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/AdminSecurity.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/AdminTeam.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Attendance.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/AttendanceLog.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Auth.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/BarcodeAttendance.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/ChatAssistant.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/CourseContentManager.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Courses.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/EditExam.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/EditExam_NEW.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/ExamAccess.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/ExamManager.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/ExamReports.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/ExamResults.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/ExamReview.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Expenses.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Fees.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Forbidden.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Grades.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Groups.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Imports.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Index.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/InstructorDashboard.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/InstructorLectures.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/InstructorStudents.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/InstructorSubscription.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/InstructorVideoRequests.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/InstructorWallet.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/JoinInstructor.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/ManualGrading.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Messages.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/NotFound.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/OfflineStudents.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/OnlineMeeting.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Profits.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/PromoVideo.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/QRAttendance.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Reports.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Staff.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentBarcodes.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentChat.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentContent.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentDashboard.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentExamResults.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentExams.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentLectures.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentMeetings.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentMessages.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentPasswordReset.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentPayments.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentPremiumLectures.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentRegistrationRequests.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentReports.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/StudentSpaces.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Students.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Subscriptions.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/Support.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/TakeExam.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/TeacherChat.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/TeacherContentManager.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/TeacherDashboard.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/TeacherExams.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/TeacherLectures.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/TeacherMaterials.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/TeacherPremiumLectures.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/TenantInvitation.tsx": {
+      "owner": "codex"
+    },
+    "src/pages/TestVideo.tsx": {
+      "owner": "codex"
+    },
+    "src/tests/m1-expanded-exam-authoring-ui.test.ts": {
+      "owner": "codex"
+    },
+    "src/tests/m1-expanded-student-management-ui.test.ts": {
+      "owner": "codex"
+    },
+    "src/tests/m1-security-ui.test.ts": {
+      "owner": "codex"
+    },
+    "src/tests/m1-sprint-attendance-ui.test.ts": {
+      "owner": "codex"
+    },
+    "src/tests/m1-sprint-exam-ui.test.ts": {
+      "owner": "codex"
+    },
+    "src/tests/m1-sprint-meeting-support-ui.test.ts": {
+      "owner": "codex"
+    },
+    "src/tests/m1-sprint-subscription-ui.test.ts": {
+      "owner": "codex"
+    },
+    "src/utils/VideoSecurityManager.ts": {
+      "owner": "codex"
+    },
+    "src/utils/examSubmissionResult.ts": {
+      "owner": "codex"
+    },
+    "src/utils/versionChecker.ts": {
+      "owner": "codex"
+    },
+    "src/vite-env.d.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/live-session-core.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/routes/live-sessions.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/src/services/live-recording-ingest.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/live-session-core.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/tests/live-recording-ingest.test.ts": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "server/bootstrap/m1/manifest.json": {
+      "owner": "codex"
+    },
+    "server/src/security/sensitive-action-mfa.ts": {
+      "owner": "codex"
+    },
+    "server/src/services/readiness-coordinator.ts": {
+      "owner": "codex"
+    },
+    "docs/streams/server/WORKBUDDY-CLOSURE-ACADEMIC-20261022.md": {
+      "owner": "workbuddy",
+      "group": "academic"
+    },
+    "docs/streams/server/WORKBUDDY-CLOSURE-MEDIA-20261022.md": {
+      "owner": "workbuddy",
+      "group": "media"
+    },
+    "docs/streams/server/WORKBUDDY-CLOSURE-NOTIFICATIONS-20261022.md": {
+      "owner": "workbuddy",
+      "group": "notifications"
+    }
+  }
+}
