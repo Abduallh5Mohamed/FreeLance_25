@@ -24,9 +24,15 @@ const getAuthToken = (): string | null => {
     return localStorage.getItem('authToken');
 };
 
+// Guards subscribe to local changes as well as cross-tab storage events.
+export const AUTH_SESSION_CHANGED_EVENT = 'auth-session-changed';
+let authRevision = 0;
+const publishSessionChange = () => { authRevision += 1; window.dispatchEvent(new Event(AUTH_SESSION_CHANGED_EVENT)); };
+
 // Helper to set auth token
 export const setAuthToken = (token: string): void => {
     localStorage.setItem('authToken', token);
+    publishSessionChange();
 };
 
 // Helper to clear auth token
@@ -34,7 +40,47 @@ export const clearAuthToken = (): void => {
     localStorage.removeItem('authToken');
     localStorage.removeItem('currentUser');
     localStorage.removeItem('currentStudent');
+    for (const key of ['student_session', 'offlineStudentSession', 'supabaseUser', 'currentStudentSpace']) localStorage.removeItem(key);
+    publishSessionChange();
 };
+
+/** Revoke before discarding the bearer. A local logout is not proof of revocation. */
+export const signOutSession = async (): Promise<{ serverRevoked: boolean; warning: string | null; sessionChanged: boolean }> => {
+    const token = getAuthToken();
+    authRevision += 1;
+    const logoutRevision = authRevision;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    let serverRevoked = false;
+    let sessionChanged = false;
+    try {
+        if (token) {
+            const response = await fetch(`${API_BASE_URL}/auth/logout`, {
+                method: 'POST', headers: { Authorization: `Bearer ${token}` },
+                signal: controller.signal, cache: 'no-store',
+            });
+            serverRevoked = response.status === 204;
+        }
+    } catch {
+        // Unknown server outcome; do not report successful revocation.
+    } finally {
+        clearTimeout(timer);
+        sessionChanged = getAuthToken() !== token || authRevision !== logoutRevision;
+        if (!sessionChanged) {
+            clearAuthToken();
+        }
+    }
+    return {
+        serverRevoked,
+        sessionChanged,
+        warning: token && !serverRevoked
+            ? 'تم الخروج من هذا المتصفح، لكن تعذّر تأكيد إبطال الجلسة على الخادم.' : null,
+    };
+};
+
+class ApiRequestError extends Error {
+    constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
+}
 
 // Generic HTTP request helper
 async function request<T>(
@@ -42,15 +88,15 @@ async function request<T>(
     options: RequestInit = {}
 ): Promise<T> {
     const token = getAuthToken();
+    const requestRevision = authRevision;
+    const isCurrentSession = () => getAuthToken() === token && authRevision === requestRevision;
 
     const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
-    const headers: HeadersInit = {
-        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-        ...options.headers,
-    };
+    const headers = new Headers(options.headers);
+    if (!isFormData && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
 
     if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
+        headers.set('Authorization', `Bearer ${token}`);
     }
 
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
@@ -59,8 +105,13 @@ async function request<T>(
     });
 
     if (!response.ok) {
-        const error = await response.json().catch(() => ({ error: 'Request failed', code: undefined }));
-        if (response.status === 403 && error.code === 'BILLING_ONLY') {
+        const payload: unknown = await response.json().catch(() => null);
+        const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+        const error = {
+            error: typeof record.error === 'string' ? record.error : 'Request failed',
+            code: typeof record.code === 'string' ? record.code : undefined,
+        };
+        if (isCurrentSession() && response.status === 403 && error.code === 'BILLING_ONLY') {
             try {
                 const current = JSON.parse(localStorage.getItem('currentUser') || 'null');
                 if (current?.role === 'instructor') localStorage.setItem('currentUser', JSON.stringify({ ...current, billing_only: true }));
@@ -69,13 +120,16 @@ async function request<T>(
                 window.location.assign('/instructor-subscription');
             }
         }
-        if (response.status === 403 && error.code === 'TENANT_SUSPENDED') {
+        if (isCurrentSession() && response.status === 403 && error.code === 'TENANT_SUSPENDED') {
             clearAuthToken();
             if (window.location.pathname !== '/auth') window.location.assign('/auth');
         }
-        throw new Error(error.error || `HTTP ${response.status}`);
+        if (token && isCurrentSession() && response.status === 401
+            && !['/auth/login', '/auth/register'].includes(endpoint)) clearAuthToken();
+        throw new ApiRequestError(error.error || `HTTP ${response.status}`, response.status, error.code);
     }
 
+    if (response.status === 204) return undefined as T;
     return response.json();
 }
 
@@ -182,24 +236,28 @@ export const signIn = async (
     phone: string,
     password: string
 ): Promise<AuthResponse> => {
+    const startedAt = authRevision;
+    const startingToken = getAuthToken();
     try {
-        console.log('🔐 signIn: Attempting login with phone:', phone);
         const response = await request<{ user: User; token: string }>('/auth/login', {
             method: 'POST',
             body: JSON.stringify({ phone, password }),
         });
 
-        console.log('🔐 signIn: Response received:', { user: response.user, hasToken: !!response.token });
 
+        if (authRevision !== startedAt || getAuthToken() !== startingToken) {
+            return { user: null, error: 'تغيّرت الجلسة أثناء الطلب. أعد المحاولة.' };
+        }
+        if (!response.token || !response.user || !response.user.id) {
+            return { user: null, error: 'تعذّر تأكيد بيانات تسجيل الدخول. أعد المحاولة.' };
+        }
         if (response.token) {
             setAuthToken(response.token);
             localStorage.setItem('currentUser', JSON.stringify(response.user));
-            console.log('🔐 signIn: Token and user stored in localStorage');
         }
 
         return { user: response.user, error: null, token: response.token };
     } catch (error) {
-        console.error('🔐 signIn: Login failed:', error);
         return { user: null, error: error instanceof Error ? error.message : 'Login failed' };
     }
 };
@@ -211,12 +269,20 @@ export const signUp = async (
     role: 'student' | 'teacher' = 'student',
     email?: string | null
 ): Promise<AuthResponse> => {
+    const startedAt = authRevision;
+    const startingToken = getAuthToken();
     try {
         const response = await request<{ user: User; token: string }>('/auth/register', {
             method: 'POST',
             body: JSON.stringify({ phone, email: email || null, password, name, role }),
         });
 
+        if (authRevision !== startedAt || getAuthToken() !== startingToken) {
+            return { user: null, error: 'تغيّرت الجلسة أثناء الطلب. أعد المحاولة.' };
+        }
+        if (!response.token || !response.user || !response.user.id) {
+            return { user: null, error: 'تعذّر تأكيد بيانات تسجيل الدخول. أعد المحاولة.' };
+        }
         if (response.token) {
             setAuthToken(response.token);
             localStorage.setItem('currentUser', JSON.stringify(response.user));
@@ -224,6 +290,9 @@ export const signUp = async (
 
         return { user: response.user, error: null, token: response.token };
     } catch (error) {
+        if (error instanceof ApiRequestError && error.code === 'SESSION_UNAVAILABLE') {
+            return { user: null, error: 'تم إنشاء الحساب، لكن خدمة الجلسات غير متاحة الآن. حاول تسجيل الدخول لاحقًا؛ لا تحتاج إلى إنشاء الحساب مرة أخرى.' };
+        }
         return { user: null, error: error instanceof Error ? error.message : 'Registration failed' };
     }
 };
@@ -243,6 +312,40 @@ export const getStudentByPhone = async (phone: string): Promise<Student | null> 
         return await request<Student>(`/students/phone/${encodeURIComponent(phone)}`);
     } catch {
         return null;
+    }
+};
+
+export type SessionVerification =
+    | { state: 'authenticated'; user: User; token: string }
+    | { state: 'anonymous' | 'unavailable' | 'changed' };
+
+/** Network failure does not prove revocation. Responses cannot replace a newer login. */
+export const verifyCurrentSession = async (signal?: AbortSignal): Promise<SessionVerification> => {
+    const token = getAuthToken();
+    if (!token) return { state: 'anonymous' };
+    const verificationRevision = authRevision;
+    const changed = () => getAuthToken() !== token || authRevision !== verificationRevision;
+    try {
+        const response = await fetch(API_BASE_URL + '/auth/me', {
+            headers: { Authorization: 'Bearer ' + token }, cache: 'no-store', signal,
+        });
+        if (changed()) return { state: 'changed' };
+        if (response.status === 401) {
+            clearAuthToken();
+            return { state: 'anonymous' };
+        }
+        if (!response.ok) return { state: 'unavailable' };
+        const body: unknown = await response.json();
+        if (changed()) return { state: 'changed' };
+        const user = (body as { user?: User } | null)?.user;
+        if (!user || typeof user.id !== 'string' || !user.id || typeof user.name !== 'string'
+            || !['admin', 'teacher', 'instructor', 'staff', 'student'].includes(user.role)
+            || !user.is_active) return { state: 'unavailable' };
+        if (signal?.aborted) return { state: 'unavailable' };
+        localStorage.setItem('currentUser', JSON.stringify(user));
+        return { state: 'authenticated', user, token };
+    } catch {
+        return { state: changed() ? 'changed' : 'unavailable' };
     }
 };
 
@@ -2254,9 +2357,14 @@ export const rejectEnrollmentRequest = (id: string, reason: string) =>
     request<{ status: string }>(`/student-enrollment/requests/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) });
 export const getStudentSpaces = () => request<StudentSpace[]>('/student-enrollment/spaces');
 export const selectStudentSpace = async (studentEnrollmentId: string) => {
+    const startedAt = authRevision;
+    const startingToken = getAuthToken();
     const result = await request<{ token: string; tenant_id: string; student_enrollment_id: string }>(
         `/student-enrollment/spaces/${studentEnrollmentId}/select`, { method: 'POST' }
     );
+    if (authRevision !== startedAt || getAuthToken() !== startingToken) {
+        throw new Error('تغيّرت الجلسة أثناء اختيار مساحة الطالب. أعد المحاولة.');
+    }
     setAuthToken(result.token);
     return result;
 };

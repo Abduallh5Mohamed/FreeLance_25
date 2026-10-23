@@ -114,19 +114,28 @@ export interface ExamAuthoringDeps {
 export type ExamAuthoringOutcome =
   | { status: 'blocked' }
   | { status: 'created'; examId: string; questionsAdded: number }
-  | { status: 'rolled-back'; examId: string; questionsAdded: number; error: Error };
+  | { status: 'rolled-back'; examId: string; questionsAdded: number; error: Error }
+  | { status: 'cleanup-failed'; examId: string; questionsAdded: number; error: Error; cleanupError: Error };
+
+type ExamCleanupFailure = Extract<ExamAuthoringOutcome, { status: 'cleanup-failed' }>;
 
 /** Single-flight controller for "create exam + insert its questions".
  *  - blocks duplicate concurrent submits (deny);
  *  - reports success only after the server accepted every question;
- *  - on a mid-way question failure it compensates by deleting the exam it
- *    just created, so a failed save never leaves an orphan exam behind. */
+ *  - on a mid-way question failure it attempts to delete the exam it created;
+ *  - failed compensation retains the exam id and blocks another creation
+ *    until the caller confirms a successful explicit cleanup. */
 export function createExamAuthoringController(deps: ExamAuthoringDeps) {
   let inFlight = false;
+  let cleanupFailure: ExamCleanupFailure | null = null;
   return {
     isBusy: () => inFlight,
+    confirmCleanup: (examId: string): void => {
+      if (cleanupFailure?.examId === examId) cleanupFailure = null;
+    },
     async submit(examPayload: unknown, questionPayloads: unknown[]): Promise<ExamAuthoringOutcome> {
       if (inFlight) return { status: 'blocked' };
+      if (cleanupFailure) return cleanupFailure;
       inFlight = true;
       try {
         const created = await deps.createExam(examPayload);
@@ -143,8 +152,12 @@ export function createExamAuthoringController(deps: ExamAuthoringDeps) {
           const error = err instanceof Error ? err : new Error(String(err));
           try {
             await deps.deleteExam(examId);
-          } catch {
-            // rollback is best-effort; the original failure is what we report
+          } catch (cleanupCause) {
+            cleanupFailure = {
+              status: 'cleanup-failed', examId, questionsAdded, error,
+              cleanupError: cleanupCause instanceof Error ? cleanupCause : new Error(String(cleanupCause)),
+            };
+            return cleanupFailure;
           }
           return { status: 'rolled-back', examId, questionsAdded, error };
         }
@@ -157,7 +170,7 @@ export function createExamAuthoringController(deps: ExamAuthoringDeps) {
   };
 }
 
-const examAuthoringController = createExamAuthoringController({
+const defaultExamAuthoringDeps: ExamAuthoringDeps = {
   createExam: async (payload) => {
     const response = await fetch(`${API_URL}/exams`, {
       method: 'POST',
@@ -183,14 +196,15 @@ const examAuthoringController = createExamAuthoringController({
     return response.json();
   },
   deleteExam: async (examId) => {
-    await fetch(`${API_URL}/exams/${examId}`, {
+    const response = await fetch(`${API_URL}/exams/${examId}`, {
       method: 'DELETE',
       headers: {
         'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
       }
     });
+    if (!response.ok) throw new Error(`Failed to clean up the partial exam (${response.status})`);
   },
-});
+};
 
 interface Question {
   question_text: string;
@@ -214,6 +228,8 @@ export default function TeacherExams() {
   const [selectedCourse, setSelectedCourse] = useState<string>('');
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [examAuthoringController] = useState(() => createExamAuthoringController(defaultExamAuthoringDeps));
+  const [cleanupFailure, setCleanupFailure] = useState<ExamCleanupFailure | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
 
   const [examData, setExamData] = useState({
@@ -435,6 +451,17 @@ export default function TeacherExams() {
 
       if (outcome.status === 'blocked') return; // duplicate submit ignored
 
+      if (outcome.status === 'cleanup-failed') {
+        setCleanupFailure(outcome);
+        toast({
+          title: 'لم يكتمل إنشاء الامتحان',
+          description: `تعذر إضافة السؤال ${outcome.questionsAdded + 1} وتعذر حذف الامتحان الجزئي. المرجع: ${outcome.examId}. راجعه أو أعد محاولة حذفه قبل إنشاء امتحان آخر.`,
+          variant: 'destructive'
+        });
+        loadExams();
+        return;
+      }
+
       if (outcome.status === 'rolled-back') {
         console.error('Error creating exam:', outcome.error);
         toast({
@@ -494,6 +521,8 @@ export default function TeacherExams() {
       }
 
       console.log('✅ Exam deleted successfully');
+      examAuthoringController.confirmCleanup(id);
+      setCleanupFailure(current => current?.examId === id ? null : current);
       toast({
         title: 'نجح',
         description: 'تم حذف الامتحان'
@@ -760,13 +789,16 @@ export default function TeacherExams() {
                                 try {
                                   const response = await fetch(`${API_URL}/exams/upload-question-image`, {
                                     method: 'POST',
+                                    headers: { Authorization: `Bearer ${localStorage.getItem('authToken') || ''}` },
                                     body: formData
                                   });
 
-                                  const data = await response.json();
-                                  if (data.success) {
+                                  const data = await response.json().catch(() => null);
+                                  if (response.ok && data?.success && typeof data.imageUrl === 'string' && data.imageUrl.trim()) {
                                     setCurrentQuestion({ ...currentQuestion, question_image: data.imageUrl });
                                     toast({ title: 'تم رفع الصورة بنجاح' });
+                                  } else {
+                                    toast({ title: 'فشل رفع الصورة', variant: 'destructive' });
                                   }
                                 } catch (error) {
                                   toast({ title: 'فشل رفع الصورة', variant: 'destructive' });
@@ -928,9 +960,23 @@ export default function TeacherExams() {
                     </div>
                   )}
 
+                  {cleanupFailure && (
+                    <div role="alert" className="space-y-2 rounded border border-destructive p-3 text-sm">
+                      <p>لم يكتمل حفظ الامتحان، وتعذر حذفه تلقائيًا. احتفظنا بالمدخلات. المرجع: {cleanupFailure.examId}</p>
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" variant="outline" onClick={() => navigate(`/teacher/exams/${cleanupFailure.examId}/edit`)}>
+                          مراجعة الامتحان الجزئي
+                        </Button>
+                        <Button type="button" variant="destructive" onClick={() => handleDeleteExam(cleanupFailure.examId)}>
+                          إعادة محاولة حذف الامتحان الجزئي
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
                   <Button
                     type="submit"
-                    disabled={loading || questions.length === 0}
+                    disabled={loading || questions.length === 0 || cleanupFailure !== null}
                     className="w-full bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-700 hover:to-teal-700"
                   >
                     {loading ? 'جاري الإنشاء...' : (

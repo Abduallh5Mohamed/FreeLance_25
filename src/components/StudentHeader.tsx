@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { supabase } from "@/integrations/supabase/client";
+import { signOutSession } from '@/lib/api-http';
 import { NotificationBell } from "@/components/NotificationBell";
 import {
   Menu,
@@ -181,41 +181,12 @@ const StudentHeader = () => {
 
   const handleLogout = async () => {
     try {
-      // Clear offline student session if exists
-      const offlineSession = localStorage.getItem('offlineStudentSession');
-      if (offlineSession) {
-        localStorage.removeItem('offlineStudentSession');
-        // Clear all authentication data
-        localStorage.removeItem('authToken');
-        localStorage.removeItem('currentUser');
-        localStorage.removeItem('currentStudent');
-        localStorage.removeItem('supabaseUser');
-        toast({
-          title: "تم تسجيل الخروج بنجاح",
-          description: "أراك لاحقاً!",
-        });
-        navigate("/");
-        return;
-      }
-
-      // Clear student session and all authentication data
-      localStorage.removeItem('student_session');
-      localStorage.removeItem('authToken');
-      localStorage.removeItem('currentUser');
-      localStorage.removeItem('currentStudent');
-      localStorage.removeItem('supabaseUser');
-
-      // Sign out from Supabase (for online students and admin users)
-      const { error } = await supabase.auth.signOut();
-      if (error && error.message !== "No session found") {
-        throw error;
-      }
-
+      const outcome = await signOutSession();
+      if (outcome.sessionChanged) return;
       toast({
-        title: "تم تسجيل الخروج بنجاح",
-        description: "أراك لاحقاً!",
+        title: "تم تسجيل الخروج",
+        description: outcome.warning ?? "أراك لاحقاً!",
       });
-
       navigate("/");
     } catch (error) {
       toast({

@@ -41,6 +41,21 @@
  * normalized-title column plus index is the proposed follow-up (see
  * docs/streams/server/SEARCH-RECALL-20261019.md).
  *
+ * Unicode boundary: folding is limited to what BOTH sides can express exactly —
+ * the listed diacritic/tatweel ranges, the alef/yaa/taa-marbuta variants, ASCII
+ * case folding and whitespace collapsing. `String#normalize('NFKC')` is
+ * deliberately NOT applied, because MySQL has no equivalent function: folding
+ * presentation forms or full-width characters in JavaScript only would make the
+ * SQL predicate narrower than the JavaScript match, and the prefilter would then
+ * drop rows the ranker would have accepted. That is a silent under-recall, which
+ * is worse than a documented non-match. Both sides are generated from the same
+ * character tables below, so the predicate stays a strict superset; a
+ * compatibility-folded search needs a persisted normalized column (same
+ * follow-up as above), not a one-sided JavaScript fold.
+ *
+ * Length bounds are counted in Unicode code points, never UTF-16 code units, so
+ * an astral character costs one position on both the minimum and the maximum.
+ *
  * Hard caps: query length, query token count, page size, page number and
  * per-kind candidate loads are all bounded by exported constants.
  *
@@ -75,6 +90,23 @@ const SEARCH_STUDENT_KINDS = ['courses', 'lessons', 'announcements'] as const;
 
 export type SearchKind = (typeof SEARCH_STAFF_KINDS)[number];
 export type StudentSearchKind = (typeof SEARCH_STUDENT_KINDS)[number];
+
+/**
+ * Kinds whose candidate statement can carry a branch refinement. `courses` has
+ * neither a branch column nor a branch-owning parent in its candidate source,
+ * so a branch filter cannot be applied to it.
+ *
+ * The route rejects `branch_id` for these kinds instead of ignoring it: an
+ * accepted-but-unapplied selector is a scope statement the server did not
+ * honour, and the caller would read a tenant-wide result as a branch-scoped
+ * one. Rejecting keeps the answer honest without inventing a branch policy for
+ * courses (which have no branch column to filter on).
+ */
+export const SEARCH_BRANCH_KINDS: readonly SearchKind[] = ['lessons', 'announcements', 'question_bank'];
+
+export function supportsBranchFilter(kind: SearchKind): boolean {
+    return SEARCH_BRANCH_KINDS.includes(kind);
+}
 
 const BRANCH_ID_MAX_LENGTH = 64;
 const BRANCH_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -158,13 +190,26 @@ export type SearchQueryValidation =
     | { ok: true; value: string }
     | { ok: false; error: string };
 
+/**
+ * Length in Unicode code points, not UTF-16 code units.
+ *
+ * `String#length` counts a surrogate pair twice, so a 100-character cap on
+ * units silently halves the allowance for any astral script (and a "2
+ * character" minimum accepted a single astral character). Counting code points
+ * makes the cap mean what it says and keeps the bound independent of the
+ * encoding of the query. Both limits are applied to the trimmed input, before
+ * normalization, so the bound cannot be moved by what normalization removes.
+ */
+const codePointLength = (value: string): number => [...value].length;
+
 export function validateSearchQuery(raw: unknown): SearchQueryValidation {
     if (typeof raw !== 'string') return { ok: false, error: 'q must be a string' };
     const trimmed = raw.trim();
-    if (trimmed.length < SEARCH_QUERY_MIN_LENGTH) {
+    const length = codePointLength(trimmed);
+    if (length < SEARCH_QUERY_MIN_LENGTH) {
         return { ok: false, error: `q must be at least ${SEARCH_QUERY_MIN_LENGTH} characters` };
     }
-    if (trimmed.length > SEARCH_QUERY_MAX_LENGTH) {
+    if (length > SEARCH_QUERY_MAX_LENGTH) {
         return { ok: false, error: `q must be at most ${SEARCH_QUERY_MAX_LENGTH} characters` };
     }
     if (countSearchTokens(normalizeSearchText(trimmed)) > SEARCH_QUERY_MAX_TOKENS) {
@@ -256,6 +301,17 @@ const appendTitlePrefilter = (
     titleExpression: string,
     normalizedQuery: string,
 ): string => {
+    // Contract guard, enforced at the single choke point every builder uses.
+    //
+    // The prefilter mirrors `normalizeSearchText` inside SQL. If a caller hands
+    // in a raw query, the SQL predicate would be built from unfolded tokens
+    // while `toSearchHits` scores the folded ones: a title the JavaScript side
+    // would match can then be filtered out by SQL *before* it is ever scored,
+    // which is a silent under-recall (a missing result, not an error). Refusing
+    // a non-normalized query keeps the two sides on the same string.
+    if (normalizeSearchText(normalizedQuery) !== normalizedQuery) {
+        throw new TypeError('The search prefilter requires a query already folded by normalizeSearchText');
+    }
     const tokens = normalizedQuery.split(' ').filter((token) => token.length > 0);
     if (tokens.length > SEARCH_QUERY_MAX_TOKENS) {
         // Explicit, never silent: dropping a token would widen the result set

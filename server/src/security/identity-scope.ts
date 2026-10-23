@@ -25,10 +25,18 @@ export interface UserIdentityState {
 
 /** Issuance gate: an account may receive a token only while it is active. */
 export function isIssuableIdentity(identity: { is_active: boolean | number; suspension_active?: boolean | number | null } | null | undefined): boolean {
-    if (!identity || !identity.is_active) return false;
+    if (!identity || (identity.is_active !== true && identity.is_active !== 1)) return false;
     if (identity.suspension_active === undefined || identity.suspension_active === null) return true;
-    return !identity.suspension_active;
+    return identity.suspension_active === false || identity.suspension_active === 0;
 }
+
+/** Null/missing versions represent the explicit legacy version zero only. */
+const identityVersion = (value: unknown): number | null => {
+    if (value === null || value === undefined) return 0;
+    if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value))) return null;
+    const version = Number(value);
+    return Number.isSafeInteger(version) && version >= 0 ? version : null;
+};
 
 /**
  * Session liveness for identities stored in the `users` table: the account
@@ -45,8 +53,9 @@ export function isUsersIdentityLive(
     // The SQL repository always selects role. Optionality only preserves older
     // injected repositories; when present, a stale role claim revokes the token.
     if (state!.role !== undefined && claimedRole !== undefined && state!.role !== claimedRole) return false;
-    const current = Number(state!.token_version || 0);
-    return Number(claimedTokenVersion || 0) === current;
+    const current = identityVersion(state!.token_version);
+    const claimed = identityVersion(claimedTokenVersion);
+    return current !== null && claimed !== null && claimed === current;
 }
 
 /**
@@ -58,7 +67,9 @@ export function isStaffIdentityLive(
     claimedTokenVersion: number | null | undefined = 0,
 ): boolean {
     if (!isIssuableIdentity(state)) return false;
-    return Number(claimedTokenVersion || 0) === Number(state!.token_version || 0);
+    const current = identityVersion(state!.token_version);
+    const claimed = identityVersion(claimedTokenVersion);
+    return current !== null && claimed !== null && claimed === current;
 }
 
 export interface TenantMembershipRow {

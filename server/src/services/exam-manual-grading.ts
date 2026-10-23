@@ -92,6 +92,12 @@ export interface PendingManualAttemptRow {
     reviewer_user_id?: string | null;
     graded_at?: string | Date | null;
     passed?: boolean | number | null;
+    /**
+     * Pinned total of the exam version this attempt was taken against. Optional
+     * because a store that does not select it simply cannot project the result
+     * into a course gradebook (the projection is skipped, never guessed).
+     */
+    total_points?: number | string | null;
 }
 
 export interface PinnedQuestionRow {
@@ -182,6 +188,38 @@ export type StoreFinalizeResult =
     | { ok: false; reason: StoreFinalizeRaceReason };
 
 /**
+ * Projection of a finalized attempt into the course gradebook.
+ *
+ * This is the C1-R link between the sealed exam result and the gradebook: the
+ * finalize transaction is the ONLY writer, so the grade appears atomically with
+ * `status='graded'` and can never exist for an attempt that did not finalize.
+ * It is deliberately an optional capability: a store that does not implement it
+ * (or does not expose `total_points`) finalizes exactly as before and reports
+ * `linked: false`, never a fabricated grade.
+ */
+export interface ExamGradebookProjectionInput {
+    tenantId: string;
+    examId: string;
+    examVersionId: string;
+    attemptId: string;
+    enrollmentId: string;
+    /** Final total in exact integer hundredths, as planned by finalize. */
+    scoreHundredths: number;
+    /** Pinned total of the exam version; null/absent means "cannot project". */
+    totalPoints: number | string | null | undefined;
+    reviewerUserId: string;
+}
+
+export type ExamGradebookProjectionSkipReason =
+    | 'not_course_scoped'
+    | 'student_not_in_course'
+    | 'invalid_score';
+
+export type ExamGradebookProjectionResult =
+    | { ok: true; linked: true; scoreId: string; corrected: boolean }
+    | { ok: true; linked: false; reason: ExamGradebookProjectionSkipReason };
+
+/**
  * Injected persistence contract. Every mutation method MUST run on the
  * transaction handle supplied by the router (`deps.transaction`).
  *
@@ -200,6 +238,10 @@ export type StoreFinalizeResult =
  *    ... FOR UPDATE` on the attempt row and a consistent read of the latest
  *    revisions). The version CAS is the backstop that closes any residual
  *    window in the no-lock case.
+ *  - `recordGradebookScore`, when implemented, MUST run on the same
+ *    transaction connection as `finalizeAttempt`, so a gradebook failure rolls
+ *    the finalization back instead of leaving a graded attempt without a grade.
+ *    It is optional; an absent implementation is reported as `linked: false`.
  *  - No other code path may bump the attempt `version` or transition its
  *    `status`, so the CAS predicates are sound.
  */
@@ -209,6 +251,8 @@ export interface ManualGradingStore {
     loadAttemptForGrading(input: { tenantId: string; attemptId: string }): Promise<ManualGradingAttemptBundle | null>;
     appendAnswerGradeRevision(input: AppendAnswerGradeRevisionInput): Promise<StoreAppendResult>;
     finalizeAttempt(input: FinalizeAttemptInput): Promise<StoreFinalizeResult>;
+    /** Optional C1-R gradebook link, bound to the same transaction. */
+    recordGradebookScore?(input: ExamGradebookProjectionInput): Promise<ExamGradebookProjectionResult>;
 }
 
 /* ------------------------------------------------------------------------- */

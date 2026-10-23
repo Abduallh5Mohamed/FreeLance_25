@@ -1,8 +1,9 @@
 import { Router, Request, Response, RequestHandler } from 'express';
 import bcrypt from 'bcryptjs';
-import jwt, { Secret } from 'jsonwebtoken';
-import { authenticateToken, getJwtSecret } from '../middleware/auth';
-import { resolveJwtLifetimeSeconds } from './auth';
+import { randomUUID } from 'node:crypto';
+import { authenticateToken } from '../middleware/auth';
+import { signLoginToken, productionLoginSessions, loginSessionsEnabled, LoginSessionUnavailable } from './auth';
+import type { LoginSessionStore } from '../security/login-session';
 import { rateLimit } from '../middleware/rate-limit';
 import { requireAdminPermission } from '../security/admin-permissions';
 
@@ -37,7 +38,15 @@ interface Staff {
  * policy; no permission insert or migration is added in this batch. Lookup
  * failures deny with 503 instead of failing open.
  */
+export interface StaffMutationConnection {
+    queryOne: <T>(sql: string, params?: unknown[]) => Promise<T | null>;
+    execute: (sql: string, params?: unknown[]) => Promise<{ insertId: number; affectedRows: number }>;
+}
+
 export interface StaffRouterDeps {
+    /** Required for identity edits: shares the staff -> users lock order with promotion. */
+    transaction?: <T>(fn: (tx: StaffMutationConnection) => Promise<T>) => Promise<T>;
+    sessionStore?: LoginSessionStore;
     query: <T = any>(sql: string, params?: any[]) => Promise<T[]>;
     queryOne: <T = any>(sql: string, params?: any[]) => Promise<T | null>;
     execute: (sql: string, params?: any[]) => Promise<{ insertId: number; affectedRows: number }>;
@@ -110,7 +119,7 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
 
             res.json(parsedStaff);
         } catch (error) {
-            console.error('Error fetching staff:', error);
+            console.error('Error fetching staff:');
             res.status(500).json({ error: 'Failed to fetch staff' });
         }
     });
@@ -139,7 +148,7 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
 
             res.json(parsedStaff);
         } catch (error) {
-            console.error('Error fetching staff:', error);
+            console.error('Error fetching staff:');
             res.status(500).json({ error: 'Failed to fetch staff' });
         }
     });
@@ -177,11 +186,13 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
             // Hash password
             const passwordHash = await bcrypt.hash(password, 10);
 
-            // Insert new staff
+            // CHAR(36) identity: MySQL insertId is not the generated UUID.
+            const staffId = randomUUID();
             const result = await deps.execute(
-                `INSERT INTO staff (name, phone, password_hash, role, accessible_pages, is_active)
-                 VALUES (?, ?, ?, 'staff', ?, 1)`,
+                `INSERT INTO staff (id, name, phone, password_hash, role, accessible_pages, is_active)
+                 VALUES (?, ?, ?, ?, 'staff', ?, 1)`,
                 [
+                    staffId,
                     name,
                     phone,
                     passwordHash,
@@ -189,10 +200,10 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
                 ]
             );
 
-            const staffId = result.insertId;
+            if (result.affectedRows !== 1) throw new Error('Staff creation was not confirmed');
 
             res.status(201).json({
-                id: staffId.toString(),
+                id: staffId,
                 name,
                 phone,
                 role: 'staff',
@@ -201,7 +212,7 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
                 message: 'تم إنشاء الموظف بنجاح'
             });
         } catch (error) {
-            console.error('Error creating staff:', error);
+            console.error('Error creating staff:');
             res.status(500).json({ error: 'Failed to create staff' });
         }
     });
@@ -236,128 +247,68 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
                 }
             }
 
-            // Check if staff exists
-            const existingStaff = await deps.queryOne<Staff>(
-                'SELECT id, phone FROM staff WHERE id = ?',
-                [id]
-            );
-
-            if (!existingStaff) {
-                return res.status(404).json({ error: 'الموظف غير موجود' });
-            }
-
-            // Check for duplicate phone (if phone is being changed)
-            if (phoneRaw && phoneRaw !== existingStaff.phone) {
-                // Check in staff table
-                const duplicateStaffPhone = await deps.queryOne(
-                    'SELECT id FROM staff WHERE phone = ? AND id != ?',
-                    [phoneRaw, id]
-                );
-                if (duplicateStaffPhone) {
-                    return res.status(409).json({ error: 'رقم الهاتف مسجل بالفعل كموظف آخر' });
+            if (!deps.transaction) return res.status(503).json({ error: 'Identity transaction unavailable' });
+            const passwordHash = passwordRaw ? await bcrypt.hash(passwordRaw, 10) : null;
+            const outcome = await deps.transaction(async (tx): Promise<{ status: number; body: unknown }> => {
+                const staff = await tx.queryOne<Staff>('SELECT id, phone FROM staff WHERE id=? FOR UPDATE', [id]);
+                if (!staff) return { status: 404, body: { error: 'الموظف غير موجود' } };
+                const promoted = await tx.queryOne<{ id: string }>('SELECT id FROM users WHERE id=? FOR UPDATE', [id]);
+                if (promoted) return { status: 409, body: {
+                    error: 'عدّل هذا الحساب من إدارة حسابات المسؤولين.', code: 'ADMIN_ACCOUNT_MANAGEMENT_REQUIRED',
+                } };
+                if (phoneRaw && phoneRaw !== staff.phone) {
+                    const duplicate = await tx.queryOne<{ id: string }>('SELECT id FROM staff WHERE phone=? AND id<>? LIMIT 1', [phoneRaw, id]);
+                    const userDuplicate = await tx.queryOne<{ id: string }>('SELECT id FROM users WHERE phone=? LIMIT 1', [phoneRaw]);
+                    if (duplicate || userDuplicate) return { status: 409, body: { error: 'رقم الهاتف مستخدم بالفعل' } };
                 }
-
-                // Check in users table
-                const duplicateUserPhone = await deps.queryOne(
-                    'SELECT id FROM users WHERE phone = ?',
-                    [phoneRaw]
-                );
-                if (duplicateUserPhone) {
-                    return res.status(409).json({ error: 'رقم الهاتف مسجل بالفعل في النظام' });
-                }
-            }
-
-            // Build update query
-            const updateFields: string[] = [];
-            const updateValues: unknown[] = [];
-
-            if (nameRaw) {
-                updateFields.push('name = ?');
-                updateValues.push(nameRaw);
-            }
-            if (phoneRaw) {
-                updateFields.push('phone = ?');
-                updateValues.push(phoneRaw);
-            }
-            if (passwordRaw) {
-                const passwordHash = await bcrypt.hash(passwordRaw, 10);
-                updateFields.push('password_hash = ?');
-                updateValues.push(passwordHash);
-                updateFields.push('token_version = COALESCE(token_version, 0) + 1');
-            }
-            if (accessiblePagesRaw !== undefined) {
-                updateFields.push('accessible_pages = ?');
-                updateValues.push(JSON.stringify(accessiblePagesRaw));
-            }
-
-            if (updateFields.length === 0) {
-                return res.status(400).json({ error: 'No fields to update' });
-            }
-
-            updateFields.push('updated_at = NOW()');
-            updateValues.push(id);
-
-            try {
-                await deps.execute(`UPDATE staff SET ${updateFields.join(', ')} WHERE id = ?`, updateValues);
-            } catch (error) {
-                if (!passwordRaw || !isMissingStaffTokenVersion(error)) throw error;
-                // Older installations remain usable until the additive migration is applied.
-                const compatibleFields = updateFields.filter((field) => !field.startsWith('token_version ='));
-                await deps.execute(`UPDATE staff SET ${compatibleFields.join(', ')} WHERE id = ?`, updateValues);
-            }
-
-            // Fetch updated staff
-            const updatedStaff = await deps.queryOne<Staff>(
-                `SELECT id, name, email, phone, role, accessible_pages, is_active, created_at, updated_at
-                 FROM staff WHERE id = ?`,
-                [id]
-            );
-
-            const parsedStaff = {
-                ...updatedStaff,
-                accessible_pages: typeof updatedStaff?.accessible_pages === 'string'
-                    ? JSON.parse(updatedStaff?.accessible_pages)
-                    : (updatedStaff?.accessible_pages || [])
-            };
-
-            res.json({
-                ...parsedStaff,
-                message: 'تم تحديث بيانات الموظف بنجاح'
+                const fields: string[] = [];
+                const values: unknown[] = [];
+                if (nameRaw !== undefined) { fields.push('name=?'); values.push(nameRaw); }
+                if (phoneRaw !== undefined) { fields.push('phone=?'); values.push(phoneRaw); }
+                if (passwordHash) { fields.push('password_hash=?'); values.push(passwordHash); }
+                if (accessiblePagesRaw !== undefined) { fields.push('accessible_pages=?'); values.push(JSON.stringify(accessiblePagesRaw)); }
+                if (!fields.length) return { status: 400, body: { error: 'No fields to update' } };
+                if (passwordHash || phoneRaw !== undefined || accessiblePagesRaw !== undefined) fields.push('token_version=COALESCE(token_version,0)+1');
+                fields.push('updated_at=NOW()');
+                values.push(id);
+                await tx.execute('UPDATE staff SET ' + fields.join(', ') + ' WHERE id=?', values);
+                const updated = await tx.queryOne<Staff>('SELECT id,name,email,phone,role,accessible_pages,is_active,created_at,updated_at FROM staff WHERE id=?', [id]);
+                if (!updated) throw new Error('Identity disappeared during update');
+                let pages: unknown = updated.accessible_pages;
+                if (typeof pages === 'string') { try { pages = JSON.parse(pages); } catch { pages = []; } }
+                return { status: 200, body: { ...updated, accessible_pages: Array.isArray(pages) ? pages.filter(page => typeof page === 'string') : [], message: 'تم تحديث بيانات الموظف بنجاح' } };
             });
+            return res.status(outcome.status).json(outcome.body);
         } catch (error) {
-            console.error('Error updating staff:', error);
-            res.status(500).json({ error: 'Failed to update staff' });
+            if (isMissingStaffTokenVersion(error)) return res.status(503).json({ error: 'Session revocation schema unavailable', code: 'SESSION_REVOCATION_UNAVAILABLE' });
+            return res.status(500).json({ error: 'Failed to update staff' });
         }
     });
 
-    // Delete staff member (soft delete)
+    // Staff deactivation cannot leave a promoted users login silently active.
     staffRouter.delete('/:id', deps.authenticate, deps.authorizeAdmin, async (req: Request, res: Response) => {
         try {
-            const { id } = req.params;
-
-            const existingStaff = await deps.queryOne(
-                'SELECT id FROM staff WHERE id = ?',
-                [id]
-            );
-
-            if (!existingStaff) {
-                return res.status(404).json({ error: 'Staff not found' });
-            }
-
-            await deps.execute(
-                'UPDATE staff SET is_active = 0, updated_at = NOW() WHERE id = ?',
-                [id]
-            );
-
-            res.json({ message: 'تم حذف الموظف بنجاح' });
+            if (!deps.transaction) return res.status(503).json({ error: 'Identity transaction unavailable' });
+            const outcome = await deps.transaction(async (tx): Promise<{ status: number; body: unknown }> => {
+                const staff = await tx.queryOne<{ id: string }>('SELECT id FROM staff WHERE id=? FOR UPDATE', [req.params.id]);
+                if (!staff) return { status: 404, body: { error: 'Staff not found' } };
+                const promoted = await tx.queryOne<{ id: string }>('SELECT id FROM users WHERE id=? FOR UPDATE', [staff.id]);
+                if (promoted) return { status: 409, body: { error: 'عطّل هذا الحساب من إدارة حسابات المسؤولين.', code: 'ADMIN_ACCOUNT_MANAGEMENT_REQUIRED' } };
+                const changed = await tx.execute('UPDATE staff SET is_active=0, token_version=COALESCE(token_version,0)+1, updated_at=NOW() WHERE id=?', [staff.id]);
+                if (changed.affectedRows !== 1) throw new Error('Identity deactivation was not confirmed');
+                return { status: 200, body: { message: 'تم حذف الموظف بنجاح' } };
+            });
+            return res.status(outcome.status).json(outcome.body);
         } catch (error) {
-            console.error('Error deleting staff:', error);
-            res.status(500).json({ error: 'Failed to delete staff' });
+            if (isMissingStaffTokenVersion(error)) return res.status(503).json({ error: 'Session revocation schema unavailable', code: 'SESSION_REVOCATION_UNAVAILABLE' });
+            return res.status(500).json({ error: 'Failed to delete staff' });
         }
     });
 
     // Staff login endpoint (public: authentication happens here)
     staffRouter.post('/login', rateLimit('staff-login', 12, 15 * 60_000), async (req: Request, res: Response) => {
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Pragma', 'no-cache');
         try {
             const body = (req.body ?? {}) as Record<string, unknown>;
             const phone = typeof body.phone === 'string' ? body.phone.trim() : '';
@@ -400,15 +351,20 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
                 return res.status(403).json({ error: 'Account is suspended', code: 'ACCOUNT_SUSPENDED' });
             }
 
+            // Promoted identities use users-table credentials and revocation versions.
+            // They must enter through the shared login instead of a staff-source token.
+            const promoted = await deps.queryOne<{ id: string }>('SELECT id FROM users WHERE id = ? LIMIT 1', [staff.id]);
+            if (promoted) return res.status(409).json({
+                error: 'استخدم صفحة تسجيل الدخول الرئيسية لهذا الحساب.', code: 'UNIFIED_LOGIN_REQUIRED',
+            });
+
             // Parse accessible_pages
             const accessiblePages = typeof staff.accessible_pages === 'string'
                 ? JSON.parse(staff.accessible_pages)
                 : (staff.accessible_pages || []);
 
             // Generate JWT token
-            const jwtSecret: Secret = getJwtSecret();
-            const jwtExpiry = resolveJwtLifetimeSeconds(process.env.JWT_EXPIRES_IN);
-            const token = jwt.sign(
+            const token = await signLoginToken(
                 {
                     id: staff.id,
                     phone: staff.phone,
@@ -416,8 +372,7 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
                     tv: Number(staff.token_version || 0),
                     accessible_pages: accessiblePages
                 },
-                jwtSecret,
-                { expiresIn: jwtExpiry } as jwt.SignOptions
+                'staff', deps.sessionStore,
             );
 
             res.json({
@@ -433,7 +388,11 @@ export const createStaffRouter = (deps: StaffRouterDeps) => {
                 token
             });
         } catch (error) {
-            console.error('Staff login error:', error);
+            if (error instanceof LoginSessionUnavailable) {
+                res.set('Cache-Control', 'no-store');
+                return res.status(503).json({ error: 'Session service unavailable' });
+            }
+            console.error('Staff login error:');
             res.status(500).json({ error: 'Authentication failed' });
         }
     });
@@ -454,6 +413,28 @@ const loadDb = async (): Promise<typeof import('../db')> => {
 };
 
 export default createStaffRouter({
+    sessionStore: loginSessionsEnabled() ? productionLoginSessions : undefined,
+    transaction: async <T>(fn: (tx: StaffMutationConnection) => Promise<T>): Promise<T> => {
+        const connection = await (await loadDb()).getPool().getConnection();
+        try {
+            await connection.beginTransaction();
+            const result = await fn({
+                queryOne: async <Row>(sql: string, params?: unknown[]) => {
+                    const [rows] = await connection.execute(sql, params);
+                    return (rows as Row[])[0] ?? null;
+                },
+                execute: async (sql, params) => {
+                    const [result] = await connection.execute(sql, params);
+                    return result as unknown as { insertId: number; affectedRows: number };
+                },
+            });
+            await connection.commit();
+            return result;
+        } catch (error) {
+            try { await connection.rollback(); } catch { /* Preserve the original failure. */ }
+            throw error;
+        } finally { connection.release(); }
+    },
     query: (sql, params) => loadDb().then((db) => db.query(sql, params)),
     queryOne: (sql, params) => loadDb().then((db) => db.queryOne(sql, params)),
     execute: (sql, params) => loadDb().then((db) => db.execute(sql, params)),

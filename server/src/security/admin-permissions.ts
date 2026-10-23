@@ -79,8 +79,8 @@ export const createRequireAdminPermission = (
       if (!permissions.includes(permission)) return res.status(403).json({ error: 'Forbidden' });
       next();
     } catch (error) {
-      console.error('Admin permission lookup failed:', error);
-      return res.status(503).json({ error: 'Admin permissions unavailable; apply the SaaS migration' });
+      console.error('Admin permission lookup failed');
+      return res.status(503).json({ error: 'Admin authorization unavailable' });
     }
   };
 

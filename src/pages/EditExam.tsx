@@ -241,7 +241,9 @@ export default function EditExam() {
       setExam(examData);
 
       // Load questions
-      const response = await fetch(`${API_URL}/exams/${examId}/questions`);
+      const response = await fetch(`${API_URL}/exams/${examId}/questions`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('authToken') || ''}` },
+      });
       if (!response.ok) throw new Error('Failed to load questions');
       const questionsData = await response.json();
       if (seq !== loadSeqRef.current) return; // stale response, drop it
@@ -750,12 +752,13 @@ export default function EditExam() {
 
                                 const response = await fetch(`${API_URL}/exams/upload-question-image`, {
                                   method: 'POST',
+                                  headers: { Authorization: `Bearer ${localStorage.getItem('authToken') || ''}` },
                                   body: formData
                                 });
 
                                 const result = await response.json().catch(() => null);
 
-                                if (response.ok && result?.success) {
+                                if (response.ok && result?.success && typeof result.imageUrl === 'string' && result.imageUrl.trim()) {
                                   setNewQuestion({ ...newQuestion, question_image: result.imageUrl });
                                   toast({
                                     title: 'تم الرفع',
@@ -963,12 +966,13 @@ export default function EditExam() {
 
                                   const response = await fetch(`${API_URL}/exams/upload-question-image`, {
                                     method: 'POST',
+                                    headers: { Authorization: `Bearer ${localStorage.getItem('authToken') || ''}` },
                                     body: formData
                                   });
 
                                   const result = await response.json().catch(() => null);
 
-                                  if (response.ok && result?.success) {
+                                  if (response.ok && result?.success && typeof result.imageUrl === 'string' && result.imageUrl.trim()) {
                                     setEditingQuestion({ ...editingQuestion, question_image: result.imageUrl });
                                     toast({
                                       title: 'تم الرفع',

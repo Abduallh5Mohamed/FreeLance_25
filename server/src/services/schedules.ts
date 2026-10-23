@@ -26,6 +26,7 @@
  * No `any`, no ts-ignore, no network, no runtime DDL.
  */
 
+import { createHash } from 'node:crypto';
 import {
     AudienceViewer,
     ScheduleAudience,
@@ -58,6 +59,57 @@ export const MAX_REASON_LENGTH = 255;
 export const MAX_DURATION_MINUTES = 24 * 60;
 export const DEFAULT_MAX_OCCURRENCES = 366;
 export const HARD_MAX_OCCURRENCES = 2000;
+
+/* ------------------------------------------------------------------------- */
+/* Series-creation idempotency                                               */
+/* ------------------------------------------------------------------------- */
+
+export const MIN_IDEMPOTENCY_KEY_LENGTH = 8;
+export const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+
+/**
+ * Normalize a client-supplied series-creation idempotency key. The key is a
+ * caller-scoped opaque token (at least 8 characters, printable ASCII subset);
+ * anything else is refused so a retry can never be silently de-duplicated
+ * against an unrelated request.
+ */
+export function normalizeIdempotencyKey(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (trimmed.length < MIN_IDEMPOTENCY_KEY_LENGTH || trimmed.length > MAX_IDEMPOTENCY_KEY_LENGTH) return null;
+    return IDEMPOTENCY_KEY_PATTERN.test(trimmed) ? trimmed : null;
+}
+
+export interface SeriesIdempotencyIdentity {
+    tenantId: string;
+    userId: string;
+    idempotencyKey: string;
+}
+
+/**
+ * Deterministic `schedule_series.id` for one idempotency key.
+ *
+ * The id is a name-based UUID (SHA-256 over tenant + author + key, RFC 4122
+ * version 5 shape), so a retried creation targets the row the first attempt
+ * already created instead of materializing a second series and a second set of
+ * sessions. The key is scoped to the authoring user inside the tenant, so two
+ * teachers can never collide on the same client token. Returns null when any
+ * part is malformed so the caller fails closed.
+ */
+export function deterministicSeriesId(identity: SeriesIdempotencyIdentity): string | null {
+    if (normalizeId(identity.tenantId) === null) return null;
+    if (normalizeId(identity.userId) === null) return null;
+    if (normalizeIdempotencyKey(identity.idempotencyKey) === null) return null;
+    const digest = createHash('sha256')
+        .update(['schedule-series', 'v1', identity.tenantId, identity.userId, identity.idempotencyKey].join('|'))
+        .digest();
+    const bytes = Buffer.from(digest.subarray(0, 16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = bytes.toString('hex');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 export function normalizeRecurrenceKind(value: unknown): RecurrenceKind | null {
     if (typeof value !== 'string') return null;

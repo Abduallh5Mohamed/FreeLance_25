@@ -106,8 +106,26 @@ function round(value: number, digits = 4): number {
 function partialId(value: string | null | undefined, keep = 6): string {
     if (!value) return 'unknown';
     const trimmed = String(value).trim();
-    if (trimmed.length <= keep) return `…${trimmed.slice(-Math.max(1, Math.floor(trimmed.length / 2)))}`;
-    return `…${trimmed.slice(-keep)}`;
+    if (!trimmed) return 'unknown';
+    // Reveal at most half, and never the whole value: a 1-character id used to
+    // be returned in full, and an 8-character id revealed 4 of them.
+    const reveal = Math.max(1, Math.min(keep, Math.floor(trimmed.length / 2)));
+    if (trimmed.length <= reveal) return `…${trimmed.slice(-reveal)}`;
+    return `…${trimmed.slice(-reveal)}`;
+}
+
+/**
+ * Pseudonymise the forensic code like every other identifier.
+ *
+ * The code is a leak-attribution handle, so it must not appear verbatim: a
+ * short code was previously embedded in full in every watermark layer. A
+ * non-string value is refused rather than throwing on `.slice`.
+ */
+function pseudonymizeForensicCode(code: unknown): string | null {
+    if (typeof code !== 'string') return null;
+    const trimmed = code.trim();
+    if (!trimmed) return null;
+    return partialId(trimmed, 4);
 }
 
 function pseudonymizeName(name: string | null | undefined): string | null {
@@ -161,10 +179,42 @@ function pickLayerText(identity: PartialIdentity, input: WatermarkInput): string
         identity.studentRef,
         identity.phoneLast4 ? `…${identity.phoneLast4}` : null,
         identity.emailDomain ? `@${identity.emailDomain}` : null,
-        input.forensicCode ? input.forensicCode.slice(0, 16) : null,
-        input.sessionId ? partialId(input.sessionId, 4) : null,
+        // The forensic code is the one field that used to skip pseudonymisation
+        // entirely: a code of ≤16 characters appeared in full in every layer,
+        // and a longer one leaked its stable prefix. It is now truncated the
+        // same way as every other identifier, and a non-string value is refused
+        // rather than throwing on `.slice`.
+        pseudonymizeForensicCode(input.forensicCode),
+        input.sessionId ? partialId(String(input.sessionId), 4) : null,
     ].filter((v): v is string => Boolean(v));
     return bits.join(' • ');
+}
+
+/**
+ * Merge partial bounds over the defaults WITHOUT letting a single override
+ * invert the range.
+ *
+ * `{ opacityMin: 0.5 }` alone used to leave `opacityMax` at its default, so
+ * `randBetween` produced an inverted range and `clamp` pinned opacity to a
+ * constant; `{ minLayers: 5 }` alone yielded 5 layers despite `maxLayers: 4`.
+ * Every pair is therefore re-paired after the merge, and an override that
+ * cannot be honoured without crossing its partner is clamped to the default
+ * rather than silently degrading the layout.
+ */
+function mergeBounds(partial: Partial<WatermarkBounds> | undefined): WatermarkBounds {
+    const merged: WatermarkBounds = { ...DEFAULT_WATERMARK_BOUNDS, ...(partial ?? {}) };
+    const d = DEFAULT_WATERMARK_BOUNDS;
+    const pair = (min: number, max: number, dMin: number, dMax: number): [number, number] => {
+        if (!Number.isFinite(min) || !Number.isFinite(max) || min > max) return [dMin, dMax];
+        return [min, max];
+    };
+    [merged.xMin, merged.xMax] = pair(merged.xMin, merged.xMax, d.xMin, d.xMax);
+    [merged.yMin, merged.yMax] = pair(merged.yMin, merged.yMax, d.yMin, d.yMax);
+    [merged.opacityMin, merged.opacityMax] = pair(merged.opacityMin, merged.opacityMax, d.opacityMin, d.opacityMax);
+    [merged.minLayers, merged.maxLayers] = pair(merged.minLayers, merged.maxLayers, d.minLayers, d.maxLayers);
+    merged.minLayers = Math.max(1, Math.trunc(merged.minLayers));
+    merged.maxLayers = Math.max(merged.minLayers, Math.trunc(merged.maxLayers));
+    return merged;
 }
 
 export function generateWatermarkPayload(
@@ -176,7 +226,7 @@ export function generateWatermarkPayload(
         layerCount?: number;
     } = {},
 ): WatermarkPayload {
-    const bounds: WatermarkBounds = { ...DEFAULT_WATERMARK_BOUNDS, ...(options.bounds ?? {}) };
+    const bounds = mergeBounds(options.bounds);
     const rng = options.rng ?? defaultRng();
     const now = options.now ?? (() => new Date());
     const identity = pseudonymizeIdentity(input);

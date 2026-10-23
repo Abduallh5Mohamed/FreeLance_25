@@ -1,7 +1,9 @@
 import { randomUUID } from 'crypto';
 import { Router, Response, RequestHandler } from 'express';
 import type { PoolConnection } from 'mysql2/promise';
-import { getPool, query, queryOne } from '../db';
+import type { query, queryOne } from '../db';
+import { createProductionSensitiveActionMfa } from '../security/sensitive-action-mfa-production';
+import { asyncRouteBoundary } from '../security/async-route-boundary';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { isSuperAdmin, requireAdminPermission } from '../security/admin-permissions';
 import { CreditAdjustmentError, postServiceCreditAdjustment } from '../services/service-credit';
@@ -32,6 +34,8 @@ export interface AdminApprovalsDataAccess {
  * Super Admin. A JWT role claim alone never satisfies any guard.
  */
 export interface AdminApprovalsRouterDeps {
+    requestStepUp?: RequestHandler;
+    decisionStepUp?: RequestHandler;
     db: AdminApprovalsDataAccess;
     authenticate: RequestHandler;
     approvalRead: RequestHandler;
@@ -42,10 +46,21 @@ export interface AdminApprovalsRouterDeps {
 
 export const createAdminApprovalsRouter = (deps: AdminApprovalsRouterDeps): Router => {
   const router = Router();
-  const { query, queryOne, getConnection } = deps.db;
-  router.use(deps.authenticate);
+  const query = <T>(sql: string, params?: unknown[]) => deps.db.query<T>(sql, params);
+  const queryOne = <T>(sql: string, params?: unknown[]) => deps.db.queryOne<T>(sql, params);
+  const getConnection = () => deps.db.getConnection();
+  router.use(asyncRouteBoundary(deps.authenticate));
+  router.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+  const pass: RequestHandler = (_req, _res, next) => next();
+  const requestStepUp = deps.requestStepUp ? asyncRouteBoundary(deps.requestStepUp) : pass;
+  const decisionStepUp = deps.decisionStepUp ? asyncRouteBoundary(deps.decisionStepUp) : pass;
+  const requireOne = (result: unknown): void => {
+    if (!result || typeof result !== 'object' || (result as { affectedRows?: unknown }).affectedRows !== 1) {
+      throw new Error('Approval transition was not confirmed');
+    }
+  };
 
-  router.get('/', deps.approvalRead, async (req: AuthRequest, res: Response) => {
+  router.get('/', deps.approvalRead, asyncRouteBoundary(async (req: AuthRequest, res: Response) => {
     try {
       const statusValue = req.query.status;
       const allowedStatuses = ['pending', 'approved', 'rejected'];
@@ -58,15 +73,18 @@ export const createAdminApprovalsRouter = (deps: AdminApprovalsRouterDeps): Rout
                 a.requested_by,a.decided_by,a.created_at,a.decided_at
          FROM admin_approval_requests a WHERE a.status=? ORDER BY a.created_at DESC LIMIT 100`, [status]
       ));
-    } catch (error) { console.error('List approvals error:', error); return res.status(500).json({ error: 'Failed to load approvals' }); }
-  });
+    } catch (error) { console.error('List approvals error:'); return res.status(500).json({ error: 'Failed to load approvals' }); }
+  }));
 
-  router.post('/', deps.creditAdjust, async (req: AuthRequest, res: Response) => {
+  router.post('/', deps.creditAdjust, requestStepUp, asyncRouteBoundary(async (req: AuthRequest, res: Response) => {
     try {
-      const action = String(req.body.action_key ?? '');
-      const instructorId = String(req.body.instructor_id ?? '');
-      const amount = String(req.body.amount ?? '').trim();
-      const reason = String(req.body.reason ?? '').trim();
+      for (const key of ['action_key', 'instructor_id', 'amount', 'reason']) {
+        if (typeof req.body?.[key] !== 'string') return res.status(400).json({ error: 'Invalid approval fields' });
+      }
+      const action = String(req.body?.action_key ?? '');
+      const instructorId = String(req.body?.instructor_id ?? '');
+      const amount = String(req.body?.amount ?? '').trim();
+      const reason = String(req.body?.reason ?? '').trim();
       if (!['service_credit.credit', 'service_credit.debit'].includes(action) ||
           !/^[0-9a-f-]{36}$/i.test(instructorId) ||
           !/^(?:0|[1-9]\d{0,9})(?:\.\d{1,2})?$/.test(amount) || Number(amount) <= 0 ||
@@ -92,13 +110,13 @@ export const createAdminApprovalsRouter = (deps: AdminApprovalsRouterDeps): Rout
             JSON.stringify({ action, instructor_id: instructorId, amount }), reason]
         );
         await connection.commit();
-      } catch (error) { await connection.rollback(); throw error; }
+      } catch (error) { try { await connection.rollback(); } catch { /* Original failure stays primary. */ } throw error; }
       finally { connection.release(); }
       return res.status(201).json({ id, status: 'pending' });
-    } catch (error) { console.error('Create approval error:', error); return res.status(500).json({ error: 'Failed to create approval' }); }
-  });
+    } catch (error) { console.error('Create approval error:'); return res.status(500).json({ error: 'Failed to create approval' }); }
+  }));
 
-  router.post('/:id/approve', deps.approvalApprove, async (req: AuthRequest, res: Response) => {
+  router.post('/:id/approve', deps.approvalApprove, decisionStepUp, asyncRouteBoundary(async (req: AuthRequest, res: Response) => {
     const connection = await getConnection();
     try {
       await connection.beginTransaction();
@@ -127,15 +145,19 @@ export const createAdminApprovalsRouter = (deps: AdminApprovalsRouterDeps): Rout
         await connection.rollback();
         return res.status(409).json({ error: 'Approval contains an invalid adjustment amount' });
       }
+      // Re-prove the financial target on this connection before any effect.
+      const [targets] = await connection.execute('SELECT id FROM users WHERE id=? AND role=? AND is_active=1 FOR UPDATE', [approval.resource_id, 'instructor']);
+      if (!Array.isArray(targets) || targets.length !== 1) { await connection.rollback(); return res.status(409).json({ error: 'Adjustment target is no longer active' }); }
       const newBalance = await postServiceCreditAdjustment(connection, {
         instructorId: approval.resource_id, actorId: req.user!.id,
         type: approval.action_key === 'service_credit.credit' ? 'credit' : 'debit',
         amount: decodedValue.amount, reason: approval.reason,
       });
-      await connection.execute(
-        `UPDATE admin_approval_requests SET status='approved',decided_by=?,decided_at=UTC_TIMESTAMP() WHERE id=?`,
+      const [decision] = await connection.execute(
+        `UPDATE admin_approval_requests SET status='approved',decided_by=?,decided_at=UTC_TIMESTAMP() WHERE id=? AND status='pending'`,
         [req.user!.id, approval.id]
       );
+      requireOne(decision);
       await connection.execute(
         `INSERT INTO audit_events
          (id,actor_user_id,action,resource_type,resource_id,new_value,reason)
@@ -146,15 +168,15 @@ export const createAdminApprovalsRouter = (deps: AdminApprovalsRouterDeps): Rout
       await connection.commit();
       return res.json({ status: 'approved', new_balance: newBalance });
     } catch (error) {
-      await connection.rollback();
+      try { await connection.rollback(); } catch { /* Original failure stays primary. */ }
       if (error instanceof CreditAdjustmentError) return res.status(error.status).json({ error: error.message });
-      console.error('Approve adjustment error:', error);
+      console.error('Approve adjustment error:');
       return res.status(500).json({ error: 'Failed to approve adjustment' });
     } finally { connection.release(); }
-  });
+  }));
 
-  router.post('/:id/reject', deps.approvalApprove, async (req: AuthRequest, res: Response) => {
-    const reason = String(req.body.reason ?? '').trim();
+  router.post('/:id/reject', deps.approvalApprove, decisionStepUp, asyncRouteBoundary(async (req: AuthRequest, res: Response) => {
+    const reason = String(req.body?.reason ?? '').trim();
     if (reason.length < 3 || reason.length > 1000) return res.status(400).json({ error: 'Rejection reason is required' });
     const connection = await getConnection();
     try {
@@ -168,28 +190,43 @@ export const createAdminApprovalsRouter = (deps: AdminApprovalsRouterDeps): Rout
       if (approval.requested_by === req.user!.id && !(await deps.isSuperAdmin(req.user!.id))) {
         await connection.rollback(); return res.status(403).json({ error: 'Requester cannot decide own action' });
       }
-      await connection.execute(
-        `UPDATE admin_approval_requests SET status='rejected',decided_by=?,decided_at=UTC_TIMESTAMP(),decision_reason=? WHERE id=?`,
+      const [decision] = await connection.execute(
+        `UPDATE admin_approval_requests SET status='rejected',decided_by=?,decided_at=UTC_TIMESTAMP(),decision_reason=? WHERE id=? AND status='pending'`,
         [req.user!.id, reason, approval.id]
       );
+      requireOne(decision);
       await connection.execute(
         'INSERT INTO audit_events (id,actor_user_id,action,resource_type,resource_id,reason) VALUES (?,?,?,?,?,?)',
         [randomUUID(), req.user!.id, 'approval.rejected', 'approval', approval.id, reason]
       );
       await connection.commit();
       return res.json({ status: 'rejected' });
-    } catch (error) { await connection.rollback(); console.error('Reject approval error:', error); return res.status(500).json({ error: 'Failed to reject approval' }); }
+    } catch (error) { try { await connection.rollback(); } catch { /* Original failure stays primary. */ } console.error('Reject approval error:'); return res.status(500).json({ error: 'Failed to reject approval' }); }
     finally { connection.release(); }
-  });
+  }));
 
   return router;
 };
 
+let dbModule: Promise<typeof import('../db')> | undefined;
+const loadDb = () => {
+  dbModule ??= import('../db').catch(error => { dbModule = undefined; throw error; });
+  return dbModule;
+};
+
 export default createAdminApprovalsRouter({
-  db: { query, queryOne, getConnection: () => getPool().getConnection() },
+  db: {
+    query: async <T>(sql: string, params?: unknown[]) => (await loadDb()).query<T>(sql, params),
+    queryOne: async <T>(sql: string, params?: unknown[]) => (await loadDb()).queryOne<T>(sql, params),
+    getConnection: async () => (await loadDb()).getPool().getConnection(),
+  },
   authenticate: authenticateToken,
   approvalRead: requireAdminPermission('approval.read'),
   creditAdjust: requireAdminPermission('service_credit.adjust'),
   approvalApprove: requireAdminPermission('approval.approve'),
   isSuperAdmin,
+  requestStepUp: process.env.AUTH_LOGIN_SESSIONS_ENABLED === 'true'
+    ? createProductionSensitiveActionMfa({ permission: 'service_credit.adjust' }) : undefined,
+  decisionStepUp: process.env.AUTH_LOGIN_SESSIONS_ENABLED === 'true'
+    ? createProductionSensitiveActionMfa({ permission: 'approval.approve' }) : undefined,
 });

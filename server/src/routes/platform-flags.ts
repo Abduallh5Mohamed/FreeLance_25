@@ -22,6 +22,8 @@ import { Router, RequestHandler, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { AuthRequest } from '../middleware/auth';
 import { requireAdminPermission } from '../security/admin-permissions';
+import { createProductionSensitiveActionMfa } from '../security/sensitive-action-mfa-production';
+import { asyncRouteBoundary } from '../security/async-route-boundary';
 import {
     FeatureFlagsDataAccess,
     TargetingSpec,
@@ -36,6 +38,7 @@ import {
 import { SealedAuditRecordInput, recordSealedAuditEvent } from '../services/audit-log';
 
 export interface PlatformFlagsDeps {
+    sensitiveAction?: RequestHandler;
     db: FeatureFlagsDataAccess;
     authenticate: RequestHandler;
     /** Verified platform permission guard (server-owned rows only). */
@@ -81,6 +84,9 @@ export const createPlatformFlagsRouter = (deps: PlatformFlagsDeps): Router => {
     const writeAudit = deps.recordAudit;
     const readGuard = deps.requirePlatformPermission('platform_flags.read');
     const manageGuard = deps.requirePlatformPermission('platform_flags.manage');
+    const sensitiveAction: RequestHandler = deps.sensitiveAction
+        ? asyncRouteBoundary(deps.sensitiveAction)
+        : (_req, _res, next) => next();
     router.use(deps.authenticate);
 
     const loadFlagById = (id: string) =>
@@ -133,7 +139,7 @@ export const createPlatformFlagsRouter = (deps: PlatformFlagsDeps): Router => {
     // ---------------------------------------------------------------------
     // Create a flag (starts with no active version => enforced false)
     // ---------------------------------------------------------------------
-    router.post('/', manageGuard, async (req: AuthRequest, res: Response) => {
+    router.post('/', manageGuard, sensitiveAction, async (req: AuthRequest, res: Response) => {
         try {
             const user = req.user;
             if (!user) return res.status(401).json({ error: 'Authentication required' });
@@ -172,7 +178,7 @@ export const createPlatformFlagsRouter = (deps: PlatformFlagsDeps): Router => {
     // ---------------------------------------------------------------------
     // Publish a new targeting version
     // ---------------------------------------------------------------------
-    router.post('/:id/versions', manageGuard, async (req: AuthRequest, res: Response) => {
+    router.post('/:id/versions', manageGuard, sensitiveAction, async (req: AuthRequest, res: Response) => {
         try {
             const user = req.user;
             if (!user) return res.status(401).json({ error: 'Authentication required' });
@@ -257,7 +263,7 @@ export const createPlatformFlagsRouter = (deps: PlatformFlagsDeps): Router => {
     // ---------------------------------------------------------------------
     // Rollback the active pointer to an existing version
     // ---------------------------------------------------------------------
-    router.post('/:id/rollback', manageGuard, async (req: AuthRequest, res: Response) => {
+    router.post('/:id/rollback', manageGuard, sensitiveAction, async (req: AuthRequest, res: Response) => {
         try {
             const user = req.user;
             if (!user) return res.status(401).json({ error: 'Authentication required' });
@@ -309,7 +315,7 @@ export const createPlatformFlagsRouter = (deps: PlatformFlagsDeps): Router => {
     // ---------------------------------------------------------------------
     // Archive a flag (enforcement resolves false for archived flags)
     // ---------------------------------------------------------------------
-    router.post('/:id/archive', manageGuard, async (req: AuthRequest, res: Response) => {
+    router.post('/:id/archive', manageGuard, sensitiveAction, async (req: AuthRequest, res: Response) => {
         try {
             const user = req.user;
             if (!user) return res.status(401).json({ error: 'Authentication required' });
@@ -451,5 +457,8 @@ export default createPlatformFlagsRouter({
         return authenticateToken(req, res, next);
     },
     requirePlatformPermission: (permission) => requireAdminPermission(permission),
+    sensitiveAction: process.env.AUTH_LOGIN_SESSIONS_ENABLED === 'true'
+        ? createProductionSensitiveActionMfa({ permission: 'platform_flags.manage' })
+        : undefined,
     recordAudit: async (dataAccess, input) => recordSealedAuditEvent(dataAccess, input),
 });

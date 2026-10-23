@@ -37,6 +37,7 @@
 
 import { createDecipheriv, createCipheriv, createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import type { NextFunction, Request, Response } from 'express';
+import { validSessionId } from '../security/login-session';
 
 export const TOTP_STEP_SECONDS = 30;
 export const TOTP_WINDOW_STEPS = 1;
@@ -315,11 +316,20 @@ export interface LockoutState {
     lockedUntil: string | null;
 }
 
-const asNumber = (value: number | string | null | undefined): number => Number(value ?? 0);
+const securityInteger = (value: unknown, label: string): number => {
+    if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value))) {
+        throw new Error('Invalid MFA ' + label);
+    }
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error('Invalid MFA ' + label);
+    return parsed;
+};
 
 const lockoutOf = (row: MfaRow, nowMs: number): LockoutState => {
-    const lockedUntil = row.locked_until ? new Date(row.locked_until).getTime() : 0;
-    if (Number.isNaN(lockedUntil) || lockedUntil <= nowMs) return { locked: false, lockedUntil: null };
+    securityInteger(nowMs, 'clock');
+    const lockedUntil = row.locked_until === null ? 0 : new Date(row.locked_until).getTime();
+    if (!Number.isSafeInteger(lockedUntil) || lockedUntil < 0) throw new Error('Invalid MFA lockout');
+    if (lockedUntil <= nowMs) return { locked: false, lockedUntil: null };
     return { locked: true, lockedUntil: row.locked_until instanceof Date ? row.locked_until.toISOString() : String(row.locked_until) };
 };
 
@@ -351,7 +361,7 @@ export interface MfaVerifyDeps {
     now: () => number;
 }
 
-const rowStepupEpoch = (row: MfaRow): number => Math.max(1, asNumber(row.stepup_epoch) || 1);
+const rowStepupEpoch = (row: MfaRow): number => securityInteger(row.stepup_epoch, 'enrollment epoch');
 
 /**
  * Deny-by-default code verification. Reads the live row, refuses when
@@ -373,7 +383,9 @@ export const verifyTotpForUser = async (
         if (!row || (row.status !== 'active' && row.status !== 'pending') || !row.sealed_secret) {
             return { ok: false, reason: 'not_enrolled' };
         }
-        const state = lockoutOf(row, deps.now());
+        if (row.user_id !== userId) return { ok: false, reason: 'store_error' };
+        const nowMs = securityInteger(deps.now(), 'clock');
+        const state = lockoutOf(row, nowMs);
         if (state.locked) return { ok: false, reason: 'locked', lockedUntil: state.lockedUntil ?? undefined };
         const key = deps.sealKey();
         if (!key) return { ok: false, reason: 'key_unavailable' };
@@ -384,8 +396,8 @@ export const verifyTotpForUser = async (
             return { ok: false, reason: 'key_unavailable' };
         }
         const epoch = rowStepupEpoch(row);
-        const currentStep = stepForTime(deps.now());
-        const match = verifyTotpReplayChecked(secret, normalizeTotpInput(suppliedCode), currentStep, asNumber(row.last_used_step));
+        const currentStep = stepForTime(nowMs);
+        const match = verifyTotpReplayChecked(secret, normalizeTotpInput(suppliedCode), currentStep, securityInteger(row.last_used_step, 'replay step'));
         if (!match.ok || match.step === null) return { ok: false, reason: 'bad_code' };
         const consumed = await deps.store.markStepUsed(userId, match.step, epoch);
         if (consumed === 0) {
@@ -395,9 +407,10 @@ export const verifyTotpForUser = async (
             const replaced = !fresh || rowStepupEpoch(fresh) !== epoch || fresh.status === 'disabled';
             return { ok: false, reason: replaced ? 'stale_enrollment' : 'replayed' };
         }
+        if (consumed !== 1) return { ok: false, reason: 'store_error' };
         return { ok: true, stepUsed: match.step, epoch };
     } catch (error) {
-        console.error('MFA code verification failed:', error);
+        console.error('MFA code verification failed:');
         return { ok: false, reason: 'store_error' };
     }
 };
@@ -411,13 +424,17 @@ export const verifyRecoveryCodeForUser = async (
     try {
         const row = await deps.store.findRow(userId);
         if (!row || (row.status !== 'active' && row.status !== 'pending')) return { ok: false, reason: 'not_enrolled' };
-        const state = lockoutOf(row, deps.now());
+        if (row.user_id !== userId) return { ok: false, reason: 'store_error' };
+        const nowMs = securityInteger(deps.now(), 'clock');
+        const state = lockoutOf(row, nowMs);
         if (state.locked) return { ok: false, reason: 'locked', lockedUntil: state.lockedUntil ?? undefined };
+        const epoch = rowStepupEpoch(row);
         const consumed = await deps.store.consumeRecoveryCode(userId, recoveryCodeHash(suppliedCode));
         if (consumed === 0) return { ok: false, reason: 'bad_code' };
-        return { ok: true, epoch: rowStepupEpoch(row) };
+        if (consumed !== 1) return { ok: false, reason: 'store_error' };
+        return { ok: true, epoch };
     } catch (error) {
-        console.error('MFA recovery verification failed:', error);
+        console.error('MFA recovery verification failed:');
         return { ok: false, reason: 'store_error' };
     }
 };
@@ -443,6 +460,9 @@ export const signStepUpToken = (
     nowMs: number,
     claims: StepUpClaims = {},
 ): string => {
+    securityInteger(epoch, 'enrollment epoch');
+    securityInteger(nowMs, 'clock');
+    if (!Buffer.isBuffer(key) || key.length < MIN_MFA_SECRET_KEY_BYTES) throw new MfaKeyUnavailableError();
     const issuedAt = Math.floor(nowMs / 1000);
     const purpose = claims.purpose ?? STEPUP_PURPOSE;
     const sessionId = claims.sessionId ?? '';
@@ -485,7 +505,13 @@ export const verifyStepUpToken = (
         expectedSessionId?: string;
     },
 ): StepUpParse => {
-    if (typeof token !== 'string') return { ok: false, reason: 'malformed' };
+    if (typeof token !== 'string' || token.length > 4096
+        || !Number.isSafeInteger(options.currentEpoch) || options.currentEpoch < 0
+        || !Number.isSafeInteger(options.nowMs) || options.nowMs < 0
+        || !Number.isSafeInteger(options.maxAgeSeconds) || options.maxAgeSeconds <= 0
+        || !Buffer.isBuffer(options.key) || options.key.length < MIN_MFA_SECRET_KEY_BYTES) {
+        return { ok: false, reason: 'malformed' };
+    }
     const parts = token.split('.');
     if (parts.length !== 7 || parts[0] !== STEPUP_TOKEN_VERSION) return { ok: false, reason: 'malformed' };
     let userId: string;
@@ -502,7 +528,8 @@ export const verifyStepUpToken = (
     } catch {
         return { ok: false, reason: 'malformed' };
     }
-    if (!Number.isInteger(epoch) || !Number.isInteger(issuedAt) || issuedAt < 0) {
+    if (!/^\d+$/.test(parts[2]) || !/^\d+$/.test(parts[3])
+        || !Number.isSafeInteger(epoch) || epoch < 0 || !Number.isSafeInteger(issuedAt) || issuedAt < 0) {
         return { ok: false, reason: 'malformed' };
     }
     const expectedMac = createHmac('sha256', options.key)
@@ -555,8 +582,14 @@ export const createRequireStepUp = (
 ) => (maxAgeSeconds: number = DEFAULT_STEPUP_MAX_AGE_SECONDS, purpose: string = STEPUP_PURPOSE) =>
     async (req: Request & { user?: { id?: string; sessionId?: string } | null }, res: Response, next: NextFunction): Promise<void> => {
         const userId = req.user?.id;
+        res.set('Cache-Control', 'no-store');
         if (!userId) {
             res.status(401).json({ error: 'Authentication required' });
+            return;
+        }
+        const sessionId = req.user?.sessionId;
+        if (!validSessionId(sessionId)) {
+            res.status(403).json({ error: 'A session-bound login is required', code: 'MFA_SESSION_REQUIRED' });
             return;
         }
         try {
@@ -565,7 +598,22 @@ export const createRequireStepUp = (
                 res.status(503).json({ error: 'MFA encryption key unavailable; step-up denied' });
                 return;
             }
-            const epoch = await deps.store.currentStepupEpoch(userId);
+            const enrollment = await deps.store.findRow(userId);
+            if (!enrollment || enrollment.user_id !== userId || enrollment.status !== 'active') {
+                res.status(403).json({ error: 'Active MFA enrollment is required', code: 'MFA_ENROLLMENT_REQUIRED' });
+                return;
+            }
+            const rawEpoch = enrollment.stepup_epoch;
+            if ((typeof rawEpoch !== 'number' && typeof rawEpoch !== 'string')
+                || (typeof rawEpoch === 'string' && !/^\d+$/.test(rawEpoch))) {
+                res.status(503).json({ error: 'MFA step-up is unavailable; denied' });
+                return;
+            }
+            const epoch = Number(rawEpoch);
+            if (!Number.isSafeInteger(epoch) || epoch < 0) {
+                res.status(503).json({ error: 'MFA step-up is unavailable; denied' });
+                return;
+            }
             const verdict = verifyStepUpToken(req.headers?.[STEPUP_HEADER], {
                 expectedUserId: String(userId),
                 currentEpoch: epoch,
@@ -573,7 +621,7 @@ export const createRequireStepUp = (
                 nowMs: deps.now(),
                 maxAgeSeconds,
                 expectedPurpose: purpose,
-                expectedSessionId: req.user?.sessionId ?? '',
+                expectedSessionId: sessionId,
             });
             if (verdict.ok) {
                 next();
@@ -581,7 +629,6 @@ export const createRequireStepUp = (
             }
             res.status(403).json({ error: 'Recent MFA verification is required', code: `STEP_UP_${(verdict.reason ?? 'required').toUpperCase()}` });
         } catch (error) {
-            console.error('MFA step-up evaluation failed:', error);
             res.status(503).json({ error: 'MFA step-up is unavailable; denied' });
         }
     };
@@ -684,10 +731,10 @@ export const createSqlPlatformMfaStore = (db: PlatformMfaDb): PlatformMfaStore =
     },
     currentStepupEpoch: async (userId) => {
         const row = await db.queryOne<{ epoch: number | string | null }>(
-            `SELECT COALESCE(stepup_epoch, 1) AS epoch FROM platform_mfa_secrets WHERE user_id = ? LIMIT 1`,
+            `SELECT stepup_epoch AS epoch FROM platform_mfa_secrets WHERE user_id = ? LIMIT 1`,
             [userId],
         );
-        return Math.max(1, asNumber(row?.epoch) || 1);
+        return securityInteger(row?.epoch, 'enrollment epoch');
     },
     bumpStepupEpoch: async (userId) => {
         await db.execute(
@@ -723,7 +770,7 @@ const createSqlStoreNextEpoch = async (db: PlatformMfaDb, userId: string): Promi
         `SELECT stepup_epoch AS epoch FROM platform_mfa_secrets WHERE user_id = ? LIMIT 1`,
         [userId],
     );
-    return Math.max(1, asNumber(row?.epoch) || 1);
+    return securityInteger(row?.epoch, 'enrollment epoch');
 };
 
 /* ----------------------------------------------------------------------- */

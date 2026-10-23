@@ -28,6 +28,20 @@ import { hasVerifiedPlatformPermission } from '../security/admin-permissions';
 export type PlaybackSessionsDb = PlaybackStoreDb;
 
 /**
+ * Bounded, fixed-label failure logging.
+ *
+ * A raw driver or provider error object carries `sql`, `sqlMessage`, bound
+ * parameters, request URLs and (for delivery paths) ticket or signature
+ * material, so printing it writes all of that into the server log. The label is
+ * the only thing emitted; the object's message, code and shape are never
+ * echoed. Callers keep their own fixed label so the log stays greppable.
+ */
+const logPlaybackFailure = (label: string, error: unknown): void => {
+    void error;
+    console.error(`[Playback] ${label}`);
+};
+
+/**
  * Roles that may act as support at all. The label alone is never authority:
  * see `resolveSupportAuthority`.
  */
@@ -117,7 +131,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         try {
             platformAuthorized = await hasPlatformCapability(actor.id);
         } catch (error) {
-            console.error('[Playback] Platform capability lookup failed:', error);
+            logPlaybackFailure('Platform capability lookup failed', error);
             return { allowed: false, status: 503, body: { error: 'authority_unavailable' } };
         }
         if (!platformAuthorized) {
@@ -159,7 +173,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
         try {
             result = await registry.revokeSession(input);
         } catch (error) {
-            console.error('[Playback] Durable session revocation failed:', error);
+            logPlaybackFailure('Durable session revocation failed', error);
             return { status: 500, body: { error: 'revoke_failed' } };
         }
         if (!result.revoked) {
@@ -169,7 +183,7 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
             try {
                 await deps.killDeliverySession(input.sessionId, input.reason);
             } catch (error) {
-                console.error('[Playback] Local delivery session close failed after a committed revoke:', error);
+                logPlaybackFailure('Local delivery session close failed after a committed revoke', error);
             }
         }
         return { status: 200, body: { ...result } };
@@ -179,20 +193,35 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
     const startHandler = async (req: Request, res: Response) => {
         const user = getUser(req);
         const body = (req.body ?? {}) as Record<string, unknown>;
-        const tenantId = str(body.tenantId) ?? str(user.tenantId) ?? str(user.tenant_id);
-        const userId = str(body.userId) ?? str(user.id) ?? str(user.userId);
-        if (!tenantId || !userId) {
-            return res.status(400).json({ error: 'tenantId and userId required' });
-        }
+        // The tenant is SERVER-DERIVED and authoritative. It used to be read
+        // from the body first with the authenticated claim as a fallback, so a
+        // principal carrying no tenant claim could name any tenant at all. The
+        // body value is now only ever compared, never adopted.
         const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
-        if (userTenantId && tenantId !== userTenantId) {
+        if (!userTenantId) {
+            return res.status(403).json({ error: 'An active tenant workspace is required' });
+        }
+        const tenantId = userTenantId;
+        const requestedTenant = str(body.tenantId);
+        if (requestedTenant && requestedTenant !== tenantId) {
             return res.status(403).json({ error: 'tenant_mismatch' });
         }
-        const userIdClaim = str(user.id) ?? str(user.userId);
+        // The acting user is the authenticated principal. A body `userId` is
+        // honoured only for an explicitly privileged actor, and only as an
+        // audited act-on-behalf-of — never as a silent identity substitution.
+        const authenticatedUserId = str(user.id) ?? str(user.userId);
+        if (!authenticatedUserId) {
+            return res.status(401).json({ error: 'Authentication required' });
+        }
+        const requestedUserId = str(body.userId);
         const userRole = str(user.role);
         const privileged = userRole === 'admin' || userRole === 'super_admin' || userRole === 'instructor' || userRole === 'teacher' || userRole === 'staff';
-        if (userIdClaim && userId !== userIdClaim && !privileged) {
-            return res.status(403).json({ error: 'user_mismatch' });
+        let userId = authenticatedUserId;
+        if (requestedUserId && requestedUserId !== authenticatedUserId) {
+            if (!privileged) {
+                return res.status(403).json({ error: 'user_mismatch' });
+            }
+            userId = requestedUserId;
         }
 
         const assetId = str(body.assetId) ?? str(body.videoId) ?? str(body.lessonId);
@@ -230,16 +259,26 @@ export function createPlaybackSessionsRouter(deps: PlaybackSessionsDeps = {}): R
             });
         }
 
-        // watermark payload (partial identity only)
+        // Watermark payload. The identity is SERVER-DERIVED ONLY.
+        //
+        // `name`/`phone`/`email` previously fell back to `body.studentName` /
+        // `body.studentPhone` / `body.studentEmail`, and `forensicCode` /
+        // `groupLabel` came straight from the body. A viewer could therefore
+        // embed another person's identity, phone suffix or email domain into
+        // their own watermark and misattribute any leak. The authenticated
+        // principal is now the only source; a field the server does not hold is
+        // simply absent from the watermark rather than caller-supplied.
         const identityInput: WatermarkInput = {
             studentId: userId,
-            name: str(user.name) ?? str(body.studentName),
-            phone: str(user.phone) ?? str(body.studentPhone),
-            email: str(user.email) ?? str(body.studentEmail),
+            name: str(user.name),
+            phone: str(user.phone),
+            email: str(user.email),
             tenantId,
-            groupLabel: str(body.groupName) ?? str(body.groupLabel),
+            groupLabel: str(user.groupName) ?? str(user.groupLabel),
             sessionId,
-            forensicCode: str(body.forensicCode) ?? `${sessionId.slice(0, 8)}`,
+            // Server-derived from the session it identifies, never from the
+            // request body.
+            forensicCode: `ps-${sessionId.slice(0, 8)}`,
         };
         const watermark: WatermarkPayload = generateWatermarkPayload(identityInput, { now });
 

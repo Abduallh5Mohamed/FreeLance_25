@@ -28,6 +28,10 @@
  * probe. Timeout handles are always cleared, so a probe leaves no timer behind
  * and no background timer is started. Liveness and dependency readiness stay
  * separate concepts: `/healthz` never runs a dependency check.
+ * Each configured probe has one underlying operation in flight. A timeout
+ * keeps that slot occupied until the actual operation settles, so repeated
+ * requests cannot launch unbounded work against a hung driver. This is an
+ * admission bound, not SQL cancellation; stuck work keeps readiness false.
  *
  * An empty readiness list is NOT treated as ready: a deployment that wires no
  * checks looks identical to a broken one, so it reports `not_ready` unless the
@@ -243,13 +247,56 @@ const runBounded = async <T>(task: () => T | Promise<T>, timeoutMs: number): Pro
 };
 
 /**
+ * Admit at most one underlying operation per configured probe. A timed-out
+ * response does not mean that a driver operation stopped: retain its flight
+ * until the operation actually settles, and reuse the already-bounded result
+ * for subsequent requests. In particular, repeated requests after a timeout
+ * neither start another query nor subscribe again to a never-settling query.
+ *
+ * Concurrent callers share the result, but each caller still has its own
+ * remaining readiness budget. Only that bounded result is awaited repeatedly;
+ * the underlying operation has one completion/rejection observer. No retry
+ * timer or request-keyed map is retained. A genuinely stuck operation keeps
+ * this probe unavailable until it settles (or the host is restarted); this
+ * does not claim SQL cancellation or connection disposal.
+ */
+const createSingleFlightProbe = <T>(task: () => T | Promise<T>) => {
+    let current: { result: Promise<BoundedResult<T>> } | null = null;
+
+    return (timeoutMs: number): Promise<BoundedResult<T>> => {
+        if (current !== null) {
+            const result = current.result;
+            return runBounded(() => result, timeoutMs).then((outcome): BoundedResult<T> =>
+                outcome.ok ? outcome.value : { ok: false });
+        }
+
+        const flight = { result: Promise.resolve<BoundedResult<T>>({ ok: false }) };
+        current = flight;
+        const attempt = Promise.resolve().then(task).then(
+            (value) => {
+                if (current === flight) current = null;
+                return value;
+            },
+            (error: unknown) => {
+                if (current === flight) current = null;
+                throw error;
+            },
+        );
+        flight.result = runBounded(() => attempt, timeoutMs);
+        return flight.result;
+    };
+};
+
+/**
  * Router exposing `/metrics`, `/healthz` and `/readyz`. Mount it at the
  * application root (paths already include their leading slash).
  */
 export function createOpsRouter(deps: ObservabilityDeps): Router {
     const router = Router();
-    const liveness = deps.liveness ?? (() => true);
-    const readiness = deps.readiness ?? [];
+    const liveness = createSingleFlightProbe(deps.liveness ?? (() => true));
+    // Fixed, router-owned slots: no state grows with request count or input.
+    const readiness = (deps.readiness ?? []).map((dependency) =>
+        createSingleFlightProbe(() => dependency.check()));
     const checkTimeoutMs = boundedMs(deps.checkTimeoutMs, DEFAULT_CHECK_TIMEOUT_MS);
     const readinessBudgetMs = boundedMs(deps.readinessBudgetMs, DEFAULT_READINESS_BUDGET_MS);
 
@@ -269,7 +316,7 @@ export function createOpsRouter(deps: ObservabilityDeps): Router {
     });
 
     router.get('/healthz', async (_req: Request, res: Response) => {
-        const outcome = await runBounded(liveness, checkTimeoutMs);
+        const outcome = await liveness(checkTimeoutMs);
         const alive = outcome.ok && Boolean(outcome.value);
         res.setHeader('Cache-Control', 'no-store');
         res.status(alive ? 200 : 503).json({ status: alive ? 'ok' : 'unavailable' });
@@ -280,13 +327,13 @@ export function createOpsRouter(deps: ObservabilityDeps): Router {
         // opt-in, otherwise an unwired deployment must report not-ready.
         let ready = readiness.length > 0 || deps.readinessOptIn === true;
         const deadline = performance.now() + readinessBudgetMs;
-        for (const dependency of readiness) {
+        for (const check of readiness) {
             const remaining = deadline - performance.now();
             if (remaining <= 0) {
                 ready = false;
                 break;
             }
-            const outcome = await runBounded(dependency.check, Math.min(checkTimeoutMs, remaining));
+            const outcome = await check(Math.min(checkTimeoutMs, remaining));
             if (!outcome.ok || !outcome.value) ready = false;
         }
         res.setHeader('Cache-Control', 'no-store');

@@ -18,6 +18,7 @@ import {
 } from '../security/identity-scope';
 import { normalizeBranchId } from '../security/branch-access';
 import type { ImpersonationContext } from '../services/impersonation';
+import { isLoginSessionLive, validSessionId } from '../security/login-session';
 
 export const getJwtSecret = (): Secret => {
     const secret = process.env.JWT_SECRET;
@@ -101,6 +102,8 @@ const isInstructorBillingPath = (req: Request, userId: string) => {
 };
 
 interface TokenClaims {
+    sid?: unknown;
+    type?: unknown;
     id: string;
     role: string;
     email?: string | null;
@@ -159,6 +162,30 @@ async function resolvePrincipal(claims: TokenClaims, req: Request, repository: P
         identitySource = 'staff';
     } else {
         return { ok: false, failure: revoked('Session revoked') };
+    }
+
+    // A derived workspace token must not shed durable revocation authority.
+    // The issuance owner must preserve sid before enabling this rollout.
+    if (process.env.AUTH_LOGIN_SESSIONS_ENABLED === 'true'
+        && claims.type === 'student_scoped' && claims.sid === undefined) {
+        return { ok: false, failure: revoked('Select the workspace from a session-bound login', 'SESSION_REQUIRED') };
+    }
+    let sessionId: string | undefined;
+    if (claims.sid !== undefined) {
+        if (!validSessionId(claims.sid)) return { ok: false, failure: revoked('Session revoked') };
+        if (typeof repository.findLoginSession !== 'function') {
+            return { ok: false, failure: { status: 503, body: { error: 'Session verification unavailable' } } };
+        }
+        try {
+            const row = await repository.findLoginSession(claims.sid, claims.id);
+            if (!isLoginSessionLive(row, {
+                id: claims.sid, userId: claims.id, identitySource,
+                tokenVersion: Number(claims.tv ?? 0),
+            }, Date.now())) return { ok: false, failure: revoked('Session revoked') };
+            sessionId = claims.sid;
+        } catch {
+            return { ok: false, failure: { status: 503, body: { error: 'Session verification unavailable' } } };
+        }
     }
 
     let billingOnly = false;
@@ -263,6 +290,7 @@ async function resolvePrincipal(claims: TokenClaims, req: Request, repository: P
             gradeId,
             tokenVersion: Number(claims.tv || 0),
             identitySource,
+            sessionId,
             branchId,
             branchMembershipVersion,
             branchRole,

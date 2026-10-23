@@ -129,8 +129,12 @@ function trustedProxyAddresses(value: string | undefined): string[] {
     return value ? value.split(',').map((address) => address.trim()).filter(Boolean) : [];
 }
 
-function getErrorResponse(error: Error) {
-    if (error.name === 'MulterError') {
+function getErrorResponse(error: unknown) {
+    const record = typeof error === 'object' && error !== null ? error as { name?: unknown; type?: unknown } : {};
+    if (record.type === 'entity.parse.failed') return { status: 400, body: { error: 'Invalid JSON body' } };
+    if (record.type === 'entity.too.large') return { status: 413, body: { error: 'Request body too large' } };
+    if (record.type === 'request.aborted') return { status: 400, body: { error: 'Request interrupted' } };
+    if (record.name === 'MulterError') {
         return { status: 400, body: { error: 'ملف الإثبات غير صالح أو يتجاوز الحد الأقصى 8MB' } };
     }
     return { status: 500, body: { error: 'Internal server error', message: 'Internal server error' } };
@@ -297,9 +301,16 @@ app.use((req: Request, res: Response) => {
 });
 
 // Error handler
-app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
-    console.error('Error:', err);
+app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
     const response = getErrorResponse(err);
+    // Driver exceptions may contain SQL, bound parameters and provider URLs.
+    // Log only the classified status, never the upstream exception/body.
+    console.error('Request failed', { status: response.status });
+    if (res.destroyed || res.writableEnded) return;
+    if (res.headersSent) {
+        next(new Error('Request failed after response started'));
+        return;
+    }
     res.status(response.status).json(response.body);
 });
 

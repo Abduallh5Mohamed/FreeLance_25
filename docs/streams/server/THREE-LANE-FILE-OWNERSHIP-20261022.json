@@ -258,7 +258,8 @@
     },
     "server/src/routes/assignments.ts": {
       "owner": "workbuddy",
-      "group": "academic"
+      "group": "academic",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/src/routes/attendance-records.ts": {
       "owner": "workbuddy",
@@ -366,11 +367,11 @@
       "owner": "codex"
     },
     "server/src/routes/notification-consent.ts": {
-      "owner": "workbuddy",
+      "owner": "opencode",
       "group": "notifications"
     },
     "server/src/routes/notifications.ts": {
-      "owner": "workbuddy",
+      "owner": "opencode",
       "group": "notifications"
     },
     "server/src/routes/ops.ts": {
@@ -424,7 +425,8 @@
     },
     "server/src/routes/search.ts": {
       "owner": "workbuddy",
-      "group": "media"
+      "group": "media",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/src/routes/secure-video.ts": {
       "owner": "workbuddy",
@@ -462,7 +464,8 @@
     },
     "server/src/routes/tenant-export.ts": {
       "owner": "workbuddy",
-      "group": "media"
+      "group": "media",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/src/routes/tenant-invitations.ts": {
       "owner": "codex"
@@ -519,15 +522,18 @@
     },
     "server/src/services/assignment-scan-worker.ts": {
       "owner": "workbuddy",
-      "group": "academic"
+      "group": "academic",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/src/services/assignment-storage.ts": {
       "owner": "workbuddy",
-      "group": "academic"
+      "group": "academic",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/src/services/assignments.ts": {
       "owner": "workbuddy",
-      "group": "academic"
+      "group": "academic",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/src/services/attendance-records.ts": {
       "owner": "workbuddy",
@@ -565,7 +571,7 @@
       "owner": "codex"
     },
     "server/src/services/delivery-channels.ts": {
-      "owner": "workbuddy",
+      "owner": "opencode",
       "group": "notifications"
     },
     "server/src/services/domain-verification.ts": {
@@ -608,7 +614,8 @@
     },
     "server/src/services/media-usage-reconciliation.ts": {
       "owner": "workbuddy",
-      "group": "media"
+      "group": "media",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/src/services/metrics.ts": {
       "owner": "codex"
@@ -620,19 +627,19 @@
       "owner": "codex"
     },
     "server/src/services/notification-consent.ts": {
-      "owner": "workbuddy",
+      "owner": "opencode",
       "group": "notifications"
     },
     "server/src/services/notification-outbox.ts": {
-      "owner": "workbuddy",
+      "owner": "opencode",
       "group": "notifications"
     },
     "server/src/services/notification-preferences.ts": {
-      "owner": "workbuddy",
+      "owner": "opencode",
       "group": "notifications"
     },
     "server/src/services/notification-worker.ts": {
-      "owner": "workbuddy",
+      "owner": "opencode",
       "group": "notifications"
     },
     "server/src/services/parent-links.ts": {
@@ -682,7 +689,8 @@
     },
     "server/src/services/search.ts": {
       "owner": "workbuddy",
-      "group": "media"
+      "group": "media",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/src/services/service-credit.ts": {
       "owner": "codex"
@@ -701,7 +709,8 @@
     },
     "server/src/services/tenant-export.ts": {
       "owner": "workbuddy",
-      "group": "media"
+      "group": "media",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/src/services/tenant-host.ts": {
       "owner": "codex"
@@ -711,7 +720,8 @@
     },
     "server/src/services/video-asset-lifecycle.ts": {
       "owner": "workbuddy",
-      "group": "media"
+      "group": "media",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/src/services/video-processor.ts": {
       "owner": "workbuddy",
@@ -741,7 +751,7 @@
       "owner": "codex"
     },
     "server/src/utils/notifications.ts": {
-      "owner": "workbuddy",
+      "owner": "opencode",
       "group": "notifications"
     },
     "server/tests/auth-boundary.test.ts": {
@@ -1736,15 +1746,18 @@
     },
     "server/src/services/live-session-core.ts": {
       "owner": "workbuddy",
-      "group": "media"
+      "group": "media",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/src/routes/live-sessions.ts": {
       "owner": "workbuddy",
-      "group": "media"
+      "group": "media",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/src/services/live-recording-ingest.ts": {
       "owner": "workbuddy",
-      "group": "media"
+      "group": "media",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/tests/live-session-core.test.ts": {
       "owner": "workbuddy",
@@ -1774,6 +1787,394 @@
     "docs/streams/server/WORKBUDDY-CLOSURE-NOTIFICATIONS-20261022.md": {
       "owner": "workbuddy",
       "group": "notifications"
+    },
+    "server/src/services/student-relations.ts": {
+      "owner": "claude",
+      "allocation": "X1",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/tests/student-relations.test.ts": {
+      "owner": "claude",
+      "allocation": "X1",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/src/services/student-relations-sql.ts": {
+      "owner": "claude",
+      "allocation": "X2",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/tests/student-relations-sql.test.ts": {
+      "owner": "claude",
+      "allocation": "X2",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/src/services/billing-invoices.ts": {
+      "owner": "claude",
+      "allocation": "X3",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/src/services/billing-snapshots.ts": {
+      "owner": "claude",
+      "allocation": "X3",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/tests/billing-invoices.test.ts": {
+      "owner": "claude",
+      "allocation": "X3",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/tests/billing-snapshots.test.ts": {
+      "owner": "claude",
+      "allocation": "X3",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/src/services/billing-collection.ts": {
+      "owner": "claude",
+      "allocation": "X4",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/tests/billing-collection.test.ts": {
+      "owner": "claude",
+      "allocation": "X4",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/src/services/billing-invoices-sql.ts": {
+      "owner": "claude",
+      "allocation": "X5",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/src/services/billing-collection-sql.ts": {
+      "owner": "claude",
+      "allocation": "X5",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/tests/billing-invoices-sql.test.ts": {
+      "owner": "claude",
+      "allocation": "X5",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/tests/billing-collection-sql.test.ts": {
+      "owner": "claude",
+      "allocation": "X5",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/src/services/payment-checkout.ts": {
+      "owner": "claude",
+      "allocation": "X6",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/tests/payment-checkout.test.ts": {
+      "owner": "claude",
+      "allocation": "X6",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/src/services/billing-payouts.ts": {
+      "owner": "claude",
+      "allocation": "X7",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/src/services/billing-refunds.ts": {
+      "owner": "claude",
+      "allocation": "X7",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/tests/billing-payouts.test.ts": {
+      "owner": "claude",
+      "allocation": "X7",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/tests/billing-refunds.test.ts": {
+      "owner": "claude",
+      "allocation": "X7",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/migrations/20261022_01_student_relations_events.sql": {
+      "owner": "claude",
+      "allocation": "X8",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/migrations/20261022_02_billing_invoices_collections.sql": {
+      "owner": "claude",
+      "allocation": "X8",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/migrations/20261022_03_payments_payouts_refunds.sql": {
+      "owner": "claude",
+      "allocation": "X8",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/tests/b3-schema-contract.test.ts": {
+      "owner": "claude",
+      "allocation": "X8",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "docs/contracts/B3-SCHEMA-CONTRACT-20261022.md": {
+      "owner": "claude",
+      "allocation": "X8",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "docs/streams/server/CL-A-IDENTITY-20261022.md": {
+      "owner": "claude",
+      "allocation": "X9",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "docs/streams/server/CL-B-BILLING-20261022.md": {
+      "owner": "claude",
+      "allocation": "X9",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "docs/streams/server/CL-C-SCHEMA-20261022.md": {
+      "owner": "claude",
+      "allocation": "X9",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "docs/streams/server/CL-D-PARENT-20261022.md": {
+      "owner": "claude",
+      "allocation": "X9",
+      "sourceScope": "claude-x1-x9-20261022"
+    },
+    "server/migrations/20261022_03_payments_checkout.sql": {
+      "owner": "claude",
+      "allocation": "post-session-financial-source",
+      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+    },
+    "server/migrations/20261022_04_payouts_refunds_disputes.sql": {
+      "owner": "claude",
+      "allocation": "post-session-financial-source",
+      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+    },
+    "server/src/services/payment-checkout-sql.ts": {
+      "owner": "claude",
+      "allocation": "post-session-financial-source",
+      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+    },
+    "server/src/services/billing-payouts-sql.ts": {
+      "owner": "claude",
+      "allocation": "post-session-financial-source",
+      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+    },
+    "server/src/services/billing-refunds-sql.ts": {
+      "owner": "claude",
+      "allocation": "post-session-financial-source",
+      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+    },
+    "server/tests/payment-checkout-sql.test.ts": {
+      "owner": "claude",
+      "allocation": "post-session-financial-source",
+      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+    },
+    "server/tests/billing-payouts-sql.test.ts": {
+      "owner": "claude",
+      "allocation": "post-session-financial-source",
+      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+    },
+    "server/tests/billing-refunds-sql.test.ts": {
+      "owner": "claude",
+      "allocation": "post-session-financial-source",
+      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+    },
+    "server/src/services/billing-read-models.ts": {
+      "owner": "claude",
+      "allocation": "post-session-financial-source",
+      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+    },
+    "server/tests/billing-read-models.test.ts": {
+      "owner": "claude",
+      "allocation": "post-session-financial-source",
+      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+    },
+    "server/migrations/20261022_06_live_sessions_recordings.sql": {
+      "owner": "claude",
+      "allocation": "live-v2-source-schema",
+      "sourceScope": "live-source-contract-r12-r15-20261022"
+    },
+    "server/tests/live-schema-contract.test.ts": {
+      "owner": "claude",
+      "allocation": "live-v2-source-schema",
+      "sourceScope": "live-source-contract-r12-r15-20261022"
+    },
+    "docs/streams/server/CL-E-LIVE-SCHEMA-20261022.md": {
+      "owner": "claude",
+      "allocation": "live-v2-source-schema",
+      "sourceScope": "live-source-contract-r12-r15-20261022"
+    },
+    "server/src/services/live-session-sql.ts": {
+      "owner": "workbuddy",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
+    },
+    "server/src/services/live-recording-ingest-sql.ts": {
+      "owner": "workbuddy",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
+    },
+    "server/src/services/live-recording-recovery.ts": {
+      "owner": "workbuddy",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
+    },
+    "server/src/services/live-presence-sql.ts": {
+      "owner": "workbuddy",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
+    },
+    "server/src/services/live-runtime-factory.ts": {
+      "owner": "workbuddy",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
+    },
+    "docs/streams/server/WORKBUDDY-LIVE-PERSISTENCE-RECOVERY-20261023.md": {
+      "owner": "workbuddy",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
+    },
+    "scripts/build-m1-bootstrap.mjs": {
+      "owner": "codex",
+      "registrationBasis": "Owner requested large concurrent continuation 2026-10-23; exact paths registered before writing; source only."
+    },
+    "docs/streams/server/CODEX-BOOTSTRAP-CANONICAL-HASH-20261023.md": {
+      "owner": "codex",
+      "registrationBasis": "Owner requested large concurrent continuation 2026-10-23; exact paths registered before writing; source only."
+    },
+    "server/src/services/billing-settlement.ts": {
+      "owner": "claude",
+      "registrationBasis": "Existing owner-approved financial allocation; technical settlement obligation continuation 2026-10-23, source only."
+    },
+    "server/src/services/billing-settlement-sql.ts": {
+      "owner": "claude",
+      "registrationBasis": "Existing owner-approved financial allocation; technical settlement obligation continuation 2026-10-23, source only."
+    },
+    "server/migrations/20261023_01_financial_settlement_obligations.sql": {
+      "owner": "claude",
+      "registrationBasis": "Existing owner-approved financial allocation; technical settlement obligation continuation 2026-10-23, source only."
+    },
+    "server/migrations/20261023_02_live_callback_presence_contract.sql": {
+      "owner": "claude",
+      "registrationBasis": "Source continuation of existing owner-approved financial and live schema allocation; exact R22/R23 and platform lifecycle contracts 2026-10-23."
+    },
+    "server/migrations/20261023_03_platform_obligation_lifecycle.sql": {
+      "owner": "claude",
+      "registrationBasis": "Source continuation of existing owner-approved financial and live schema allocation; exact R22/R23 and platform lifecycle contracts 2026-10-23."
+    },
+    "server/src/services/notification-contact-sql.ts": {
+      "owner": "opencode",
+      "registrationBasis": "Four-lane notification source closure 2026-10-23"
+    },
+    "server/src/services/notification-runtime-factory.ts": {
+      "owner": "opencode",
+      "registrationBasis": "Four-lane notification source closure 2026-10-23"
+    },
+    "server/src/services/notification-dispatch-recovery.ts": {
+      "owner": "opencode",
+      "registrationBasis": "Four-lane notification source closure 2026-10-23"
+    },
+    "docs/streams/server/OPENCODE-NOTIFICATION-CLOSURE-20261023.md": {
+      "owner": "opencode",
+      "registrationBasis": "Four-lane notification source closure 2026-10-23"
+    },
+    "server/src/security/async-route-boundary.ts": {
+      "owner": "codex"
+    },
+    "docs/streams/server/FOUR-LANE-MASTER-20261023.md": {
+      "owner": "codex"
+    },
+    "server/src/security/login-session.ts": {
+      "owner": "codex",
+      "registrationBasis": "Explicit owner instruction execute Codex session/MFA work 2026-10-23"
+    },
+    "server/migrations/20261023_04_live_recovery_checkpoint.sql": {
+      "owner": "claude",
+      "registrationBasis": "F1-F4 source continuation of approved live allocation 2026-10-23"
+    },
+    "server/src/security/login-session-sql.ts": {
+      "owner": "codex",
+      "registrationBasis": "Owner authorized continued Codex session implementation alongside WorkBuddy 2026-10-23"
+    },
+    "server/src/security/sensitive-action-mfa-production.ts": {
+      "owner": "codex",
+      "registrationBasis": "Owner requested continued session and MFA source integration 2026-10-23"
+    },
+    "server/src/services/assignment-cleanup-recovery.ts": {
+      "owner": "workbuddy",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
+    },
+    "server/src/services/assignment-recovery-factory.ts": {
+      "owner": "workbuddy",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
+    },
+    "docs/streams/server/WORKBUDDY-ASSIGNMENT-RECOVERY-20261023.md": {
+      "owner": "workbuddy",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
+    },
+    "server/migrations/20261023_05_assignment_cleanup_scan_fencing.sql": {
+      "owner": "claude",
+      "registrationBasis": "Source continuation of existing academic/storage cleanup allocation; exact schema/store paths 2026-10-23"
+    },
+    "server/src/services/assignment-cleanup-sql.ts": {
+      "owner": "workbuddy",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
+    },
+    "docs/streams/server/WORKBUDDY-SEARCH-EXPORT-CLOSURE-20261023.md": {
+      "owner": "workbuddy",
+      "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     }
-  }
+  },
+  "extensions": {
+    "claude-x1-x9-20261022": {
+      "approvedAt": "2026-10-21T23:06:32.863Z",
+      "basis": "Owner explicitly authorized remaining three-lane implementation with supervised agents; exact X1-X9 request independently read from CLAUDE-LANE-ALLOCATION-20261022.md; no new product policy or live operations authorized.",
+      "paths": 29
+    },
+    "post-session-financial-source": {
+      "approvedAt": "2026-10-22T03:46:56.109Z",
+      "basis": "Same owner-approved remaining financial source scope. Actual03 checkout filename reconciled prospectively, previous deviation remains recorded. Source/adapters/readmodels only; unresolved economic policy held. Implementation depends on reviewed domain/schema corrections; no live or API mounting.",
+      "paths": 10
+    }
+  },
+  "allocationMode": "four-lane",
+  "currentMaster": "docs/streams/server/FOUR-LANE-MASTER-20261023.md",
+  "ownershipTransfers": [
+    {
+      "path": "server/src/routes/notification-consent.ts",
+      "from": "workbuddy",
+      "to": "opencode",
+      "basis": "Owner explicitly requested four independent workers 2026-10-23; live tasks have no notification files; historical reports retain their historical scope."
+    },
+    {
+      "path": "server/src/routes/notifications.ts",
+      "from": "workbuddy",
+      "to": "opencode",
+      "basis": "Owner explicitly requested four independent workers 2026-10-23; live tasks have no notification files; historical reports retain their historical scope."
+    },
+    {
+      "path": "server/src/services/delivery-channels.ts",
+      "from": "workbuddy",
+      "to": "opencode",
+      "basis": "Owner explicitly requested four independent workers 2026-10-23; live tasks have no notification files; historical reports retain their historical scope."
+    },
+    {
+      "path": "server/src/services/notification-consent.ts",
+      "from": "workbuddy",
+      "to": "opencode",
+      "basis": "Owner explicitly requested four independent workers 2026-10-23; live tasks have no notification files; historical reports retain their historical scope."
+    },
+    {
+      "path": "server/src/services/notification-outbox.ts",
+      "from": "workbuddy",
+      "to": "opencode",
+      "basis": "Owner explicitly requested four independent workers 2026-10-23; live tasks have no notification files; historical reports retain their historical scope."
+    },
+    {
+      "path": "server/src/services/notification-preferences.ts",
+      "from": "workbuddy",
+      "to": "opencode",
+      "basis": "Owner explicitly requested four independent workers 2026-10-23; live tasks have no notification files; historical reports retain their historical scope."
+    },
+    {
+      "path": "server/src/services/notification-worker.ts",
+      "from": "workbuddy",
+      "to": "opencode",
+      "basis": "Owner explicitly requested four independent workers 2026-10-23; live tasks have no notification files; historical reports retain their historical scope."
+    },
+    {
+      "path": "server/src/utils/notifications.ts",
+      "from": "workbuddy",
+      "to": "opencode",
+      "basis": "Owner explicitly requested four independent workers 2026-10-23; live tasks have no notification files; historical reports retain their historical scope."
+    }
+  ]
 }

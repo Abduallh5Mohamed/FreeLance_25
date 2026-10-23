@@ -34,7 +34,8 @@ export interface ProgressWriteResult {
         | 'rate_limited'
         | 'tenant_mismatch'
         | 'student_mismatch'
-        | 'device_not_permitted';
+        | 'device_not_permitted'
+        | 'session_not_active';
 }
 
 export interface ResumeResult {
@@ -104,6 +105,34 @@ export interface PlaybackProgressService {
 const keyOf = (tenantId: string, enrollmentId: string, assetId: string) =>
     `${tenantId}\u0000${enrollmentId}\u0000${assetId}`;
 
+/**
+ * Strict non-negative integer seconds.
+ *
+ * `Number(x)` accepted `''`, `null`, `[]`, `true`, `' '` and `'12.7'`; the first
+ * four coerce to 0/1 and sailed through the finite check, so a malformed
+ * position was recorded as a real one. A DB row with a non-numeric
+ * `position_seconds` produced `NaN`, and `NaN < x` is false — which silently
+ * bypassed the monotonic guard and wrote `NaN` back as `accepted: true`.
+ *
+ * Anything that is not a non-negative safe integer is refused by the caller as
+ * invalid input, never coerced.
+ */
+function parseSeconds(value: unknown): number | null {
+    if (typeof value === 'number') {
+        return Number.isSafeInteger(value) && value >= 0 ? value : null;
+    }
+    if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+        const parsed = Number(value.trim());
+        return Number.isSafeInteger(parsed) ? parsed : null;
+    }
+    return null;
+}
+
+/** Ids must be non-empty strings; `''` is not a tenant, enrollment or asset. */
+function isUsableId(value: unknown): value is string {
+    return typeof value === 'string' && value.trim().length > 0;
+}
+
 export function createPlaybackProgressService(deps: PlaybackProgressDeps = {}): PlaybackProgressService {
     const nowFn = deps.now ?? (() => new Date());
     const minProgressInterval = deps.minProgressIntervalMs ?? 2000;
@@ -138,16 +167,16 @@ export function createPlaybackProgressService(deps: PlaybackProgressDeps = {}): 
         sessionId?: string | null;
         now?: Date;
     }): ProgressWriteResult => {
-        if (!input || typeof input.tenantId !== 'string' || typeof input.studentEnrollmentId !== 'string' || typeof input.assetId !== 'string') {
+        if (!input || !isUsableId(input.tenantId) || !isUsableId(input.studentEnrollmentId) || !isUsableId(input.assetId)) {
             return { accepted: false, position: 0, reason: 'invalid_input' };
         }
         const now = input.now ?? nowFn();
         const nowMs = now.getTime();
-        const position = Number(input.positionSeconds);
-        if (!Number.isFinite(position) || position < 0) {
+        const position = parseSeconds(input.positionSeconds);
+        if (position === null) {
             return { accepted: false, position: 0, reason: 'negative_position' };
         }
-        const duration = Number(input.durationSeconds ?? 0);
+        const duration = parseSeconds(input.durationSeconds) ?? 0;
         const deviceId = input.deviceId ?? null;
 
         const key = keyOf(input.tenantId, input.studentEnrollmentId, input.assetId);
@@ -157,14 +186,16 @@ export function createPlaybackProgressService(deps: PlaybackProgressDeps = {}): 
             return { accepted: false, position, reason: 'device_not_permitted' };
         }
 
-        // cross-tenant / cross-student forgery guard against an existing record
-        // stored under the same enrollment+asset but a different tenant/student.
-        for (const [k, rec] of progress) {
+        // Cross-tenant forgery guard: the same enrollment+asset recorded under a
+        // DIFFERENT tenant is a forgery attempt. The mirror check — same tenant,
+        // different enrollment — is deliberately absent: two students in one
+        // tenant watching one asset is a normal case, and records are keyed by
+        // (tenant, enrollment, asset), so it is a different record, not a
+        // conflict. Rejecting it permanently blocked the second student for as
+        // long as the first student's row existed.
+        for (const [, rec] of progress) {
             if (rec.studentEnrollmentId === input.studentEnrollmentId && rec.assetId === input.assetId && rec.tenantId !== input.tenantId) {
                 return { accepted: false, position, reason: 'tenant_mismatch' };
-            }
-            if (rec.tenantId === input.tenantId && rec.assetId === input.assetId && rec.studentEnrollmentId !== input.studentEnrollmentId) {
-                return { accepted: false, position, reason: 'student_mismatch' };
             }
         }
 
@@ -351,7 +382,14 @@ interface ProgressRow {
 const PROGRESS_COLUMNS = 'id, tenant_id, student_enrollment_id, asset_id, device_id, session_id, position_seconds, duration_seconds, completed, updated_at';
 
 function mapProgressRow(row: ProgressRow): ProgressRecord {
-    const position = Number(row.position_seconds);
+    // Strict parse on the read path too: a row this module cannot read must not
+    // become a `NaN`/`0` record that later bypasses the monotonic guard. The
+    // caller drops unreadable rows rather than serving them.
+    const position = parseSeconds(row.position_seconds);
+    const duration = parseSeconds(row.duration_seconds);
+    if (position === null || duration === null) {
+        throw new Error('A stored playback progress row could not be read');
+    }
     return {
         tenantId: row.tenant_id,
         studentEnrollmentId: row.student_enrollment_id,
@@ -359,7 +397,7 @@ function mapProgressRow(row: ProgressRow): ProgressRecord {
         deviceId: row.device_id,
         sessionId: row.session_id,
         positionSeconds: position,
-        durationSeconds: Number(row.duration_seconds),
+        durationSeconds: duration,
         completed: Boolean(row.completed),
         updatedAt: toIsoTime(row.updated_at),
         highWaterMark: position,
@@ -412,18 +450,32 @@ export function createSqlPlaybackProgressService(db: PlaybackStoreDb, deps: SqlP
 
     return {
         recordProgress: async (input) => {
-            if (!input || typeof input.tenantId !== 'string' || typeof input.studentEnrollmentId !== 'string' || typeof input.assetId !== 'string') {
+            if (!input || !isUsableId(input.tenantId) || !isUsableId(input.studentEnrollmentId) || !isUsableId(input.assetId)) {
                 return { accepted: false, position: 0, reason: 'invalid_input' };
             }
             const now = input.now ?? nowFn();
             const nowMs = now.getTime();
-            const position = Number(input.positionSeconds);
-            if (!Number.isFinite(position) || position < 0) {
+            const position = parseSeconds(input.positionSeconds);
+            if (position === null) {
                 return { accepted: false, position: 0, reason: 'negative_position' };
             }
             const deviceId = input.deviceId ?? null;
             if (deviceId !== null && !(await devicePermitted(deviceId))) {
                 return { accepted: false, position, reason: 'device_not_permitted' };
+            }
+
+            // A stopped or revoked session must not be able to write progress.
+            // Without this the write was accepted after the session ended and the
+            // row's `session_id` was refreshed with a dead session — the same
+            // guard `recordHeartbeat` already applies.
+            if (input.sessionId) {
+                const session = await db.queryOne<{ status: string }>(
+                    'SELECT status FROM playback_session_slots WHERE session_id = ? LIMIT 1',
+                    [input.sessionId],
+                );
+                if (!session || session.status !== 'active') {
+                    return { accepted: false, position, reason: 'session_not_active' };
+                }
             }
 
             const tenantConflict = await db.queryOne<{ x: number }>(
@@ -432,12 +484,9 @@ export function createSqlPlaybackProgressService(db: PlaybackStoreDb, deps: SqlP
                 [input.studentEnrollmentId, input.assetId, input.tenantId],
             );
             if (tenantConflict) return { accepted: false, position, reason: 'tenant_mismatch' };
-            const studentConflict = await db.queryOne<{ x: number }>(
-                `SELECT 1 AS x FROM playback_progress
-                 WHERE tenant_id = ? AND asset_id = ? AND student_enrollment_id <> ? LIMIT 1`,
-                [input.tenantId, input.assetId, input.studentEnrollmentId],
-            );
-            if (studentConflict) return { accepted: false, position, reason: 'student_mismatch' };
+            // No same-tenant/different-enrollment check: see the in-memory path.
+            // Two students in one tenant on one asset are two records, not a
+            // conflict, and the old check permanently blocked the second one.
 
             const existing = await loadRow(input.tenantId, input.studentEnrollmentId, input.assetId);
             if (existing) {
@@ -446,19 +495,30 @@ export function createSqlPlaybackProgressService(db: PlaybackStoreDb, deps: SqlP
                     return { accepted: false, position, reason: 'rate_limited' };
                 }
             }
-            const existingPosition = existing ? Number(existing.position_seconds) : 0;
-            const providedDuration = Number(input.durationSeconds ?? 0);
-            const effectiveDuration = providedDuration > 0 ? providedDuration : (existing ? Number(existing.duration_seconds) : 0);
+            const existingPosition = existing ? parseSeconds(existing.position_seconds) : null;
+            if (existing && existingPosition === null) {
+                // A stored position this module cannot read is a data fault, not
+                // a zero: treating it as zero would let any write regress the
+                // high-water mark.
+                return { accepted: false, position, reason: 'invalid_input' };
+            }
+            const storedPosition = existingPosition ?? 0;
+            const providedDuration = parseSeconds(input.durationSeconds) ?? 0;
+            const existingDuration = existing ? parseSeconds(existing.duration_seconds) : null;
+            if (existing && existingDuration === null) {
+                return { accepted: false, position, reason: 'invalid_input' };
+            }
+            const effectiveDuration = providedDuration > 0 ? providedDuration : (existingDuration ?? 0);
             if (effectiveDuration > 0 && position > effectiveDuration + durationTolerance) {
                 return { accepted: false, position, reason: 'exceeds_duration' };
             }
-            if (existing && position < existingPosition) {
-                return { accepted: false, position: existingPosition, reason: 'not_monotonic' };
+            if (existing && position < storedPosition) {
+                return { accepted: false, position: storedPosition, reason: 'not_monotonic' };
             }
 
-            const highWater = Math.max(existingPosition, position);
+            const highWater = Math.max(storedPosition, position);
             const completed = effectiveDuration > 0 && highWater >= effectiveDuration - durationTolerance;
-            await db.execute(
+            const written = await db.execute(
                 `INSERT INTO playback_progress
                    (id, tenant_id, student_enrollment_id, asset_id, device_id, session_id, position_seconds, duration_seconds, completed, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
@@ -481,6 +541,13 @@ export function createSqlPlaybackProgressService(db: PlaybackStoreDb, deps: SqlP
                     completed ? 1 : 0,
                 ],
             );
+            // The write's own count is the only evidence the row changed.
+            // Discarding it made a silently failed persist indistinguishable
+            // from success, and `undefined` is neither 0 nor 1 — it throws.
+            const affected = written?.affectedRows;
+            if (typeof affected !== 'number' || !Number.isSafeInteger(affected) || affected < 1 || affected > 2) {
+                return { accepted: false, position: highWater, reason: 'invalid_input' };
+            }
             return { accepted: true, position: highWater, reason: 'ok' };
         },
 
@@ -504,12 +571,20 @@ export function createSqlPlaybackProgressService(db: PlaybackStoreDb, deps: SqlP
         },
 
         getResumePosition: async (input) => {
-            if (!input || typeof input.tenantId !== 'string' || typeof input.studentEnrollmentId !== 'string' || typeof input.assetId !== 'string') {
+            if (!input || !isUsableId(input.tenantId) || !isUsableId(input.studentEnrollmentId) || !isUsableId(input.assetId)) {
                 return { allowed: false, position: 0, duration: 0, completed: false, deviceId: null, reason: 'asset_mismatch' };
             }
             const row = await loadRow(input.tenantId, input.studentEnrollmentId, input.assetId);
             if (!row) return { allowed: false, position: 0, duration: 0, completed: false, deviceId: null, reason: 'not_found' };
-            const record = mapProgressRow(row);
+            let record: ProgressRecord;
+            try {
+                record = mapProgressRow(row);
+            } catch {
+                // An unreadable row denies the resume rather than serving a
+                // coerced position, which would resume the viewer somewhere the
+                // server never recorded.
+                return { allowed: false, position: 0, duration: 0, completed: false, deviceId: null, reason: 'not_found' };
+            }
             const deviceId = input.deviceId ?? record.deviceId ?? null;
             if (deviceId !== null && !(await devicePermitted(deviceId))) {
                 return { allowed: false, position: record.positionSeconds, duration: record.durationSeconds, completed: record.completed, deviceId, reason: 'device_not_permitted' };
@@ -519,7 +594,12 @@ export function createSqlPlaybackProgressService(db: PlaybackStoreDb, deps: SqlP
 
         getProgress: async (input) => {
             const row = await loadRow(input.tenantId, input.studentEnrollmentId, input.assetId);
-            return row ? mapProgressRow(row) : null;
+            if (!row) return null;
+            try {
+                return mapProgressRow(row);
+            } catch {
+                return null;
+            }
         },
 
         permitDevice: async (deviceId) => {

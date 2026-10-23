@@ -43,6 +43,26 @@ function clampPositiveInt(value: number, fallback: number, ceiling: number): num
     return Math.min(Math.trunc(value), ceiling);
 }
 
+/**
+ * A single-row CAS must report exactly one affected row.
+ *
+ * `undefined` is neither zero (which would drop a change that happened) nor one
+ * (which would fabricate a change that did not), so an unusable count throws
+ * instead of being coerced with `?? 0` or tested for truthiness. Callers decide
+ * what a legitimate zero means — usually "someone else won the race" — but they
+ * cannot decide that when they cannot see the number at all.
+ */
+function requireAffectedRows(
+    result: { affectedRows?: number } | undefined,
+    label: string,
+): number {
+    const affected = result?.affectedRows;
+    if (typeof affected !== 'number' || !Number.isSafeInteger(affected) || affected < 0) {
+        throw new Error(`The ${label} did not report a usable affected-row count`);
+    }
+    return affected;
+}
+
 export function normalizePlaybackPolicy(input: unknown, tenantId: string | null = null): PlaybackPolicy {
     const raw = (input && typeof input === 'object') ? (input as Record<string, unknown>) : {};
     const maxConcurrent = Number(raw.maxConcurrentSessions ?? raw.max_concurrent_sessions ?? DEFAULT_PLAYBACK_POLICY.maxConcurrentSessions);
@@ -207,7 +227,10 @@ export function createPlaybackSessionRegistry(deps: PlaybackSessionRegistryDeps 
     };
 
     const setPolicy = (policy: PlaybackPolicy | Record<string, unknown>, tenantId?: string): PlaybackPolicy => {
-        const tid = tenantId ?? String((policy as Record<string, unknown>).tenantId ?? '');
+        // The tenant is the EXPLICIT argument. Falling back to `policy.tenantId`
+        // let a caller-supplied object name the tenant it wanted to configure,
+        // so a policy write was addressable to any tenant id the caller typed.
+        const tid = tenantId ?? '';
         const normalized = normalizePlaybackPolicy(policy, tid || null);
         if (tid) policies.set(tid, normalized);
         return normalized;
@@ -301,7 +324,13 @@ export function createPlaybackSessionRegistry(deps: PlaybackSessionRegistryDeps 
         if (device.status !== 'active') return { acquired: false, slot: null, reason: 'device_revoked', warning: false, activeSlots: activeSlotCount(input.tenantId, input.userId) };
         if (slots.has(input.sessionId)) return { acquired: false, slot: slots.get(input.sessionId) ?? null, reason: 'duplicate_session', warning: false, activeSlots: activeSlotCount(input.tenantId, input.userId) };
 
-        const policy = input.policy ? normalizePlaybackPolicy(input.policy, input.tenantId) : getPolicy(input.tenantId);
+        // The policy is ALWAYS server-derived. A caller-supplied policy object
+        // used to be able to replace it, clamped only to the global ceiling —
+        // so a caller who could influence that argument raised their own
+        // concurrency limit from the tenant's configured 2 up to 10. The
+        // ceilings bound magnitude; the tenant row is the authority. `policy`
+        // remains on the input type for existing callers but is ignored here.
+        const policy = getPolicy(input.tenantId);
         // device limit check
         const userDevices = [...devices.values()].filter((d) => d.tenantId === input.tenantId && d.userId === input.userId && d.status === 'active');
         if (userDevices.length > policy.maxDevices) {
@@ -549,7 +578,10 @@ function mapDeviceRow(row: PlaybackDeviceRow): PlaybackDevice {
         userId: row.user_id,
         fingerprint: row.device_fingerprint,
         label: row.device_label,
-        status: row.status === 'revoked' ? 'revoked' : 'active',
+        // Fail CLOSED: an unknown status is not treated as active. A schema that
+        // later gains `expired` or `suspended` must not have those sessions
+        // silently count as live and resurrectable through every read path.
+        status: row.status === 'active' ? 'active' : 'revoked',
         firstSeenAt: toIso(row.first_seen_at),
         lastSeenAt: toIso(row.last_seen_at),
         revokedAt: row.revoked_at === null || row.revoked_at === undefined ? null : toIso(row.revoked_at),
@@ -559,7 +591,12 @@ function mapDeviceRow(row: PlaybackDeviceRow): PlaybackDevice {
 }
 
 function mapSlotRow(row: PlaybackSlotRow): PlaybackSlot {
-    const status = row.status === 'ended' || row.status === 'revoked' ? row.status : 'active';
+    // Fail CLOSED, for the same reason as `mapDeviceRow`: only the two known
+    // terminal states and the active state are recognised, and anything else is
+    // treated as not-active rather than as active.
+    const status = row.status === 'active' || row.status === 'ended' || row.status === 'revoked'
+        ? row.status
+        : 'ended';
     return {
         id: row.id,
         tenantId: row.tenant_id,
@@ -621,7 +658,10 @@ export function createSqlPlaybackSessionStore(db: PlaybackStoreDb, deps: Playbac
         getPolicy: (tenantId) => loadPolicy(db, tenantId),
 
         setPolicy: async (policy, tenantId) => {
-            const tid = tenantId ?? String((policy as Record<string, unknown>).tenantId ?? '');
+            // Explicit argument only, same rule as the in-memory `setPolicy`:
+            // a caller-supplied `policy.tenantId` must never name the tenant a
+            // durable policy write is addressed to.
+            const tid = tenantId ?? '';
             const normalized = normalizePlaybackPolicy(policy, tid || null);
             if (tid) {
                 await db.execute(
@@ -718,16 +758,27 @@ export function createSqlPlaybackSessionStore(db: PlaybackStoreDb, deps: Playbac
             if (input.support && !policy.supportRevokeAllowed) return { revoked: false, reason: 'support_revoke_not_allowed' };
             if (!input.support && !policy.selfRevokeAllowed) return { revoked: false, reason: 'self_revoke_not_allowed' };
             const reason = input.reason ?? (input.support ? 'support_revoke' : 'self_revoke');
-            await tx.execute(
+            // Both are CAS updates (`AND status = 'active'`) and both results
+            // are asserted: `FOR UPDATE` above serialises this transaction, but
+            // a lock that is not honoured would otherwise let a second revoke
+            // pass the pre-checks, change zero rows, and still report success
+            // and audit a revoke that never happened.
+            const deviceUpdate = await tx.execute(
                 `UPDATE playback_devices SET status = 'revoked', revoked_at = NOW(), revoked_by = ?, revoke_reason = ?
                  WHERE id = ? AND status = 'active'`,
                 [input.actorId, reason, input.deviceId],
             );
-            await tx.execute(
+            if (requireAffectedRows(deviceUpdate, 'playback device revoke') !== 1) {
+                return { revoked: false, reason: 'already_revoked' };
+            }
+            const slotUpdate = await tx.execute(
                 `UPDATE playback_session_slots SET status = 'revoked', ended_at = NOW(), ended_reason = ?
                  WHERE device_id = ? AND status = 'active'`,
                 [reason, input.deviceId],
             );
+            // A device may legitimately hold zero active slots, so zero is
+            // allowed here — but the count must still be readable.
+            requireAffectedRows(slotUpdate, 'playback device slot revoke');
             await audit({ action: input.support ? 'playback.device.support_revoke' : 'playback.device.self_revoke', deviceId: row.id, tenantId: row.tenant_id, userId: row.user_id, actorId: input.actorId, reason }, tx);
             return { revoked: true, reason: 'ok' };
         }),
@@ -765,7 +816,10 @@ export function createSqlPlaybackSessionStore(db: PlaybackStoreDb, deps: Playbac
                 [input.tenantId, input.userId],
             );
             const current = await countActiveSlots(tx, input.tenantId, input.userId);
-            if (Number(deviceCount?.c ?? 0) > policy.maxDevices) {
+            // Strict parse, never `Number(x ?? 0)`: an unreadable count is a
+            // fault, not "zero devices". `>=` matches the registration guard
+            // below — the old `>` made this branch unreachable.
+            if (parseCount(deviceCount?.c, 'active playback device count') >= policy.maxDevices) {
                 return denied('device_limit', current);
             }
             if (current >= policy.maxConcurrentSessions) {
@@ -803,8 +857,13 @@ export function createSqlPlaybackSessionStore(db: PlaybackStoreDb, deps: Playbac
                  WHERE session_id = ? AND status = 'active'`,
                 [reason, sessionId],
             );
-            if (!result.affectedRows) return false;
-            await audit({ action: 'playback.session.released', sessionId, reason });
+            // Exactly one row must move. `undefined` is an error, not zero: a
+            // driver that does not populate the count would otherwise be
+            // reported as "nothing to release" while the slot is in fact ended,
+            // and the audit would be skipped for a change that happened.
+            const affected = requireAffectedRows(result, 'playback session release');
+            if (affected !== 1) return false;
+            await audit({ action: 'playback.session.released', sessionId, reason, tenantId: undefined, userId: undefined });
             return true;
         },
 
@@ -839,9 +898,14 @@ export function createSqlPlaybackSessionStore(db: PlaybackStoreDb, deps: Playbac
                  WHERE session_id = ? AND status = 'active'`,
                 [reason, input.sessionId],
             );
-            // A concurrent revoke/release won the race; report it instead of
-            // emitting a second revoke event for a row this call did not change.
-            if (!update.affectedRows) return { revoked: false, reason: 'already_ended' };
+            // Exactly one row must move. `undefined` is an ERROR, not zero: a
+            // driver that does not populate the count would otherwise bail out
+            // with `already_ended` BEFORE the entitlement co-commit and the
+            // audit row run, leaving the slot revoked in the database while the
+            // delivery entitlement stays live — the exact half-applied state the
+            // transaction above promises is impossible.
+            const affected = requireAffectedRows(update, 'playback session revoke');
+            if (affected !== 1) return { revoked: false, reason: 'already_ended' };
             if (deps.revokeEntitlements) {
                 await deps.revokeEntitlements(tx, {
                     sessionId: input.sessionId,
@@ -895,5 +959,28 @@ function countActiveSlots(conn: PlaybackStoreDb, tenantId: string, userId: strin
     return conn.queryOne<{ c: number | string }>(
         `SELECT COUNT(*) AS c FROM playback_session_slots WHERE tenant_id = ? AND user_id = ? AND status = 'active'`,
         [tenantId, userId],
-    ).then((row) => Number(row?.c ?? 0));
+    ).then((row) => parseCount(row?.c, 'active playback slot count'));
+}
+
+/**
+ * Strict count parsing.
+ *
+ * `COUNT(*)` is a non-negative integer, so anything that is not one is a driver
+ * or shape fault — not a zero. Coercing it to `0` would make the concurrency
+ * check pass when it cannot see the row, which oversubscribes the tenant's
+ * anti-sharing limit instead of failing closed. MySQL returns COUNT as a number
+ * or a decimal string; both are accepted, nothing else is.
+ */
+function parseCount(value: unknown, label: string): number {
+    if (typeof value === 'number') {
+        if (!Number.isSafeInteger(value) || value < 0) {
+            throw new Error(`The ${label} is not a non-negative safe integer`);
+        }
+        return value;
+    }
+    if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+        const parsed = Number(value.trim());
+        if (Number.isSafeInteger(parsed)) return parsed;
+    }
+    throw new Error(`The ${label} could not be read`);
 }

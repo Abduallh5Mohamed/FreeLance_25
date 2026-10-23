@@ -30,6 +30,18 @@
  * Duplicate-key races on the per-version UNIQUE key are re-evaluated and
  * answered as a policy denial, not a 500.
  *
+ * Durable cleanup (2026-10-23). Every rejection, cancel and infected verdict
+ * removes **exactly the object version the server verified**, never
+ * `removeObject(storage_key)`: the key is mutable, and a key delete would
+ * destroy a concurrent re-upload no verifier ever looked at. When a durable
+ * obligation store is injected (`cleanupObligations`), the obligation to destroy
+ * that version is written **before** the bytes are touched and in the same unit
+ * of work as the state change (the quarantine verdict, the cancellation), then
+ * settled after the external delete. Without that store the cleanup stays
+ * best-effort and is reported as `cleanup-unconfigured`; no queued/deleted
+ * success is ever claimed. See
+ * `docs/streams/server/WORKBUDDY-ASSIGNMENT-RECOVERY-20261023.md`.
+ *
  * Exports `createAssignmentsRouter(deps)` and a default-wired router instance
  * (real pool/auth/authority) so a later mounting task can `app.use` it. This
  * module never mounts itself and never runs DDL.
@@ -48,6 +60,7 @@ import {
 import { toUtcIso, tenantLocalNow } from '../services/content-release';
 import {
     AssignmentAudienceFacts,
+    AssignmentCleanupReason,
     EnrollmentAudienceFacts,
     EvaluateSubmissionInput,
     ExistingSubmission,
@@ -63,6 +76,18 @@ import {
     validateVerifiedUpload,
     UploadStatus,
 } from '../services/assignments';
+import {
+    UNRECORDED_CLEANUP_HANDLE,
+    cleanupProofForRemoval,
+    normalizeCleanupTarget,
+    recordCleanupObligation,
+    settleRecordedCleanup,
+} from '../services/assignment-cleanup-recovery';
+import type {
+    AssignmentCleanupHandle,
+    AssignmentCleanupObligationStore,
+    AssignmentCleanupTarget,
+} from '../services/assignment-cleanup-recovery';
 import {
     AssignmentObjectMetadata,
     AssignmentObjectStore,
@@ -83,6 +108,10 @@ import {
     verifyObjectSignature,
     verifySubmissionStorageKey,
 } from '../services/assignment-storage';
+import {
+    deterministicScoreId,
+    validateLinkedGradeInput,
+} from '../services/gradebook';
 
 export interface AssignmentsDataAccess {
     query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>;
@@ -114,6 +143,28 @@ export interface AssignmentsDeps {
     scanTimeoutMs?: number;
     /** Short-lived upload authorization lifetime (clamped to 60–600 s). */
     uploadUrlTtlSeconds?: number;
+    /**
+     * Durable cleanup obligation store. When injected, every rejection and
+     * cancellation records the obligation to destroy its exact object version
+     * **before** the bytes are touched, and settles it afterwards — so a crash
+     * between the delete and the DB write leaves a durable row instead of a log
+     * line. Absent means the cleanup stays best-effort and is reported as
+     * `cleanup-unconfigured`: no queued/deleted success is ever claimed.
+     *
+     * The durable adapter (`assignment-cleanup-sql.ts`) declares its own
+     * availability: a store that reports `unavailable` is written through by
+     * nobody, and the router treats it exactly like an absent one.
+     */
+    cleanupObligations?: AssignmentCleanupObligationStore;
+    /**
+     * Declares that `assignment_submissions.object_etag` exists
+     * (migration `20261023_05`). When declared, finalize records the verified
+     * object version on the row, which is what lets the fenced scan store bind a
+     * verdict to a version. Absent keeps today's UPDATE byte-for-byte, so the
+     * column is never referenced before it exists — and a row without it is
+     * never trusted (see `LEGACY_UNBOUND_ETAG_POLICY`).
+     */
+    objectVersionColumn?: 'declared';
 }
 
 const STAFF_AUTHORITIES = new Set(['owner', 'instructor']);
@@ -144,6 +195,7 @@ interface AssignmentRow {
     allowed_file_types: string | null;
     status: string;
     archived_at: string | Date | null;
+    created_by: string | null;
     version: number;
 }
 
@@ -244,7 +296,7 @@ function toLocalWallTime(isoUtc: string, timeZone: string): string {
 
 const ASSIGNMENT_COLUMNS =
     'id,tenant_id,branch_id,branch_scope,course_id,group_id,title,instructions,deadline_at,deadline_timezone,' +
-    'late_policy,resubmission_policy,max_submissions,max_file_bytes,allowed_file_types,status,archived_at,version';
+    'late_policy,resubmission_policy,max_submissions,max_file_bytes,allowed_file_types,status,archived_at,created_by,version';
 
 export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
     const router = Router();
@@ -400,6 +452,69 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             [assignmentId, tenantId],
         );
 
+    /**
+     * Assigned-teacher authority over **grading** one assignment.
+     *
+     * This is deliberately stricter than row visibility: a tenant-wide
+     * assignment is visible to every instructor in the tenant, but only the
+     * tenant owner, the assignment's author, the instructor of its group, or
+     * the instructor of its course may put a grade on a student.
+     *
+     * A **group-scoped** assignment belongs to exactly one group. A teacher of
+     * a *different* group is not its assigned teacher even when both groups
+     * share the course or the branch, so the course-level "teaches a group in
+     * this course" widening is applied only to course-wide assignments.
+     *
+     * Verified branch membership is never authority on its own: a membership
+     * is a placement in an org unit, not an assignment to a cohort's work.
+     * Likewise a role label, a tenant membership or a client-supplied id is
+     * never authority. Deny by default.
+     */
+    const authorizeAssignmentGrading = async (scope: StaffScope, assignment: AssignmentRow): Promise<boolean> => {
+        if (scope.isOwner) return true;
+        if (assignment.created_by !== null && assignment.created_by === scope.userId) return true;
+        const groupScoped = assignment.group_id !== null;
+        if (assignment.group_id) {
+            const group = await db.queryOne<{ instructor_id: string | null; tenant_id: string | null }>(
+                `SELECT g.instructor_id, c.tenant_id
+                 FROM \`groups\` g LEFT JOIN courses c ON c.id = g.course_id
+                 WHERE g.id = ? LIMIT 1`,
+                [assignment.group_id],
+            );
+            if (group && group.tenant_id === scope.tenantId && group.instructor_id === scope.userId) return true;
+        }
+        if (assignment.course_id) {
+            const course = await db.queryOne<{ instructor_id: string | null; tenant_id: string | null }>(
+                'SELECT id, instructor_id, tenant_id FROM courses WHERE id = ? LIMIT 1',
+                [assignment.course_id],
+            );
+            if (course && course.tenant_id === scope.tenantId) {
+                if (course.instructor_id === scope.userId) return true;
+                if (!groupScoped) {
+                    const taught = await db.queryOne<{ id: string }>(
+                        `SELECT g.id FROM \`groups\` g INNER JOIN courses c ON c.id = g.course_id
+                         WHERE g.course_id = ? AND g.instructor_id = ? AND c.tenant_id = ? LIMIT 1`,
+                        [assignment.course_id, scope.userId, scope.tenantId],
+                    );
+                    if (taught) return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    /** True when the enrollment belongs to a group (or active course link) of this course. */
+    const enrollmentInCourse = async (tenantId: string, enrollmentId: string, courseId: string): Promise<boolean> => {
+        const row = await db.queryOne<{ id: string }>(
+            `SELECT s.id FROM students s
+               LEFT JOIN \`groups\` g ON g.id = s.group_id
+               LEFT JOIN student_courses sc ON sc.student_id = s.id AND sc.course_id = ? AND sc.status='active'
+              WHERE s.id=? AND s.tenant_id=? AND (g.course_id = ? OR sc.course_id IS NOT NULL) LIMIT 1`,
+            [courseId, enrollmentId, tenantId, courseId],
+        );
+        return Boolean(row);
+    };
+
     const SUBMISSION_COLUMNS =
         'id,assignment_id,tenant_id,student_enrollment_id,student_user_id,version,status,' +
         'file_name,file_type,file_size_bytes,scan_status,is_late,submitted_at,revoked_at';
@@ -521,35 +636,107 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
     };
 
     /**
-     * Best-effort removal of a rejected object **version**; a cleanup failure
-     * never hides the denial.
-     *
-     * The delete is bound to the exact version the server verified above, and
-     * it goes through the same capability-gated seam as a quarantine cleanup
-     * (`removeScannedObjectVersion`): a mutable-key delete would destroy
-     * whatever happens to sit at the key when it runs — including a concurrent
-     * re-upload that no verifier ever looked at. When the adapter cannot prove
-     * the version nothing is deleted at all, the row stays unreadable, and the
-     * cleanup is reported as pending for an operator. That is an honest
-     * limitation, never a destructive-cleanup claim.
+     * Build the durable identity of one object version. Returns null when the
+     * key does not bind to these identifiers, so an unbound target is never
+     * recorded and never deleted.
      */
-    const removeRejectedObject = async (
+    const buildCleanupTarget = (
         storageKey: string,
         version: BoundObjectVersion,
-        submissionId: string,
+        facts: { tenantId: string; assignmentId: string; enrollmentId: string; submissionId: string },
+        reason: AssignmentCleanupReason,
+    ): AssignmentCleanupTarget | null => normalizeCleanupTarget({
+        tenantId: facts.tenantId,
+        assignmentId: facts.assignmentId,
+        enrollmentId: facts.enrollmentId,
+        submissionId: facts.submissionId,
+        storageKey,
+        etag: version.etag,
+        sizeBytes: version.sizeBytes,
+        reason,
+    });
+
+    /**
+     * Write the obligation ahead of the delete.
+     *
+     * With a `tx` the insert joins the caller's unit of work and a failure
+     * **propagates**, so a rejection or cancellation rolls back rather than
+     * committing a state change whose cleanup was never recorded. Without one it
+     * runs in its own transaction and a failure is reported instead of thrown;
+     * the caller must then delete nothing.
+     */
+    const recordCleanup = async (
+        target: AssignmentCleanupTarget | null,
+        tx?: AssignmentsDataAccess,
+    ): Promise<AssignmentCleanupHandle> => {
+        if (tx) {
+            // The same transaction, on the same connection: the adapter's
+            // idempotent insert **and** the read-back that classifies it both run
+            // here, so the obligation cannot commit apart from the decision.
+            return recordCleanupObligation(deps.cleanupObligations, target, {
+                // Wrapped, not extracted: `query`/`execute` are interface
+                // properties, and an implementation that reads `this` would
+                // break the moment the method is passed unbound.
+                query: (sql, params) => tx.query(sql, params),
+                execute: (sql, params) => tx.execute(sql, params),
+            });
+        }
+        try {
+            const handle = await runAtomic(
+                async (unit) => recordCleanupObligation(deps.cleanupObligations, target, {
+                    query: (sql, params) => unit.query(sql, params),
+                    execute: (sql, params) => unit.execute(sql, params),
+                }),
+            );
+            return handle;
+        } catch (error) {
+            console.error(
+                `Assignment cleanup obligation could not be recorded for submission ${target?.submissionId ?? 'unknown'}:`,
+                error,
+            );
+            return { id: null, claimVersion: null, recording: 'record_failed' };
+        }
+    };
+
+    /**
+     * Delete **exactly** the recorded version, then settle the obligation.
+     *
+     * The delete is the capability-gated exact-version seam — never
+     * `removeObject(storage_key)`, which would destroy whatever sits at the key
+     * when it runs, including a concurrent re-upload no verifier ever looked at.
+     * External deletion and the DB completion are two stages on purpose: if the
+     * process dies between them the row stays `pending` and the recovery
+     * coordinator replays it, learning from the store that the target is already
+     * gone.
+     */
+    const performVersionCleanup = async (
+        target: AssignmentCleanupTarget,
+        handle: AssignmentCleanupHandle,
     ): Promise<QuarantineCleanup> => {
         if (!objectStore) return 'unsupported';
         const cleanup = await removeScannedObjectVersion(
             objectStore,
-            { objectKey: storageKey, etag: version.etag, sizeBytes: version.sizeBytes },
+            { objectKey: target.storageKey, etag: target.etag, sizeBytes: target.sizeBytes },
             (error) => console.error(
-                `Assignment rejection cleanup failed for submission ${submissionId}:`,
+                `Assignment cleanup failed for submission ${target.submissionId}:`,
                 error,
             ),
         );
+        const proof = cleanupProofForRemoval(cleanup);
+        if (proof !== null && handle.recording !== 'unconfigured') {
+            const settled = await settleRecordedCleanup(deps.cleanupObligations, handle, proof, now().getTime());
+            if (!settled) {
+                // The row stays pending and the coordinator replays it. Nothing
+                // about the response changes, and no success is claimed here.
+                console.error(
+                    `Assignment cleanup obligation not settled for submission ${target.submissionId};`
+                    + ' it stays pending for the recovery pass',
+                );
+            }
+        }
         if (cleanup === 'unsupported' || cleanup === 'failed') {
             console.error(
-                `Assignment rejection cleanup pending for submission ${submissionId}:`
+                `Assignment rejection cleanup pending for submission ${target.submissionId}:`
                 + ' the storage adapter cannot delete by exact object version',
             );
         }
@@ -557,63 +744,69 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
     };
 
     /**
-     * Cancel cleanup for an abandoned upload. The row never became readable, so
-     * there is no earlier verdict to re-stat against — but the key is still
-     * mutable, and the object has never been verified. The version that is at
-     * the key *now* is therefore proven first, and exactly that version is
-     * deleted. A stat failure, or an adapter that cannot express a version,
-     * deletes nothing and leaves the cleanup pending: never a delete by key,
-     * which could destroy a concurrent re-upload.
+     * Full orchestration for a rejection that owns its own unit of work: record,
+     * delete, settle. `not_attempted` means no delete was issued — either no
+     * exact version could be bound, the obligation could not be recorded (so the
+     * write-ahead property would be lost), or another version of this submission
+     * still owes cleanup.
      */
-    const removeCancelledUpload = async (
-        storageKey: string,
+    const removeRejectedObject = async (
+        target: AssignmentCleanupTarget | null,
         submissionId: string,
-    ): Promise<QuarantineCleanup> => {
+    ): Promise<QuarantineCleanup | 'not_attempted'> => {
         if (!objectStore) return 'unsupported';
-        let metadata: AssignmentObjectMetadata | null;
-        try {
-            metadata = await objectStore.statObject(storageKey);
-        } catch (error) {
-            console.error(`Assignment cancel stat failed for submission ${submissionId}:`, error);
-            return 'failed';
-        }
-        const version = boundObjectVersion(metadata);
-        if (!version) {
+        if (!target) {
             console.error(
                 `Assignment rejection cleanup pending for submission ${submissionId}:`
-                + ' the storage adapter cannot bind the abandoned upload to a version',
+                + ' the verified object version is not bound to this submission',
             );
-            return 'unsupported';
+            return 'not_attempted';
         }
-        return removeRejectedObject(storageKey, version, submissionId);
+        const handle = await recordCleanup(target);
+        // `record_failed`: the write did not land. `store_invalid_row`: it landed
+        // but cannot be read, so we cannot say whether this version is already
+        // owed. Both mean the write-ahead property is unavailable, and the only
+        // honest answer is to issue no delete.
+        if (handle.recording === 'record_failed' || handle.recording === 'store_invalid_row') {
+            return 'not_attempted';
+        }
+        if (handle.recording === 'conflict') {
+            // A different version of this submission already owes cleanup; that
+            // obligation is still pending and this call must not claim the new
+            // version was queued. The coordinator owns the older one.
+            console.error(
+                `Assignment rejection cleanup deferred for submission ${submissionId}:`
+                + ' a different version of this submission already owes cleanup',
+            );
+            return 'not_attempted';
+        }
+        return performVersionCleanup(target, handle);
     };
 
     /**
-     * Quarantine cleanup: destroy **exactly** the object version the scan
-     * rejected, never "whatever is at the key now".
+     * Quarantine cleanup for an `infected` verdict: destroy **exactly** the
+     * object version the scan rejected, never "whatever is at the key now".
      *
-     * A mutable-key delete here would be a correctness bug: between the final
-     * re-stat and the delete the key can be rewritten by a concurrent upload, so
-     * the delete would destroy bytes no scanner ever looked at. The removal is
-     * therefore only issued when the adapter declares an exact-version
-     * capability. Without it nothing is deleted — the row stays `infected` (and
-     * therefore unreadable) and the version-exact cleanup is reported as pending
-     * for an operator. That is a real limitation, not a silent success.
+     * The obligation was already recorded inside the verdict transaction, so this
+     * only performs the external stage and settles it. A mutable-key delete here
+     * would be a correctness bug: between the final re-stat and the delete the
+     * key can be rewritten by a concurrent upload, and the delete would destroy
+     * bytes no scanner ever looked at.
      */
     const quarantineRejectedObject = async (
-        storageKey: string,
-        version: BoundObjectVersion,
+        target: AssignmentCleanupTarget | null,
+        handle: AssignmentCleanupHandle,
         submissionId: string,
     ): Promise<QuarantineCleanup> => {
         if (!objectStore) return 'unsupported';
-        const cleanup = await removeScannedObjectVersion(
-            objectStore,
-            { objectKey: storageKey, etag: version.etag, sizeBytes: version.sizeBytes },
-            (error) => console.error(
-                `Assignment quarantine cleanup failed for submission ${submissionId}:`,
-                error,
-            ),
-        );
+        if (!target) {
+            console.error(
+                `Assignment quarantine cleanup pending for submission ${submissionId}:`
+                + ' the scanned object version is not bound to this submission',
+            );
+            return 'unsupported';
+        }
+        const cleanup = await performVersionCleanup(target, handle);
         if (cleanup === 'unsupported') {
             console.error(
                 `Assignment quarantine cleanup pending for submission ${submissionId}:`
@@ -1052,7 +1245,39 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 });
             }
 
+            // The abandoned upload's version is proven **before** the revocation
+            // transaction, so the cleanup obligation can be recorded in the same
+            // unit of work as the revocation and its audit event. The stat is a
+            // read; the delete still happens after commit and still names this
+            // exact version, so an upload that lands in between survives — the
+            // store refuses a mismatched version instead of deleting it.
+            let cancelVersion: BoundObjectVersion | null = null;
+            if (objectStore) {
+                let cancelMetadata: AssignmentObjectMetadata | null = null;
+                try {
+                    cancelMetadata = await objectStore.statObject(row.storage_key);
+                } catch (error) {
+                    console.error(`Assignment cancel stat failed for submission ${submissionId}:`, error);
+                }
+                cancelVersion = boundObjectVersion(cancelMetadata);
+                if (cancelMetadata !== null && cancelVersion === null) {
+                    console.error(
+                        `Assignment cancel cleanup pending for submission ${submissionId}:`
+                        + ' the storage adapter cannot bind the abandoned upload to a version',
+                    );
+                }
+            }
+            const cancelTarget = cancelVersion === null
+                ? null
+                : buildCleanupTarget(row.storage_key, cancelVersion, {
+                    tenantId: enrollment.tenantId,
+                    assignmentId,
+                    enrollmentId: enrollment.id,
+                    submissionId,
+                }, 'cancelled_upload');
+
             let cancelled = false;
+            let cancelHandle: AssignmentCleanupHandle = UNRECORDED_CLEANUP_HANDLE;
             try {
                 cancelled = await runAtomic(async (tx) => {
                     const updated = await tx.execute(
@@ -1073,6 +1298,9 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                         oldValue: snapshotRow({ status: row.status, file_size_bytes: 0 }),
                         newValue: snapshotRow({ status: 'revoked', reason: 'cancelled_by_student' }),
                     });
+                    // Same unit: a cancellation whose cleanup was never recorded
+                    // must not commit. Throws into the transaction on failure.
+                    cancelHandle = await recordCleanup(cancelTarget, tx);
                     return true;
                 });
             } catch (error) {
@@ -1100,10 +1328,22 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
 
             // The row never became readable; the abandoned bytes are removed
             // best-effort and a cleanup failure never hides the cancellation.
-            // The removal is bound to the exact version proven to be at the key
-            // now, so a concurrent re-upload survives; a version that cannot be
-            // proven leaves the bytes in place and the cleanup pending.
-            await removeCancelledUpload(row.storage_key, submissionId);
+            // The removal is bound to the exact version proven above, so a
+            // concurrent re-upload survives; a version that cannot be proven
+            // leaves the bytes in place and the cleanup pending.
+            if (cancelTarget === null) {
+                console.error(
+                    `Assignment cancel cleanup pending for submission ${submissionId}:`
+                    + ' no exact object version could be proven for the abandoned upload',
+                );
+            } else if (cancelHandle.recording === 'conflict') {
+                console.error(
+                    `Assignment cancel cleanup deferred for submission ${submissionId}:`
+                    + ' a different version of this submission already owes cleanup',
+                );
+            } else {
+                await performVersionCleanup(cancelTarget, cancelHandle);
+            }
             res.json({ id: submissionId, status: 'revoked', cancelled: true });
         } catch (error) {
             console.error('Cancel assignment submission error:', error);
@@ -1208,8 +1448,17 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 maxFileBytes: Number(assignment.max_file_bytes),
                 allowedFileTypes: parseJsonArray(assignment.allowed_file_types),
             };
+            // Every admission denial below removes exactly this version, and each
+            // one records its obligation first (when a durable store is wired).
+            const rejectionTarget = (reason: AssignmentCleanupReason): AssignmentCleanupTarget | null =>
+                buildCleanupTarget(row.storage_key, verifiedVersion, {
+                    tenantId: enrollment.tenantId,
+                    assignmentId,
+                    enrollmentId: enrollment.id,
+                    submissionId,
+                }, reason);
             if (Number.isInteger(metadata.sizeBytes) && metadata.sizeBytes > limits.maxFileBytes) {
-                await removeRejectedObject(row.storage_key, verifiedVersion, submissionId);
+                await removeRejectedObject(rejectionTarget('admission_oversize'), submissionId);
                 return res.status(413).json({
                     error: 'Uploaded file exceeds the assignment size limit',
                     code: 'file_size_out_of_bounds',
@@ -1217,13 +1466,13 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             }
             const verifiedSize = validateVerifiedUpload(metadata.sizeBytes, limits);
             if (!verifiedSize.ok) {
-                await removeRejectedObject(row.storage_key, verifiedVersion, submissionId);
+                await removeRejectedObject(rejectionTarget('admission_size_out_of_bounds'), submissionId);
                 return res.status(400).json({ error: verifiedSize.error, code: 'file_size_out_of_bounds' });
             }
 
             const storedType = normalizeContentType(metadata.contentType);
             if (storedType !== expectedType) {
-                await removeRejectedObject(row.storage_key, verifiedVersion, submissionId);
+                await removeRejectedObject(rejectionTarget('admission_content_type_mismatch'), submissionId);
                 return res.status(422).json({
                     error: 'Stored content type does not match the declared file type',
                     code: 'content_type_mismatch',
@@ -1239,7 +1488,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             }
             const signature = verifyObjectSignature(extension, prefix);
             if (!signature.ok) {
-                await removeRejectedObject(row.storage_key, verifiedVersion, submissionId);
+                await removeRejectedObject(rejectionTarget('admission_signature_mismatch'), submissionId);
                 return res.status(422).json({
                     error: 'Uploaded content does not match its file type',
                     code: signature.reason === 'unsupported_type' ? 'unsupported_file_type' : 'signature_mismatch',
@@ -1312,15 +1561,53 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 });
             }
 
+            // The infected branch records its cleanup obligation in the SAME
+            // transaction as the verdict write and its audit event: either the
+            // row is quarantined and the obligation is durable, or neither
+            // happened. The external delete stays outside the transaction (an
+            // object store cannot join it), and the two stages are settled
+            // separately below.
+            const infectedTarget = nextScanStatus === 'infected'
+                ? buildCleanupTarget(row.storage_key, verifiedVersion, {
+                    tenantId: enrollment.tenantId,
+                    assignmentId,
+                    enrollmentId: enrollment.id,
+                    submissionId,
+                }, 'scan_infected')
+                : null;
+            const quarantineHandle: { handle: AssignmentCleanupHandle } = { handle: UNRECORDED_CLEANUP_HANDLE };
+
             let recorded = false;
             try {
                 recorded = await runAtomic(async (tx) => {
+                    // The verified object version is recorded with the verdict when
+                    // the column is declared. Without it the row has no version
+                    // binding, and the fenced scan store deliberately refuses to
+                    // trust such a row rather than infer one.
+                    const persistEtag = deps.objectVersionColumn === 'declared';
                     const result = await tx.execute(
                         `UPDATE assignment_submissions
-                         SET file_size_bytes=?, scan_status=?
+                         SET file_size_bytes=?, scan_status=?${persistEtag ? ', object_etag=?' : ''}
                          WHERE id=? AND assignment_id=? AND tenant_id=? AND student_enrollment_id=?
                            AND file_size_bytes=0 AND scan_status='pending' AND status<>'revoked'`,
-                        [verifiedSize.value, nextScanStatus, submissionId, assignmentId, enrollment.tenantId, enrollment.id],
+                        persistEtag
+                            ? [
+                                verifiedSize.value,
+                                nextScanStatus,
+                                verifiedVersion.etag,
+                                submissionId,
+                                assignmentId,
+                                enrollment.tenantId,
+                                enrollment.id,
+                            ]
+                            : [
+                                verifiedSize.value,
+                                nextScanStatus,
+                                submissionId,
+                                assignmentId,
+                                enrollment.tenantId,
+                                enrollment.id,
+                            ],
                     );
                     if ((result.affectedRows ?? 0) === 0) return false;
                     await recordAudit(tx.execute, {
@@ -1337,6 +1624,12 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                             late: Boolean(row.is_late),
                         }),
                     });
+                    if (infectedTarget) {
+                        // Throws into the caller's unit of work on purpose: a
+                        // quarantine whose cleanup was never recorded must not
+                        // commit, or the bytes would be owed by nobody.
+                        quarantineHandle.handle = await recordCleanup(infectedTarget, tx);
+                    }
                     return true;
                 });
             } catch (error) {
@@ -1374,7 +1667,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 scan_status: nextScanStatus,
             };
             if (uploadStatus === 'quarantined') {
-                await quarantineRejectedObject(row.storage_key, verifiedVersion, submissionId);
+                await quarantineRejectedObject(infectedTarget, quarantineHandle.handle, submissionId);
                 return res.status(422).json({
                     error: 'Uploaded file failed the malware scan',
                     code: 'scan_infected',
@@ -1475,6 +1768,212 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
         } catch (error) {
             console.error('Revoke assignment submission error:', error);
             res.status(500).json({ error: 'Failed to revoke submission' });
+        }
+    });
+
+    /* --------------------------------------------------------------------- */
+    /* POST /:id/submissions/:submissionId/grade — correction → gradebook      */
+    /* --------------------------------------------------------------------- */
+    /*
+     * Correcting one submission writes exactly one course gradebook row for the
+     * intended student, atomically with its audit event:
+     *
+     *  - authority is the assigned teacher (`authorizeAssignmentGrading`), never
+     *    the caller's tenant role alone;
+     *  - the student identity is proven server-side: the submission's
+     *    `student_enrollment_id` must resolve to an enrollment in this tenant
+     *    whose `user_id` is the one recorded on the submission, that matches the
+     *    assignment audience, and that is enrolled in the assignment's course.
+     *    No name, phone or client-supplied student id is ever matched;
+     *  - only a verified, clean submission is gradeable. A revoked row, an
+     *    unfinished upload and a quarantined scan are refused: a grade can never
+     *    exist for bytes nobody verified;
+     *  - the gradebook row id is deterministic over
+     *    (tenant, enrollment, course, 'assignment', assignment id), so a
+     *    repeated identical request is a no-op replay and a different award
+     *    corrects the same row (with the previous value in the audit record).
+     */
+    router.post('/:id/submissions/:submissionId/grade', async (req: AuthRequest, res: Response) => {
+        try {
+            const scope = await resolveStaffScope(req, res);
+            if (!scope) return;
+            const assignmentId = normalizeId(req.params.id);
+            const submissionId = normalizeId(req.params.submissionId);
+            if (!assignmentId || !submissionId) return res.status(404).json({ error: 'Submission not found' });
+
+            const assignment = await loadAssignmentForEnrollment(scope.tenantId, assignmentId);
+            if (!assignment) return res.status(404).json({ error: 'Assignment not found' });
+            if (!(await authorizeAssignmentGrading(scope, assignment))) {
+                return res.status(403).json({ error: 'You are not the assigned teacher for this assignment' });
+            }
+            if (!assignment.course_id) {
+                return res.status(409).json({
+                    error: 'Assignment is not linked to a course gradebook',
+                    code: 'assignment_not_course_scoped',
+                });
+            }
+            const courseId = assignment.course_id;
+
+            const submission = await db.queryOne<SubmissionRow>(
+                `SELECT ${SUBMISSION_COLUMNS}
+                 FROM assignment_submissions
+                 WHERE id = ? AND assignment_id = ? AND tenant_id = ? LIMIT 1`,
+                [submissionId, assignmentId, scope.tenantId],
+            );
+            if (!submission) return res.status(404).json({ error: 'Submission not found' });
+            if (submission.status === 'revoked') {
+                return res.status(409).json({ error: 'A revoked submission cannot be graded', code: 'submission_revoked' });
+            }
+            if (Number(submission.file_size_bytes) <= 0 || submission.scan_status !== 'clean') {
+                return res.status(409).json({
+                    error: 'Only a verified, clean submission can be graded',
+                    code: 'submission_not_gradeable',
+                });
+            }
+
+            const enrollment = await db.queryOne<{
+                id: string; tenant_id: string; user_id: string; group_id: string | null;
+                branch_id: string | null; branch_scope: string | null; course_id: string | null;
+            }>(
+                `SELECT s.id, s.tenant_id, s.user_id, s.group_id, grp.branch_id, grp.branch_scope, grp.course_id
+                 FROM students s LEFT JOIN \`groups\` grp ON grp.id = s.group_id
+                 WHERE s.id = ? AND s.tenant_id = ? LIMIT 1`,
+                [submission.student_enrollment_id, scope.tenantId],
+            );
+            if (!enrollment) return res.status(404).json({ error: 'Student enrollment not found' });
+            // The submission row is server-written, but the pair is re-proven
+            // here so a drifted or hand-edited row can never move a grade onto
+            // another student.
+            if (enrollment.user_id !== submission.student_user_id) {
+                return res.status(409).json({
+                    error: 'Submission student identity does not match the enrollment',
+                    code: 'submission_student_mismatch',
+                });
+            }
+            const enrollmentFacts: EnrollmentAudienceFacts = {
+                tenantId: enrollment.tenant_id,
+                branchId: enrollment.branch_scope === 'branch' ? enrollment.branch_id : null,
+                groupId: enrollment.group_id,
+                courseId: enrollment.course_id ?? null,
+            };
+            if (!enrollmentMatchesAssignment(assignmentAudience(assignment), enrollmentFacts)) {
+                return res.status(403).json({ error: 'Student is outside the assignment audience' });
+            }
+            // The audience helper checks a branch first for a branch-scoped row,
+            // so the exact assignment/student pair is re-proven here: a
+            // group-scoped assignment may only ever be graded for a student of
+            // that same group, never for a peer group in the same branch.
+            if (assignment.group_id !== null && enrollment.group_id !== assignment.group_id) {
+                return res.status(403).json({ error: 'Student is not in the assignment group' });
+            }
+            if (!(await enrollmentInCourse(scope.tenantId, enrollment.id, courseId))) {
+                return res.status(409).json({
+                    error: 'Student is not enrolled in this course',
+                    code: 'student_not_in_course',
+                });
+            }
+
+            const validated = validateLinkedGradeInput(req.body ?? {});
+            if (!validated.ok) return res.status(400).json({ error: validated.error });
+            const grade = validated.value;
+
+            const scoreId = deterministicScoreId({
+                tenantId: scope.tenantId,
+                enrollmentId: enrollment.id,
+                courseId,
+                itemType: 'assignment',
+                itemId: assignmentId,
+            });
+            if (!scoreId) return res.status(400).json({ error: 'invalid grade identity' });
+
+            let outcome: 'created' | 'unchanged' | 'corrected' = 'created';
+            const applied = await runAtomic(async (tx) => {
+                const existing = await tx.queryOne<{ id: string; score: number; max_score: number; weight: number | null }>(
+                    'SELECT id, score, max_score, weight FROM gradebook_scores WHERE id=? AND tenant_id=? FOR UPDATE',
+                    [scoreId, scope.tenantId],
+                );
+                if (existing) {
+                    const before = {
+                        score: Number(existing.score),
+                        max_score: Number(existing.max_score),
+                        weight: existing.weight === null ? null : Number(existing.weight),
+                    };
+                    const sameWeight = (before.weight === null && grade.weight === null)
+                        || (before.weight !== null && grade.weight !== null && before.weight === grade.weight);
+                    if (before.score === grade.score && before.max_score === grade.maxScore && sameWeight) {
+                        outcome = 'unchanged';
+                        return true;
+                    }
+                    const updated = await tx.execute(
+                        'UPDATE gradebook_scores SET score=?, max_score=?, weight=?, recorded_by=?, recorded_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=?',
+                        [grade.score, grade.maxScore, grade.weight, scope.userId, scoreId, scope.tenantId],
+                    );
+                    if ((updated.affectedRows ?? 0) === 0) {
+                        outcome = 'unchanged';
+                        return true;
+                    }
+                    outcome = 'corrected';
+                    await recordAudit(tx.execute, {
+                        actorUserId: scope.userId,
+                        tenantId: scope.tenantId,
+                        action: 'assignment.submission.grade.correct',
+                        resourceType: 'gradebook_score',
+                        resourceId: scoreId,
+                        oldValue: before,
+                        newValue: {
+                            assignment_id: assignmentId,
+                            submission_id: submissionId,
+                            course_id: courseId,
+                            student_enrollment_id: enrollment.id,
+                            item_type: 'assignment',
+                            score: grade.score,
+                            max_score: grade.maxScore,
+                        },
+                    });
+                    return true;
+                }
+                await tx.execute(
+                    'INSERT INTO gradebook_scores (id, tenant_id, student_enrollment_id, course_id, category_id, item_type, item_id, score, max_score, weight, recorded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    [scoreId, scope.tenantId, enrollment.id, courseId, null, 'assignment', assignmentId,
+                        grade.score, grade.maxScore, grade.weight, scope.userId],
+                );
+                await recordAudit(tx.execute, {
+                    actorUserId: scope.userId,
+                    tenantId: scope.tenantId,
+                    action: 'assignment.submission.grade',
+                    resourceType: 'gradebook_score',
+                    resourceId: scoreId,
+                    newValue: {
+                        assignment_id: assignmentId,
+                        submission_id: submissionId,
+                        course_id: courseId,
+                        student_enrollment_id: enrollment.id,
+                        item_type: 'assignment',
+                        score: grade.score,
+                        max_score: grade.maxScore,
+                    },
+                });
+                return true;
+            });
+            if (!applied) return res.status(409).json({ error: 'Grade changed concurrently' });
+
+            // The outcome is set inside the transaction closure, which the
+            // compiler cannot track; the declared union is the contract.
+            const finalOutcome = outcome as 'created' | 'unchanged' | 'corrected';
+            res.status(finalOutcome === 'created' ? 201 : 200).json({
+                id: scoreId,
+                submission_id: submissionId,
+                assignment_id: assignmentId,
+                course_id: courseId,
+                student_enrollment_id: enrollment.id,
+                score: grade.score,
+                max_score: grade.maxScore,
+                idempotent: finalOutcome === 'unchanged',
+                corrected: finalOutcome === 'corrected',
+            });
+        } catch (error) {
+            console.error('Grade assignment submission error:', error);
+            res.status(500).json({ error: 'Failed to grade submission' });
         }
     });
 
@@ -1755,8 +2254,7 @@ const productionMalwareScanner: MalwareScanner | undefined = undefined;
  * staff-side edit/publish/revoke/archive writes) must commit or roll back
  * together, so a failed audit can never leave an unaudited submission behind.
  */
-const productionTransaction = async <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>): Promise<T> => {
-    const { withTransaction } = await loadDb();
+const productionTransaction = async <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>): Promise<T> => {    const { withTransaction } = await loadDb();
     return withTransaction((connection) => fn({
         query: async <R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R[]> => {
             const [rows] = await connection.query(sql, params as never);
@@ -1785,4 +2283,21 @@ export default createAssignmentsRouter({
     objectStore: productionObjectStore,
     malwareScanner: productionMalwareScanner,
     transaction: productionTransaction,
+    /*
+     * `cleanupObligations` is deliberately NOT wired: `assignment_submissions`
+     * has no obligation table yet (the exact DDL is a Claude-owned migration —
+     * `20261023_05_assignment_cleanup_scan_fencing.sql`, contract in
+     * `docs/streams/server/WORKBUDDY-ASSIGNMENT-RECOVERY-20261023.md` §10). The
+     * durable adapter exists (`createSqlAssignmentCleanupStore`) but declares
+     * itself `unavailable` until that schema and the ETag collation verdict are
+     * present, so injecting it today would change nothing. An in-process queue
+     * here would make every cleanup look durable while losing it on restart, so
+     * the honest production state is `cleanup-unconfigured`: rejections and
+     * cancels still destroy the exact version best-effort, and a cleanup that
+     * cannot be proven is reported pending rather than claimed.
+     *
+     * `objectVersionColumn` is likewise unwired: without it the finalize UPDATE
+     * is exactly the historical statement, and no row is given an ETag it cannot
+     * prove.
+     */
 });

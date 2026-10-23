@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { supabase } from "@/integrations/supabase/client";
+import { signOutSession } from '@/lib/api-http';
 import { NotificationBell } from "@/components/NotificationBell";
 import {
   BookOpen,
@@ -89,16 +89,11 @@ const Header = () => {
 
   const handleLogout = async () => {
     try {
-      localStorage.removeItem("student_session");
-      localStorage.removeItem("authToken");
-      localStorage.removeItem("currentUser");
-      localStorage.removeItem("currentStudent");
-      localStorage.removeItem("supabaseUser");
-      const { error } = await supabase.auth.signOut();
-      if (error && error.message !== "No session found") throw error;
+      const outcome = await signOutSession();
+      if (outcome.sessionChanged) return;
       toast({
-        title: "تم تسجيل الخروج بنجاح",
-        description: "أراك لاحقاً!",
+        title: "تم تسجيل الخروج",
+        description: outcome.warning ?? "أراك لاحقاً!",
       });
       navigate("/");
     } catch {

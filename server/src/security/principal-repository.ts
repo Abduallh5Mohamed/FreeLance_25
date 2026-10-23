@@ -10,6 +10,8 @@
 import {
     ACTIVE_SUSPENSION_PREDICATE_SQL,
 } from './suspension-predicate';
+import type { LoginSessionRecord } from './login-session';
+import { createLoginSessionSqlStore } from './login-session-sql';
 import {
     StudentEnrollmentRow,
     TenantMembershipRow,
@@ -64,6 +66,8 @@ export interface BranchSessionRow {
 }
 
 export interface PrincipalRepository {
+    /** Optional for legacy tokens; a token carrying sid requires this live lookup. */
+    findLoginSession?(sessionId: string, userId: string): Promise<LoginSessionRecord | null>;
     /** users-table identity for liveness/revocation checks. */
     findUsersIdentity(id: string): Promise<UsersIdentityRow | null>;
     /** Staff-table identity and its session revocation version. */
@@ -88,6 +92,10 @@ const isMissingStaffTokenVersion = (error: unknown): boolean => {
 };
 
 export const defaultPrincipalRepository: PrincipalRepository = {
+    findLoginSession: async (sessionId, userId) => {
+        const { queryOne, execute } = await loadDb();
+        return createLoginSessionSqlStore({ queryOne, execute }).find(sessionId, userId);
+    },
     findUsersIdentity: async (id) => {
         const { queryOne } = await loadDb();
         return queryOne<UsersIdentityRow>(

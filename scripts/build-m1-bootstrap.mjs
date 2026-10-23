@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TextDecoder } from 'node:util';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const migrationDir = path.join(repoRoot, 'server', 'migrations');
@@ -12,6 +13,23 @@ const preludeName = '20260920_00z_m1_prelude.sql';
 const databaseCollationName = '20260920_00_a_m1_database_collation.sql';
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
+const contentHashEncoding = 'utf8-crlf-to-lf-v1';
+
+async function readSqlUtf8(sourcePath) {
+  const bytes = await readFile(sourcePath);
+  // Preserve an existing BOM and reject malformed UTF-8 rather than silently
+  // replacing it before hashing. Raw provenance hashes always cover real bytes.
+  const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  return { text, rawSha256: sha256(bytes) };
+}
+
+// Only transport line endings are canonicalized. Preserve BOM, final newline,
+// whitespace, comments and all SQL tokens so content changes still fail review.
+function canonicalSql(value, name) {
+  const canonical = value.replace(/\r\n/g, '\n');
+  if (canonical.includes('\r')) throw new Error(`Unsupported bare CR in ${name}; review the source encoding explicitly.`);
+  return canonical;
+}
 
 function assertSafeSql(sql, name) {
   const stripped = sql.replace(/--[^\r\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
@@ -30,11 +48,17 @@ export async function buildM1Bootstrap(destination) {
   }
   const names = (await readdir(migrationDir)).filter((name) => /^\d{8}_.*\.sql$/.test(name)).sort();
   const reviewedManifest = JSON.parse(await readFile(path.join(repoRoot, 'server', 'bootstrap', 'm1', 'manifest.json'), 'utf8'));
+  if (reviewedManifest.contentHashEncoding !== contentHashEncoding) {
+    throw new Error('Reviewed manifest must explicitly declare the canonical SQL hash encoding.');
+  }
   const sourceHashes = {};
+  const sourceRawHashes = {};
   const staged = [];
   for (const name of names) {
-    const original = await readFile(path.join(migrationDir, name), 'utf8');
+    const source = await readSqlUtf8(path.join(migrationDir, name));
+    const original = canonicalSql(source.text, name);
     assertSafeSql(original, name);
+    sourceRawHashes[name] = source.rawSha256;
     sourceHashes[name] = sha256(original);
     if (reviewedManifest.sourceSha256?.[name] !== sourceHashes[name]) {
       throw new Error(`Source hash differs from reviewed manifest for ${name}; review and update the plan explicitly.`);
@@ -49,9 +73,13 @@ export async function buildM1Bootstrap(destination) {
   if (Object.keys(reviewedManifest.sourceSha256 ?? {}).sort().join('\n') !== names.join('\n')) {
     throw new Error('Migration inventory differs from reviewed manifest; refusing an incomplete or expanded plan.');
   }
-  const prelude = await readFile(preludePath, 'utf8');
+  const prelude = canonicalSql((await readSqlUtf8(preludePath)).text, 'prelude.sql');
   assertSafeSql(prelude, 'prelude.sql');
-  const databaseCollation = await readFile(databaseCollationPath, 'utf8');
+  const preludeHash = sha256(prelude);
+  if (reviewedManifest.preludeSha256 !== preludeHash) {
+    throw new Error('Prelude hash differs from the reviewed manifest; review and update the plan explicitly.');
+  }
+  const databaseCollation = canonicalSql((await readSqlUtf8(databaseCollationPath)).text, 'database-collation.sql');
   assertSafeSql(databaseCollation, 'database-collation.sql');
   const databaseCollationHash = sha256(databaseCollation);
   if (reviewedManifest.databaseCollationSha256 !== databaseCollationHash) {
@@ -75,18 +103,23 @@ export async function buildM1Bootstrap(destination) {
   try {
     for (const { name, content } of outputFiles) await writeFile(path.join(target, name), content, { flag: 'wx' });
     const manifest = {
-      format: 2,
+      format: 3,
+      contentHashEncoding,
       generatedAt: new Date().toISOString(),
       sourceDirectory: 'server/migrations',
       stagedDirectory: target,
       sourceSha256: sourceHashes,
+      sourceRawSha256: sourceRawHashes,
+      preludeSha256: preludeHash,
       databaseCollationSha256: databaseCollationHash,
+      stagedSha256: Object.fromEntries(outputFiles.map(({ name, content }) => [name, sha256(content)])),
       stagedOrder: outputFiles.map(({ name }) => name),
       transformations: [
         { source: 'server/bootstrap/m1/database-collation.sql', action: 'staged as 20260920_00_a_m1_database_collation.sql before the legacy baseline; sets the database default to utf8mb4/utf8mb4_unicode_ci so every table without an explicit charset matches the explicit utf8mb4_unicode_ci tables and their foreign keys to users(id) (fixes fresh-bootstrap ERROR 3780); edits no migration and disables no foreign-key check' },
-        { source: '20260920_00_legacy_baseline.sql', action: 'unchanged copy; canonical legacy schema base' },
-        { source: '20261017_02_missing_core_tables.sql', action: 'unchanged copy; dynamic guard skips lectures after reviewed early creation' },
-        { source: '20260928_runtime_schema_replacement.sql', action: 'one exact reviewed groups ALTER moved to prelude; all remaining bytes retained' },
+        { source: '*', action: 'canonical UTF-8 SQL with CRLF converted to LF only; no trimming or SQL token rewriting; source and staged hashes describe canonical content, sourceRawSha256 records checkout bytes' },
+        { source: '20260920_00_legacy_baseline.sql', action: 'canonical line-ending copy; legacy schema base' },
+        { source: '20261017_02_missing_core_tables.sql', action: 'canonical line-ending copy; dynamic guard skips lectures after reviewed early creation' },
+        { source: '20260928_runtime_schema_replacement.sql', action: 'one exact reviewed groups ALTER moved to prelude after line-ending canonicalization; all remaining canonical content retained' },
         { source: '20260920_05_instructor_system.sql', action: 'unchanged copy; early lectures table satisfies FK references; adds instructor_id' },
         { source: '20260924_instructor_video_exchange.sql', action: 'unchanged copy; owns addition of lectures.price and archived_at' }
       ],

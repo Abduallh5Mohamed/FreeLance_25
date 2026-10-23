@@ -1325,6 +1325,7 @@ test('download: the router exposes no endpoint that serves a stored object', () 
         'POST /:id/submissions',
         'POST /:id/submissions/:submissionId/cancel',
         'POST /:id/submissions/:submissionId/finalize',
+        'POST /:id/submissions/:submissionId/grade',
         'POST /:id/submissions/:submissionId/revoke',
         'POST /:id/submissions/:submissionId/upload-authorization',
     ].sort(), 'no route serves object bytes: staff can never read a pending or foreign file');

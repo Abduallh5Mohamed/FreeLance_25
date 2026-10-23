@@ -226,6 +226,12 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
         try {
             const userId = userIdOf(req, res);
             if (!userId) return;
+            // Do not consume an OTP/recovery code only to mint an unbound
+            // step-up token. Authentication has already checked this session.
+            if (!req.user?.sessionId) {
+                res.set('Cache-Control', 'no-store');
+                return res.status(403).json({ error: 'Sign in with a session-bound login', code: 'MFA_SESSION_REQUIRED' });
+            }
             if (!notThrottled('verify', userId, res)) return;
             const recoveryCode = typeof req.body?.recovery_code === 'string' ? req.body.recovery_code.trim() : '';
             const totpCode = normalizeTotpInput(req.body?.code);
@@ -311,6 +317,14 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
     router.post(
         '/disable',
         manageGuard,
+        (req: AuthRequest, res: Response, next) => {
+            res.set('Cache-Control', 'no-store');
+            if (!req.user?.sessionId) {
+                res.status(403).json({ error: 'Sign in with a session-bound login', code: 'MFA_SESSION_REQUIRED' });
+                return;
+            }
+            next();
+        },
         requireStepUpGuard(deps.stepUpMaxAgeSeconds ?? DEFAULT_STEPUP_MAX_AGE_SECONDS),
         async (req: AuthRequest, res: Response) => {
             try {

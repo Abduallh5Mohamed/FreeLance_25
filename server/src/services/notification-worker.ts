@@ -35,6 +35,7 @@ import { canDeliverTo, type NotificationDataAccess } from './notification-consen
 import {
     claimDueOutboxIdsInScope,
     dispatchOutboxRow,
+    LINK_SECRET_MIN_BYTES,
     outboxRowRenderer,
     recoverStaleSendingRows,
     STALE_SENDING_MARKER,
@@ -415,4 +416,94 @@ export const createNotificationWorker = (deps: NotificationWorkerDeps): Notifica
     });
 
     return { start, stop, runOnce, reapStaleClaims, status };
+};
+
+// ---------------------------------------------------------------------------
+// W9-R1 — startup configuration / readiness (pure: no I/O, no timer, no send)
+// ---------------------------------------------------------------------------
+
+/**
+ * Exact reason codes the integration owner maps onto its own readiness surface.
+ * They are fixed strings on purpose: an operator must be able to tell "no
+ * tenant" from "no secret" from "no provider", and a generic "not ready" hides
+ * a misconfiguration that otherwise fails at 03:00 as an empty claim loop.
+ */
+export const STARTUP_REASONS = {
+    tenantUnresolved: 'tenant-unresolved',
+    linkSecretMissing: 'link-secret-missing',
+    contactHmacKeyMissing: 'contact-hmac-key-missing',
+    noReadyChannel: 'no-ready-channel',
+} as const;
+
+/** A contact-ref HMAC key shorter than this is treated as missing. */
+const MIN_CONTACT_HMAC_KEY_BYTES = 16;
+
+export interface NotificationWorkerStartupInput {
+    /** The process environment (or a test double); read, never mutated. */
+    env: Record<string, string | undefined>;
+    /** Server-resolved tenant for this worker; never a request/client value. */
+    tenantId: string | null | undefined;
+    /** Channels that have a *configured* transport in this deployment. */
+    channels: readonly string[];
+    limits?: WorkerLimits;
+}
+
+export interface NotificationWorkerStartupConfig {
+    tenantId: string;
+    linkSecret: string;
+    hmacKey: string;
+    channels: string[];
+    limits: ResolvedWorkerLimits;
+}
+
+export type NotificationWorkerStartupResult =
+    | { ready: true; config: NotificationWorkerStartupConfig }
+    | { ready: false; reasons: string[] };
+
+/**
+ * Validates everything `createNotificationWorker` needs *before* it is
+ * constructed, so a misconfigured process starts with an explicit refusal
+ * instead of a worker that silently claims nothing (or, worse, one whose
+ * missing link secret only surfaces per row).
+ *
+ * Callers must not `start()` the worker when `ready` is false; they should
+ * report the reasons on their readiness surface and keep serving HTTP.
+ */
+export const resolveNotificationWorkerStartup = (
+    input: NotificationWorkerStartupInput,
+): NotificationWorkerStartupResult => {
+    const reasons: string[] = [];
+    const tenantId = typeof input.tenantId === 'string' ? input.tenantId.trim() : '';
+    if (tenantId.length === 0) reasons.push(STARTUP_REASONS.tenantUnresolved);
+
+    const rawLinkSecret = input.env.NOTIFICATION_LINK_SECRET;
+    const linkSecret = typeof rawLinkSecret === 'string' && Buffer.byteLength(rawLinkSecret, 'utf8') >= LINK_SECRET_MIN_BYTES
+        ? rawLinkSecret
+        : null;
+    if (linkSecret === null) reasons.push(STARTUP_REASONS.linkSecretMissing);
+
+    const rawHmacKey = input.env.NOTIFICATION_CONTACT_HMAC_KEY;
+    const hmacKey = typeof rawHmacKey === 'string' && Buffer.byteLength(rawHmacKey, 'utf8') >= MIN_CONTACT_HMAC_KEY_BYTES
+        ? rawHmacKey
+        : null;
+    if (hmacKey === null) reasons.push(STARTUP_REASONS.contactHmacKeyMissing);
+
+    const channels = [...new Set(
+        input.channels.filter((channel): channel is string => typeof channel === 'string' && channel.length > 0),
+    )];
+    if (channels.length === 0) reasons.push(STARTUP_REASONS.noReadyChannel);
+
+    if (reasons.length > 0 || linkSecret === null || hmacKey === null) {
+        return { ready: false, reasons };
+    }
+    return {
+        ready: true,
+        config: {
+            tenantId,
+            linkSecret,
+            hmacKey,
+            channels,
+            limits: resolveWorkerLimits(input.limits),
+        },
+    };
 };

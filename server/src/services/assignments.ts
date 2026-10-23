@@ -45,6 +45,25 @@ export type SubmissionStatus = (typeof SUBMISSION_STATUSES)[number];
 export const SCAN_STATUSES = ['pending', 'clean', 'infected', 'failed'] as const;
 export type ScanStatus = (typeof SCAN_STATUSES)[number];
 
+/**
+ * Why one stored object version owes a durable cleanup. The list is closed and
+ * mirrors the only places the lifecycle destroys (or fails to destroy) bytes:
+ * the four admission denials of finalize, the infected-scan quarantine, and a
+ * student cancel of an unverified upload.
+ *
+ * A reason is recorded with the obligation so a later reader can tell a
+ * rejection apart from a malware quarantine without replaying the request.
+ */
+export const CLEANUP_OBLIGATION_REASONS = [
+    'admission_oversize',
+    'admission_size_out_of_bounds',
+    'admission_content_type_mismatch',
+    'admission_signature_mismatch',
+    'scan_infected',
+    'cancelled_upload',
+] as const;
+export type AssignmentCleanupReason = (typeof CLEANUP_OBLIGATION_REASONS)[number];
+
 export const DEFAULT_ALLOWED_FILE_TYPES = ['pdf', 'doc', 'docx', 'png', 'jpg', 'jpeg', 'zip', 'txt'];
 export const DEFAULT_MAX_FILE_BYTES = 25 * 1024 * 1024;
 export const MIN_FILE_BYTES = 1024;
@@ -92,6 +111,14 @@ export function normalizeBranchScope(value: unknown): AssignmentBranchScope | nu
     if (typeof value !== 'string') return null;
     return (ASSIGNMENT_BRANCH_SCOPES as readonly string[]).includes(value)
         ? (value as AssignmentBranchScope)
+        : null;
+}
+
+/** A closed cleanup reason, or null when the value is not one of them. */
+export function normalizeCleanupReason(value: unknown): AssignmentCleanupReason | null {
+    if (typeof value !== 'string') return null;
+    return (CLEANUP_OBLIGATION_REASONS as readonly string[]).includes(value)
+        ? (value as AssignmentCleanupReason)
         : null;
 }
 

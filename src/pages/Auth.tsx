@@ -56,12 +56,8 @@ const Auth = () => {
         }
 
         if (result.user) {
-          console.log('✅ Login successful, user:', result.user);
-
           // Store user session in localStorage
           localStorage.setItem('currentUser', JSON.stringify(result.user));
-          console.log('✅ User stored in localStorage');
-
           // Redirect based on role
           if (result.user.role === 'admin' || result.user.admin_member) {
             toast({ title: "تم تسجيل الدخول بنجاح", description: `مرحباً بك ${result.user.name}` });
@@ -70,9 +66,7 @@ const Auth = () => {
             toast({
               title: "تم تسجيل الدخول بنجاح",
               description: `مرحباً بك ${result.user.name}`,
-            });
-            console.log('✅ Navigating to /teacher...');
-            setTimeout(() => {
+            });            setTimeout(() => {
               navigate("/teacher");
             }, 300);
           } else if (result.user.role === 'instructor') {
@@ -81,9 +75,7 @@ const Auth = () => {
             toast({
               title: "تم تسجيل الدخول بنجاح",
               description: `مرحباً بك ${result.user.name}`,
-            });
-            console.log('✅ Navigating to /teacher...');
-            setTimeout(() => {
+            });            setTimeout(() => {
               navigate(result.user?.billing_only ? "/instructor-subscription" : "/teacher");
             }, 300);
           } else if (result.user.role === 'staff') {
@@ -91,10 +83,7 @@ const Auth = () => {
             toast({
               title: "تم تسجيل الدخول بنجاح",
               description: `مرحباً بك ${result.user.name}`,
-            });
-            console.log('✅ Staff user, accessible pages:', (result.user as any).accessible_pages);
-            console.log('✅ Navigating to /teacher...');
-            setTimeout(() => {
+            });            setTimeout(() => {
               navigate("/teacher");
             }, 300);
           } else {
@@ -110,9 +99,7 @@ const Auth = () => {
       } else {
         throw new Error("إنشاء حساب الطالب يتم من رابط الدعوة الذي يرسله المدرس فقط.");
       }
-    } catch (error) {
-      console.error('Auth error:', error);
-      const errorMessage = error instanceof Error ? error.message : "حدث خطأ غير متوقع";
+    } catch (error) {      const errorMessage = error instanceof Error ? error.message : "حدث خطأ غير متوقع";
       setError(errorMessage);
       toast({
         variant: "destructive",
@@ -300,12 +287,7 @@ const Auth = () => {
                         الصف الدراسي
                       </Label>
                       <div className="relative">
-                        <Select value={gradeId} onValueChange={(value) => {
-                          console.log('✅ Selected grade:', value);
-                          console.log('📋 All groups:', groups);
-                          const filtered = groups.filter(g => g.grade_id === value);
-                          console.log('📋 Filtered groups for grade:', filtered);
-                          setGradeId(value);
+                        <Select value={gradeId} onValueChange={(value) => {                          const filtered = groups.filter(g => g.grade_id === value);                          setGradeId(value);
                           setSelectedGroup(''); // Reset group when grade changes
                           setSelectedCourses([]); // Reset courses when grade changes
                         }} required>
@@ -434,9 +416,7 @@ const Auth = () => {
                         {courses
                           .filter(course => {
                             const selectedGrade = grades.find(g => g.id === gradeId);
-                            const gradeName = selectedGrade?.name;
-                            console.log('🔍 Course:', course.name, '| Course Grade:', course.grade, '| Selected Grade Name:', gradeName, '| Match:', course.grade === gradeName);
-                            return course.grade === gradeName;
+                            const gradeName = selectedGrade?.name;                            return course.grade === gradeName;
                           })
                           .map((course) => (
                             <div key={course.id} className="flex items-center justify-end gap-2">

@@ -258,7 +258,11 @@ export interface ProviderTransport {
 }
 
 export interface ConfiguredChannelAdapter {
-    readonly channel: 'email' | 'sms';
+    /**
+     * `whatsapp` is part of the union so a deferred channel can be registered
+     * as explicitly unready instead of being silently absent (W9-R3).
+     */
+    readonly channel: 'email' | 'sms' | 'whatsapp';
     /** Explicit readiness signal: a channel is only claimable when ready. */
     readiness(): AdapterReadiness;
     send(request: ChannelSendRequest): Promise<ChannelSendOutcome>;
@@ -329,6 +333,29 @@ export const createSmsAdapter = (config: ChannelAdapterConfig = {}): ConfiguredC
     channel: 'sms',
     readiness: () => (config.transport ? { ready: true } : { ready: false, reason: 'no-provider-configured' }),
     send: (request) => sendThroughTransport('sms', config.transport, request),
+});
+
+/** The exact reason a channel deferred by the owner reports. */
+export const DEFERRED_CHANNEL_REASON = 'channel-deferred-by-owner';
+
+/**
+ * W9-R3 — a channel whose provider was deferred by the owner (OTP/SMS/WhatsApp)
+ * is registered explicitly **unready** with an exact, operator-visible reason.
+ *
+ * This is the safe refusal made structural: the registration can never be
+ * claimed by the worker (an unready registration is filtered out of the claim),
+ * `send` can never reach a provider, and an accidental send reports
+ * `unavailable` — never `sent` and never a fabricated message id. It exists so
+ * a future wiring cannot leave the channel silently absent (which would show up
+ * only as `no-adapter` retries) or, worse, substitute a fake success.
+ */
+export const createDeferredChannelAdapter = (
+    channel: 'sms' | 'whatsapp',
+    reason: string = DEFERRED_CHANNEL_REASON,
+): ConfiguredChannelAdapter => ({
+    channel,
+    readiness: () => ({ ready: false, reason }),
+    send: async () => ({ outcome: 'unavailable', reason }),
 });
 
 // ---------------------------------------------------------------------------

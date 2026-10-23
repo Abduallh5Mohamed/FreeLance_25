@@ -61,7 +61,7 @@
  * ts-ignore, no network, no runtime DDL.
  */
 import { createHash, randomUUID } from 'crypto';
-import type { AuditRecordInput } from '../security/audit';
+import { recordAudit, type AuditRecordInput } from '../security/audit';
 
 /* =========================================================================
  * Taxonomy
@@ -835,6 +835,539 @@ export function createInMemoryMediaMeteringStore(
             for (const [key, total] of pendingCounters) counters.set(key, total);
             for (const audit of pendingAudits) audits.push(audit);
             return result;
+        }),
+    };
+}
+
+/* =========================================================================
+ * Durable persistence — SQL adapter against the published I2 contract
+ * =========================================================================
+ *
+ * The tables below are the request this module has published since the first
+ * delivery (`B2-W6-MEDIA-METERING-20261021.md` §C.7, I2-1..I2-4). The adapter
+ * implements exactly that contract and NOTHING else:
+ *
+ *   I2-1 `video_storage_transitions(id, tenant_id, asset_id, transition,
+ *         resulting_bytes, idempotency_key, evidence_source, occurred_at,
+ *         created_at)` with `UNIQUE (tenant_id, idempotency_key)` and
+ *         `KEY (tenant_id, asset_id, occurred_at)`;
+ *   I2-2 `media_storage_asset_counters(tenant_id, asset_id, storage_bytes,
+ *         updated_at)` PRIMARY KEY `(tenant_id, asset_id)` and
+ *         `media_storage_tenant_counters(tenant_id, storage_bytes, updated_at)`
+ *         PRIMARY KEY `(tenant_id)` — two tables because MySQL cannot put NULL
+ *         in a primary key, while the port's `assetId: null` means "tenant
+ *         total";
+ *   I2-3 the read-modify-write is safe because the adapter takes the TENANT
+ *         counter row lock and then the ASSET counter row lock at the start of
+ *         every unit, in that one order;
+ *   I2-4 `media_usage_gap_outbox` for a `deferred`/`unconfigured` byte count.
+ *
+ * The migration is NOT written here (schema source belongs to the schema
+ * owner) and the adapter is NOT composed anywhere: without the tables it would
+ * fail at runtime, so shipping it as "production metering" would be a false
+ * claim. It is a real adapter against a declared contract, not an invention.
+ */
+
+export const MEDIA_METERING_SCHEMA_CONTRACT = {
+    /** I2-1 */
+    events: 'video_storage_transitions',
+    /** I2-2 */
+    assetCounters: 'media_storage_asset_counters',
+    tenantCounters: 'media_storage_tenant_counters',
+    /** I2-4 */
+    gapOutbox: 'media_usage_gap_outbox',
+} as const;
+
+export interface MediaMeteringSqlConnection {
+    query: <T = unknown>(sql: string, params?: unknown[]) => Promise<T[]>;
+    queryOne: <T = unknown>(sql: string, params?: unknown[]) => Promise<T | null>;
+    execute: (sql: string, params?: unknown[]) => Promise<{ affectedRows?: number }>;
+}
+
+export interface MediaMeteringSqlDb {
+    /** A single pooled connection; the caller releases it after commit/rollback. */
+    getConnection: () => Promise<{
+        connection: MediaMeteringSqlConnection;
+        release: () => void | Promise<void>;
+    }>;
+}
+
+function isDuplicateKey(error: unknown): boolean {
+    if (!error || typeof error !== 'object') return false;
+    const code = (error as { code?: unknown }).code;
+    return code === 'ER_DUP_ENTRY' || code === 1062;
+}
+
+function toMysqlUtc(ms: number): string {
+    return new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function fromMysqlUtc(value: unknown): number {
+    if (value instanceof Date) return value.getTime();
+    if (typeof value === 'string' && value) {
+        const date = new Date(/[TZ]/.test(value) ? value : `${value.replace(' ', 'T')}Z`);
+        if (Number.isFinite(date.getTime())) return date.getTime();
+    }
+    return 0;
+}
+
+interface StorageTransitionDbRow {
+    id: string;
+    tenant_id: string;
+    asset_id: string;
+    transition: string;
+    resulting_bytes: number | string;
+    idempotency_key: string;
+    evidence_source: string;
+    occurred_at: unknown;
+}
+
+const TRANSITION_COLUMNS = `id, tenant_id, asset_id, transition, resulting_bytes,
+    idempotency_key, evidence_source, occurred_at`;
+
+function mapTransitionRow(row: StorageTransitionDbRow): StorageMeterEventRow | null {
+    const transition = normalizeStorageTransition(row.transition);
+    const source = normalizeEvidenceSource(row.evidence_source);
+    if (!transition || !source.ok) return null;
+    return {
+        id: row.id,
+        tenantId: row.tenant_id,
+        assetId: row.asset_id,
+        transition,
+        resultingBytes: Number(row.resulting_bytes ?? 0),
+        idempotencyKey: row.idempotency_key,
+        source: source.value,
+        occurredAtMs: fromMysqlUtc(row.occurred_at),
+    };
+}
+
+/**
+ * Durable meter store over the declared contract.
+ *
+ * `withTransaction` is the only write path and it does three things the port
+ * documents:
+ *  1. `BEGIN` on one connection;
+ *  2. `INSERT ... ON DUPLICATE KEY UPDATE` + `SELECT ... FOR UPDATE` on the
+ *     TENANT counter, then the same on the ASSET counter — one order on every
+ *     writer, which is what makes a deadlock between two appends impossible;
+ *  3. `COMMIT` on success, `ROLLBACK` on any throw, and the connection is
+ *     always released.
+ */
+export function createSqlMediaMeteringStore(db: MediaMeteringSqlDb): MediaMeteringStore {
+    const listEventsOn = async (
+        conn: MediaMeteringSqlConnection,
+        tenantId: string,
+        assetId?: string,
+    ): Promise<StorageMeterEventRow[]> => {
+        const rows = assetId === undefined
+            ? await conn.query<StorageTransitionDbRow>(
+                `SELECT ${TRANSITION_COLUMNS} FROM ${MEDIA_METERING_SCHEMA_CONTRACT.events}
+                 WHERE tenant_id = ? ORDER BY occurred_at ASC, idempotency_key ASC`,
+                [tenantId],
+            )
+            : await conn.query<StorageTransitionDbRow>(
+                `SELECT ${TRANSITION_COLUMNS} FROM ${MEDIA_METERING_SCHEMA_CONTRACT.events}
+                 WHERE tenant_id = ? AND asset_id = ? ORDER BY occurred_at ASC, idempotency_key ASC`,
+                [tenantId, assetId],
+            );
+        return rows
+            .map(mapTransitionRow)
+            .filter((row): row is StorageMeterEventRow => row !== null);
+    };
+
+    const readCounterOn = async (
+        conn: MediaMeteringSqlConnection,
+        tenantId: string,
+        assetId: string | null,
+    ): Promise<number | null> => {
+        const row = assetId === null
+            ? await conn.queryOne<{ storage_bytes: number | string | null }>(
+                `SELECT storage_bytes FROM ${MEDIA_METERING_SCHEMA_CONTRACT.tenantCounters} WHERE tenant_id = ? LIMIT 1`,
+                [tenantId],
+            )
+            : await conn.queryOne<{ storage_bytes: number | string | null }>(
+                `SELECT storage_bytes FROM ${MEDIA_METERING_SCHEMA_CONTRACT.assetCounters}
+                 WHERE tenant_id = ? AND asset_id = ? LIMIT 1`,
+                [tenantId, assetId],
+            );
+        if (!row || row.storage_bytes === null || row.storage_bytes === undefined) return null;
+        const total = Number(row.storage_bytes);
+        return Number.isSafeInteger(total) ? total : null;
+    };
+
+    const lockCounters = async (
+        conn: MediaMeteringSqlConnection,
+        unit: MediaMeteringUnit,
+    ): Promise<void> => {
+        // Tenant row first, always.
+        await conn.execute(
+            `INSERT INTO ${MEDIA_METERING_SCHEMA_CONTRACT.tenantCounters} (tenant_id, storage_bytes)
+             VALUES (?, 0) ON DUPLICATE KEY UPDATE tenant_id = tenant_id`,
+            [unit.tenantId],
+        );
+        await conn.query(
+            `SELECT tenant_id FROM ${MEDIA_METERING_SCHEMA_CONTRACT.tenantCounters}
+             WHERE tenant_id = ? FOR UPDATE`,
+            [unit.tenantId],
+        );
+        // Then the asset row.
+        await conn.execute(
+            `INSERT INTO ${MEDIA_METERING_SCHEMA_CONTRACT.assetCounters} (tenant_id, asset_id, storage_bytes)
+             VALUES (?, ?, 0) ON DUPLICATE KEY UPDATE asset_id = asset_id`,
+            [unit.tenantId, unit.assetId],
+        );
+        await conn.query(
+            `SELECT asset_id FROM ${MEDIA_METERING_SCHEMA_CONTRACT.assetCounters}
+             WHERE tenant_id = ? AND asset_id = ? FOR UPDATE`,
+            [unit.tenantId, unit.assetId],
+        );
+    };
+
+    return {
+        listEvents: (tenantId, assetId) => db.getConnection().then(async ({ connection, release }) => {
+            try {
+                return await listEventsOn(connection, tenantId, assetId);
+            } finally {
+                await release();
+            }
+        }),
+
+        readStorageCounter: (tenantId, assetId) => db.getConnection().then(async ({ connection, release }) => {
+            try {
+                return await readCounterOn(connection, tenantId, assetId);
+            } finally {
+                await release();
+            }
+        }),
+
+        withTransaction: async (unit, work) => {
+            const { connection, release } = await db.getConnection();
+            try {
+                await connection.execute('START TRANSACTION');
+                try {
+                    await lockCounters(connection, unit);
+                    const tx: MediaMeteringTransaction = {
+                        findAssetTenant: async (assetId) => {
+                            const row = await connection.queryOne<{ tenant_id: string | null }>(
+                                'SELECT tenant_id FROM video_assets WHERE id = ? LIMIT 1',
+                                [assetId],
+                            );
+                            return row?.tenant_id ?? null;
+                        },
+                        listEvents: (tenantId, assetId) => listEventsOn(connection, tenantId, assetId),
+                        readStorageCounter: (tenantId, assetId) => readCounterOn(connection, tenantId, assetId),
+                        insertEvent: async (row) => {
+                            try {
+                                await connection.execute(
+                                    `INSERT INTO ${MEDIA_METERING_SCHEMA_CONTRACT.events}
+                                       (id, tenant_id, asset_id, transition, resulting_bytes,
+                                        idempotency_key, evidence_source, occurred_at)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                                    [
+                                        row.id,
+                                        row.tenantId,
+                                        row.assetId,
+                                        row.transition,
+                                        row.resultingBytes,
+                                        row.idempotencyKey,
+                                        row.source,
+                                        toMysqlUtc(row.occurredAtMs),
+                                    ],
+                                );
+                                return true;
+                            } catch (error) {
+                                if (isDuplicateKey(error)) return false;
+                                throw error;
+                            }
+                        },
+                        writeStorageCounter: async (tenantId, assetId, total) => {
+                            if (assetId === null) {
+                                await connection.execute(
+                                    `INSERT INTO ${MEDIA_METERING_SCHEMA_CONTRACT.tenantCounters}
+                                       (tenant_id, storage_bytes, updated_at)
+                                     VALUES (?, ?, UTC_TIMESTAMP())
+                                     ON DUPLICATE KEY UPDATE storage_bytes = VALUES(storage_bytes),
+                                                             updated_at = UTC_TIMESTAMP()`,
+                                    [tenantId, total],
+                                );
+                                return;
+                            }
+                            await connection.execute(
+                                `INSERT INTO ${MEDIA_METERING_SCHEMA_CONTRACT.assetCounters}
+                                   (tenant_id, asset_id, storage_bytes, updated_at)
+                                 VALUES (?, ?, ?, UTC_TIMESTAMP())
+                                 ON DUPLICATE KEY UPDATE storage_bytes = VALUES(storage_bytes),
+                                                         updated_at = UTC_TIMESTAMP()`,
+                                [tenantId, assetId, total],
+                            );
+                        },
+                        recordAudit: async (input) => {
+                            await recordAudit(connection.execute, input);
+                        },
+                    };
+                    const result = await work(tx);
+                    await connection.execute('COMMIT');
+                    return result;
+                } catch (error) {
+                    // A partial commit is a contract violation, so every throw
+                    // rolls back the event, BOTH counters and the audit row.
+                    await connection.execute('ROLLBACK');
+                    throw error;
+                }
+            } finally {
+                await release();
+            }
+        },
+    };
+}
+
+/* =========================================================================
+ * Gap outbox (I2-4) — a deferred or unconfigured byte count is never lost
+ * ========================================================================= */
+
+export type MediaGapReason = 'metering_deferred' | 'metering_unconfigured';
+
+export type MediaGapStatus = 'pending' | 'delivered';
+
+export interface MediaUsageGapRow {
+    id: string;
+    tenantId: string;
+    assetId: string;
+    operationId: string;
+    resultingBytes: number;
+    source: StorageEvidenceSource;
+    occurredAtMs: number;
+    reason: MediaGapReason;
+    status: MediaGapStatus;
+    attempts: number;
+    lastAttemptAtMs: number | null;
+    lastError: string | null;
+    createdAtMs: number;
+}
+
+export interface MediaUsageGapOutbox {
+    /** Deduplicated on (tenant_id, asset_id, operation_id). */
+    enqueue(row: MediaUsageGapRow): Promise<{ enqueued: boolean; duplicate: boolean }>;
+    /** Oldest first, bounded by `limit`. */
+    listPending(tenantId: string, limit: number): Promise<MediaUsageGapRow[]>;
+    markDelivered(id: string, atMs: number): Promise<void>;
+    /** Keeps the row pending and records the failure; attempts is incremented. */
+    markAttemptFailed(id: string, atMs: number, error: string): Promise<void>;
+}
+
+export interface GapDrainInput {
+    outbox: MediaUsageGapOutbox;
+    meter: Pick<MediaMeteringService, 'recordVerifiedBytes'>;
+    tenantId: string;
+    limit?: number;
+    maxAttempts?: number;
+    nowMs?: number;
+}
+
+export interface GapDrainReport {
+    tenantId: string;
+    attempted: number;
+    delivered: number;
+    deduplicated: number;
+    deferred: number;
+    exhausted: number;
+    mutated: true;
+}
+
+export const DEFAULT_GAP_DRAIN_LIMIT = 50;
+export const DEFAULT_GAP_MAX_ATTEMPTS = 5;
+
+/**
+ * Re-drive pending gaps through the SAME verified path the live callback used.
+ * The meter's own idempotency key absorbs a gap that was already applied, so a
+ * retry can never double-count. A row that keeps failing stops at
+ * `maxAttempts` and is reported as `exhausted` instead of retrying forever.
+ */
+export async function drainMediaUsageGaps(input: GapDrainInput): Promise<GapDrainReport> {
+    const tenantId = normalizeTenantId(input.tenantId);
+    if (!tenantId) throw new Error(STORAGE_METER_ERRORS.invalidTenant);
+    const limit = Math.min(500, Math.max(1, Math.trunc(input.limit ?? DEFAULT_GAP_DRAIN_LIMIT)));
+    const maxAttempts = Math.max(1, Math.trunc(input.maxAttempts ?? DEFAULT_GAP_MAX_ATTEMPTS));
+    const at = typeof input.nowMs === 'number' && Number.isFinite(input.nowMs) ? Math.trunc(input.nowMs) : Date.now();
+
+    const pending = await input.outbox.listPending(tenantId, limit);
+    let delivered = 0;
+    let deduplicated = 0;
+    let deferred = 0;
+    let exhausted = 0;
+
+    for (const gap of pending) {
+        if (gap.attempts >= maxAttempts) {
+            exhausted += 1;
+            continue;
+        }
+        try {
+            const result = await input.meter.recordVerifiedBytes({
+                tenantId: gap.tenantId,
+                assetId: gap.assetId,
+                resultingBytes: gap.resultingBytes,
+                operationId: gap.operationId,
+                source: gap.source,
+                occurredAtMs: gap.occurredAtMs,
+            });
+            if ('error' in result) {
+                deferred += 1;
+                await input.outbox.markAttemptFailed(gap.id, at, result.error);
+                continue;
+            }
+            if (result.deduplicated) {
+                deduplicated += 1;
+            } else {
+                delivered += 1;
+            }
+            await input.outbox.markDelivered(gap.id, at);
+        } catch (error) {
+            deferred += 1;
+            await input.outbox.markAttemptFailed(gap.id, at, error instanceof Error ? error.message : 'unknown error');
+        }
+    }
+
+    return {
+        tenantId,
+        attempted: pending.length,
+        delivered,
+        deduplicated,
+        deferred,
+        exhausted,
+        mutated: true,
+    };
+}
+
+export interface InMemoryGapOutbox extends MediaUsageGapOutbox {
+    readonly rows: MediaUsageGapRow[];
+}
+
+/** A real adapter: it stores rows, enforces the dedupe key and counts attempts. */
+export function createInMemoryGapOutbox(): InMemoryGapOutbox {
+    const rows: MediaUsageGapRow[] = [];
+    const keys = new Set<string>();
+    return {
+        rows,
+        enqueue: async (row) => {
+            const key = `${row.tenantId}\u0000${row.assetId}\u0000${row.operationId}`;
+            if (keys.has(key)) return { enqueued: false, duplicate: true };
+            keys.add(key);
+            rows.push({ ...row });
+            return { enqueued: true, duplicate: false };
+        },
+        listPending: async (tenantId, limit) => rows
+            .filter((row) => row.tenantId === tenantId && row.status === 'pending')
+            .sort((a, b) => (a.createdAtMs - b.createdAtMs) || (a.id < b.id ? -1 : 1))
+            .slice(0, limit)
+            .map((row) => ({ ...row })),
+        markDelivered: async (id, atMs) => {
+            const row = rows.find((entry) => entry.id === id);
+            if (!row) return;
+            row.status = 'delivered';
+            row.lastAttemptAtMs = atMs;
+            row.lastError = null;
+        },
+        markAttemptFailed: async (id, atMs, error) => {
+            const row = rows.find((entry) => entry.id === id);
+            if (!row) return;
+            row.attempts += 1;
+            row.lastAttemptAtMs = atMs;
+            row.lastError = error.slice(0, 500);
+        },
+    };
+}
+
+/** SQL gap outbox over I2-4. Unique key `(tenant_id, asset_id, operation_id)`. */
+export function createSqlMediaGapOutbox(db: MediaMeteringSqlDb): MediaUsageGapOutbox {
+    const withConnection = async <T>(work: (conn: MediaMeteringSqlConnection) => Promise<T>): Promise<T> => {
+        const { connection, release } = await db.getConnection();
+        try {
+            return await work(connection);
+        } finally {
+            await release();
+        }
+    };
+
+    return {
+        enqueue: (row) => withConnection(async (conn) => {
+            try {
+                await conn.execute(
+                    `INSERT INTO ${MEDIA_METERING_SCHEMA_CONTRACT.gapOutbox}
+                       (id, tenant_id, asset_id, operation_id, resulting_bytes, evidence_source,
+                        occurred_at, reason, status, attempts, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, UTC_TIMESTAMP())`,
+                    [
+                        row.id,
+                        row.tenantId,
+                        row.assetId,
+                        row.operationId,
+                        row.resultingBytes,
+                        row.source,
+                        toMysqlUtc(row.occurredAtMs),
+                        row.reason,
+                    ],
+                );
+                return { enqueued: true, duplicate: false };
+            } catch (error) {
+                if (isDuplicateKey(error)) return { enqueued: false, duplicate: true };
+                throw error;
+            }
+        }),
+
+        listPending: (tenantId, limit) => withConnection(async (conn) => {
+            const rows = await conn.query<{
+                id: string; tenant_id: string; asset_id: string; operation_id: string;
+                resulting_bytes: number | string; evidence_source: string; occurred_at: unknown;
+                reason: string; status: string; attempts: number | string; last_attempt_at: unknown;
+                last_error: string | null; created_at: unknown;
+            }>(
+                `SELECT id, tenant_id, asset_id, operation_id, resulting_bytes, evidence_source,
+                        occurred_at, reason, status, attempts, last_attempt_at, last_error, created_at
+                 FROM ${MEDIA_METERING_SCHEMA_CONTRACT.gapOutbox}
+                 WHERE tenant_id = ? AND status = 'pending'
+                 ORDER BY created_at ASC, id ASC LIMIT ?`,
+                [tenantId, limit],
+            );
+            const mapped: MediaUsageGapRow[] = [];
+            for (const row of rows) {
+                const source = normalizeEvidenceSource(row.evidence_source);
+                const reason = row.reason === 'metering_unconfigured' ? 'metering_unconfigured' : 'metering_deferred';
+                if (!source.ok) continue;
+                mapped.push({
+                    id: row.id,
+                    tenantId: row.tenant_id,
+                    assetId: row.asset_id,
+                    operationId: row.operation_id,
+                    resultingBytes: Number(row.resulting_bytes ?? 0),
+                    source: source.value,
+                    occurredAtMs: fromMysqlUtc(row.occurred_at),
+                    reason,
+                    status: 'pending',
+                    attempts: Number(row.attempts ?? 0),
+                    lastAttemptAtMs: row.last_attempt_at ? fromMysqlUtc(row.last_attempt_at) : null,
+                    lastError: row.last_error ?? null,
+                    createdAtMs: fromMysqlUtc(row.created_at),
+                });
+            }
+            return mapped;
+        }),
+
+        markDelivered: (id, atMs) => withConnection(async (conn) => {
+            await conn.execute(
+                `UPDATE ${MEDIA_METERING_SCHEMA_CONTRACT.gapOutbox}
+                 SET status = 'delivered', last_attempt_at = ?, last_error = NULL
+                 WHERE id = ?`,
+                [toMysqlUtc(atMs), id],
+            );
+        }),
+
+        markAttemptFailed: (id, atMs, error) => withConnection(async (conn) => {
+            await conn.execute(
+                `UPDATE ${MEDIA_METERING_SCHEMA_CONTRACT.gapOutbox}
+                 SET attempts = attempts + 1, last_attempt_at = ?, last_error = ?
+                 WHERE id = ? AND status = 'pending'`,
+                [toMysqlUtc(atMs), error.slice(0, 500), id],
+            );
         }),
     };
 }

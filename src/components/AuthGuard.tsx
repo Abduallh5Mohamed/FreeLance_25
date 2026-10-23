@@ -1,45 +1,68 @@
-import { useMemo } from "react";
+import { useEffect, useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { Loader2 } from "lucide-react";
-import { canAccessRoute, type AccessProfile, type LegacyRole } from "@/auth/access-control";
+import { canAccessRoute, type LegacyRole } from "@/auth/access-control";
+import { AUTH_SESSION_CHANGED_EVENT, verifyCurrentSession, type SessionVerification } from "@/lib/api-http";
 
 interface AuthGuardProps {
   children: React.ReactNode;
   requiredRole?: LegacyRole;
 }
 
-function readStoredUser(): { user: AccessProfile | null; invalid: boolean } {
-  const raw = localStorage.getItem("currentUser");
-  if (!raw) return { user: null, invalid: false };
-
-  try {
-    return { user: JSON.parse(raw) as AccessProfile, invalid: false };
-  } catch {
-    return { user: null, invalid: true };
-  }
-}
-
 export const AuthGuard = ({ children }: AuthGuardProps) => {
   const location = useLocation();
-  const stored = useMemo(() => readStoredUser(), []);
-  const hasToken = Boolean(localStorage.getItem("authToken"));
+  const [revision, setRevision] = useState(0);
+  const [verification, setVerification] = useState<SessionVerification | null>(null);
+  const [verifiedPath, setVerifiedPath] = useState<string | null>(null);
+  useEffect(() => {
+    const refresh = () => { setVerification(null); setRevision(value => value + 1); };
+    const storage = (event: StorageEvent) => {
+      if (event.key === 'authToken' || event.key === null) refresh();
+    };
+    window.addEventListener('focus', refresh);
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
+    window.addEventListener('storage', storage);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
+      window.removeEventListener('storage', storage);
+    };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    setVerification(null);
+    void verifyCurrentSession(controller.signal).then(result => {
+      if (!active) return;
+      if (result.state === 'changed') {
+        setRevision(value => value + 1);
+        return;
+      }
+      setVerifiedPath(location.pathname);
+      setVerification(result);
+    });
+    return () => { active = false; clearTimeout(timer); controller.abort(); };
+  }, [location.pathname, revision]);
 
-  if (stored.invalid) {
-    localStorage.removeItem("currentUser");
-  }
-
-  if (!stored.user || !hasToken) {
+  if (!verification || verifiedPath !== location.pathname) return <RouteLoading />;
+  if (verification.state === 'anonymous') {
     return <Navigate to="/auth" replace state={{ from: location.pathname }} />;
   }
-
-  if ((stored.user.role === "admin" || stored.user.admin_member) && (location.pathname === "/teacher" || location.pathname === "/instructor")) {
+  if (verification.state !== 'authenticated') {
+    return <main dir="rtl" className="min-h-screen flex flex-col items-center justify-center gap-4" role="alert">
+      <p>تعذّر التحقق من الجلسة الآن. حاول مرة أخرى.</p>
+      <button type="button" className="rounded border px-4 py-2" onClick={() => setRevision(value => value + 1)}>إعادة المحاولة</button>
+    </main>;
+  }
+  if (localStorage.getItem('authToken') !== verification.token) return <RouteLoading />;
+  const user = verification.user;
+  if ((user.role === 'admin' || user.admin_member) && ['/teacher', '/instructor'].includes(location.pathname)) {
     return <Navigate to="/admin" replace />;
   }
-
-  if (!canAccessRoute(stored.user, location.pathname)) {
+  if (!canAccessRoute(user, location.pathname)) {
     return <Navigate to="/forbidden" replace state={{ from: location.pathname }} />;
   }
-
   return <>{children}</>;
 };
 

@@ -46,6 +46,10 @@ export interface AssignmentObjectMetadata {
     sizeBytes: number;
     /** Stored `Content-Type` metadata, if the store reports one. */
     contentType: string | null;
+    /**
+     * The provider's ETag, RAW and OPAQUE. Preserve it byte-for-byte: it is the
+     * version identity, and trimming it collapses distinct versions.
+     */
     etag: string | null;
     lastModified: Date | null;
 }
@@ -56,8 +60,17 @@ export interface AssignmentObjectMetadata {
  * separately, and a caller must never have to parse a composite key back apart.
  */
 export interface BoundObjectVersion {
-    /** `etag:size` — the canonical identity of the version. */
+    /**
+     * `etag:size` — the canonical identity of the version.
+     *
+     * The ETag inside this string is RAW and OPAQUE. It is not trimmed,
+     * case-folded or quote-stripped, so `"e"` and `"e "` produce two different
+     * version strings — which is what the exact NO PAD storage contract
+     * requires. A caller must never re-derive the ETag by trimming this string
+     * or by stripping quotes: use the `etag` field, which is the same raw value.
+     */
     version: string;
+    /** The raw ETag, byte-for-byte as the provider reported it. */
     etag: string;
     sizeBytes: number;
 }
@@ -66,12 +79,29 @@ export interface BoundObjectVersion {
  * Bind metadata to one immutable object version. Returns null when the adapter
  * cannot express a version (no ETag, no positive integer size), which the
  * caller must treat as "not verifiable" and fail closed — never as "verified".
+ *
+ * The ETag is OPAQUE and is preserved BYTE-FOR-BYTE. It is not trimmed, not
+ * case-folded, and has no quotes stripped.
+ *
+ * Trimming collapsed two distinct identities into one: `"e"` and `"e "` differ
+ * only by a trailing space, which is exactly what `utf8mb4_bin` PAD SPACE
+ * collation treats as EQUAL and what the exact NO PAD storage contract treats as
+ * DIFFERENT. A padded provider ETag therefore produced a bound version whose
+ * string matched the unpadded one, and an exact-version delete precondition
+ * built from it could match — and destroy — the wrong bytes. No provider
+ * contract in this lane proves that a trimmed ETag denotes the same object, so
+ * no canonicalization is applied here; the raw string is the identity.
  */
 export function boundObjectVersion(metadata: AssignmentObjectMetadata | null): BoundObjectVersion | null {
     if (!metadata) return null;
-    const etag = typeof metadata.etag === 'string' ? metadata.etag.trim() : '';
+    // Raw, untrimmed. An empty string still fails closed; whitespace around a
+    // real ETag is part of that ETag, not decoration to remove.
+    const etag = typeof metadata.etag === 'string' ? metadata.etag : '';
     if (!etag) return null;
-    if (!Number.isInteger(metadata.sizeBytes) || metadata.sizeBytes <= 0) return null;
+    // Safe integer, not merely integer: `Number.isInteger(2**53)` is true, and
+    // an unsafe size is not a representable byte count — distinct real sizes
+    // would collide on one double and the version string would be untrustworthy.
+    if (!Number.isSafeInteger(metadata.sizeBytes) || metadata.sizeBytes <= 0) return null;
     return { version: `${etag}:${metadata.sizeBytes}`, etag, sizeBytes: metadata.sizeBytes };
 }
 
@@ -218,6 +248,11 @@ export type QuarantineCleanup = ObjectVersionRemoval | 'unsupported' | 'failed';
 /** What an exact-version delete must name: the key *and* the version. */
 export interface ExactVersionRemovalInput {
     objectKey: string;
+    /**
+     * The RAW ETag, byte-for-byte. The provider compares it against the stored
+     * object's own ETag, so a trimmed or quote-stripped value either fails to
+     * match the intended object or — under PAD SPACE — matches the wrong one.
+     */
     etag: string;
     sizeBytes: number;
 }

@@ -1,6 +1,16 @@
 /**
  * M4 A6 — gradebook domain policy.
+ *
+ * Also owns the pure identity/validation rules for a grade that is written by a
+ * source item (an assignment submission or a finalized exam attempt) instead of
+ * a free manual entry. A source-linked grade is addressed by a deterministic
+ * row id derived from the exact `(tenant, enrollment, course, item type, item)`
+ * tuple, so a repeated request targets the same row instead of appending a
+ * duplicate. That is a pure function; the SQL upsert itself belongs to the
+ * route that owns the transaction.
  */
+import { createHash } from 'node:crypto';
+
 export const GRADING_MODES = ['points', 'weighted'] as const;
 export type GradingMode = (typeof GRADING_MODES)[number];
 export const ROUNDING_MODES = ['half_up', 'half_even', 'none'] as const;
@@ -258,3 +268,100 @@ export const validatePolicy = validateGradebookPolicy;
 export const computeCalculatedGrade = calculateGrade;
 export const recomputeCalculatedGrade = recomputeGrade;
 export const recompute = recomputeGrade;
+
+/* ------------------------------------------------------------------------- */
+/* Source-linked grade identity (idempotent writes)                          */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * Item types whose grade is owned by exactly one source row per
+ * `(tenant, enrollment, course)`. A free `manual`/`lesson` entry keeps the
+ * historical append behaviour: two manual scores are legitimately two rows.
+ */
+export const LINKED_SCORE_ITEM_TYPES = ['assignment', 'exam'] as const;
+export type LinkedScoreItemType = (typeof LINKED_SCORE_ITEM_TYPES)[number];
+
+export function normalizeLinkedScoreItemType(value: unknown): LinkedScoreItemType | null {
+    if (typeof value !== 'string') return null;
+    return (LINKED_SCORE_ITEM_TYPES as readonly string[]).includes(value) ? (value as LinkedScoreItemType) : null;
+}
+
+export interface LinkedScoreIdentity {
+    tenantId: string;
+    enrollmentId: string;
+    courseId: string;
+    itemType: LinkedScoreItemType;
+    itemId: string;
+}
+
+/**
+ * Deterministic `gradebook_scores.id` for a source-linked grade.
+ *
+ * The id is a name-based UUID (SHA-256 over the exact identity tuple, RFC 4122
+ * version 5 shape) so the same source item for the same student in the same
+ * course always maps to one primary key. A repeated write therefore collides on
+ * the existing PRIMARY KEY instead of appending a second grade — that is the
+ * whole idempotency mechanism, and it needs no schema change. A different
+ * student, course, tenant or item always produces a different id, so no
+ * cross-tenant or cross-student collision is possible. Returns null for a
+ * malformed identity so the caller fails closed instead of writing a row under
+ * a meaningless key.
+ */
+export function deterministicScoreId(identity: LinkedScoreIdentity): string | null {
+    const itemType = normalizeLinkedScoreItemType(identity.itemType);
+    if (!itemType) return null;
+    const parts = [
+        identity.tenantId,
+        identity.enrollmentId,
+        identity.courseId,
+        identity.itemId,
+    ];
+    for (const part of parts) {
+        if (normalizeId(part) === null) return null;
+    }
+    const digest = createHash('sha256')
+        .update(['gradebook-score', 'v1', identity.tenantId, identity.enrollmentId,
+            identity.courseId, itemType, identity.itemId].join('|'))
+        .digest();
+    const bytes = Buffer.from(digest.subarray(0, 16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = bytes.toString('hex');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export interface ValidatedLinkedGrade {
+    score: number;
+    maxScore: number;
+    weight: number | null;
+}
+
+/**
+ * Validate the numeric payload of a source-linked grade. An award can never
+ * exceed the item maximum, and both values stay inside the fixed-point range
+ * the `DECIMAL(12,4)` column can represent, so a correction can never store a
+ * score the grade calculator would then silently drop as invalid.
+ */
+export function validateLinkedGradeInput(body: unknown): ValidationResult<ValidatedLinkedGrade> {
+    if (!isRecord(body)) return { ok: false, error: 'invalid grade payload' };
+    const rawScore = body['score'];
+    const rawMax = body['max_score'] ?? body['maxScore'];
+    const score = typeof rawScore === 'number' ? rawScore : Number(rawScore);
+    const maxScore = typeof rawMax === 'number' ? rawMax : Number(rawMax);
+    if (rawScore === undefined || rawScore === null || rawScore === '') return { ok: false, error: 'score is required' };
+    if (rawMax === undefined || rawMax === null || rawMax === '') return { ok: false, error: 'max_score is required' };
+    if (!Number.isFinite(score) || !Number.isFinite(maxScore)) return { ok: false, error: 'invalid grade payload' };
+    if (score < 0 || maxScore <= 0) return { ok: false, error: 'invalid grade payload' };
+    if (score > MAX_SCORE || maxScore > MAX_SCORE) return { ok: false, error: 'invalid grade payload' };
+    if (score > maxScore) return { ok: false, error: 'score must not exceed max_score' };
+    let weight: number | null = null;
+    const rawWeight = body['weight'];
+    if (rawWeight !== undefined && rawWeight !== null && rawWeight !== '') {
+        const parsed = typeof rawWeight === 'number' ? rawWeight : Number(rawWeight);
+        if (!Number.isFinite(parsed) || parsed < 0 || parsed > MAX_WEIGHT) {
+            return { ok: false, error: 'invalid grade payload' };
+        }
+        weight = parsed;
+    }
+    return { ok: true, value: { score, maxScore, weight } };
+}

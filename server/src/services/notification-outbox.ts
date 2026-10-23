@@ -38,9 +38,9 @@
  * a sanitized receipt/log entry that carries no PII.
  */
 
-import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { isNotificationChannel, type NotificationChannel } from './notification-preferences';
-import type { NotificationDataAccess } from './notification-consent';
+import { CONSENT_USER_TYPES, type NotificationDataAccess } from './notification-consent';
 import {
     sanitizeDeliveryLog,
     sanitizeProof,
@@ -326,6 +326,41 @@ const TEMPLATES: Record<string, Record<OutboxLocale, TemplateSpec>> = {
             bodyText: '{body_text}',
             bodyHtml: '<p>{body_html}</p>{close}',
             placeholders: ['title', 'body_text', 'body_html', 'unsubscribe_link'],
+        },
+    },
+    /**
+     * W9-R2 — academic publication events. Copy is deliberately neutral: it
+     * names the resource and its server-formatted instants, and carries no
+     * grade, result, ranking or progress claim. A results/grade message needs
+     * the results-release policy, which is not settled (see
+     * NOTIFICATION_PRODUCER_POLICY).
+     */
+    assignment_published: {
+        ar: {
+            subject: 'واجب جديد: {assignment_title}',
+            bodyText: 'واجب جديد في {course_name}: {assignment_title}. آخر موعد للتسليم {due_at}.',
+            bodyHtml: '<p>واجب جديد في {course_name}.</p><p>{assignment_title}</p><p>آخر موعد للتسليم: {due_at}</p>{close}',
+            placeholders: ['assignment_title', 'course_name', 'due_at', 'unsubscribe_link'],
+        },
+        en: {
+            subject: 'New assignment: {assignment_title}',
+            bodyText: 'New assignment in {course_name}: {assignment_title}. Due {due_at}.',
+            bodyHtml: '<p>New assignment in {course_name}.</p><p>{assignment_title}</p><p>Due: {due_at}</p>{close}',
+            placeholders: ['assignment_title', 'course_name', 'due_at', 'unsubscribe_link'],
+        },
+    },
+    exam_published: {
+        ar: {
+            subject: 'امتحان جديد: {exam_title}',
+            bodyText: 'امتحان جديد في {course_name}: {exam_title}. يفتح {opens_at} وينتهي {closes_at}.',
+            bodyHtml: '<p>امتحان جديد في {course_name}.</p><p>{exam_title}</p><p>يفتح: {opens_at}</p><p>ينتهي: {closes_at}</p>{close}',
+            placeholders: ['exam_title', 'course_name', 'opens_at', 'closes_at', 'unsubscribe_link'],
+        },
+        en: {
+            subject: 'New exam: {exam_title}',
+            bodyText: 'New exam in {course_name}: {exam_title}. Opens {opens_at}, closes {closes_at}.',
+            bodyHtml: '<p>New exam in {course_name}.</p><p>{exam_title}</p><p>Opens: {opens_at}</p><p>Closes: {closes_at}</p>{close}',
+            placeholders: ['exam_title', 'course_name', 'opens_at', 'closes_at', 'unsubscribe_link'],
         },
     },
 };
@@ -1288,3 +1323,428 @@ export const outboxRowRenderer = (): (row: OutboxRow) => TemplateRenderResult =>
         const payload = parseRowPayload(row);
         return renderOutboxTemplate(row.event_type, row.locale, payload);
     };
+
+// ---------------------------------------------------------------------------
+// W9-R2 — producer contracts (publication-gated academic event notifications)
+// ---------------------------------------------------------------------------
+
+/**
+ * Producer events this module can queue, and the exact state of each one's
+ * policy. A producer is only implemented when the *publication policy of its
+ * owning domain is settled in the repository*; everything else refuses with a
+ * named reason instead of guessing a trigger, an audience or a release rule.
+ *
+ * Settled sources (read-only references, not SQL executed here):
+ *  - `assignments.status ENUM('draft','published','closed')`
+ *    (server/migrations/20261018_08_question_bank_assignments.sql);
+ *  - `exam_versions.status ENUM('draft','published','archived')` + `published_at`
+ *    (server/migrations/20261018_09_exam_snapshots_grading.sql).
+ *
+ * Held (no settled policy exists yet — see SERVER-REMAINING-INVENTORY §7):
+ *  - `schedule_change`: which schedule edit notifies, at what lead time and to
+ *    which audience (branch/group/tenant) is an open product decision (C3-R);
+ *  - `results_available`: the results-release policy (draft/submitted/retakes/
+ *    release/archived) is open (C1-R, D3), and no consent purpose covers a
+ *    result yet, so even the purpose would have to be invented.
+ */
+export type AcademicProducerEvent = 'assignment_published' | 'exam_published';
+export type HeldProducerEvent = 'schedule_change' | 'results_available';
+export type ProducerEvent = AcademicProducerEvent | HeldProducerEvent;
+
+export interface ProducerPolicyEntry {
+    eventType: ProducerEvent;
+    /** Consent purpose the event is delivered under; null while unsettled. */
+    purpose: string | null;
+    /** Outbox template event; null while no template may be sent. */
+    templateEvent: string | null;
+    status: 'settled' | 'policy-held';
+    /** Exact reason a held producer refuses with; never a generic label. */
+    heldReason: string | null;
+    /** Where the owning domain's publication state lives. */
+    publicationSource: string | null;
+}
+
+export const NOTIFICATION_PRODUCER_POLICY: readonly ProducerPolicyEntry[] = [
+    {
+        eventType: 'assignment_published',
+        purpose: 'lesson_updates',
+        templateEvent: 'assignment_published',
+        status: 'settled',
+        heldReason: null,
+        publicationSource: "assignments.status = 'published'",
+    },
+    {
+        eventType: 'exam_published',
+        purpose: 'lesson_updates',
+        templateEvent: 'exam_published',
+        status: 'settled',
+        heldReason: null,
+        publicationSource: "exam_versions.status = 'published' (published_at set)",
+    },
+    {
+        eventType: 'schedule_change',
+        purpose: 'schedule_changes',
+        templateEvent: null,
+        status: 'policy-held',
+        heldReason: 'schedule-change-policy-unsettled',
+        publicationSource: null,
+    },
+    {
+        eventType: 'results_available',
+        purpose: null,
+        templateEvent: null,
+        status: 'policy-held',
+        heldReason: 'results-release-policy-unsettled',
+        publicationSource: null,
+    },
+];
+
+export const producerPolicyFor = (event: string): ProducerPolicyEntry | null =>
+    NOTIFICATION_PRODUCER_POLICY.find((entry) => entry.eventType === event) ?? null;
+
+/** Channels a producer may queue. `in_app` is the feed's, not the outbox's. */
+export const PRODUCER_CHANNELS: readonly string[] = ['email', 'whatsapp', 'sms'];
+
+/** One call is bounded; a larger audience must be chunked by the caller. */
+export const MAX_PRODUCER_RECIPIENTS = 500;
+
+export interface ProducerRecipient {
+    userId: string;
+    /** Server-derived principal namespace, never client input. */
+    userType: string;
+}
+
+/**
+ * Reads the owning domain's own publication state. Injected on purpose: the
+ * notification layer must not import academic tables (or trust a caller's
+ * `published: true`), and the domain must not be re-implemented here.
+ */
+export interface PublicationAuthority {
+    readPublication(input: {
+        tenantId: string;
+        event: AcademicProducerEvent;
+        resourceId: string;
+    }): Promise<{ published: boolean; publishedAt: Date | string | null }>;
+}
+
+export interface AcademicEventNotificationInput {
+    /** Server-derived tenant; a client value is never accepted. */
+    tenantId: string;
+    event: AcademicProducerEvent;
+    resourceId: string;
+    /** Server-derived audience of the owning domain, already tenant-scoped. */
+    recipients: readonly ProducerRecipient[];
+    locale: string;
+    /** External channels requested; `in_app` is rejected. */
+    channels: readonly string[];
+    /** Template variables for this event (validated before any write). */
+    variables: Record<string, unknown>;
+    linkSecret: string;
+    baseUrl: string;
+    unsubscribeTtlSeconds?: number;
+    now?: () => Date;
+}
+
+export type ProducerRefusal =
+    | 'unknown-event'
+    | 'event-policy-held'
+    | 'tenant-required'
+    | 'not-published'
+    | 'publication-in-future'
+    | 'invalid-recipient'
+    | 'no-recipients'
+    | 'recipient-limit-exceeded'
+    | 'no-external-channel'
+    | 'validation-failed'
+    | 'template-render-failed'
+    | 'consent-check-failed';
+
+export interface ProducerEnqueueResult {
+    ok: boolean;
+    reason?: ProducerRefusal;
+    /** Set only for `event-policy-held`; names the unsettled policy exactly. */
+    heldReason?: string;
+    error?: string;
+    /** Counts only — a producer result never carries a recipient identity. */
+    queued?: number;
+    duplicates?: number;
+    consentDenied?: number;
+}
+
+const producerIdempotencyKey = (parts: readonly string[]): string =>
+    `acad:${createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 40)}`;
+
+/**
+ * Queues one published academic resource to its server-derived audience.
+ *
+ * Order of authority (all fail-closed, all before the first write):
+ *  1. the event's policy must be **settled** — a held event refuses with its
+ *     exact `heldReason` and writes nothing;
+ *  2. the tenant must be present (never inferred);
+ *  3. the owning domain's publication state must say `published` with a past
+ *     `publishedAt` (a future instant means "not visible yet");
+ *  4. recipients must be real consent namespaces, deduped and bounded;
+ *  5. channels must be external (in-app rows belong to the feed);
+ *  6. the template must render with the supplied variables;
+ *  7. consent is read for every (recipient, channel) **before** any row is
+ *     written, so a revoked recipient never produces an outbox row at all.
+ *
+ * The worker re-checks consent again at send time; this pre-check exists so a
+ * revoked recipient does not sit in the queue as noise, not to replace it.
+ */
+export const enqueueAcademicEventNotification = async (
+    db: NotificationDataAccess,
+    consent: OutboxConsentGate,
+    authority: PublicationAuthority,
+    input: AcademicEventNotificationInput,
+): Promise<ProducerEnqueueResult> => {
+    const policy = producerPolicyFor(input.event);
+    if (policy === null) return { ok: false, reason: 'unknown-event' };
+    if (policy.status !== 'settled' || policy.templateEvent === null || policy.purpose === null) {
+        return { ok: false, reason: 'event-policy-held', heldReason: policy.heldReason ?? 'policy-unsettled' };
+    }
+    const tenantId = typeof input.tenantId === 'string' ? input.tenantId.trim() : '';
+    if (tenantId.length === 0) return { ok: false, reason: 'tenant-required' };
+    if (typeof input.resourceId !== 'string' || input.resourceId.length === 0 || input.resourceId.length > 64) {
+        return { ok: false, reason: 'validation-failed', error: 'resourceId must be 1-64 characters' };
+    }
+    if (!isOutboxLocale(input.locale)) {
+        return { ok: false, reason: 'validation-failed', error: 'locale must be ar or en' };
+    }
+    if (typeof input.baseUrl !== 'string' || input.baseUrl.length === 0 || input.baseUrl.length > 300) {
+        return { ok: false, reason: 'validation-failed', error: 'baseUrl is required' };
+    }
+
+    const channels = [...new Set(input.channels)];
+    if (channels.length === 0) return { ok: false, reason: 'no-external-channel' };
+    for (const channel of channels) {
+        if (!isNotificationChannel(channel) || !(PRODUCER_CHANNELS as readonly string[]).includes(channel)) {
+            return { ok: false, reason: 'validation-failed', error: `Channel ${String(channel)} is not an external channel` };
+        }
+    }
+
+    const recipients: ProducerRecipient[] = [];
+    const seen = new Set<string>();
+    for (const candidate of input.recipients ?? []) {
+        const userId = typeof candidate?.userId === 'string' ? candidate.userId : '';
+        const userType = typeof candidate?.userType === 'string' ? candidate.userType : '';
+        if (userId.length === 0 || userId.length > 64) return { ok: false, reason: 'invalid-recipient' };
+        if (!CONSENT_USER_TYPES.has(userType)) return { ok: false, reason: 'invalid-recipient' };
+        const key = `${userType}:${userId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        recipients.push({ userId, userType });
+    }
+    if (recipients.length === 0) return { ok: false, reason: 'no-recipients' };
+    if (recipients.length > MAX_PRODUCER_RECIPIENTS) return { ok: false, reason: 'recipient-limit-exceeded' };
+
+    // Publication policy — read from the owning domain, never asserted by the caller.
+    let publication: { published: boolean; publishedAt: Date | string | null };
+    try {
+        publication = await authority.readPublication({ tenantId, event: input.event, resourceId: input.resourceId });
+    } catch {
+        // An unreadable publication state is "not published", never "send anyway".
+        return { ok: false, reason: 'not-published' };
+    }
+    if (!publication || publication.published !== true) return { ok: false, reason: 'not-published' };
+    const publishedAt = publication.publishedAt === null ? null : new Date(publication.publishedAt);
+    if (publishedAt === null || Number.isNaN(publishedAt.getTime())) return { ok: false, reason: 'not-published' };
+    const now = (input.now ?? (() => new Date()))();
+    if (publishedAt.getTime() > now.getTime()) return { ok: false, reason: 'publication-in-future' };
+
+    const templateEvent = policy.templateEvent;
+    const purpose = policy.purpose;
+    const base = input.baseUrl.endsWith('/') ? input.baseUrl : `${input.baseUrl}/`;
+
+    // Validate the variable shape before any consent read or write.
+    const probe = renderOutboxTemplate(templateEvent, input.locale, {
+        ...input.variables,
+        unsubscribe_link: `${base}?u=probe`,
+    });
+    if (!probe.ok) return { ok: false, reason: 'template-render-failed', error: probe.error };
+
+    // Phase 1 — consent for every pair, before the first row exists.
+    const decisions: { recipient: ProducerRecipient; channel: string; allowed: boolean }[] = [];
+    for (const recipient of recipients) {
+        for (const channel of channels) {
+            let allowed: boolean;
+            try {
+                allowed = await consent.canDeliver({
+                    userId: recipient.userId,
+                    userType: recipient.userType,
+                    purpose,
+                    channel,
+                });
+            } catch {
+                return { ok: false, reason: 'consent-check-failed' };
+            }
+            decisions.push({ recipient, channel, allowed });
+        }
+    }
+
+    // Phase 2 — one idempotent row per allowed pair, each with its own signed,
+    // expiring, single-use unsubscribe link.
+    let queued = 0;
+    let duplicates = 0;
+    let consentDenied = 0;
+    const publishedEpoch = String(publishedAt.getTime());
+    for (const decision of decisions) {
+        if (!decision.allowed) {
+            consentDenied += 1;
+            continue;
+        }
+        let unsubscribeLink: string;
+        try {
+            const token = signSecureLink(
+                {
+                    kind: 'unsubscribe',
+                    ref: `${input.event}:${input.resourceId}`,
+                    userId: decision.recipient.userId,
+                    userType: decision.recipient.userType,
+                    purpose,
+                    channel: decision.channel as NotificationChannel,
+                },
+                input.linkSecret,
+                { ttlSeconds: input.unsubscribeTtlSeconds ?? unsubscribeLinkTtlSecondsDefault, now: input.now },
+            );
+            unsubscribeLink = `${base}?u=${token}`;
+        } catch {
+            return { ok: false, reason: 'validation-failed', error: 'link-signing-failed', queued, duplicates, consentDenied };
+        }
+        const payload = { ...input.variables, unsubscribe_link: unsubscribeLink };
+        const rendered = renderOutboxTemplate(templateEvent, input.locale, payload);
+        if (!rendered.ok) {
+            return { ok: false, reason: 'template-render-failed', error: rendered.error, queued, duplicates, consentDenied };
+        }
+        const enqueued = await enqueueOutboxRow(db, {
+            idempotencyKey: producerIdempotencyKey([
+                tenantId,
+                input.event,
+                input.resourceId,
+                decision.recipient.userId,
+                decision.recipient.userType,
+                decision.channel,
+                publishedEpoch,
+            ]),
+            tenantId,
+            eventType: templateEvent,
+            purpose,
+            recipientUserId: decision.recipient.userId,
+            recipientUserType: decision.recipient.userType,
+            channel: decision.channel,
+            locale: input.locale,
+            payload,
+            now: input.now,
+        });
+        if (!enqueued.ok) {
+            return { ok: false, reason: 'validation-failed', error: enqueued.error, queued, duplicates, consentDenied };
+        }
+        if (enqueued.duplicate) duplicates += 1;
+        else queued += 1;
+    }
+    return { ok: true, queued, duplicates, consentDenied };
+};
+
+// ---------------------------------------------------------------------------
+// W9-R1 — explicit reconciliation of a quarantined (unknown) outcome
+// ---------------------------------------------------------------------------
+
+/** `last_error` written when an operator releases a quarantined row to retry. */
+export const RECONCILED_RELEASED_MARKER = 'reconciled-not-delivered';
+
+export type QuarantineResolution = 'provider-delivered' | 'provider-not-delivered';
+
+export interface ReconcileQuarantinedInput {
+    outboxId: string;
+    /** Required: a quarantined row is only resolvable inside its own tenant. */
+    tenantId: string;
+    /**
+     * `provider-delivered` — an authoritative provider statement that the
+     * message was accepted: the row becomes `sent` with a receipt.
+     * `provider-not-delivered` — an authoritative statement that nothing was
+     * delivered: the row is released to `pending` for one more bounded attempt.
+     */
+    resolution: QuarantineResolution;
+    /** Operator identity for the audit trail; never a contact. */
+    actorId: string;
+    /** Provider proof for `provider-delivered` (sanitized before storage). */
+    proof?: Record<string, unknown>;
+    now?: () => Date;
+    hmacKey: string;
+    log?: (entry: unknown) => void;
+}
+
+export type ReconcileResult =
+    | { ok: true; outcome: 'sent' | 'released' }
+    | {
+        ok: false;
+        reason:
+            | 'tenant-required'
+            | 'actor-required'
+            | 'not-found'
+            | 'not-quarantined'
+            | 'attempt-cap-reached'
+            | 'transition-rejected';
+    };
+
+/**
+ * Resolves ONE quarantined row (`sending` + `provider-outcome-unknown` or
+ * `stale-claim-unconfirmed`) from an authoritative provider result. This is the
+ * manual reconciliation the contract (§5, §12.3) leaves to an operator; it is
+ * not automatic and there is no poller.
+ *
+ * Guarantees:
+ *  - tenant-scoped read and write (`id AND tenant_id`), so a foreign row is
+ *    unreachable and reported as `not-found`;
+ *  - only a row that is actually quarantined can be resolved;
+ *  - every write is fenced by `attempts`, so a concurrent claim invalidates it;
+ *  - releasing to `pending` is refused at the attempt cap instead of silently
+ *    burning the row (the operator must decide explicitly);
+ *  - the resolution is receipted, and the actor is only ever a user id in a log.
+ */
+export const reconcileQuarantinedOutboxRow = async (
+    db: NotificationDataAccess,
+    input: ReconcileQuarantinedInput,
+): Promise<ReconcileResult> => {
+    const tenantId = typeof input.tenantId === 'string' ? input.tenantId.trim() : '';
+    if (tenantId.length === 0) return { ok: false, reason: 'tenant-required' };
+    const actorId = typeof input.actorId === 'string' ? input.actorId.trim() : '';
+    if (actorId.length === 0) return { ok: false, reason: 'actor-required' };
+    if (input.resolution !== 'provider-delivered' && input.resolution !== 'provider-not-delivered') {
+        return { ok: false, reason: 'not-quarantined' };
+    }
+
+    const row = await db.queryOne<OutboxRow>(
+        'SELECT * FROM notification_outbox WHERE id = ? AND tenant_id = ? LIMIT 1',
+        [input.outboxId, tenantId],
+    );
+    if (!row) return { ok: false, reason: 'not-found' };
+    const quarantined = row.status === 'sending'
+        && (row.last_error === UNKNOWN_OUTCOME_MARKER || row.last_error === STALE_SENDING_MARKER);
+    if (!quarantined) return { ok: false, reason: 'not-quarantined' };
+
+    const now = (input.now ?? (() => new Date()))();
+    const emit = input.log ?? (() => undefined);
+
+    if (input.resolution === 'provider-delivered') {
+        const applied = await finishRow(db, row, 'sent', null, null, row.attempts);
+        if (!applied) return { ok: false, reason: 'transition-rejected' };
+        await writeReceiptSafely(
+            db, row, 'sent', input.proof ?? {}, null, null, input.hmacKey,
+            { consent: { canDeliver: async () => false }, render: outboxRowRenderer(), linkSecret: '', log: emit },
+        );
+        emit({ outboxId: row.id, outcome: 'reconciled', resolution: input.resolution, actorId });
+        return { ok: true, outcome: 'sent' };
+    }
+
+    const maxAttempts = row.max_attempts > 0 ? row.max_attempts : MAX_ATTEMPTS_DEFAULT;
+    if (row.attempts >= maxAttempts) return { ok: false, reason: 'attempt-cap-reached' };
+    const applied = await finishRow(db, row, 'pending', now, RECONCILED_RELEASED_MARKER, row.attempts);
+    if (!applied) return { ok: false, reason: 'transition-rejected' };
+    await writeReceiptSafely(
+        db, row, 'failed', {}, RECONCILED_RELEASED_MARKER, null, input.hmacKey,
+        { consent: { canDeliver: async () => false }, render: outboxRowRenderer(), linkSecret: '', log: emit },
+    );
+    emit({ outboxId: row.id, outcome: 'reconciled', resolution: input.resolution, actorId });
+    return { ok: true, outcome: 'released' };
+};

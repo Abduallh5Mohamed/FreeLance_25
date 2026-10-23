@@ -46,10 +46,13 @@ import { recordAudit, snapshotRow } from '../security/audit';
 import {
     AudienceViewer,
     ScheduleAudience,
+    ValidatedSeries,
     buildTimeRangeConditions,
     buildVisibleScheduleFilter,
+    deterministicSeriesId,
     expandRecurrenceDetailed,
     normalizeId,
+    normalizeIdempotencyKey,
     parseTimeRangeFilter,
     sessionDurationMinutes,
     toMysqlUtc,
@@ -147,6 +150,48 @@ interface SessionRow {
     version: number;
 }
 
+/** Persisted series input, projected as text for canonical comparison. */
+interface SeriesReplayRow {
+    id: string;
+    title: string;
+    audience: string;
+    timezone: string;
+    recurrence: string;
+    branch_id: string | null;
+    group_id: string | null;
+    weekdays: string | null;
+    day_of_month: number | string | null;
+    starts_on: string;
+    ends_on: string | null;
+    start_time: string;
+    duration_minutes: number | string;
+}
+
+/** Outcome of resolving an idempotency key against the stored series. */
+type SeriesReplayOutcome =
+    | { kind: 'absent' }
+    | { kind: 'conflict' }
+    | { kind: 'match'; body: Record<string, unknown> };
+
+/** `weekdays` is stored as a CSV; compare as the validated sorted day set. */
+const normalizeWeekdayCsv = (value: string | null): string => {
+    if (value === null || value.trim() === '') return '';
+    const days = value.split(',')
+        .map((part) => Number(part.trim()))
+        .filter((day) => Number.isInteger(day));
+    return [...new Set(days)].sort((a, b) => a - b).join(',');
+};
+
+const normalizeNullableInteger = (value: number | string | null): number | null =>
+    value === null ? null : Number(value);
+
+/** `DATE` may render as `YYYY-MM-DD` or a full timestamp; keep the date part. */
+const normalizeCalendarDate = (value: string | null): string | null =>
+    value === null || value === '' ? null : value.slice(0, 10);
+
+/** `TIME` renders as `HH:MM:SS`; the recurrence is authored as `HH:MM`. */
+const normalizeClockTime = (value: string): string => value.slice(0, 5);
+
 export const createSchedulesRouter = (deps: SchedulesDeps): Router => {
     const router = Router();
     const { db } = deps;
@@ -198,6 +243,106 @@ export const createSchedulesRouter = (deps: SchedulesDeps): Router => {
         );
         if (!row || row.tenant_id !== scope.tenantId) return false;
         return scope.isOwner || row.instructor_id === scope.userId;
+    };
+
+    /**
+     * A live branch membership. Authoring a schedule for a branch is a write on
+     * that branch, so a tenant-wide instructor membership alone is not enough:
+     * the caller must be an active member of the branch inside this tenant.
+     */
+    const branchMembership = async (scope: StaffScope, branchId: string): Promise<boolean> => {
+        const row = await db.queryOne<{ id: string }>(
+            `SELECT bm.id FROM branch_memberships bm
+             INNER JOIN branches b ON b.id = bm.branch_id AND b.tenant_id = ?
+             WHERE bm.branch_id = ? AND bm.user_id = ? AND bm.status = 'active' LIMIT 1`,
+            [scope.tenantId, branchId, scope.userId],
+        );
+        return Boolean(row);
+    };
+
+    /** mysql2 duplicate-key error (a replayed idempotent creation). */
+    const isDuplicateKeyError = (error: unknown): boolean => {
+        if (typeof error !== 'object' || error === null) return false;
+        const code = (error as { code?: unknown }).code;
+        const errno = (error as { errno?: unknown }).errno;
+        return code === 'ER_DUP_ENTRY' || errno === 1062;
+    };
+
+    /**
+     * The persisted series row behind an idempotency key, projected as text so
+     * DATE/TIME/INT columns compare canonically regardless of driver types.
+     */
+    const loadSeriesReplayRow = async (tenantId: string, seriesId: string): Promise<SeriesReplayRow | null> =>
+        db.queryOne<SeriesReplayRow>(
+            `SELECT id, title, audience, timezone, recurrence,
+                    CAST(branch_id AS CHAR) AS branch_id, CAST(group_id AS CHAR) AS group_id,
+                    weekdays, day_of_month,
+                    CAST(starts_on AS CHAR) AS starts_on, CAST(ends_on AS CHAR) AS ends_on,
+                    CAST(start_time AS CHAR) AS start_time, duration_minutes
+             FROM schedule_series WHERE id = ? AND tenant_id = ? LIMIT 1`,
+            [seriesId, tenantId],
+        );
+
+    /**
+     * True when the persisted series is the one the incoming payload would
+     * have created. `Idempotency-Key` is scoped to (tenant, author, key), but a
+     * key is caller-chosen: reusing it for a different title, group, time,
+     * timezone or recurrence must be a conflict, never a silent replay of the
+     * old success. Every field that was validated and written is compared.
+     */
+    const seriesReplayMatches = (row: SeriesReplayRow, value: ValidatedSeries): boolean => {
+        const sameNullable = (left: string | null, right: string | null): boolean =>
+            (left === null || left === '') ? (right === null || right === '') : left === right;
+        return row.title === value.title
+            && row.audience === value.audience
+            && sameNullable(row.branch_id, value.branchId)
+            && sameNullable(row.group_id, value.groupId)
+            && row.timezone === value.timezone
+            && row.recurrence === value.recurrence
+            && normalizeWeekdayCsv(row.weekdays) === value.weekdays.join(',')
+            && normalizeNullableInteger(row.day_of_month) === value.dayOfMonth
+            && normalizeCalendarDate(row.starts_on) === value.startsOn
+            && normalizeCalendarDate(row.ends_on) === value.endsOn
+            && normalizeClockTime(row.start_time) === value.startTime
+            && Number(row.duration_minutes) === value.durationMinutes;
+    };
+
+    /**
+     * Resolve an idempotency key to one of three outcomes: no series yet
+     * (`absent`), an identical creation (`match`, replayable 201 body), or a
+     * different payload under the same key (`conflict`, answered 409).
+     */
+    const loadSeriesReplay = async (
+        tenantId: string,
+        seriesId: string,
+        value: ValidatedSeries,
+    ): Promise<SeriesReplayOutcome> => {
+        const row = await loadSeriesReplayRow(tenantId, seriesId);
+        if (!row) return { kind: 'absent' };
+        if (!seriesReplayMatches(row, value)) return { kind: 'conflict' };
+        const count = await db.queryOne<{ n: number | string }>(
+            'SELECT COUNT(*) AS n FROM schedule_sessions WHERE series_id = ? AND tenant_id = ?',
+            [seriesId, tenantId],
+        );
+        return {
+            kind: 'match',
+            body: {
+                id: row.id,
+                status: 'active',
+                audience: row.audience,
+                timezone: row.timezone,
+                recurrence: row.recurrence,
+                sessions: Number(count?.n ?? 0),
+            },
+        };
+    };
+
+    /** A reused key whose payload differs is a conflict, never a replay. */
+    const sendIdempotencyConflict = (res: Response): void => {
+        res.status(409).json({
+            error: 'Idempotency-Key was already used for a different schedule',
+            code: 'idempotency_key_reused',
+        });
     };
 
     /**
@@ -276,6 +421,10 @@ export const createSchedulesRouter = (deps: SchedulesDeps): Router => {
             if (value.audience === 'branch' && !(await branchInTenant(scope, value.branchId as string))) {
                 return res.status(403).json({ error: 'Branch is outside this tenant' });
             }
+            if (value.audience === 'branch' && !scope.isOwner
+                && !(await branchMembership(scope, value.branchId as string))) {
+                return res.status(403).json({ error: 'Branch membership required' });
+            }
             if (value.audience === 'group' && !(await groupInTenant(scope, value.groupId as string))) {
                 return res.status(403).json({ error: 'Group is outside this tenant' });
             }
@@ -303,50 +452,93 @@ export const createSchedulesRouter = (deps: SchedulesDeps): Router => {
                 return res.status(400).json({ error: 'The recurrence produces no sessions' });
             }
 
-            const seriesId = randomUUID();
+            /*
+             * Idempotent creation. A caller that retries (timeout, retry loop,
+             * double click) sends the same `Idempotency-Key`; the series id is
+             * derived from (tenant, author, key), so the retry resolves to the
+             * series the first attempt already created and returns the same
+             * creation body instead of materializing a second series and a
+             * second set of sessions. Without a key the historical behaviour is
+             * unchanged (a fresh series per request).
+             */
+            const headerKey = req.headers?.['idempotency-key'];
+            const rawKey = (Array.isArray(headerKey) ? headerKey[0] : headerKey)
+                ?? (typeof (req.body as Record<string, unknown> | undefined)?.['idempotency_key'] === 'string'
+                    ? (req.body as Record<string, unknown>)['idempotency_key']
+                    : undefined);
+            let idempotencyKey: string | null = null;
+            if (rawKey !== undefined && rawKey !== null && rawKey !== '') {
+                idempotencyKey = normalizeIdempotencyKey(rawKey);
+                if (!idempotencyKey) return res.status(400).json({ error: 'Invalid Idempotency-Key' });
+            }
+            const replayId = idempotencyKey
+                ? deterministicSeriesId({ tenantId: scope.tenantId, userId: scope.userId, idempotencyKey })
+                : null;
+            if (replayId) {
+                const replay = await loadSeriesReplay(scope.tenantId, replayId, value);
+                if (replay.kind === 'conflict') return sendIdempotencyConflict(res);
+                if (replay.kind === 'match') return res.status(201).json(replay.body);
+            }
+
+            const seriesId = replayId ?? randomUUID();
             const occurrencesWithIds = occurrences.map((occurrence) => ({ id: randomUUID(), ...occurrence }));
 
-            await runAtomic(async (tx) => {
-                await tx.execute(
-                    `INSERT INTO schedule_series
-                       (id, tenant_id, branch_id, group_id, title, audience, timezone, recurrence, weekdays,
-                        day_of_month, starts_on, ends_on, start_time, duration_minutes, status, created_by)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'active', ?)`,
-                    [
-                        seriesId, scope.tenantId, value.branchId, value.groupId, value.title, value.audience,
-                        value.timezone, value.recurrence, value.weekdays.join(','), value.dayOfMonth,
-                        value.startsOn, value.endsOn, value.startTime, value.durationMinutes, scope.userId,
-                    ],
-                );
-                for (const occurrence of occurrencesWithIds) {
+            try {
+                await runAtomic(async (tx) => {
                     await tx.execute(
-                        `INSERT IGNORE INTO schedule_sessions
-                           (id, series_id, tenant_id, branch_id, group_id, title, audience, timezone,
-                            starts_at, ends_at, status, created_by)
-                         VALUES (?,?,?,?,?,?,?,?,?,?, 'scheduled', ?)`,
+                        `INSERT INTO schedule_series
+                           (id, tenant_id, branch_id, group_id, title, audience, timezone, recurrence, weekdays,
+                            day_of_month, starts_on, ends_on, start_time, duration_minutes, status, created_by)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'active', ?)`,
                         [
-                            occurrence.id, seriesId, scope.tenantId, value.branchId, value.groupId, value.title,
-                            value.audience, value.timezone, toMysqlUtc(occurrence.startsAt), toMysqlUtc(occurrence.endsAt), scope.userId,
+                            seriesId, scope.tenantId, value.branchId, value.groupId, value.title, value.audience,
+                            value.timezone, value.recurrence, value.weekdays.join(','), value.dayOfMonth,
+                            value.startsOn, value.endsOn, value.startTime, value.durationMinutes, scope.userId,
                         ],
                     );
-                }
-                await recordAudit(tx.execute, {
-                    actorUserId: scope.userId,
-                    tenantId: scope.tenantId,
-                    action: 'schedule.series.create',
-                    resourceType: 'schedule_series',
-                    resourceId: seriesId,
-                    newValue: {
-                        title: value.title,
-                        audience: value.audience,
-                        branch_id: value.branchId,
-                        group_id: value.groupId,
-                        timezone: value.timezone,
-                        recurrence: value.recurrence,
-                        sessions: occurrencesWithIds.length,
-                    },
+                    for (const occurrence of occurrencesWithIds) {
+                        await tx.execute(
+                            `INSERT IGNORE INTO schedule_sessions
+                               (id, series_id, tenant_id, branch_id, group_id, title, audience, timezone,
+                                starts_at, ends_at, status, created_by)
+                             VALUES (?,?,?,?,?,?,?,?,?,?, 'scheduled', ?)`,
+                            [
+                                occurrence.id, seriesId, scope.tenantId, value.branchId, value.groupId, value.title,
+                                value.audience, value.timezone, toMysqlUtc(occurrence.startsAt), toMysqlUtc(occurrence.endsAt), scope.userId,
+                            ],
+                        );
+                    }
+                    await recordAudit(tx.execute, {
+                        actorUserId: scope.userId,
+                        tenantId: scope.tenantId,
+                        action: 'schedule.series.create',
+                        resourceType: 'schedule_series',
+                        resourceId: seriesId,
+                        newValue: {
+                            title: value.title,
+                            audience: value.audience,
+                            branch_id: value.branchId,
+                            group_id: value.groupId,
+                            timezone: value.timezone,
+                            recurrence: value.recurrence,
+                            sessions: occurrencesWithIds.length,
+                            idempotent: replayId !== null,
+                        },
+                    });
                 });
-            });
+            } catch (error) {
+                // A concurrent retry with the same key won the primary key.
+                // Re-read the row and answer from its actual payload: an
+                // identical creation replays, a different one conflicts. The
+                // losing request must never report success for a payload the
+                // stored series does not hold.
+                if (replayId && isDuplicateKeyError(error)) {
+                    const replay = await loadSeriesReplay(scope.tenantId, replayId, value);
+                    if (replay.kind === 'conflict') return sendIdempotencyConflict(res);
+                    if (replay.kind === 'match') return res.status(201).json(replay.body);
+                }
+                throw error;
+            }
 
             await notifySafely({
                 type: 'series.created',

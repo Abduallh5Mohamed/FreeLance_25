@@ -47,6 +47,7 @@ export interface PlaybackTokenExpectation {
 export type PlaybackDenialReason =
     | 'malformed'
     | 'invalid-signature'
+    | 'secret-unavailable'
     | 'expired'
     | 'revoked'
     | 'tenant-mismatch'
@@ -92,6 +93,25 @@ function isNonEmptyString(value: unknown): value is string {
     return typeof value === 'string' && value.trim().length > 0;
 }
 
+/**
+ * Strict millisecond timestamps.
+ *
+ * `Number(record['issuedAtMs'])` accepted `''`, `null`, `[]`, `true` and `' '`,
+ * and `'12.7'`/`'0x10'`/`'1e3'` as valid times — a claim whose expiry the server
+ * never actually set. A non-safe-integer or non-digit-string reading is refused
+ * so the token cannot be evaluated against a fabricated clock.
+ */
+function parseEpochMs(value: unknown): number | null {
+    if (typeof value === 'number') {
+        return Number.isSafeInteger(value) ? value : null;
+    }
+    if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+        const parsed = Number(value.trim());
+        return Number.isSafeInteger(parsed) ? parsed : null;
+    }
+    return null;
+}
+
 /** Structural validation of a decoded payload; no field is trusted by type. */
 export function parsePlaybackClaims(value: unknown): PlaybackTokenClaims | null {
     if (!value || typeof value !== 'object') return null;
@@ -101,9 +121,13 @@ export function parsePlaybackClaims(value: unknown): PlaybackTokenClaims | null 
         || !isNonEmptyString(studentEnrollmentId) || !isNonEmptyString(sessionId)) {
         return null;
     }
-    const issuedAtMs = Number(record['issuedAtMs']);
-    const expiresAtMs = Number(record['expiresAtMs']);
-    if (!Number.isFinite(issuedAtMs) || !Number.isFinite(expiresAtMs)) return null;
+    const issuedAtMs = parseEpochMs(record['issuedAtMs']);
+    const expiresAtMs = parseEpochMs(record['expiresAtMs']);
+    if (issuedAtMs === null || expiresAtMs === null) return null;
+    // A token whose expiry precedes its issuance is malformed, not merely odd:
+    // it would otherwise be denied as `expired` and indistinguishable from a
+    // genuinely elapsed token.
+    if (expiresAtMs < issuedAtMs) return null;
     return { jti, tenantId, lessonId, studentEnrollmentId, sessionId, issuedAtMs, expiresAtMs };
 }
 
@@ -205,7 +229,18 @@ export function evaluatePlaybackEntitlement(
 
 /** Clamp a requested TTL into the short-lived window [1, MAX]. */
 export function normalizePlaybackTtl(ttlSeconds: unknown): number {
-    const parsed = typeof ttlSeconds === 'number' ? Math.trunc(ttlSeconds) : Number.parseInt(String(ttlSeconds ?? ''), 10);
+    // Digits only. `parseInt('12abc')` returned 12 and `parseInt(' 30 ')`
+    // returned 30, so a caller could smuggle a value past the numeric shape;
+    // anything that is not a clean positive integer falls back to the default
+    // rather than being partially parsed.
+    let parsed: number;
+    if (typeof ttlSeconds === 'number') {
+        parsed = Number.isSafeInteger(ttlSeconds) ? ttlSeconds : NaN;
+    } else if (typeof ttlSeconds === 'string' && /^\d+$/.test(ttlSeconds.trim())) {
+        parsed = Number(ttlSeconds.trim());
+    } else {
+        parsed = NaN;
+    }
     if (!Number.isFinite(parsed) || parsed <= 0) return PLAYBACK_TOKEN_DEFAULT_TTL_SECONDS;
     return Math.min(PLAYBACK_TOKEN_MAX_TTL_SECONDS, parsed);
 }
@@ -245,10 +280,24 @@ export interface PlaybackEntitlementStore {
      * server session, newest first. Byte-delivery routes use this when the
      * client cannot present the opaque token (the existing sid/token URL
      * contract), so the same revocation/expiry/binding rules apply without a
-     * new client parameter. A store without this method fails closed: the
-     * delivery helper reports `store-unavailable`.
+     * new client parameter. A store without this method MUST refuse the
+     * delivery, not return an empty list — see `PlaybackDeliveryUnavailable`.
      */
     findBySessionId?(sessionId: string): Promise<PlaybackEntitlementRecord[]>;
+}
+
+/**
+ * Raised when the delivery lookup is unavailable.
+ *
+ * An empty list is indistinguishable from "no records were ever issued for this
+ * session", and a delivery helper that treats it as such would deny a
+ * legitimate viewer while reporting a data answer rather than a capability
+ * fault. The lookup is either implemented or it refuses.
+ */
+export class PlaybackDeliveryUnavailableError extends Error {
+    constructor() {
+        super('The playback entitlement store cannot resolve records by session');
+    }
 }
 
 /* =========================================================================
@@ -317,7 +366,10 @@ export function createPlaybackEntitlementService(deps: PlaybackEntitlementDeps):
 
         verify: async (token, expectation) => {
             const secret = deps.getSecret()?.trim();
-            if (!secret) return { allowed: false, reason: 'invalid-signature' as const };
+            // A missing secret is a configuration fault, not a forged token.
+            // Reporting it as `invalid-signature` made an unconfigured
+            // deployment indistinguishable from an attack in the audit trail.
+            if (!secret) return { allowed: false, reason: 'secret-unavailable' as const };
             const parsed = verifyPlaybackToken(secret, token);
             if (!parsed.ok) {
                 return { allowed: false, reason: parsed.reason === 'malformed' ? 'malformed' : 'invalid-signature' };
@@ -332,9 +384,15 @@ export function createPlaybackEntitlementService(deps: PlaybackEntitlementDeps):
         },
 
         findBySessionId: async (sessionId) => {
-            if (!store.findBySessionId) return [];
+            // Refuse rather than return an empty list: an empty list reads as
+            // "this session has no records", which a delivery helper would
+            // answer with a denial that looks like data instead of a missing
+            // capability. The previous comment promised `store-unavailable`
+            // while the code returned `[]`.
+            if (!store.findBySessionId) throw new PlaybackDeliveryUnavailableError();
             const safe = normalizeId(sessionId);
-            return safe ? store.findBySessionId(safe) : [];
+            if (!safe) return [];
+            return store.findBySessionId(safe);
         },
 
         revoke: async (jti, reason, actorUserId) => {

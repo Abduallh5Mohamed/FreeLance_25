@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
+import { randomUUID } from 'node:crypto';
 import jwt, { Secret } from 'jsonwebtoken';
 import {
     AuthRequest,
@@ -16,6 +17,8 @@ import { rateLimit } from '../middleware/rate-limit';
 import { normalizeEgyptianPhone, phoneLookupCandidates } from '../security/phone';
 import { isIssuableIdentity } from '../security/identity-scope';
 import { ACTIVE_SUSPENSION_PREDICATE_SQL } from '../security/suspension-predicate';
+import { createLoginSessionAuthority, type LoginSessionStore } from '../security/login-session';
+import { createLoginSessionSqlStore } from '../security/login-session-sql';
 
 /**
  * `../db` is loaded lazily (and cached) so importing this module never runs
@@ -30,6 +33,36 @@ const loadDb = async (): Promise<typeof import('../db')> => {
 };
 
 const router = Router();
+
+export const productionLoginSessions = createLoginSessionSqlStore({
+    queryOne: (sql, values) => loadDb().then(db => db.queryOne(sql, values)),
+    execute: (sql, values) => loadDb().then(db => db.execute(sql, values)),
+});
+
+/** The production login path never falls back to a sessionless token on storage failure. */
+export async function signLoginToken(payload: jwt.JwtPayload, source: 'users' | 'staff', store?: LoginSessionStore): Promise<string> {
+    const secret: Secret = getJwtSecret();
+    const lifetime = resolveJwtLifetimeSeconds(process.env.JWT_EXPIRES_IN);
+    // Legacy injected handler fixtures may omit the session store. Production
+    // explicitly supplies it; omission does not satisfy sensitive-action MFA.
+    if (!store) return jwt.sign(payload, secret, { expiresIn: lifetime });
+    const issuedAt = Math.floor(Date.now() / 1000);
+    let session;
+    try {
+        session = await createLoginSessionAuthority(store).issue({
+            userId: String(payload.id), identitySource: source,
+            tokenVersion: Number(payload.tv ?? 0), expiresAtMs: (issuedAt + lifetime) * 1000,
+        });
+    } catch {
+        throw new LoginSessionUnavailable();
+    }
+    return jwt.sign({ ...payload, sid: session.id, iat: issuedAt, exp: issuedAt + lifetime }, secret);
+}
+
+export class LoginSessionUnavailable extends Error {}
+
+/** Rollout is explicit; enabling it requires the reviewed session schema first. */
+export const loginSessionsEnabled = (): boolean => process.env.AUTH_LOGIN_SESSIONS_ENABLED === 'true';
 
 /** Maximum lifetime for locally issued auth tokens (7 days, in seconds). */
 export const MAX_JWT_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
@@ -134,6 +167,7 @@ interface Staff {
 // (including the suspension gate) can be tested against isolated fixtures
 // without a database; production wiring passes the real adapters.
 export interface LoginHandlerDeps {
+    sessionStore?: LoginSessionStore;
     queryOne: <T = any>(sql: string, params?: any[]) => Promise<T | null>;
     comparePassword: (password: string, hash: string) => Promise<boolean>;
     loadAdminPermissions: (userId: string) => Promise<string[]>;
@@ -142,6 +176,8 @@ export interface LoginHandlerDeps {
 
 export const createLoginHandler = (deps: LoginHandlerDeps) =>
     async (req: Request, res: Response) => {
+        res.set('Cache-Control', 'no-store');
+        res.set('Pragma', 'no-cache');
         try {
             // Prefer phone-based login; fall back to email for backwards compatibility
             const { phone, email, password } = req.body;
@@ -207,12 +243,10 @@ export const createLoginHandler = (deps: LoginHandlerDeps) =>
                         billingOnly = !Boolean(access.legacy_compat || access.allowed);
                     }
                     // Generate JWT token
-                    const jwtSecret: Secret = getJwtSecret();
-                    const token = jwt.sign(
+                    const token = await signLoginToken(
                         { id: user.id, email: user.email || null, phone: user.phone || null, role: user.role,
                             tv: Number(user.token_version || 0) },
-                        jwtSecret,
-                        { expiresIn: resolveJwtLifetimeSeconds(process.env.JWT_EXPIRES_IN) } as jwt.SignOptions
+                        'users', deps.sessionStore,
                     );
 
                     let adminPermissions: string[] = [];
@@ -281,8 +315,7 @@ export const createLoginHandler = (deps: LoginHandlerDeps) =>
                     // Generate JWT token. tv carries the live staff
                     // token_version so /api/auth/login sessions are revoked
                     // by the same version bump as /api/staff/login sessions.
-                    const jwtSecret: Secret = getJwtSecret();
-                    const token = jwt.sign(
+                    const token = await signLoginToken(
                         {
                             id: staff.id,
                             phone: staff.phone,
@@ -290,8 +323,7 @@ export const createLoginHandler = (deps: LoginHandlerDeps) =>
                             tv: Number(staff.token_version || 0),
                             accessible_pages: accessiblePages
                         },
-                        jwtSecret,
-                        { expiresIn: resolveJwtLifetimeSeconds(process.env.JWT_EXPIRES_IN) } as jwt.SignOptions
+                        'staff', deps.sessionStore,
                     );
 
                     return res.json({
@@ -312,23 +344,45 @@ export const createLoginHandler = (deps: LoginHandlerDeps) =>
             // Neither user nor staff found/matched
             return res.status(401).json({ error: 'Invalid credentials' });
         } catch (error) {
+            if (error instanceof LoginSessionUnavailable) {
+                res.set('Cache-Control', 'no-store');
+                return res.status(503).json({ error: 'Session service unavailable' });
+            }
             console.error('Login error:', error);
             res.status(500).json({ error: 'Authentication failed' });
         }
     };
 
 router.post('/login', rateLimit('auth-login', 12, 15 * 60_000), createLoginHandler({
+    sessionStore: loginSessionsEnabled() ? productionLoginSessions : undefined,
     queryOne: (sql, params) => loadDb().then((db) => db.queryOne(sql, params)),
     comparePassword: (password, hash) => bcrypt.compare(password, hash),
     loadAdminPermissions: getAdminPermissions,
     loadAdminRoleCodes: getAdminRoleCodes,
 }));
 
+router.post('/logout', authenticateToken, async (req: AuthRequest, res: Response) => {
+    res.set('Cache-Control', 'no-store');
+    const user = req.user;
+    if (!user?.sessionId) {
+        // A sessionless legacy token cannot be individually revoked. Do not
+        // pretend deleting a browser token revokes it at the server.
+        return res.status(409).json({ error: 'A session-bound login is required', code: 'SESSION_REQUIRED' });
+    }
+    try {
+        await createLoginSessionAuthority(productionLoginSessions).revoke(user.sessionId, user.id);
+        return res.status(204).end();
+    } catch {
+        return res.status(503).json({ error: 'Session service unavailable' });
+    }
+});
+
 // Register endpoint - public self-registration for student identities only.
 // Built over injected dependencies (same pattern as createLoginHandler) so
 // validation and rejection behavior is hermetically testable; production
 // wiring passes the real adapters below.
 export interface RegisterHandlerDeps {
+    sessionStore?: LoginSessionStore;
     queryOne: <T>(sql: string, params?: unknown[]) => Promise<T | null>;
     query: (sql: string, params?: unknown[]) => Promise<{ insertId: number; affectedRows: number }>;
     hashPassword: (password: string) => Promise<string>;
@@ -336,6 +390,8 @@ export interface RegisterHandlerDeps {
 
 export const createRegisterHandler = (deps: RegisterHandlerDeps) =>
     async (req: Request, res: Response) => {
+        res.set('Cache-Control', 'no-store');
+        res.set('Pragma', 'no-cache');
         try {
             const { phone, email, password, name, role: requestedRole } = req.body ?? {};
             const role = resolvePublicRegistrationRole(requestedRole);
@@ -371,19 +427,16 @@ export const createRegisterHandler = (deps: RegisterHandlerDeps) =>
 
             const passwordHash = await deps.hashPassword(password);
 
-            const result = await deps.query(
-                `INSERT INTO users (email, phone, password_hash, name, role) VALUES (?, ?, ?, ?, ?)`,
-                [validated.email, validated.phone, passwordHash, validated.name, role]
+            const userId = randomUUID();
+            await deps.query(
+                `INSERT INTO users (id, email, phone, password_hash, name, role) VALUES (?, ?, ?, ?, ?, ?)`,
+                [userId, validated.email, validated.phone, passwordHash, validated.name, role]
             );
 
-            const userId = result.insertId;
-
             // Generate JWT token
-            const jwtSecret: Secret = getJwtSecret();
-            const token = jwt.sign(
+            const token = await signLoginToken(
                 { id: userId, email: validated.email, phone: validated.phone, role, tv: 0 },
-                jwtSecret,
-                { expiresIn: resolveJwtLifetimeSeconds(process.env.JWT_EXPIRES_IN) } as jwt.SignOptions
+                'users', deps.sessionStore,
             );
 
             const user = {
@@ -400,12 +453,17 @@ export const createRegisterHandler = (deps: RegisterHandlerDeps) =>
                 token,
             });
         } catch (error) {
+            if (error instanceof LoginSessionUnavailable) {
+                res.set('Cache-Control', 'no-store');
+                return res.status(503).json({ error: 'Account created; sign in when the session service is available', code: 'SESSION_UNAVAILABLE' });
+            }
             console.error('Registration error:', error);
             return res.status(500).json({ error: 'Registration failed' });
         }
     };
 
 router.post('/register', rateLimit('auth-register', 10, 15 * 60_000), createRegisterHandler({
+    sessionStore: loginSessionsEnabled() ? productionLoginSessions : undefined,
     queryOne: (sql, params) => loadDb().then((db) => db.queryOne(sql, params)),
     query: (sql, params) =>
         loadDb().then((db) => db.query(sql, params) as unknown as Promise<{ insertId: number; affectedRows: number }>),
@@ -414,36 +472,34 @@ router.post('/register', rateLimit('auth-register', 10, 15 * 60_000), createRegi
 
 // Get current user (requires token)
 router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Pragma', 'no-cache');
     try {
         const { queryOne } = await loadDb();
+        // The authenticated source is authoritative even if IDs collide across tables.
+        if (req.user?.identitySource === 'staff') {
+            const staff = await queryOne<Staff>(
+                'SELECT id, name, email, phone, role, is_active, accessible_pages FROM staff WHERE id = ? AND is_active = 1',
+                [req.user.id],
+            );
+            if (!staff) return res.status(401).json({ error: 'Identity unavailable' });
+            return res.json({ user: { ...staff, role: 'staff', accessible_pages: parseAccessiblePages(staff.accessible_pages) } });
+        }
         const user = await queryOne<User>(
             'SELECT id, email, name, role, is_active FROM users WHERE id = ? AND is_active = TRUE',
-            [req.user?.id]
+            [req.user?.id],
         );
-
-        if (!user) {
-            // Staff-table identities live outside the users table; return their
-            // own identity so /auth/me works for every authenticated principal.
-            if (req.user?.role === 'staff' && req.user.identitySource === 'staff') {
-                const staff = await queryOne<Staff>(
-                    'SELECT id, name, email, phone, role, is_active, accessible_pages FROM staff WHERE id = ? AND is_active = 1',
-                    [req.user.id]
-                );
-                if (staff) {
-                    return res.json({ user: { ...staff, accessible_pages: parseAccessiblePages(staff.accessible_pages) } });
-                }
-            }
-            return res.status(404).json({ error: 'User not found' });
-        }
-
+        if (!user) return res.status(401).json({ error: 'Identity unavailable' });
+        const staffProfile = user.role === 'staff'
+            ? await queryOne<Staff>('SELECT accessible_pages FROM staff WHERE id = ? AND is_active = 1', [user.id])
+            : null;
         let adminPermissions: string[] = [];
         let adminRoles: string[] = [];
-        try { adminPermissions = await getAdminPermissions(user.id); } catch { /* migration not installed yet */ }
-        try { adminRoles = await getAdminRoleCodes(user.id); } catch { /* migration not installed yet */ }
-        res.json({ user: { ...user, billing_only: Boolean(req.user?.billingOnly), admin_member: adminPermissions.length > 0, admin_permissions: adminPermissions, admin_roles: adminRoles } });
-    } catch (error) {
-        console.error('Get user error:', error);
-        res.status(401).json({ error: 'Invalid token' });
+        try { adminPermissions = await getAdminPermissions(user.id); } catch { /* no elevated capabilities */ }
+        try { adminRoles = await getAdminRoleCodes(user.id); } catch { /* no elevated capabilities */ }
+        return res.json({ user: { ...user, ...(user.role === 'staff' ? { accessible_pages: parseAccessiblePages(staffProfile?.accessible_pages) } : {}), billing_only: Boolean(req.user?.billingOnly), admin_member: adminPermissions.length > 0, admin_permissions: adminPermissions, admin_roles: adminRoles } });
+    } catch {
+        return res.status(503).json({ error: 'Identity service unavailable', code: 'IDENTITY_UNAVAILABLE' });
     }
 });
 

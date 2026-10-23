@@ -25,10 +25,13 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { formatHundredths } from './exam-grading';
+import { formatHundredths, toHundredths } from './exam-grading';
+import { deterministicScoreId } from './gradebook';
 import {
     AppendAnswerGradeRevisionInput,
     DEFAULT_PENDING_LIMIT,
+    ExamGradebookProjectionInput,
+    ExamGradebookProjectionResult,
     FinalizeAttemptInput,
     ListPendingAttemptsInput,
     MAX_PENDING_LIMIT,
@@ -146,6 +149,7 @@ interface AttemptRowDb {
     reviewer_user_id?: string | null;
     graded_at?: string | Date | null;
     passed?: boolean | number | null;
+    total_points?: number | string | null;
 }
 
 interface QuestionRowDb {
@@ -176,7 +180,7 @@ interface RevisionRowDb {
 const ATTEMPT_COLUMNS = `a.id, a.tenant_id, a.exam_id, a.exam_version_id,
     a.student_enrollment_id, a.student_user_id, a.status, a.submitted_at,
     a.auto_score, a.score, a.manual_required, a.version,
-    a.reviewer_user_id, a.graded_at, a.passed`;
+    a.reviewer_user_id, a.graded_at, a.passed, v.total_points`;
 
 const PENDING_SELECT = `SELECT ${ATTEMPT_COLUMNS}, v.passing_points
     FROM exam_versioned_attempts a
@@ -240,6 +244,34 @@ const REVISION_INSERT = `INSERT INTO exam_manual_answer_revisions
     (id, tenant_id, attempt_id, question_ref, revision, awarded_hundredths,
      reviewer_user_id, feedback, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+/*
+ * C1-R gradebook link. The exam's course is resolved from the server rows
+ * (`exams.course_id` joined to a tenant-owned course); the enrollment is
+ * re-proven to belong to that course before any grade is written, so a
+ * finalized attempt can never create a grade in a course its student is not
+ * enrolled in. All statements run on the caller's transaction connection.
+ */
+const EXAM_COURSE_SELECT = `SELECT e.course_id
+    FROM exams e INNER JOIN courses c ON c.id = e.course_id
+    WHERE e.id = ? AND c.tenant_id = ? LIMIT 1`;
+
+const ENROLLMENT_IN_COURSE_SELECT = `SELECT s.id FROM students s
+      LEFT JOIN \`groups\` g ON g.id = s.group_id
+      LEFT JOIN student_courses sc ON sc.student_id = s.id AND sc.course_id = ? AND sc.status='active'
+     WHERE s.id = ? AND s.tenant_id = ? AND (g.course_id = ? OR sc.course_id IS NOT NULL) LIMIT 1`;
+
+const GRADEBOOK_SCORE_SELECT = `SELECT id, score, max_score
+    FROM gradebook_scores WHERE id = ? AND tenant_id = ? LIMIT 1 FOR UPDATE`;
+
+const GRADEBOOK_SCORE_INSERT = `INSERT INTO gradebook_scores
+    (id, tenant_id, student_enrollment_id, course_id, category_id, item_type, item_id,
+     score, max_score, weight, recorded_by)
+    VALUES (?, ?, ?, ?, NULL, 'exam', ?, ?, ?, NULL, ?)`;
+
+const GRADEBOOK_SCORE_UPDATE = `UPDATE gradebook_scores
+    SET score = ?, max_score = ?, recorded_by = ?, recorded_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND tenant_id = ?`;
 
 const affectedRowsOf = (result: { affectedRows?: number | string }): number => {
     const value = typeof result.affectedRows === 'string' ? Number(result.affectedRows) : result.affectedRows;
@@ -330,6 +362,7 @@ const mapAttempt = (row: AttemptRowDb): PendingManualAttemptRow => ({
     reviewer_user_id: row.reviewer_user_id ?? null,
     graded_at: row.graded_at ?? null,
     passed: row.passed ?? null,
+    total_points: row.total_points ?? null,
 });
 
 const safelyNormalizedVersion = (value: number | string, context: string): number => {
@@ -555,6 +588,92 @@ class ExamManualGradingSqlTransaction implements ExamManualGradingSqlBoundStore 
         // is written here.
         void latestRevisions;
         return { ok: true, newAttemptVersion: input.expectedVersion + 1 };
+    }
+
+    /**
+     * C1-R: project the just-finalized total into the course gradebook on this
+     * same transaction. The row id is deterministic over
+     * (tenant, enrollment, course, 'exam', exam id), so a repeated finalize
+     * (which the CAS already refuses) and any later re-projection target one
+     * row instead of appending a duplicate grade.
+     *
+     * Every skip is explicit and non-destructive: no course, a student outside
+     * the course, or a total that cannot be represented means "no grade", never
+     * a guessed one. A real write failure throws and rolls the finalization
+     * back, so a graded attempt can never commit without its grade.
+     */
+    async recordGradebookScore(input: ExamGradebookProjectionInput): Promise<ExamGradebookProjectionResult> {
+        const courseRows = await this.conn.query<{ course_id: string }>(EXAM_COURSE_SELECT, [
+            input.examId,
+            input.tenantId,
+        ]);
+        const courseId = courseRows[0]?.course_id;
+        if (!courseId) return { ok: true, linked: false, reason: 'not_course_scoped' };
+
+        const enrolled = await this.conn.query<{ id: string }>(ENROLLMENT_IN_COURSE_SELECT, [
+            courseId,
+            input.enrollmentId,
+            input.tenantId,
+            courseId,
+        ]);
+        if (enrolled.length === 0) return { ok: true, linked: false, reason: 'student_not_in_course' };
+
+        const maxHundredths = toHundredths(input.totalPoints ?? null);
+        if (maxHundredths === null || maxHundredths <= 0) {
+            return { ok: true, linked: false, reason: 'invalid_score' };
+        }
+        if (!Number.isSafeInteger(input.scoreHundredths)
+            || input.scoreHundredths < 0
+            || input.scoreHundredths > maxHundredths) {
+            return { ok: true, linked: false, reason: 'invalid_score' };
+        }
+        const scoreId = deterministicScoreId({
+            tenantId: input.tenantId,
+            enrollmentId: input.enrollmentId,
+            courseId,
+            itemType: 'exam',
+            itemId: input.examId,
+        });
+        if (!scoreId) return { ok: true, linked: false, reason: 'invalid_score' };
+
+        const score = formatHundredths(input.scoreHundredths);
+        const maxScore = formatHundredths(maxHundredths);
+        const existing = await this.conn.query<{ id: string; score: number | string; max_score: number | string }>(
+            GRADEBOOK_SCORE_SELECT,
+            [scoreId, input.tenantId],
+        );
+        if (existing.length > 0) {
+            const current = existing[0];
+            if (Number(current.score) === Number(score) && Number(current.max_score) === Number(maxScore)) {
+                return { ok: true, linked: true, scoreId, corrected: false };
+            }
+            await this.conn.execute(GRADEBOOK_SCORE_UPDATE, [
+                score,
+                maxScore,
+                input.reviewerUserId,
+                scoreId,
+                input.tenantId,
+            ]);
+            return { ok: true, linked: true, scoreId, corrected: true };
+        }
+        try {
+            await this.conn.execute(GRADEBOOK_SCORE_INSERT, [
+                scoreId,
+                input.tenantId,
+                input.enrollmentId,
+                courseId,
+                input.examId,
+                score,
+                maxScore,
+                input.reviewerUserId,
+            ]);
+        } catch (error) {
+            // A concurrent projection of the same item won the primary key.
+            // The grade exists, so this attempt is already represented.
+            if (isDuplicateError(error)) return { ok: true, linked: true, scoreId, corrected: false };
+            throw error;
+        }
+        return { ok: true, linked: true, scoreId, corrected: false };
     }
 }
 

@@ -9,7 +9,9 @@ import {
     ScoreEntry,
     ValidatedGradebookPolicy,
     calculateGrade,
+    deterministicScoreId,
     normalizeId,
+    normalizeLinkedScoreItemType,
     normalizeScoreEntry,
     validateGradebookPolicy,
     validateScoreEntry,
@@ -32,6 +34,14 @@ export interface GradebookDeps {
 }
 
 const STAFF_AUTHORITIES = new Set(['owner', 'instructor']);
+
+/** mysql2 duplicate-key error: a linked-score row already exists (idempotent). */
+const isDuplicateKeyError = (error: unknown): boolean => {
+    if (typeof error !== 'object' || error === null) return false;
+    const code = (error as { code?: unknown }).code;
+    const errno = (error as { errno?: unknown }).errno;
+    return code === 'ER_DUP_ENTRY' || errno === 1062;
+};
 
 interface PolicyRow {
     id: string;
@@ -277,16 +287,97 @@ export const createGradebookRouter = (deps: GradebookDeps): Router => {
         const validated = validateScoreEntry(body);
         if (!validated.ok) { res.status(400).json({ error: validated.error }); return; }
         const v = validated.value;
-        const id = randomUUID();
+        /*
+         * A source-linked grade (an assignment submission or a finalized exam
+         * attempt) is addressed by a deterministic row id over the exact
+         * (tenant, enrollment, course, item type, item) tuple. The same source
+         * item therefore always targets the same primary key, so a repeated
+         * request can never append a duplicate grade: it is either an exact
+         * replay (no write at all) or a correction of the existing row. A free
+         * `manual`/`lesson` entry keeps the historical append behaviour,
+         * because two manual scores are legitimately two rows.
+         */
+        const linkedType = normalizeLinkedScoreItemType(v.itemType);
+        if (linkedType && !v.itemId) {
+            res.status(400).json({ error: 'item_id is required for a linked score' });
+            return;
+        }
+        const linkedId = linkedType && v.itemId
+            ? deterministicScoreId({
+                tenantId: scope.tenantId,
+                enrollmentId,
+                courseId,
+                itemType: linkedType,
+                itemId: v.itemId,
+            })
+            : null;
+        if (linkedType && linkedId === null) {
+            res.status(400).json({ error: 'invalid item_id for a linked score' });
+            return;
+        }
+        const id = linkedId ?? randomUUID();
+        let outcome: 'created' | 'unchanged' | 'corrected' = 'created';
         try {
             await runAtomic(async (tx) => {
+                if (linkedId) {
+                    const existing = await tx.queryOne<{ id: string; score: number; max_score: number; weight: number | null }>(
+                        'SELECT id, score, max_score, weight FROM gradebook_scores WHERE id=? AND tenant_id=? FOR UPDATE',
+                        [linkedId, scope.tenantId],
+                    );
+                    if (existing) {
+                        const before = {
+                            score: Number(existing.score),
+                            max_score: Number(existing.max_score),
+                            weight: existing.weight === null ? null : Number(existing.weight),
+                        };
+                        const sameWeight = (before.weight === null && v.weight === null)
+                            || (before.weight !== null && v.weight !== null && before.weight === v.weight);
+                        if (before.score === v.score && before.max_score === v.maxScore && sameWeight) {
+                            outcome = 'unchanged';
+                            return;
+                        }
+                        const updated = await tx.execute(
+                            'UPDATE gradebook_scores SET score=?, max_score=?, weight=?, recorded_by=?, recorded_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=?',
+                            [v.score, v.maxScore, v.weight, scope.userId, linkedId, scope.tenantId],
+                        );
+                        if ((updated.affectedRows ?? 0) === 0) {
+                            outcome = 'unchanged';
+                            return;
+                        }
+                        outcome = 'corrected';
+                        await recordAudit(tx.execute.bind(tx) as never, {
+                            actorUserId: scope.userId,
+                            tenantId: scope.tenantId,
+                            action: 'gradebook.score.correct',
+                            resourceType: 'gradebook_score',
+                            resourceId: linkedId,
+                            oldValue: before,
+                            newValue: {
+                                enrollmentId, courseId, itemType: linkedType, itemId: v.itemId,
+                                score: v.score, maxScore: v.maxScore, weight: v.weight,
+                            },
+                        });
+                        return;
+                    }
+                }
                 await tx.execute('INSERT INTO gradebook_scores (id, tenant_id, student_enrollment_id, course_id, category_id, item_type, item_id, score, max_score, weight, recorded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [id, scope.tenantId, enrollmentId, courseId, v.categoryId, v.itemType, v.itemId, v.score, v.maxScore, v.weight, scope.userId]);
                 await recordAudit(tx.execute.bind(tx) as never, { actorUserId: scope.userId, tenantId: scope.tenantId, action: 'gradebook.score.create', resourceType: 'gradebook_score', resourceId: id, newValue: { enrollmentId, courseId, score: v.score, maxScore: v.maxScore } });
             });
         } catch (e) {
+            // A concurrent first write of the same linked item lost the primary
+            // key race. The grade already exists, so this request is a replay.
+            if (linkedId && isDuplicateKeyError(e)) {
+                res.status(200).json({ id, idempotent: true });
+                return;
+            }
             res.status(500).json({ error: 'Failed to record score' });
             return;
         }
+        // The outcome is set inside the transaction closure, which the compiler
+        // cannot track; the declared union is the contract.
+        const finalOutcome = outcome as 'created' | 'unchanged' | 'corrected';
+        if (finalOutcome === 'unchanged') { res.status(200).json({ id, idempotent: true }); return; }
+        if (finalOutcome === 'corrected') { res.status(201).json({ id, corrected: true }); return; }
         res.status(201).json({ id });
     });
 

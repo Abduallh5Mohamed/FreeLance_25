@@ -446,6 +446,30 @@ export function createExamManualGradingRouter(deps: ExamManualGradingDeps): Rout
                 if (!result.ok) {
                     return { kind: 'rejected', rejection: projectStoreMutationRejection(result.reason) };
                 }
+                /*
+                 * C1-R link: the sealed result is projected into the course
+                 * gradebook on the SAME transaction connection, so a gradebook
+                 * failure rolls the finalization back and a graded attempt can
+                 * never commit without its grade. The capability is optional —
+                 * a store without it finalizes exactly as before and the audit
+                 * records `gradebook_linked: false` instead of inventing a
+                 * grade. Nothing about the CAS, the version bump or the
+                 * "no revision after finalize" guard changes here.
+                 */
+                let gradebookLinked = false;
+                if (tx.recordGradebookScore) {
+                    const projection = await tx.recordGradebookScore({
+                        tenantId: scope.tenantId,
+                        examId: fresh.attempt.exam_id,
+                        examVersionId: fresh.attempt.exam_version_id,
+                        attemptId: bundle.attempt.id,
+                        enrollmentId: fresh.attempt.student_enrollment_id,
+                        scoreHundredths: planned.plan.scoreHundredths,
+                        totalPoints: fresh.attempt.total_points ?? null,
+                        reviewerUserId: scope.userId,
+                    });
+                    gradebookLinked = projection.linked;
+                }
                 await deps.audit(tx, {
                     actorUserId: scope.userId,
                     tenantId: scope.tenantId,
@@ -461,6 +485,7 @@ export function createExamManualGradingRouter(deps: ExamManualGradingDeps): Rout
                             question_ref: row.question_ref,
                             revision: row.revision,
                         })),
+                        gradebook_linked: gradebookLinked,
                         version: result.newAttemptVersion,
                     },
                 });

@@ -60,6 +60,20 @@ import {
 } from './content-access';
 import { buildLessonReleasePolicy, ReleasePolicyRow } from '../services/content-release';
 
+/**
+ * Bounded, fixed-label failure logging.
+ *
+ * A raw driver or provider error object carries `sql`, `sqlMessage`, bound
+ * parameters, request URLs and — on the delivery and callback paths — ticket,
+ * token and signature material, so printing it writes all of that into the
+ * server log. Only the fixed label is emitted; the object's message, code and
+ * shape are never echoed, and no request data is interpolated into it.
+ */
+const logVideoAssetFailure = (label: string, error: unknown): void => {
+    void error;
+    console.error(`[VideoAssets] ${label}`);
+};
+
 /** Server-derived principal facts used to compose the content-access policy. */
 export interface LessonAccessPrincipal {
     id: string;
@@ -168,7 +182,7 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
             if (!result.ok) return res.status(400).json({ error: 'Invalid asset registration' });
             return res.status(201).json({ id: result.id, status: result.state });
         } catch (error) {
-            console.error('Video asset registration error:', error);
+            logVideoAssetFailure('Asset registration failed', error);
             return res.status(500).json({ error: 'Failed to register asset' });
         }
     });
@@ -188,7 +202,7 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
             if (!isMaster) return res.status(403).json({ error: 'Forbidden' });
             return res.json(projectAsset(asset));
         } catch (error) {
-            console.error('Video asset read error:', error);
+            logVideoAssetFailure('Asset read failed', error);
             return res.status(500).json({ error: 'Failed to load asset' });
         }
     });
@@ -217,7 +231,7 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
             if (result.reason === 'not-found') return res.status(404).json({ error: 'Asset not found' });
             return res.status(409).json({ error: 'Transition not allowed', reason: result.reason, from: result.from });
         } catch (error) {
-            console.error('Video asset processing error:', error);
+            logVideoAssetFailure('Asset processing failed', error);
             return res.status(500).json({ error: 'Failed to start processing' });
         }
     });
@@ -250,7 +264,7 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
                 ...(result.status === 'applied' ? { attempts: result.attempts, dead_lettered: result.deadLettered } : {}),
             });
         } catch (error) {
-            console.error('Video asset callback error:', error);
+            logVideoAssetFailure('Provider callback failed', error);
             return res.status(500).json({ error: 'Failed to apply callback' });
         }
     });
@@ -308,7 +322,7 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
                 expiresIn: issued.expiresIn,
             });
         } catch (error) {
-            console.error('Playback entitlement issue error:', error);
+            logVideoAssetFailure('Playback entitlement issue failed', error);
             return res.status(500).json({ error: 'Failed to issue entitlement' });
         }
     });
@@ -344,7 +358,7 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
             if (!result.revoked) return res.status(404).json({ error: 'Entitlement not found' });
             return res.json({ revoked: true, jti });
         } catch (error) {
-            console.error('Playback entitlement revoke error:', error);
+            logVideoAssetFailure('Playback entitlement revoke failed', error);
             return res.status(500).json({ error: 'Failed to revoke entitlement' });
         }
     });
@@ -379,6 +393,13 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
                 return res.status(403).json({ error: 'A valid playback entitlement is required' });
             }
 
+            // Reject an unprovable asset selector FIRST — before the rate limit
+            // and before the ledger write — so no side effect records an
+            // attribution the server cannot prove. See the note above.
+            if (body.assetId !== undefined) {
+                return res.status(400).json({ error: 'Asset attribution is not available for watch heartbeats' });
+            }
+
             // One heartbeat can never account for more than one dedupe window of
             // watch time, so a large client delta cannot inflate the aggregate.
             const deltaSeconds = clampHeartbeatSeconds(body.deltaSeconds, heartbeatWindow);
@@ -400,6 +421,11 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
                 return res.status(429).json({ error: 'Watch heartbeat limit exceeded', reason: limit.reason });
             }
 
+            // Asset attribution is OPTIONAL and there is no server-side proof
+            // available for it, so none is recorded: the event carries the
+            // server-proven tenant, enrollment, session and watch seconds only.
+            // See the rejection note above for why a client selector is refused
+            // rather than trusted.
             const input: UsageEventInput = {
                 tenantId: principal.tenantId,
                 kind: 'watch',
@@ -408,14 +434,13 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
                 studentEnrollmentId: principal.studentEnrollmentId,
                 watchSeconds: deltaSeconds,
                 source: 'heartbeat',
-                assetId: typeof body.assetId === 'string' ? body.assetId : undefined,
                 occurredAtMs: nowMs,
             };
             const result = await deps.usage.record(input);
             if ('error' in result) return res.status(400).json({ error: result.error });
             return res.json({ recorded: result.recorded, deduplicated: result.deduplicated });
         } catch (error) {
-            console.error('Usage heartbeat error:', error);
+            logVideoAssetFailure('Usage heartbeat failed', error);
             return res.status(500).json({ error: 'Failed to record heartbeat' });
         }
     });
@@ -467,7 +492,7 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
             if ('error' in result) return res.status(400).json({ error: result.error });
             return res.json({ recorded: result.recorded, deduplicated: result.deduplicated });
         } catch (error) {
-            console.error('Usage provider callback error:', error);
+            logVideoAssetFailure('Usage provider callback failed', error);
             return res.status(500).json({ error: 'Failed to record usage' });
         }
     });
@@ -486,7 +511,7 @@ export function createVideoAssetsRouter(deps: VideoAssetsDeps): Router {
             ]);
             return res.json({ tenantId: scope.tenantId, watchSeconds, storageBytes });
         } catch (error) {
-            console.error('Usage summary error:', error);
+            logVideoAssetFailure('Usage summary failed', error);
             return res.status(500).json({ error: 'Failed to load usage summary' });
         }
     });
