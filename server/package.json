@@ -4,7 +4,7 @@
     "description": "Backend API for Tabweb Academy",
     "main": "dist/index.js",
     "scripts": {
-        "dev": "powershell -ExecutionPolicy Bypass -File ./start-minio.ps1 && tsx watch src/index.ts",
+        "dev": "powershell -ExecutionPolicy Bypass -File ./dev.ps1",
         "dev:server": "tsx watch src/index.ts",
         "minio": "powershell -ExecutionPolicy Bypass -File ./start-minio.ps1",
         "build": "tsc",
