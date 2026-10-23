@@ -61,6 +61,7 @@ interface SessionSnapshot {
 
 const installSessionEnvironment = (initial: Record<string, string> = {}) => {
     const store = new Map<string, string>(Object.entries(initial));
+    const fetchCalls: Array<{ input: string | URL | Request; init?: RequestInit }> = [];
     const realLocalStorage = (globalThis as { localStorage?: unknown }).localStorage;
     (globalThis as unknown as { localStorage: unknown }).localStorage = {
         getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
@@ -73,9 +74,12 @@ const installSessionEnvironment = (initial: Record<string, string> = {}) => {
     const realFetch = globalThis.fetch;
     return {
         store,
+        fetchCalls,
         setFetchResponse: (body: unknown) => {
-            globalThis.fetch = (async () =>
-                ({ ok: true, status: 200, json: async () => body }) as unknown as Response) as typeof fetch;
+            globalThis.fetch = (async (input, init) => {
+                fetchCalls.push({ input, init });
+                return ({ ok: true, status: 200, json: async () => body }) as unknown as Response;
+            }) as typeof fetch;
         },
         restore: () => {
             (globalThis as unknown as { localStorage: unknown }).localStorage = realLocalStorage ?? undefined;
@@ -200,6 +204,23 @@ test("signIn notifies login only after the complete mutation — atomic login", 
         assert.equal(seen[0].token, "tok-login");
         assert.ok(seen[0].user, "the subscriber observes the token AND its identity together");
         unsubscribe();
+    } finally {
+        env.restore();
+    }
+});
+
+test("signIn omits a stale Authorization header so expired sessions cannot block a fresh login", async () => {
+    const env = installSessionEnvironment({ authToken: "expired-token" });
+    try {
+        env.setFetchResponse({ user: { id: "u-2", role: "admin" }, token: "fresh-token" });
+
+        const result = await signIn("01000000000", "password-123");
+
+        assert.equal(result.error, null);
+        assert.equal(env.fetchCalls.length, 1);
+        const headers = env.fetchCalls[0].init?.headers as Record<string, string>;
+        assert.equal(headers.Authorization, undefined);
+        assert.equal(localStorage.getItem("authToken"), "fresh-token");
     } finally {
         env.restore();
     }

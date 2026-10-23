@@ -45,24 +45,27 @@ export const clearAuthToken = (): void => {
 };
 
 // Generic HTTP request helper
+type RequestOptions = RequestInit & { auth?: boolean };
+
 async function request<T>(
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestOptions = {}
 ): Promise<T> {
+    const { auth = true, ...fetchOptions } = options;
     const token = getAuthToken();
 
-    const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+    const isFormData = typeof FormData !== 'undefined' && fetchOptions.body instanceof FormData;
     const headers: HeadersInit = {
         ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-        ...options.headers,
+        ...fetchOptions.headers,
     };
 
-    if (token) {
+    if (auth && token) {
         headers['Authorization'] = `Bearer ${token}`;
     }
 
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-        ...options,
+        ...fetchOptions,
         headers,
     });
 
@@ -200,6 +203,7 @@ export const signIn = async (
         const response = await request<{ user: User; token: string }>('/auth/login', {
             method: 'POST',
             body: JSON.stringify({ phone, password }),
+            auth: false,
         });
 
         console.log('🔐 signIn: Response received:', { user: response.user, hasToken: !!response.token });
@@ -231,6 +235,7 @@ export const signUp = async (
         const response = await request<{ user: User; token: string }>('/auth/register', {
             method: 'POST',
             body: JSON.stringify({ phone, email: email || null, password, name, role }),
+            auth: false,
         });
 
         if (response.token) {
