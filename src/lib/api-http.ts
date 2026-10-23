@@ -1,3 +1,4 @@
+import { notifySessionChange, type SessionChangeKind } from './session-events';
 /**
  * HTTP Client for Backend API
  * Replaces the mock localStorage database with real HTTP requests
@@ -27,7 +28,7 @@ const getAuthToken = (): string | null => {
 // Guards subscribe to local changes as well as cross-tab storage events.
 export const AUTH_SESSION_CHANGED_EVENT = 'auth-session-changed';
 let authRevision = 0;
-const publishSessionChange = () => { authRevision += 1; window.dispatchEvent(new Event(AUTH_SESSION_CHANGED_EVENT)); };
+const publishSessionChange = (kind: SessionChangeKind = 'token') => { authRevision += 1; notifySessionChange(kind); window.dispatchEvent(new Event(AUTH_SESSION_CHANGED_EVENT)); };
 
 // Helper to set auth token
 export const setAuthToken = (token: string): void => {
@@ -41,7 +42,7 @@ export const clearAuthToken = (): void => {
     localStorage.removeItem('currentUser');
     localStorage.removeItem('currentStudent');
     for (const key of ['student_session', 'offlineStudentSession', 'supabaseUser', 'currentStudentSpace']) localStorage.removeItem(key);
-    publishSessionChange();
+    publishSessionChange('logout');
 };
 
 /** Revoke before discarding the bearer. A local logout is not proof of revocation. */
@@ -85,22 +86,23 @@ class ApiRequestError extends Error {
 // Generic HTTP request helper
 async function request<T>(
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestInit & { auth?: boolean } = {}
 ): Promise<T> {
+    const { auth = true, ...fetchOptions } = options;
     const token = getAuthToken();
     const requestRevision = authRevision;
     const isCurrentSession = () => getAuthToken() === token && authRevision === requestRevision;
 
-    const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
-    const headers = new Headers(options.headers);
+    const isFormData = typeof FormData !== 'undefined' && fetchOptions.body instanceof FormData;
+    const headers = new Headers(fetchOptions.headers);
     if (!isFormData && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
 
-    if (token) {
+    if (auth && token) {
         headers.set('Authorization', `Bearer ${token}`);
     }
 
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-        ...options,
+        ...fetchOptions,
         headers,
     });
 
@@ -114,7 +116,7 @@ async function request<T>(
         if (isCurrentSession() && response.status === 403 && error.code === 'BILLING_ONLY') {
             try {
                 const current = JSON.parse(localStorage.getItem('currentUser') || 'null');
-                if (current?.role === 'instructor') localStorage.setItem('currentUser', JSON.stringify({ ...current, billing_only: true }));
+                if (current?.role === 'instructor') { localStorage.setItem('currentUser', JSON.stringify({ ...current, billing_only: true })); notifySessionChange('identity'); }
             } catch { /* malformed local session will be handled by the auth guard */ }
             if (!['/instructor-subscription', '/instructor-wallet', '/support'].includes(window.location.pathname)) {
                 window.location.assign('/instructor-subscription');
@@ -242,6 +244,7 @@ export const signIn = async (
         const response = await request<{ user: User; token: string }>('/auth/login', {
             method: 'POST',
             body: JSON.stringify({ phone, password }),
+            auth: false,
         });
 
 
@@ -252,8 +255,8 @@ export const signIn = async (
             return { user: null, error: 'تعذّر تأكيد بيانات تسجيل الدخول. أعد المحاولة.' };
         }
         if (response.token) {
-            setAuthToken(response.token);
             localStorage.setItem('currentUser', JSON.stringify(response.user));
+            setAuthToken(response.token);
         }
 
         return { user: response.user, error: null, token: response.token };
@@ -275,6 +278,7 @@ export const signUp = async (
         const response = await request<{ user: User; token: string }>('/auth/register', {
             method: 'POST',
             body: JSON.stringify({ phone, email: email || null, password, name, role }),
+            auth: false,
         });
 
         if (authRevision !== startedAt || getAuthToken() !== startingToken) {
@@ -284,8 +288,8 @@ export const signUp = async (
             return { user: null, error: 'تعذّر تأكيد بيانات تسجيل الدخول. أعد المحاولة.' };
         }
         if (response.token) {
-            setAuthToken(response.token);
             localStorage.setItem('currentUser', JSON.stringify(response.user));
+            setAuthToken(response.token);
         }
 
         return { user: response.user, error: null, token: response.token };

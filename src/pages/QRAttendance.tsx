@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { getStudents, markAttendance, getAttendanceByDate, getGroups } from '@/lib/api-http';
+import { getStudents, getAttendance, markAttendance, getGroups } from '@/lib/api-http';
+import { instantToDayKey } from '@/lib/attendance-calendar';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Calendar } from '@/components/ui/calendar';
@@ -58,12 +59,47 @@ export function createSubmissionGuard(): SubmissionGuard {
 }
 
 /**
+ * Per-key in-flight guard for mutations that are keyed by an entity id (e.g.
+ * one student can be marked present/absent, but two same-tick submissions for
+ * the SAME student must collapse to one). The claim is synchronous, so it
+ * closes the pre-render window that a React state flag (e.g. a
+ * `pendingStudentIds` array) leaves open between two calls in one tick.
+ */
+export interface KeyedSubmissionGuard {
+  tryAcquire(key: string): boolean;
+  release(key: string): void;
+  isBusy(key: string): boolean;
+}
+
+export function createKeyedSubmissionGuard(): KeyedSubmissionGuard {
+  const busy = new Set<string>();
+  return {
+    tryAcquire(key: string): boolean {
+      if (busy.has(key)) return false;
+      busy.add(key);
+      return true;
+    },
+    release(key: string): void {
+      busy.delete(key);
+    },
+    isBusy(key: string): boolean {
+      return busy.has(key);
+    },
+  };
+}
+
+/**
  * Monotonic token sequence so an older async response (e.g. after the user
  * changed the selected date mid-flight) cannot overwrite newer state.
+ * `invalidate()` supersedes every outstanding token WITHOUT issuing a new one,
+ * which is what a scope-clear (deselecting a student/group) needs: a late
+ * completion of the cleared scope must be dropped even when no replacement
+ * request is started.
  */
 export interface ResponseSequence {
   next(): number;
   isCurrent(token: number): boolean;
+  invalidate(): void;
 }
 
 export function createResponseSequence(): ResponseSequence {
@@ -76,7 +112,30 @@ export function createResponseSequence(): ResponseSequence {
     isCurrent(token: number): boolean {
       return token === latest;
     },
+    invalidate(): void {
+      // Bump the generation so all previously issued tokens are now stale.
+      latest += 1;
+    },
   };
+}
+
+/**
+ * Resolves a student's guardian contact number from the canonical API field
+ * (`guardian_phone`, the field the /students endpoint actually returns).
+ * A legacy `parent_phone` record is intentionally NOT read here: the backend
+ * contract exposes `guardian_phone` only, so reading another source would risk
+ * acting on data the server does not own. Returns a trimmed number, or '' when
+ * absent/blank so the caller fails closed instead of opening a WhatsApp link
+ * with no number.
+ *
+ * The parameter is `unknown` because callers hold loosely-typed student rows
+ * (e.g. a legacy record shaped `{ name, phone, parent_phone }`); the field is
+ * validated structurally here rather than relying on a caller-side cast.
+ */
+export function resolveGuardianPhone(student: unknown): string {
+  if (student === null || typeof student !== 'object') return '';
+  const phone = (student as { guardian_phone?: unknown }).guardian_phone;
+  return typeof phone === 'string' ? phone.trim() : '';
 }
 
 export type AttendanceErrorKind =
@@ -162,6 +221,61 @@ export function classifyAttendanceError(error: unknown): ClassifiedAttendanceErr
   return { kind, status, serverMessage, message: ERROR_FALLBACKS[kind] };
 }
 
+export interface AttendanceMarkInput {
+  student_id: string;
+  attendance_date: Date;
+  status: 'present' | 'absent';
+}
+
+export interface AttendanceMarkDeps {
+  markAttendance: (input: AttendanceMarkInput) => Promise<unknown>;
+  /** Re-reads the server's authoritative attendance rows (must not reject). */
+  refreshAttendance: () => Promise<void>;
+}
+
+export type AttendanceMarkOutcome =
+  | { kind: 'recorded' }
+  | { kind: 'duplicate'; classified: ClassifiedAttendanceError }
+  | { kind: 'error'; classified: ClassifiedAttendanceError }
+  | { kind: 'ignored' };
+
+/**
+ * Production single-flight attendance submission used by Attendance.tsx.
+ *
+ * The keyed guard is claimed synchronously BEFORE the first await, so two
+ * calls in the same tick for the same student cannot both issue a write; the
+ * loser returns `{ kind: 'ignored' }` and performs no I/O. A server rejection
+ * is classified (duplicate vs auth vs network) and the server rows are
+ * re-read on every failure so the UI reflects what the server actually holds
+ * (fail closed, no false success). The guard is always released.
+ */
+export async function submitAttendanceMark(
+  request: { studentId: string; status: 'present' | 'absent'; date: Date },
+  deps: AttendanceMarkDeps,
+  guard: KeyedSubmissionGuard,
+): Promise<AttendanceMarkOutcome> {
+  if (!guard.tryAcquire(request.studentId)) {
+    return { kind: 'ignored' };
+  }
+  try {
+    await deps.markAttendance({
+      student_id: request.studentId,
+      attendance_date: request.date,
+      status: request.status,
+    });
+    await deps.refreshAttendance();
+    return { kind: 'recorded' };
+  } catch (error) {
+    const classified = classifyAttendanceError(error);
+    await deps.refreshAttendance();
+    return classified.kind === 'duplicate'
+      ? { kind: 'duplicate', classified }
+      : { kind: 'error', classified };
+  } finally {
+    guard.release(request.studentId);
+  }
+}
+
 export interface BarcodeScanStudent {
   id: string;
   name: string;
@@ -189,7 +303,7 @@ export type BarcodeScanOutcome =
 /**
  * Real barcode-scan pipeline with injected production dependencies:
  * validates the barcode, resolves the student, checks for an existing
- * record on the selected date (comparing normalized local date keys, since
+ * record on the selected date (comparing Africa/Cairo business days, since
  * attendance_date arrives as a datetime), and marks attendance.
  * Every failure is classified instead of surfacing a generic error.
  */
@@ -211,10 +325,16 @@ export async function processBarcodeScan(
     }
 
     const records = await deps.loadAttendanceForDate(input.date);
-    const dateKey = formatLocalDate(input.date);
-    const existingRecord = records.find(
-      (r) => r.student_id === student.id && formatLocalDate(r.attendance_date) === dateKey,
-    );
+    // Compare Africa/Cairo business days (supervisor/026): the scan date and
+    // the stored attendance_date datetime are both reduced to the Cairo
+    // calendar day they denote — the same day the server records — instead of
+    // host-local date parts, which disagree with the server near midnight.
+    const dateKey = instantToDayKey(input.date);
+    const existingRecord = dateKey
+      ? records.find(
+          (r) => r.student_id === student.id && instantToDayKey(r.attendance_date) === dateKey,
+        )
+      : undefined;
     if (existingRecord) {
       return { kind: 'duplicate', studentName: student.name };
     }
@@ -282,7 +402,15 @@ export default function BarcodeAttendance() {
   const loadAttendanceByDate = async (date: Date) => {
     const token = attendanceSequence.current.next();
     try {
-      const records = await getAttendanceByDate(date);
+      // Send the Africa/Cairo business day as an explicit calendar-day key
+      // (supervisor/026): the server preserves explicit keys, so the load
+      // matches the day marks are recorded under on every host. The
+      // getAttendanceByDate(Date) helper formats host-local date parts and
+      // lives in the shared api-http module outside this task's
+      // allowedPaths, so this page switches call sites instead.
+      const dayKey = instantToDayKey(date);
+      if (!dayKey) return; // unusable selection: fail closed, no request
+      const records = await getAttendance({ date: dayKey });
       // Ignore a stale response that belongs to a superseded date selection.
       if (!attendanceSequence.current.isCurrent(token)) return;
       const normalized = (records || []).map((record) => ({
@@ -318,7 +446,14 @@ export default function BarcodeAttendance() {
         { barcode, date: selectedDate },
         {
           loadStudents: () => getStudents(),
-          loadAttendanceForDate: (date) => getAttendanceByDate(date),
+          // Africa/Cairo business-day key (supervisor/026), matching the
+          // duplicate comparison inside processBarcodeScan and the day the
+          // server records; the shared getAttendanceByDate(Date) helper
+          // formats host-local date parts and stays outside this task.
+          loadAttendanceForDate: (date) => {
+            const dayKey = instantToDayKey(date);
+            return dayKey ? getAttendance({ date: dayKey }) : Promise.resolve([]);
+          },
           markAttendance: (normalizedBarcode, date) =>
             markAttendance({ barcode: normalizedBarcode, attendance_date: date, status: 'present' }),
         },

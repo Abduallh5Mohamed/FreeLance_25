@@ -1,4 +1,5 @@
-import { Router, Response, RequestHandler } from 'express';
+import { Router, Request, Response, RequestHandler } from 'express';
+import type { PoolConnection } from 'mysql2/promise';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { getPool, query, queryOne, execute } from '../db';
@@ -6,6 +7,15 @@ import { optionalAuth, instructorScopeId, AuthRequest, authenticateToken } from 
 import { requireTeachingWrite } from '../middleware/teaching-access';
 import { normalizeEgyptianPhone, phoneLookupCandidates } from '../security/phone';
 import { isSuperAdmin } from '../security/admin-permissions';
+import {
+    applyOfflineCourseSelection,
+    createTransactionEnrollmentSeam,
+    lockOfflineCourseTarget,
+    runStudentWriteTransaction,
+    StudentWriteRefusal,
+    type CourseAuthorityCaller,
+} from '../lib/offline-student-courses';
+
 
 const STUDENT_COLUMNS = `
     s.id, s.user_id, s.tenant_id, s.name, s.email, s.phone, s.guardian_phone,
@@ -121,7 +131,12 @@ export const createStudentsRouter = (deps: StudentsRouterDeps = defaultStudentsR
                     FROM student_courses sc
                     INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
-                ) AS course_names
+                ) AS course_names,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT sc.course_id ORDER BY sc.course_id SEPARATOR ',')
+                    FROM student_courses sc
+                    WHERE sc.student_id = s.id
+                ) AS course_ids
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -170,7 +185,12 @@ router.get('/:id', deps.authenticate, async (req: AuthRequest, res: Response) =>
                     FROM student_courses sc
                     INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
-                ) AS course_names
+                ) AS course_names,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT sc.course_id ORDER BY sc.course_id SEPARATOR ',')
+                    FROM student_courses sc
+                    WHERE sc.student_id = s.id
+                ) AS course_ids
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -205,7 +225,12 @@ router.get('/email/:email', deps.authenticate, async (req: AuthRequest, res: Res
                     FROM student_courses sc
                     INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
-                ) AS course_names
+                ) AS course_names,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT sc.course_id ORDER BY sc.course_id SEPARATOR ',')
+                    FROM student_courses sc
+                    WHERE sc.student_id = s.id
+                ) AS course_ids
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -240,7 +265,12 @@ router.get('/phone/:phone', deps.authenticate, async (req: AuthRequest, res: Res
                     FROM student_courses sc
                     INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
-                ) AS course_names
+                ) AS course_names,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT sc.course_id ORDER BY sc.course_id SEPARATOR ',')
+                    FROM student_courses sc
+                    WHERE sc.student_id = s.id
+                ) AS course_ids
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -275,7 +305,12 @@ router.get('/barcode/:barcode', deps.authenticate, async (req: AuthRequest, res:
                     FROM student_courses sc
                     INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
-                ) AS course_names
+                ) AS course_names,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT sc.course_id ORDER BY sc.course_id SEPARATOR ',')
+                    FROM student_courses sc
+                    WHERE sc.student_id = s.id
+                ) AS course_ids
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -296,11 +331,29 @@ router.get('/barcode/:barcode', deps.authenticate, async (req: AuthRequest, res:
 // (moved email & phone handlers above to avoid route conflicts)
 
 // Create new student
+/**
+ * Course-selection authority for the offline-student contract
+ * (supervisor/026): the caller's server-derived selected tenant, with the
+ * admin platform role unrestricted — the canonical `courseScope` rule from
+ * routes/courses.ts, never a body-supplied id.
+ */
+const courseAuthorityCaller = async (req: AuthRequest): Promise<CourseAuthorityCaller> => ({
+    tenantId: req.user?.tenantId ?? null,
+    isAdmin: req.user?.role === 'admin' && await deps.hasPlatformCapability(req.user.id),
+});
+
 router.post('/', requireTeachingWrite('students'), async (req: AuthRequest, res: Response) => {
     try {
         const scopeId = instructorScopeId(req);
-        const { name, email, phone, guardian_phone, grade, grade_id, group_id, password, barcode: incomingBarcode, is_offline = false, approval_status = 'approved' } = req.body;
+        const { name, email, phone, guardian_phone, grade, grade_id, group_id, password, barcode: incomingBarcode, is_offline = false, approval_status = 'approved', course_ids } = req.body;
         const offline = is_offline === true || is_offline === 1 || is_offline === 'true';
+
+        // Server-enforced offline-only eligibility (supervisor/029): a course
+        // selection on a creation whose stored student would NOT be offline is
+        // refused here, never silently applied or ignored.
+        if (course_ids !== undefined && !offline) {
+            return res.status(400).json({ error: 'اختيار المقررات متاح لطلاب الأوفلاين فقط' });
+        }
 
         if (!String(name || '').trim()) {
             return res.status(400).json({ error: 'اسم الطالب مطلوب' });
@@ -334,47 +387,66 @@ router.post('/', requireTeachingWrite('students'), async (req: AuthRequest, res:
 
         const connection = await getPool().getConnection();
         try {
-            await connection.beginTransaction();
-            const [tenantRows] = scopeId ? await connection.execute<any[]>(
-                "SELECT id FROM tenants WHERE owner_user_id=? AND status='active' LIMIT 1", [scopeId]
-            ) : [[] as any];
-            const tenantId = tenantRows?.[0]?.id || null;
-            let linkedUserId: string | null = null;
-            let normalizedPhone = phone ? normalizeEgyptianPhone(phone) : null;
-            if (!offline) {
-                if (!normalizedPhone) { await connection.rollback(); return res.status(400).json({ error: 'Invalid Egyptian mobile number' }); }
-                const candidates = phoneLookupCandidates(normalizedPhone);
-                const [existingUsers] = await connection.execute<any[]>(
-                    `SELECT id FROM users WHERE role='student' AND phone IN (${candidates.map(() => '?').join(',')}) LIMIT 1`, candidates
-                );
-                linkedUserId = existingUsers?.[0]?.id || crypto.randomUUID();
-                if (tenantId) {
-                    const [membership] = await connection.execute<any[]>('SELECT id FROM students WHERE tenant_id=? AND user_id=? LIMIT 1', [tenantId, linkedUserId]);
-                    if (membership?.[0]) { await connection.rollback(); return res.status(409).json({ error: 'Student already belongs to this instructor' }); }
-                }
-                if (!existingUsers?.[0]) {
-                    const passwordHash = await bcrypt.hash(String(password), 12);
-                    await connection.execute(
-                        `INSERT INTO users (id,email,password_hash,role,phone,name,student_id,is_active)
-                         VALUES (?,?,?,'student',?,?,?,1)`,
-                        [linkedUserId, email || null, passwordHash, normalizedPhone, String(name).trim(), studentId]
+            await runStudentWriteTransaction(connection, async () => {
+                const [tenantRows] = scopeId ? await connection.execute<any[]>(
+                    "SELECT id FROM tenants WHERE owner_user_id=? AND status='active' LIMIT 1", [scopeId]
+                ) : [[] as any];
+                const tenantId = tenantRows?.[0]?.id || null;
+                let linkedUserId: string | null = null;
+                let normalizedPhone = phone ? normalizeEgyptianPhone(phone) : null;
+                if (!offline) {
+                    if (!normalizedPhone) throw new StudentWriteRefusal(400, 'Invalid Egyptian mobile number');
+                    const candidates = phoneLookupCandidates(normalizedPhone);
+                    const [existingUsers] = await connection.execute<any[]>(
+                        `SELECT id FROM users WHERE role='student' AND phone IN (${candidates.map(() => '?').join(',')}) LIMIT 1`, candidates
                     );
+                    linkedUserId = existingUsers?.[0]?.id || crypto.randomUUID();
+                    if (tenantId) {
+                        const [membership] = await connection.execute<any[]>('SELECT id FROM students WHERE tenant_id=? AND user_id=? LIMIT 1', [tenantId, linkedUserId]);
+                        if (membership?.[0]) throw new StudentWriteRefusal(409, 'Student already belongs to this instructor');
+                    }
+                    if (!existingUsers?.[0]) {
+                        const passwordHash = await bcrypt.hash(String(password), 12);
+                        await connection.execute(
+                            `INSERT INTO users (id,email,password_hash,role,phone,name,student_id,is_active)
+                             VALUES (?,?,?,'student',?,?,?,1)`,
+                            [linkedUserId, email || null, passwordHash, normalizedPhone, String(name).trim(), studentId]
+                        );
+                    }
                 }
-            }
-            await connection.execute(
-                `INSERT INTO students (id,user_id,tenant_id,name,email,phone,guardian_phone,grade,grade_id,group_id,instructor_id,barcode,is_offline,approval_status)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-                [studentId, linkedUserId, tenantId, String(name).trim(), email || null, normalizedPhone || phone || null,
-                    guardian_phone || null, grade || null, grade_id || null, finalGroupId, scopeId, barcodeToStore, offline ? 1 : 0, approval_status]
-            );
-            await connection.commit();
+                await connection.execute(
+                    `INSERT INTO students (id,user_id,tenant_id,name,email,phone,guardian_phone,grade,grade_id,group_id,instructor_id,barcode,is_offline,approval_status)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                    [studentId, linkedUserId, tenantId, String(name).trim(), email || null, normalizedPhone || phone || null,
+                        guardian_phone || null, grade || null, grade_id || null, finalGroupId, scopeId, barcodeToStore, offline ? 1 : 0, approval_status]
+                );
+
+                // Optional course selection (supervisor/026): validated and
+                // applied inside the SAME transaction as the student/user writes,
+                // so a rejected or failed selection can never leave an orphan
+                // student or a partially replaced enrollment. The whole
+                // transaction is owned by runStudentWriteTransaction: a refusal
+                // throws and the runner rolls back before any partial
+                // student/user write can commit (supervisor/035).
+                const courseResult = await applyOfflineCourseSelection(
+                    studentId,
+                    course_ids,
+                    createTransactionEnrollmentSeam(connection),
+                    await courseAuthorityCaller(req),
+                );
+                if (!courseResult.ok) {
+                    throw new StudentWriteRefusal(courseResult.status, courseResult.error);
+                }
+            });
         } catch (transactionError: any) {
-            await connection.rollback();
+            if (transactionError instanceof StudentWriteRefusal) {
+                return res.status(transactionError.status).json({ error: transactionError.error });
+            }
             if (transactionError?.code === 'ER_DUP_ENTRY') {
                 return res.status(409).json({ error: 'رقم الهاتف أو البريد مستخدم بالفعل' });
             }
             throw transactionError;
-        } finally { connection.release(); }
+        }
 
         const newStudent = await queryOne(
             `SELECT
@@ -387,7 +459,12 @@ router.post('/', requireTeachingWrite('students'), async (req: AuthRequest, res:
                     FROM student_courses sc
                     INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
-                ) AS course_names
+                ) AS course_names,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT sc.course_id ORDER BY sc.course_id SEPARATOR ',')
+                    FROM student_courses sc
+                    WHERE sc.student_id = s.id
+                ) AS course_ids
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -459,7 +536,7 @@ router.put('/:id', requireTeachingWrite('students'), async (req: AuthRequest, re
         if (scopeId && !(await isStudentInScope(req.params.id, scopeId))) {
             return res.status(404).json({ error: 'Student not found' });
         }
-        const { name, email, phone, guardian_phone, grade, grade_id, group_id, barcode, password, notes } = req.body;
+        const { name, email, phone, guardian_phone, grade, grade_id, group_id, barcode, password, notes, course_ids } = req.body;
         if (scopeId && group_id !== undefined && group_id !== null && !(await isGroupInScope(group_id, scopeId))) {
             return res.status(403).json({ error: 'لا يمكن نقل الطالب لمجموعة لا تخصك' });
         }
@@ -516,39 +593,110 @@ router.put('/:id', requireTeachingWrite('students'), async (req: AuthRequest, re
             }
         }
 
-        if (fields.length === 0) {
+        // An absent course_ids preserves the existing enrollment untouched; a
+        // present value (including []) participates in the update.
+        const courseSelectionRequested = course_ids !== undefined;
+        if (fields.length === 0 && !courseSelectionRequested) {
             return res.status(400).json({ error: 'No fields provided for update' });
         }
 
-        fields.push('updated_at = CURRENT_TIMESTAMP');
+        if (courseSelectionRequested) {
+            // Transactional path (supervisor/026): the student (and linked
+            // user) update and the enrollment diff commit or roll back
+            // together, so a rejected or failed selection can never leave a
+            // half-applied update or a partially replaced enrollment.
+            const connection = await getPool().getConnection();
+            try {
+                await runStudentWriteTransaction(connection, async () => {
+                    // Lock and re-validate the target INSIDE the transaction
+                    // (supervisor/029): the stored offline predicate — never a
+                    // UI flag — decides eligibility, an instructor's authority
+                    // is re-checked under the lock, and FOR UPDATE serializes a
+                    // concurrent replacement on the same student.
+                    const lockResult = await lockOfflineCourseTarget(connection, req.params.id, scopeId);
+                    if (!lockResult.ok) {
+                        throw new StudentWriteRefusal(lockResult.status, lockResult.error);
+                    }
 
-        const result = await execute(
-            `UPDATE students SET ${fields.join(', ')} WHERE id = ?`,
-            [...params, req.params.id]
-        );
+                    if (fields.length > 0) {
+                        fields.push('updated_at = CURRENT_TIMESTAMP');
+                        const [result] = (await connection.execute(
+                            `UPDATE students SET ${fields.join(', ')} WHERE id = ?`,
+                            [...params, req.params.id]
+                        )) as [{ affectedRows: number }, unknown];
+                        if (result.affectedRows === 0) {
+                            throw new StudentWriteRefusal(404, 'Student not found');
+                        }
+                    }
 
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ error: 'Student not found' });
-        }
+                    // Also update users table if email exists (same rule as the
+                    // non-transactional path below).
+                    if (email) {
+                        const updateFields = ['name = ?', 'phone = ?'];
+                        const updateValues = [name, phone || null];
 
-        // Also update users table if email exists
-        if (email) {
-            const updateFields = ['name = ?', 'phone = ?'];
-            const updateValues = [name, phone || null];
+                        if (password) {
+                            // Hash the password before updating
+                            const passwordHash = await bcrypt.hash(password, 10);
+                            updateFields.push('password_hash = ?');
+                            updateValues.push(passwordHash);
+                        }
 
-            if (password) {
-                // Hash the password before updating
-                const passwordHash = await bcrypt.hash(password, 10);
-                updateFields.push('password_hash = ?');
-                updateValues.push(passwordHash);
+                        updateValues.push(email);
+
+                        await connection.execute(
+                            `UPDATE users SET ${updateFields.join(', ')} WHERE email = ? AND role = 'student'`,
+                            updateValues
+                        );
+                    }
+
+                    const courseResult = await applyOfflineCourseSelection(
+                        req.params.id,
+                        course_ids,
+                        createTransactionEnrollmentSeam(connection),
+                        await courseAuthorityCaller(req),
+                    );
+                    if (!courseResult.ok) {
+                        throw new StudentWriteRefusal(courseResult.status, courseResult.error);
+                    }
+                });
+            } catch (transactionError) {
+                if (transactionError instanceof StudentWriteRefusal) {
+                    return res.status(transactionError.status).json({ error: transactionError.error });
+                }
+                throw transactionError;
+            }
+        } else {
+            fields.push('updated_at = CURRENT_TIMESTAMP');
+
+            const result = await execute(
+                `UPDATE students SET ${fields.join(', ')} WHERE id = ?`,
+                [...params, req.params.id]
+            );
+
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ error: 'Student not found' });
             }
 
-            updateValues.push(email);
+            // Also update users table if email exists
+            if (email) {
+                const updateFields = ['name = ?', 'phone = ?'];
+                const updateValues = [name, phone || null];
 
-            await execute(
-                `UPDATE users SET ${updateFields.join(', ')} WHERE email = ? AND role = 'student'`,
-                updateValues
-            );
+                if (password) {
+                    // Hash the password before updating
+                    const passwordHash = await bcrypt.hash(password, 10);
+                    updateFields.push('password_hash = ?');
+                    updateValues.push(passwordHash);
+                }
+
+                updateValues.push(email);
+
+                await execute(
+                    `UPDATE users SET ${updateFields.join(', ')} WHERE email = ? AND role = 'student'`,
+                    updateValues
+                );
+            }
         }
 
         const updatedStudent = await queryOne(
@@ -562,7 +710,12 @@ router.put('/:id', requireTeachingWrite('students'), async (req: AuthRequest, re
                     FROM student_courses sc
                     INNER JOIN courses c ON sc.course_id = c.id
                     WHERE sc.student_id = s.id
-                ) AS course_names
+                ) AS course_names,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT sc.course_id ORDER BY sc.course_id SEPARATOR ',')
+                    FROM student_courses sc
+                    WHERE sc.student_id = s.id
+                ) AS course_ids
              FROM students s
              LEFT JOIN grades g ON s.grade_id = g.id
              LEFT JOIN \`groups\` grp ON s.group_id = grp.id
@@ -606,6 +759,208 @@ router.delete('/:id', requireTeachingWrite('students'), async (req: AuthRequest,
         res.status(500).json({ error: 'Failed to delete student' });
     }
 });
+
+// ---------------------------------------------------------------------------
+// M2-18 — private student branch assignment (owner-only, additive)
+//
+// One owner-only route beside the existing student management handlers:
+// PATCH /api/students/:id/branch with the strict single-field body
+// `{ branch_id }`. `branch_id` is either a branch UUID or `null`; `null`
+// CLEARS the assignment. Nothing else is accepted.
+//
+// This is organization/planning metadata only. Assigning or clearing a branch
+// never changes a login, an account, an invitation, an enrollment, a
+// group/course membership, an academic-period binding, an access rule, pricing
+// or billing: the route writes exactly one nullable column on the student row
+// plus one sanitized audit event, inside one transaction, on one connection.
+//
+// Authority is deliberately NOT the instructor scope used by the handlers
+// above (`instructorScopeId` / `isStudentInScope`): branch assignment belongs
+// to the verified OWNER of the server-selected tenant, re-resolved from
+// server-side rows on the same connection that performs the write — the same
+// owner rule the accepted M2-B03 branch routes use
+// (routes/tenant-self.ts). A membership role label never grants it.
+//
+// `/api/students` is NOT one of the billing-only exempt prefixes
+// (middleware/auth.ts isInstructorBillingPath), so a billed-out instructor is
+// already refused by the shared authentication middleware before this handler
+// runs; no local billing guard is needed or added here.
+// ---------------------------------------------------------------------------
+
+/** A server-generated UUID. A client-supplied id is only a SELECTOR. */
+const BRANCH_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const STUDENT_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
+ * Explicit bounded projection. The student row is never spread into the
+ * response: exactly three fields, no name, phone, email, barcode, grade, group
+ * or any other stored value. `branch_name` is the name read under the same
+ * lock inside the same transaction, and it is `null` exactly when there is no
+ * branch.
+ */
+const studentBranchDto = (studentId: string, branchId: string | null, branchName: string | null) => ({
+  student_id: studentId,
+  branch_id: branchId,
+  branch_name: branchName,
+});
+
+router.patch('/:id/branch', deps.authenticate, async (req: AuthRequest, res: Response) => {
+  // The cache directive is applied before the first await and before any
+  // denial, so every outcome this handler produces carries it.
+  res.set('Cache-Control', 'no-store');
+
+  const studentId = String(req.params?.id ?? '');
+  if (!STUDENT_ID_PATTERN.test(studentId)) {
+    return res.status(400).json({ error: 'Invalid student id' });
+  }
+
+  // Strict single-field body: exactly `{ branch_id }`, where the value is a
+  // branch UUID or null. A tenant selector, a status, a name or any extra key
+  // is refused before a connection is taken.
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return res.status(400).json({ error: 'Invalid student branch payload' });
+  }
+  const keys = Object.keys(body);
+  if (keys.length !== 1 || keys[0] !== 'branch_id') {
+    return res.status(400).json({ error: 'Invalid student branch payload' });
+  }
+  const rawBranchId = (body as Record<string, unknown>).branch_id;
+  let branchId: string | null = null;
+  if (rawBranchId !== null) {
+    if (typeof rawBranchId !== 'string' || !BRANCH_ID_PATTERN.test(rawBranchId)) {
+      return res.status(400).json({ error: 'Invalid student branch payload' });
+    }
+    branchId = rawBranchId;
+  }
+
+  const userId = req.user?.id;
+  const tenantId = req.user?.tenantId;
+  if (!userId || !tenantId) return res.status(404).json({ error: 'Tenant membership not found' });
+
+  let connection: PoolConnection | null = null;
+  let transactionStarted = false;
+  let commitAttempted = false;
+  let disposal: 'release' | 'destroy' = 'release';
+
+  const rollbackOrDiscard = async (): Promise<void> => {
+    try {
+      await connection!.rollback();
+    } catch (rollbackError) {
+      disposal = 'destroy';
+      console.error('Rollback student branch assignment error (connection will be discarded):', rollbackError);
+    }
+  };
+
+  try {
+    connection = await getPool().getConnection();
+    await connection.beginTransaction();
+    transactionStarted = true;
+
+    // Owner revalidation INSIDE the transaction, on the same connection that
+    // performs the write: the tenant's real `owner_user_id`, its status and
+    // the caller's own active user row, locked so the write cannot race an
+    // ownership change.
+    const [ownerRows] = await connection.execute<any[]>(
+      `SELECT t.owner_user_id,t.status AS tenant_status,u.is_active AS caller_active
+       FROM tenants t JOIN users u ON u.id=? WHERE t.id=? FOR UPDATE`,
+      [userId, tenantId]
+    );
+    const owner = (ownerRows as any[])[0];
+    if (!owner || String(owner.owner_user_id) !== userId || owner.tenant_status !== 'active' || Number(owner.caller_active) !== 1) {
+      await rollbackOrDiscard();
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    // The target student is qualified by BOTH the id and the selected tenant
+    // and locked, so a foreign tenant's student and an absent id produce the
+    // identical not-found result and no cross-tenant existence is disclosed.
+    const [studentRows] = await connection.execute<any[]>(
+      `SELECT s.id,s.branch_id FROM students s WHERE s.id=? AND s.tenant_id=? FOR UPDATE`,
+      [studentId, tenantId]
+    );
+    const student = (studentRows as any[])[0];
+    if (!student) {
+      await rollbackOrDiscard();
+      return res.status(404).json({ error: 'Student not found' });
+    }
+    const currentBranchId =
+      student.branch_id === null || student.branch_id === undefined ? null : String(student.branch_id);
+
+    // An assign target must exist, belong to the SAME tenant and be active;
+    // an archived or foreign branch is refused exactly like a missing one.
+    let branchName: string | null = null;
+    if (branchId !== null) {
+      const [branchRows] = await connection.execute<any[]>(
+        `SELECT b.id,b.name,b.status FROM tenant_branches b WHERE b.id=? AND b.tenant_id=? FOR UPDATE`,
+        [branchId, tenantId]
+      );
+      const branch = (branchRows as any[])[0];
+      if (!branch || String(branch.status) !== 'active') {
+        await rollbackOrDiscard();
+        return res.status(404).json({ error: 'Branch not found' });
+      }
+      branchName = String(branch.name);
+    }
+
+    if (branchId === currentBranchId) {
+      // Truthful no-op: an identical retry writes nothing and audits nothing.
+      await rollbackOrDiscard();
+      return res.json({ student: studentBranchDto(studentId, currentBranchId, branchName) });
+    }
+
+    const [updateResult] = await connection.execute<any[]>(
+      'UPDATE students SET branch_id=? WHERE id=? AND tenant_id=?',
+      [branchId, studentId, tenantId]
+    );
+    if (Number((updateResult as any)?.affectedRows) !== 1) {
+      await rollbackOrDiscard();
+      return res.status(409).json({ error: 'Student was modified concurrently' });
+    }
+
+    // One sanitized audit event, inside the same transaction as the write: the
+    // action names the operation, the resource is the student id, and the
+    // old/new values carry ONLY the branch id — never a student value, never a
+    // branch name, never an existing-record identity.
+    await connection.execute(
+      `INSERT INTO audit_events (id,actor_user_id,tenant_id,action,resource_type,resource_id,old_value,new_value)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [crypto.randomUUID(), userId, tenantId,
+        branchId === null ? 'student.branch_cleared' : 'student.branch_assigned',
+        'student', studentId,
+        JSON.stringify({ branch_id: currentBranchId }),
+        JSON.stringify({ branch_id: branchId })]
+    );
+
+    commitAttempted = true;
+    await connection.commit();
+    return res.json({ student: studentBranchDto(studentId, branchId, branchName) });
+  } catch (error) {
+    if (commitAttempted) {
+      // The commit acknowledgement was lost: whether the write persisted is
+      // UNKNOWN. Do not claim a rollback happened, do not retry silently, and
+      // never return this connection to the pool.
+      disposal = 'destroy';
+      console.error('Assign student branch error after commit attempt (persistence uncertain):', error);
+    } else if (transactionStarted) {
+      console.error('Assign student branch error:', error);
+      await rollbackOrDiscard();
+    } else {
+      disposal = 'destroy';
+      console.error('Assign student branch error before transaction start:', error);
+    }
+    return res.status(500).json({ error: 'Failed to update student branch' });
+  } finally {
+    if (connection) {
+      if (disposal === 'destroy') {
+        try { connection.destroy(); } catch { /* connection already gone */ }
+      } else {
+        try { connection.release(); } catch { /* connection already released */ }
+      }
+    }
+  }
+});
+
 
     return router;
 };

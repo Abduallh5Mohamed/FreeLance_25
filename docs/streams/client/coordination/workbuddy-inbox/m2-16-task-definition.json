@@ -1,0 +1,34 @@
+{
+  "id": "client-m2-16-audited-idempotent-student-import-20261021-01",
+  "workspace": "D:/FreeLance_25-1/FreeLance_25-1",
+  "approvalVersion": 2,
+  "allowedPaths": [
+    "server/migrations/20261021_04_student_import_batches.sql",
+    "server/src/routes/student-import-resolution.ts",
+    "server/src/routes/tenant-self.ts",
+    "server/tests/helpers/m2-student-import-resolution-harness.ts",
+    "server/tests/m2-student-import-commit.test.ts",
+    "server/tests/m2-student-import-commit-failures.test.ts",
+    "src/features/students/StudentImportPreview.tsx",
+    "src/features/students/import-commit.ts",
+    "src/lib/api-http.ts",
+    "src/tests/m2-student-import-commit.test.ts",
+    "docs/streams/server/M2-B09-CONTRACT.md",
+    "docs/streams/client/M2-16-CONTRACTS.md",
+    "docs/streams/client/M2-16-PROPOSAL.md"
+  ],
+  "implementationWorker": "workbuddy",
+  "taskKind": "implementation",
+  "instructions": "Read docs/streams/client/M2-16-HANDOFF.md completely and implement its bounded audited idempotent student-row import. Preserve accepted M2-08/11/14/15 and all dirty owned work. Migration FILE only. No accounts, login, OTP, enrollment, assignment, payment, access, live services, Git, deploy or policy expansion.",
+  "acceptance": [
+    "Exact thirteen-path scope and contracts are complete.",
+    "Production server route is owner/tenant private, bounded, atomic, idempotent and audited with hard existing-match refusal.",
+    "Production client requires an explicit current all-clear confirmation and fences every stale/private lifecycle.",
+    "Hermetic production-path server/client regressions and scoped types pass with honest outside diagnostics.",
+    "Worker stops all activity before MCP report and concise unique worker reply; no self-acceptance or next task."
+  ],
+  "approval": {
+    "by": "human",
+    "scopeHash": "0e9c7b1adab19f7011de16762c16b79a36db345520826bacf06c41bc1a59d83f"
+  }
+}

@@ -1,3 +1,4 @@
+import { subscribeSessionChange } from '@/lib/session-events';
 import { useEffect, useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { Loader2 } from "lucide-react";
@@ -19,10 +20,12 @@ export const AuthGuard = ({ children }: AuthGuardProps) => {
     const storage = (event: StorageEvent) => {
       if (event.key === 'authToken' || event.key === null) refresh();
     };
+    const unsubscribe = subscribeSessionChange(event => { if (event.kind === 'identity' || event.kind === 'scope') refresh(); });
     window.addEventListener('focus', refresh);
     window.addEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
     window.addEventListener('storage', storage);
     return () => {
+      unsubscribe();
       window.removeEventListener('focus', refresh);
       window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
       window.removeEventListener('storage', storage);

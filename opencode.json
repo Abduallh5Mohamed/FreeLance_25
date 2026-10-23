@@ -1,0 +1,37 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [
+    "docs/streams/client/OPENCODE-WORKER.md"
+  ],
+  "permission": {
+    "external_directory": {
+      "C:/Users/BaraaWael/TabwebClientSupervisor/*": "allow"
+    },
+    "read": {
+      "C:/Users/BaraaWael/TabwebClientSupervisor/*": "deny",
+      "C:/Users/BaraaWael/TabwebClientSupervisor/136-m2-06-review-probes.test.ts": "allow",
+      "C:/Users/BaraaWael/TabwebClientSupervisor/140-m2-06-silent-principal-probes.test.ts": "allow",
+      "C:/Users/BaraaWael/TabwebClientSupervisor/161-m2-07-independent-probes.test.ts": "allow",
+      "C:/Users/BaraaWael/TabwebClientSupervisor/167-m2-08-independent-probes.test.ts": "allow",
+      "C:/Users/BaraaWael/TabwebClientSupervisor/173-m2-b04-utc-probes.test.ts": "allow",
+      "C:/Users/BaraaWael/TabwebClientSupervisor/179-m2-09-independent-probes.test.ts": "allow",
+      "C:/Users/BaraaWael/TabwebClientSupervisor/182-m2-b05-uuid-probes.test.ts": "allow",
+      "C:/Users/BaraaWael/TabwebClientSupervisor/188-m2-10-independent-probes.test.ts": "allow",
+      "C:/Users/BaraaWael/TabwebClientSupervisor/194-m2-11-independent-probes.test.ts": "allow",
+      "C:/Users/BaraaWael/TabwebClientSupervisor/202-m2-12-independent-probes.test.ts": "allow"
+    },
+    "edit": {
+      "C:/Users/BaraaWael/TabwebClientSupervisor/*": "deny"
+    }
+  },
+  "mcp": {
+    "tabweb_supervisor": {
+      "type": "local",
+      "command": [
+        "C:/Program Files/nodejs/node.exe",
+        "C:/Users/BaraaWael/TabwebClientBridge/server.cjs"
+      ],
+      "enabled": true
+    }
+  }
+}

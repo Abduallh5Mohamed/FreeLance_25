@@ -9,7 +9,8 @@ import { Calendar, Check, X, Users, Search } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
 import { getStudents, getCourses, getAttendance, markAttendance } from "@/lib/api";
-import { classifyAttendanceError, createResponseSequence, formatLocalDate } from "@/pages/QRAttendance";
+import { classifyAttendanceError, createKeyedSubmissionGuard, createResponseSequence, submitAttendanceMark } from "@/pages/QRAttendance";
+import { todayDayKey, instantToDayKey } from "@/lib/attendance-calendar";
 
 type AttendanceLoadErrors = {
   students?: string;
@@ -18,7 +19,10 @@ type AttendanceLoadErrors = {
 };
 
 const Attendance = () => {
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  // Default to the current Africa/Cairo attendance business day
+  // (supervisor/026): every operator sees the same "today" the server uses,
+  // regardless of host timezone.
+  const [selectedDate, setSelectedDate] = useState(todayDayKey());
   const [selectedCourse, setSelectedCourse] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [students, setStudents] = useState([]);
@@ -27,6 +31,9 @@ const Attendance = () => {
   const [loadErrors, setLoadErrors] = useState<AttendanceLoadErrors>({});
   const [pendingStudentIds, setPendingStudentIds] = useState<string[]>([]);
   const attendanceSequence = useRef(createResponseSequence());
+  // Synchronous per-student single-flight guard: closes the pre-render window
+  // that the pendingStudentIds React state leaves open for two same-tick calls.
+  const submissionGuard = useRef(createKeyedSubmissionGuard());
   const { toast } = useToast();
 
   useEffect(() => {
@@ -74,33 +81,44 @@ const Attendance = () => {
   };
 
   const handleMarkAttendance = async (studentId: string, status: 'present' | 'absent') => {
-    // Duplicate submission suppression: ignore repeated clicks while a mark
-    // for this student is in flight.
-    if (pendingStudentIds.includes(studentId)) return;
-    setPendingStudentIds((prev) => [...prev, studentId]);
-    try {
-      await markAttendance({
-        student_id: studentId,
-        attendance_date: new Date(selectedDate),
-        status
-      });
+    // Mark the UI as pending, then claim the per-student slot synchronously
+    // (before any await) inside submitAttendanceMark so two calls in the same
+    // tick cannot both issue a write. The loser performs no I/O.
+    setPendingStudentIds((prev) => (prev.includes(studentId) ? prev : [...prev, studentId]));
+    const outcome = await submitAttendanceMark(
+      // The selected value is a validated YYYY-MM-DD key; parsed as UTC
+      // midnight it denotes the SAME Africa/Cairo calendar day (Cairo is
+      // always UTC+2/+3, ahead of UTC), so the server's instant->Cairo-day
+      // conversion records exactly the selected day on every host.
+      { studentId, status, date: new Date(selectedDate) },
+      { markAttendance, refreshAttendance: () => fetchAttendance() },
+      submissionGuard.current,
+    );
 
-      await fetchAttendance();
-      toast({
-        title: `تم تسجيل ${status === 'present' ? 'الحضور' : 'الغياب'}`,
-        description: `تم تسجيل ${status === 'present' ? 'الحضور' : 'الغياب'} للطالب`,
-      });
-    } catch (error) {
-      const classified = classifyAttendanceError(error);
-      toast({
-        title: classified.kind === 'duplicate' ? 'تنبيه' : 'خطأ',
-        description: classified.kind === 'duplicate'
-          ? 'تم تسجيل الحضور مسبقاً لهذا التاريخ'
-          : classified.message,
-        variant: classified.kind === 'duplicate' ? 'default' : 'destructive',
-      });
-      // Reflect whatever the server actually holds (fail closed, no false success).
-      await fetchAttendance();
+    // A same-tick duplicate lost the race; the winner owns the pending flag.
+    if (outcome.kind === 'ignored') return;
+
+    try {
+      if (outcome.kind === 'recorded') {
+        toast({
+          title: `تم تسجيل ${status === 'present' ? 'الحضور' : 'الغياب'}`,
+          description: `تم تسجيل ${status === 'present' ? 'الحضور' : 'الغياب'} للطالب`,
+        });
+      } else if (outcome.kind === 'duplicate') {
+        toast({
+          title: 'تنبيه',
+          description: 'تم تسجيل الحضور مسبقاً لهذا التاريخ',
+          variant: 'default',
+        });
+      } else {
+        // Server/network/auth failure: submitAttendanceMark already re-read the
+        // server's authoritative rows, so no false success is shown.
+        toast({
+          title: 'خطأ',
+          description: outcome.classified.message,
+          variant: 'destructive',
+        });
+      }
     } finally {
       setPendingStudentIds((prev) => prev.filter((id) => id !== studentId));
     }
@@ -109,8 +127,9 @@ const Attendance = () => {
   const getStudentAttendance = (studentId: string) => {
     return attendance.find(a =>
       a.student_id === studentId &&
-      // attendance_date arrives as a datetime; compare normalized local date keys.
-      formatLocalDate(a.attendance_date) === selectedDate
+      // attendance_date arrives as a datetime; compare the Africa/Cairo
+      // business day it denotes against the selected calendar-day key.
+      instantToDayKey(a.attendance_date) === selectedDate
     );
   };
 

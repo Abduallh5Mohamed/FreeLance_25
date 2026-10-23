@@ -79,6 +79,11 @@ import { UploadNotification } from "./components/UploadNotification";
 import JoinInstructor from "./pages/JoinInstructor";
 import StudentSpaces from "./pages/StudentSpaces";
 import StudentPasswordReset from "./pages/StudentPasswordReset";
+// M2-22 — the anonymous published-course discovery page. It is mounted WITHOUT
+// AuthGuard on purpose: discovery is public and read only, and it consults no
+// principal. It never enrolls, grants access, delivers a lesson or a file, or
+// takes payment.
+import PublicCourseDiscovery from "./pages/PublicCourseDiscovery";
 
 const queryClient = new QueryClient();
 
@@ -128,6 +133,8 @@ const App = () => {
               <Route path="/forbidden" element={<Forbidden />} />
               <Route path="/invite" element={<TenantInvitation />} />
               <Route path="/support" element={<AuthGuard><Support /></AuthGuard>} />
+              {/* Public: no AuthGuard, no session, no principal. */}
+              <Route path="/discover" element={<PublicCourseDiscovery />} />
 
               {/* Teacher Routes - Protected */}
               <Route path="/teacher" element={<AuthGuard requiredRole="teacher"><TeacherDashboard /></AuthGuard>} />

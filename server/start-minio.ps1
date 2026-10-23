@@ -12,7 +12,7 @@ $minioProcess = Get-Process -Name "minio" -ErrorAction SilentlyContinue
 if ($minioProcess) {
     Write-Host "⚠️  MinIO is already running (PID: $($minioProcess.Id))" -ForegroundColor Yellow
     Write-Host "✅ MinIO ready at http://127.0.0.1:9000" -ForegroundColor Green
-    exit 0
+    return
 }
 
 # Check if MinIO executable exists

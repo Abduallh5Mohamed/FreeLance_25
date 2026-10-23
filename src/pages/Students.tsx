@@ -73,6 +73,9 @@ export interface StudentMutationMessages {
  * click while a request for the same target is in flight reuses it instead of
  * issuing a duplicate request), the list is refreshed only after the server
  * confirms success, and failures are surfaced without mutating local state.
+ * A failure of the post-success refresh does NOT invert the outcome: the
+ * server already accepted the mutation, so the success is still reported
+ * (the refresh failure is logged and left to the page's own fetch handling).
  */
 export const createStudentMutationController = (deps: StudentMutationDeps) => {
   const inFlight = new Map<string, Promise<StudentMutationOutcome>>();
@@ -99,7 +102,15 @@ export const createStudentMutationController = (deps: StudentMutationDeps) => {
           deps.notify("error", messages.failureTitle, messages.failureDescription);
           return { ok: false };
         }
-        await deps.refresh();
+        try {
+          await deps.refresh();
+        } catch (refreshError) {
+          // The mutation was accepted by the server; a refresh failure must
+          // not be reported as a failed mutation (it would keep the dialog
+          // open and invite a duplicate retry). The page's own fetch error
+          // handling surfaces the load problem.
+          console.error('Error refreshing after mutation:', refreshError);
+        }
         deps.notify("success", messages.successTitle, messages.successDescription);
         return { ok: true };
       } catch (error: unknown) {
@@ -134,6 +145,113 @@ const EMPTY_FORM = {
 
 type ConfirmableDelete = { kind: "student" | "user"; id: string } | null;
 
+/**
+ * Monotonic generation fence for a page load. A response may only commit while
+ * it is still the newest one for its resource; `invalidate()` retires every
+ * outstanding load (scope clear / unmount) without starting a replacement.
+ */
+export interface LoadSequence {
+  begin(): number;
+  isCurrent(token: number): boolean;
+  invalidate(): void;
+}
+
+export const createLoadSequence = (): LoadSequence => {
+  let latest = 0;
+  return {
+    begin(): number {
+      latest += 1;
+      return latest;
+    },
+    isCurrent(token: number): boolean {
+      return token === latest;
+    },
+    invalidate(): void {
+      latest += 1;
+    },
+  };
+};
+
+interface SelectorResult<T> {
+  ok: boolean;
+  value: T | null;
+}
+
+async function settleSelector<T>(load: () => Promise<T>): Promise<SelectorResult<T>> {
+  try {
+    return { ok: true, value: (await load()) ?? null };
+  } catch (error) {
+    console.error('Error loading selector list:', error);
+    return { ok: false, value: null };
+  }
+}
+
+export interface StudentPageLoadPatch {
+  students?: StudentListItem[];
+  grades?: unknown[];
+  groups?: unknown[];
+  /** Independent error channels: the student list vs the required selectors. */
+  errors: { students?: string | null; selectors?: string | null };
+}
+
+export interface StudentPageLoaderDeps {
+  getStudents: () => Promise<StudentListItem[]>;
+  getGrades: () => Promise<unknown[]>;
+  getGroups: () => Promise<unknown[]>;
+  /** Page filter: which rows belong on this page (online vs offline). */
+  includes: (student: StudentListItem) => boolean;
+  apply: (patch: StudentPageLoadPatch) => void;
+}
+
+/**
+ * Production load lifecycle of the student list page.
+ *
+ * The student list and the selector lists (grades/groups) are fenced
+ * SEPARATELY: a superseded load of either kind can never commit (so an older
+ * response cannot restore pre-mutation rows after a successful refresh), and a
+ * student refresh clears only the student-list error — a failed selector load
+ * keeps its own error channel instead of being erased by an unrelated refresh.
+ */
+export const createStudentPageLoader = (deps: StudentPageLoaderDeps) => {
+  const studentsSequence = createLoadSequence();
+  const selectorsSequence = createLoadSequence();
+
+  return {
+    async loadStudents() {
+      const token = studentsSequence.begin();
+      try {
+        const data = await deps.getStudents();
+        if (!studentsSequence.isCurrent(token)) return; // superseded: never commit
+        deps.apply({
+          students: (data || []).filter(deps.includes),
+          errors: { students: null },
+        });
+      } catch (error) {
+        if (!studentsSequence.isCurrent(token)) return;
+        console.error('Error fetching students:', error);
+        deps.apply({ errors: { students: 'تعذر تحميل قائمة الطلاب' } });
+      }
+    },
+    async loadSelectors() {
+      const token = selectorsSequence.begin();
+      const [grades, groups] = await Promise.all([
+        settleSelector(deps.getGrades),
+        settleSelector(deps.getGroups),
+      ]);
+      if (!selectorsSequence.isCurrent(token)) return;
+      deps.apply({
+        grades: grades.ok ? grades.value || [] : undefined,
+        groups: groups.ok ? groups.value || [] : undefined,
+        errors: { selectors: grades.ok && groups.ok ? null : 'تعذر تحميل الصفوف أو المجموعات' },
+      });
+    },
+    invalidate() {
+      studentsSequence.invalidate();
+      selectorsSequence.invalidate();
+    },
+  };
+};
+
 const Students = () => {
   const currentRole = (() => { try { return JSON.parse(localStorage.getItem('currentUser') || '{}').role as string | undefined; } catch { return undefined; } })();
   const [students, setStudents] = useState<StudentListItem[]>([]);
@@ -144,54 +262,41 @@ const Students = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [formData, setFormData] = useState(EMPTY_FORM);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [selectorError, setSelectorError] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ConfirmableDelete>(null);
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
 
+  const applyStudentPatch = (patch: StudentPageLoadPatch) => {
+    if (patch.students !== undefined) setStudents(patch.students);
+    if (patch.groups !== undefined) setGroups(patch.groups as never[]);
+    if (patch.grades !== undefined) setGrades(patch.grades as never[]);
+    if (patch.errors.students !== undefined) setLoadError(patch.errors.students);
+    if (patch.errors.selectors !== undefined) setSelectorError(patch.errors.selectors);
+  };
+
+  const pageLoader = useMemo(() => createStudentPageLoader({
+    getStudents,
+    getGrades,
+    getGroups,
+    includes: (student) => !isOfflineStudent(student.is_offline),
+    apply: applyStudentPatch,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), []);
+
   useEffect(() => {
-    fetchStudents();
-    fetchGroups();
-    fetchGrades();
-  }, []);
-
-  const fetchGrades = async () => {
-    try {
-      const data = await getGrades();
-      setGrades(data || []);
-    } catch (error) {
-      console.error('Error fetching grades:', error);
-      setLoadError('تعذر تحميل الصفوف الدراسية');
-    }
-  };
-
-  const fetchStudents = async () => {
-    setLoadError(null);
-    try {
-      const data = await getStudents();
-      // Filter for online students only (is_offline = false or 0)
-      const onlineStudents = (data || []).filter(student => !isOfflineStudent(student.is_offline));
-      setStudents(onlineStudents);
-    } catch (error) {
-      console.error('Error fetching students:', error);
-      setLoadError('تعذر تحميل قائمة الطلاب');
-    }
-  };
-
-  const fetchGroups = async () => {
-    try {
-      const data = await getGroups();
-      setGroups(data || []);
-    } catch (error) {
-      console.error('Error fetching groups:', error);
-      setLoadError('تعذر تحميل المجموعات');
-    }
-  };
+    pageLoader.loadStudents();
+    pageLoader.loadSelectors();
+    // Scope clear / unmount: retire in-flight loads so a late response cannot
+    // commit over the current state.
+    return () => pageLoader.invalidate();
+  }, [pageLoader]);
 
   const mutations = useMemo(() => createStudentMutationController({
     updateStudent,
     deleteStudent,
     deleteUserByStudentId,
-    refresh: fetchStudents,
+    refresh: () => pageLoader.loadStudents(),
     notify: (kind, title, description) => toast({
       title,
       description,
@@ -446,7 +551,12 @@ const Students = () => {
                 {loadError}
               </div>
             )}
-            {filteredStudents.length === 0 ? (
+            {selectorError && (
+              <div role="alert" className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-400">
+                {selectorError}
+              </div>
+            )}
+            {loadError ? null : filteredStudents.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground">
                 <Users className="w-16 h-16 mx-auto mb-4 opacity-20" />
                 <p className="text-lg font-medium">لا يوجد طلاب أونلاين حالياً</p>

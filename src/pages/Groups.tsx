@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,30 +9,19 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
-import { getGroups, getGrades, createGroup, updateGroup, deleteGroup, getStudents, type Group as APIGroup, type Grade as APIGrade } from '@/lib/api';
+import { getGrades, getStudents, type Grade } from '@/lib/api';
+import {
+  GROUP_SCHEDULE_DAYS,
+  GROUP_SCHEDULE_DAY_LABELS,
+  createProductionGroupScheduleController,
+} from '@/features/groups/group-schedules';
+import {
+  ANNOUNCEMENT_BODY_MAX,
+  ANNOUNCEMENT_TITLE_MAX,
+  createProductionGroupAnnouncementController,
+} from '@/features/groups/group-announcements';
 import { useToast } from '@/hooks/use-toast';
-import { Plus, Edit, Trash2, Users, Search, Phone, Mail, Eye } from 'lucide-react';
-
-interface Group {
-  id: string;
-  name: string;
-  description?: string;
-  max_students?: number;
-  current_students?: number;
-  is_active: boolean;
-  course_id?: string;
-  grade_id?: string;
-  grade_name?: string;
-  schedule_days?: string[] | string | null;
-  schedule_time?: string | null;
-}
-
-interface Grade {
-  id: string;
-  name: string;
-  display_order: number;
-  is_active: boolean;
-}
+import { Plus, Edit, Trash2, Users, Search, Phone, Mail, Eye, Megaphone } from 'lucide-react';
 
 interface Student {
   id: string;
@@ -50,83 +39,99 @@ interface Student {
 }
 
 const Groups = () => {
-  const [groups, setGroups] = useState<Group[]>([]);
+  /**
+   * M2-19: the whole group/schedule lifecycle runs through the injected
+   * production seam in `src/features/groups/group-schedules.ts` — one bounded
+   * list read, strict canonical weekday/time form, duplicate-submit blocking,
+   * retained retryable drafts, denied/not-found cleanup and the session, scope,
+   * form, target and dispose fences. The page only renders.
+   */
+  const controller = useMemo(() => createProductionGroupScheduleController(), []);
+  const state = useSyncExternalStore(controller.subscribe, controller.getState);
+
+  /**
+   * M2-21: the private group-announcement panel runs through its own injected
+   * production seam in `src/features/groups/group-announcements.ts` — one
+   * bounded page per owned group, a bounded "next page" only when the server
+   * minted a cursor, strict canonical create/edit/publish/retract, duplicate
+   * blocking, retained drafts and the session, principal, selection, list,
+   * form, target and dispose fences. The page only renders.
+   */
+  const announcementController = useMemo(
+    () => createProductionGroupAnnouncementController(),
+    [],
+  );
+  const announcementState = useSyncExternalStore(
+    announcementController.subscribe,
+    announcementController.getState,
+  );
+
   const [students, setStudents] = useState<Student[]>([]);
   const [grades, setGrades] = useState<Grade[]>([]);
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [isStudentsDialogOpen, setIsStudentsDialogOpen] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
-  const [currentGroup, setCurrentGroup] = useState<Group | null>(null);
-  const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [booted, setBooted] = useState(false);
   const { toast } = useToast();
 
-  const [formData, setFormData] = useState({
-    name: '',
-    description: '',
-    grade_id: '',
-    max_students: 50,
-    schedule_days: [] as string[],
-    schedule_time: '' as string
-  });
+  useEffect(() => {
+    let alive = true;
+    controller.load().finally(() => { if (alive) setBooted(true); });
+    return () => { alive = false; };
+  }, [controller]);
+
+  useEffect(() => () => controller.dispose(), [controller]);
+
+  useEffect(() => () => announcementController.dispose(), [announcementController]);
 
   useEffect(() => {
-    fetchGroups();
-    fetchGrades();
-    fetchStudents();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    let alive = true;
+    (async () => {
+      try {
+        const data = await getGrades();
+        if (alive) setGrades(data);
+      } catch (error) {
+        console.error('Error fetching grades:', error);
+      }
+      try {
+        const data = await getStudents();
+        if (alive) setStudents(data || []);
+      } catch (error) {
+        console.error('Error fetching students:', error);
+      }
+    })();
+    return () => { alive = false; };
   }, []);
 
-  const fetchGroups = async () => {
-    try {
-      const data = await getGroups();
-      // Fetch grade names for each group
-      const gradesData = await getGrades();
-      const groupsWithGrades = data.map(group => ({
-        ...group,
-        grade_name: gradesData.find(g => g.id === group.grade_id)?.name || '-'
-      }));
-      setGroups(groupsWithGrades);
-    } catch (error) {
-      console.error('Error fetching groups:', error);
-      toast({
-        title: "خطأ",
-        description: "فشل في تحميل المجموعات",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
+  const form = state.form;
+  const isDialogOpen = form.mode !== 'closed';
+  const isEditing = form.mode === 'edit';
+  const selectedGroup = selectedGroupId
+    ? state.rows.find((row) => row.id === selectedGroupId) ?? null
+    : null;
+  const isStudentsDialogOpen = selectedGroup !== null;
+  const saving = state.mutation.status === 'saving';
+  const retryable = state.phase === 'error' || state.phase === 'unauthorized';
 
-  const fetchGrades = async () => {
-    try {
-      const data = await getGrades();
-      setGrades(data);
-    } catch (error) {
-      console.error('Error fetching grades:', error);
-    }
-  };
+  const announcementForm = announcementState.form;
+  const announcementSaving = announcementState.mutation.status === 'saving';
+  const isAnnouncementsOpen = announcementState.groupId !== null;
+  const announcementsGroup = announcementState.groupId
+    ? state.rows.find((row) => row.id === announcementState.groupId) ?? null
+    : null;
+  const announcementRetryable =
+    announcementState.phase === 'error' || announcementState.phase === 'unauthorized';
 
-  const fetchStudents = async () => {
-    try {
-      const data = await getStudents();
-      setStudents(data || []);
-    } catch (error) {
-      console.error('Error fetching students:', error);
-    }
-  };
+  const gradeNameOf = (gradeId: string | null) =>
+    grades.find((grade) => grade.id === gradeId)?.name || '-';
 
-  const handleViewStudents = (group: Group) => {
-    setSelectedGroup(group);
+  const handleViewStudents = (groupId: string) => {
+    setSelectedGroupId(groupId);
     setSearchTerm('');
-    setIsStudentsDialogOpen(true);
   };
 
   const getGroupStudents = () => {
     if (!selectedGroup) return [];
-    return students.filter(s => s.group_id === selectedGroup.id);
+    return students.filter((student) => student.group_id === selectedGroup.id);
   };
 
   const getFilteredStudents = () => {
@@ -134,135 +139,143 @@ const Groups = () => {
     if (!searchTerm.trim()) return groupStudents;
 
     const search = searchTerm.toLowerCase().trim();
-    return groupStudents.filter(student =>
+    return groupStudents.filter((student) =>
       student.name?.toLowerCase().includes(search) ||
       student.phone?.toLowerCase().includes(search) ||
-      student.email?.toLowerCase().includes(search)
+      student.email?.toLowerCase().includes(search),
     );
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
+    const outcome = await controller.save();
+    const settled = controller.getState();
 
-    try {
-      const groupData = {
-        name: formData.name,
-        description: formData.description,
-        grade_id: formData.grade_id || undefined,
-        max_students: formData.max_students,
-        is_active: true,
-        schedule_days: formData.schedule_days.length > 0 ? formData.schedule_days : undefined,
-        schedule_time: formData.schedule_time || undefined
-      };
-
-      if (isEditing && currentGroup) {
-        await updateGroup(currentGroup.id, groupData);
-      } else {
-        await createGroup(groupData);
-      }
-
+    if (outcome === 'confirmed') {
       toast({
-        title: "نجح",
-        description: isEditing ? "تم تحديث المجموعة بنجاح" : "تم إضافة المجموعة بنجاح",
+        title: 'نجح',
+        description: isEditing ? 'تم تحديث المجموعة بنجاح' : 'تم إضافة المجموعة بنجاح',
       });
-
-      setIsDialogOpen(false);
-      resetForm();
-      fetchGroups();
-    } catch (error) {
-      console.error('Error saving group:', error);
-      toast({
-        title: "خطأ",
-        description: "فشل في حفظ المجموعة",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
+      return;
     }
-  };
-
-  const handleEdit = (group: Group) => {
-    setCurrentGroup(group);
-    let parsedDays: string[] = [];
-    if (group.schedule_days) {
-      if (typeof group.schedule_days === 'string') {
-        try {
-          parsedDays = JSON.parse(group.schedule_days);
-        } catch {
-          parsedDays = [];
-        }
-      } else if (Array.isArray(group.schedule_days)) {
-        parsedDays = group.schedule_days;
-      }
+    if (outcome === 'invalid') {
+      // The form keeps the user's input and shows the local validation error.
+      return;
     }
-    setFormData({
-      name: group.name,
-      description: group.description || '',
-      grade_id: group.grade_id || '',
-      max_students: group.max_students || 50,
-      schedule_days: parsedDays,
-      schedule_time: group.schedule_time || ''
+    if (outcome === 'blocked' || outcome === 'idle') return;
+
+    toast({
+      title: 'خطأ',
+      description: settled.mutation.notice || settled.mutation.error || 'فشل في حفظ المجموعة',
+      variant: 'destructive',
     });
-    setIsEditing(true);
-    setIsDialogOpen(true);
   };
 
   const handleDelete = async (id: string) => {
     if (!window.confirm('هل أنت متأكد من حذف هذه المجموعة؟')) return;
 
-    try {
-      await deleteGroup(id);
-
-      toast({
-        title: "نجح",
-        description: "تم حذف المجموعة بنجاح",
-      });
-
-      fetchGroups();
-    } catch (error) {
-      console.error('Error deleting group:', error);
-      toast({
-        title: "خطأ",
-        description: "فشل في حذف المجموعة",
-        variant: "destructive",
-      });
+    const outcome = await controller.remove(id);
+    const settled = controller.getState();
+    if (outcome === 'confirmed') {
+      toast({ title: 'نجح', description: 'تم حذف المجموعة بنجاح' });
+      return;
     }
-  };
-
-  const toggleGroupStatus = async (group: Group) => {
-    try {
-      await updateGroup(group.id, { is_active: !group.is_active });
-
-      toast({
-        title: "نجح",
-        description: group.is_active ? "تم إغلاق المجموعة" : "تم فتح المجموعة",
-      });
-
-      fetchGroups();
-    } catch (error) {
-      toast({
-        title: "خطأ",
-        description: "فشل في تحديث حالة المجموعة",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const resetForm = () => {
-    setFormData({
-      name: '',
-      description: '',
-      grade_id: '',
-      max_students: 50,
-      schedule_days: [],
-      schedule_time: ''
+    if (outcome === 'blocked' || outcome === 'idle') return;
+    toast({
+      title: 'خطأ',
+      description: settled.mutation.notice || settled.mutation.error || 'فشل في حذف المجموعة',
+      variant: 'destructive',
     });
-    setIsEditing(false);
-    setCurrentGroup(null);
   };
 
-  if (loading) {
+  const toggleGroupStatus = async (groupId: string, isActive: boolean) => {
+    const outcome = await controller.setActive(groupId, !isActive);
+    const settled = controller.getState();
+    if (outcome === 'confirmed') {
+      toast({
+        title: 'نجح',
+        description: isActive ? 'تم إغلاق المجموعة' : 'تم فتح المجموعة',
+      });
+      return;
+    }
+    if (outcome === 'blocked' || outcome === 'idle') return;
+    toast({
+      title: 'خطأ',
+      description: settled.mutation.notice || settled.mutation.error || 'فشل في تحديث حالة المجموعة',
+      variant: 'destructive',
+    });
+  };
+
+  const handleOpenAnnouncements = (groupId: string) => {
+    void announcementController.select(groupId);
+  };
+
+  const handleAnnouncementSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const outcome = await announcementController.save();
+    const settled = announcementController.getState();
+    if (outcome === 'confirmed') {
+      toast({
+        title: 'نجح',
+        description: announcementForm.mode === 'edit'
+          ? 'تم تحديث الإعلان بنجاح'
+          : 'تم إضافة الإعلان بنجاح',
+      });
+      return;
+    }
+    if (outcome === 'unchanged') {
+      toast({ title: 'لا تغيير', description: settled.mutation.notice || 'لم يتغيّر شيء.' });
+      return;
+    }
+    if (outcome === 'invalid') {
+      // The form keeps the instructor's input and shows the local validation error.
+      return;
+    }
+    if (outcome === 'blocked' || outcome === 'idle') return;
+
+    toast({
+      title: 'خطأ',
+      description: settled.mutation.notice || settled.mutation.error || 'فشل في حفظ الإعلان',
+      variant: 'destructive',
+    });
+  };
+
+  const handleAnnouncementPublish = async (announcementId: string) => {
+    const outcome = await announcementController.publish(announcementId);
+    const settled = announcementController.getState();
+    if (outcome === 'confirmed') {
+      toast({ title: 'نجح', description: settled.mutation.notice || 'تم نشر الإعلان.' });
+      return;
+    }
+    if (outcome === 'blocked' || outcome === 'idle' || outcome === 'unchanged') return;
+    toast({
+      title: 'خطأ',
+      description: settled.mutation.notice || settled.mutation.error || 'فشل في نشر الإعلان',
+      variant: 'destructive',
+    });
+  };
+
+  const handleAnnouncementRetract = async (announcementId: string) => {
+    if (!window.confirm('هل أنت متأكد من سحب هذا الإعلان؟ لا يمكن التراجع عن السحب.')) return;
+
+    const outcome = await announcementController.retract(announcementId);
+    const settled = announcementController.getState();
+    if (outcome === 'confirmed') {
+      toast({ title: 'نجح', description: settled.mutation.notice || 'تم سحب الإعلان.' });
+      return;
+    }
+    if (outcome === 'blocked' || outcome === 'idle' || outcome === 'unchanged') return;
+    toast({
+      title: 'خطأ',
+      description: settled.mutation.notice || settled.mutation.error || 'فشل في سحب الإعلان',
+      variant: 'destructive',
+    });
+  };
+
+  const announcementStateLabel = (value: string) =>
+    value === 'published' ? 'منشور' : value === 'retracted' ? 'مسحوب' : 'مسودة';
+
+  if (!booted) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-teal-50 dark:from-slate-900 dark:via-cyan-950 dark:to-teal-950" dir="rtl">
         <Header />
@@ -289,28 +302,57 @@ const Groups = () => {
             </div>
           </div>
 
-          <Button onClick={() => {
-            resetForm();
-            setIsDialogOpen(true);
-          }}>
+          <Button
+            onClick={() => controller.openCreate()}
+            disabled={saving || (state.phase !== 'ready' && state.phase !== 'empty')}
+          >
             <Plus className="w-4 h-4 ml-2" />
             إضافة مجموعة جديدة
           </Button>
         </div>
+
+        {state.phase === 'denied' && (
+          <div role="alert" className="mb-4 rounded bg-red-50 p-3 text-red-700">
+            {state.error || 'لا تملك صلاحية إدارة المجموعات في هذه المساحة.'}
+          </div>
+        )}
+
+        {state.phase === 'no-workspace' && (
+          <div role="alert" className="mb-4 rounded bg-amber-50 p-3 text-amber-800">
+            {state.error || 'لم يتم تحديد مساحة عمل. اختر مساحة المدرس أولاً.'}
+          </div>
+        )}
+
+        {retryable && (
+          <div className="mb-4 space-y-3">
+            <p role="alert" className="rounded bg-red-50 p-3 text-red-700">
+              {state.error || 'فشل في تحميل المجموعات'}
+            </p>
+            <Button type="button" variant="outline" onClick={() => controller.refresh()}>
+              إعادة المحاولة
+            </Button>
+          </div>
+        )}
+
+        {state.mutation.status === 'uncertain' && state.mutation.notice && (
+          <div role="status" className="mb-4 rounded bg-amber-50 p-3 text-amber-800">
+            {state.mutation.notice}
+          </div>
+        )}
 
         <Card>
           <CardHeader>
             <CardTitle>قائمة المجموعات</CardTitle>
           </CardHeader>
           <CardContent className="p-4">
-            {groups.length === 0 ? (
+            {state.rows.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground">
                 <Users className="w-16 h-16 mx-auto mb-4 opacity-20" />
                 <p className="text-lg font-medium">لا توجد مجموعات حالياً</p>
               </div>
             ) : (
               <div className="space-y-4">
-                {groups.map((group) => (
+                {state.rows.map((group) => (
                   <div
                     key={group.id}
                     className="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-white dark:bg-slate-900"
@@ -325,9 +367,8 @@ const Groups = () => {
                         <div>
                           <h3 className="font-bold text-white text-lg">{group.name}</h3>
                           <div className="flex items-center gap-2 text-xs text-cyan-50">
-                            {group.grade_name && (
-                              <span>📚 {group.grade_name}</span>
-                            )}
+                            {group.grade_id && <span>📚 {gradeNameOf(group.grade_id)}</span>}
+                            {!group.is_active && <span>⚠ مجموعة مغلقة</span>}
                           </div>
                         </div>
                       </div>
@@ -335,7 +376,27 @@ const Groups = () => {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => handleEdit(group)}
+                          onClick={() => toggleGroupStatus(group.id, group.is_active)}
+                          disabled={saving}
+                          className="h-8 px-2 text-white hover:bg-white/20"
+                        >
+                          {group.is_active ? 'إغلاق' : 'فتح'}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleOpenAnnouncements(group.id)}
+                          disabled={saving || announcementSaving}
+                          className="h-8 px-2 text-white hover:bg-white/20"
+                          title="إعلانات المجموعة"
+                        >
+                          <Megaphone className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => controller.openEdit(group.id)}
+                          disabled={saving}
                           className="h-8 w-8 p-0 text-white hover:bg-white/20"
                         >
                           <Edit className="w-4 h-4" />
@@ -344,6 +405,7 @@ const Groups = () => {
                           variant="ghost"
                           size="sm"
                           onClick={() => handleDelete(group.id)}
+                          disabled={saving}
                           className="h-8 w-8 p-0 text-white hover:bg-red-500/30"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -359,7 +421,7 @@ const Groups = () => {
 
                       <div>
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">🎓 الصف الدراسي</div>
-                        <div className="text-sm font-medium">{group.grade_name || '-'}</div>
+                        <div className="text-sm font-medium">{gradeNameOf(group.grade_id)}</div>
                       </div>
 
                       <div>
@@ -371,18 +433,40 @@ const Groups = () => {
                         <div className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 mb-1">👨‍🎓 عدد الطلاب</div>
                         <div className="flex items-center gap-2">
                           <div className="text-sm font-medium">
-                            {students.filter(s => s.group_id === group.id).length} / {group.max_students || 50}
+                            {students.filter((student) => student.group_id === group.id).length} / {group.max_students}
                           </div>
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => handleViewStudents(group)}
+                            onClick={() => handleViewStudents(group.id)}
                             className="h-7 text-xs"
                           >
                             <Eye className="w-3 h-3 ml-1" />
                             عرض الطلاب
                           </Button>
                         </div>
+                      </div>
+                    </div>
+
+                    <div className="px-4 pb-4">
+                      <div className="border-t pt-3 flex flex-wrap items-center gap-2 text-sm">
+                        <span className="text-xs font-semibold text-cyan-600 dark:text-cyan-400">🗓️ الموعد الأسبوعي</span>
+                        {group.schedule_days.length === 0 && !group.schedule_time ? (
+                          <span className="text-muted-foreground">غير محدد</span>
+                        ) : (
+                          <>
+                            {group.schedule_days.map((day) => (
+                              <Badge key={day} variant="outline" className="text-xs">
+                                {GROUP_SCHEDULE_DAY_LABELS[day]}
+                              </Badge>
+                            ))}
+                            {group.schedule_time && (
+                              <span className="font-mono text-xs text-cyan-900 dark:text-cyan-100" dir="ltr">
+                                {group.schedule_time}
+                              </span>
+                            )}
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -392,7 +476,7 @@ const Groups = () => {
           </CardContent>
         </Card>
 
-        <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+        <Dialog open={isDialogOpen} onOpenChange={(open) => { if (!open) controller.cancel(); }}>
           <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>
@@ -406,8 +490,8 @@ const Groups = () => {
                   <Label htmlFor="name">اسم المجموعة</Label>
                   <Input
                     id="name"
-                    value={formData.name}
-                    onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
+                    value={form.name}
+                    onChange={(e) => controller.setField({ name: e.target.value })}
                     required
                   />
                 </div>
@@ -415,8 +499,8 @@ const Groups = () => {
                 <div className="space-y-2">
                   <Label htmlFor="grade">الصف الدراسي</Label>
                   <Select
-                    value={formData.grade_id}
-                    onValueChange={(value) => setFormData(prev => ({ ...prev, grade_id: value }))}
+                    value={form.gradeId}
+                    onValueChange={(value) => controller.setField({ gradeId: value })}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="اختر الصف" />
@@ -436,8 +520,8 @@ const Groups = () => {
                 <Label htmlFor="description">الوصف</Label>
                 <Textarea
                   id="description"
-                  value={formData.description}
-                  onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
+                  value={form.description}
+                  onChange={(e) => controller.setField({ description: e.target.value })}
                   rows={3}
                 />
               </div>
@@ -448,8 +532,8 @@ const Groups = () => {
                   <Input
                     id="max_students"
                     type="number"
-                    value={formData.max_students}
-                    onChange={(e) => setFormData(prev => ({ ...prev, max_students: parseInt(e.target.value) }))}
+                    value={form.maxStudents}
+                    onChange={(e) => controller.setField({ maxStudents: e.target.value })}
                     min="1"
                     required
                   />
@@ -460,8 +544,8 @@ const Groups = () => {
                   <Input
                     id="schedule_time"
                     type="time"
-                    value={formData.schedule_time}
-                    onChange={(e) => setFormData(prev => ({ ...prev, schedule_time: e.target.value }))}
+                    value={form.time}
+                    onChange={(e) => controller.setField({ time: e.target.value })}
                   />
                 </div>
               </div>
@@ -469,42 +553,34 @@ const Groups = () => {
               <div className="space-y-2">
                 <Label>أيام الأسبوع (اختياري)</Label>
                 <div className="grid grid-cols-4 gap-2">
-                  {['sat', 'sun', 'mon', 'tue', 'wed', 'thu', 'fri'].map((day) => {
-                    const label = {
-                      sat: 'السبت',
-                      sun: 'الأحد',
-                      mon: 'الاثنين',
-                      tue: 'الثلاثاء',
-                      wed: 'الأربعاء',
-                      thu: 'الخميس',
-                      fri: 'الجمعة'
-                    }[day];
-                    const checked = formData.schedule_days.includes(day);
+                  {GROUP_SCHEDULE_DAYS.map((day) => {
+                    const checked = form.days.includes(day);
                     return (
                       <label key={day} className="flex items-center gap-2 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={checked}
-                          onChange={(e) => {
-                            const newDays = e.target.checked
-                              ? [...formData.schedule_days, day]
-                              : formData.schedule_days.filter(d => d !== day);
-                            setFormData(prev => ({ ...prev, schedule_days: newDays }));
-                          }}
+                          onChange={() => controller.toggleDay(day)}
                           className="w-4 h-4"
                         />
-                        <span className="text-sm">{label}</span>
+                        <span className="text-sm">{GROUP_SCHEDULE_DAY_LABELS[day]}</span>
                       </label>
                     );
                   })}
                 </div>
               </div>
 
+              {form.error && (
+                <p role="alert" className="rounded bg-red-50 p-3 text-sm text-red-700">
+                  {form.error}
+                </p>
+              )}
+
               <div className="flex justify-end gap-2 pt-4">
-                <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)}>
+                <Button type="button" variant="outline" onClick={() => controller.cancel()} disabled={saving}>
                   إلغاء
                 </Button>
-                <Button type="submit" disabled={loading}>
+                <Button type="submit" disabled={saving}>
                   {isEditing ? 'تحديث' : 'إضافة'}
                 </Button>
               </div>
@@ -512,8 +588,246 @@ const Groups = () => {
           </DialogContent>
         </Dialog>
 
+        {/* Announcements Dialog — the private M2-21 management surface */}
+        <Dialog
+          open={isAnnouncementsOpen}
+          onOpenChange={(open) => { if (!open) void announcementController.select(null); }}
+        >
+          <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Megaphone className="w-5 h-5 text-primary" />
+                إعلانات مجموعة: {announcementsGroup?.name ?? ''}
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              <p className="text-xs text-muted-foreground">
+                إعلانات خاصة تُدار من هذه الشاشة فقط. لا يُرسل أي بريد أو رسالة أو تنبيه، ولا
+                يوجد جدولة نشر أو انتهاء صلاحية.
+              </p>
+
+              {announcementState.phase === 'denied' && (
+                <div role="alert" className="rounded bg-red-50 p-3 text-red-700">
+                  {announcementState.error || 'لا تملك صلاحية إدارة إعلانات هذه المجموعة.'}
+                </div>
+              )}
+
+              {announcementState.phase === 'no-workspace' && (
+                <div role="alert" className="rounded bg-amber-50 p-3 text-amber-800">
+                  {announcementState.error || 'لم يتم تحديد مساحة عمل. اختر مساحة المدرس أولاً.'}
+                </div>
+              )}
+
+              {announcementRetryable && announcementState.phase !== 'denied' && announcementState.phase !== 'no-workspace' && (
+                <div className="space-y-3">
+                  <p role="alert" className="rounded bg-red-50 p-3 text-red-700">
+                    {announcementState.error || 'فشل في تحميل الإعلانات'}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void announcementController.refresh()}
+                  >
+                    إعادة المحاولة
+                  </Button>
+                </div>
+              )}
+
+              {announcementState.mutation.status === 'uncertain' && announcementState.mutation.notice && (
+                <div role="status" className="rounded bg-amber-50 p-3 text-amber-800">
+                  {announcementState.mutation.notice}
+                </div>
+              )}
+
+              {announcementState.mutation.status !== 'uncertain' && announcementState.mutation.notice && (
+                <div role="status" className="rounded bg-emerald-50 p-3 text-emerald-800">
+                  {announcementState.mutation.notice}
+                </div>
+              )}
+
+              {announcementState.phase === 'loading' && (
+                <div className="text-center py-6 text-muted-foreground">جاري تحميل الإعلانات...</div>
+              )}
+
+              {(announcementState.phase === 'ready' || announcementState.phase === 'empty') && (
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    onClick={() => announcementController.openCreate()}
+                    disabled={announcementSaving || announcementForm.mode !== 'closed'}
+                  >
+                    <Plus className="w-4 h-4 ml-2" />
+                    إعلان جديد
+                  </Button>
+                </div>
+              )}
+
+              {announcementState.phase === 'empty' && (
+                <div className="text-center py-8 text-muted-foreground">
+                  <Megaphone className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                  <p>لا توجد إعلانات لهذه المجموعة.</p>
+                </div>
+              )}
+
+              {announcementState.rows.length > 0 && (
+                <div className="space-y-3">
+                  {announcementState.rows.map((announcement) => (
+                    <div
+                      key={announcement.id}
+                      className="border border-cyan-200 dark:border-cyan-800 rounded-lg p-4 bg-white dark:bg-slate-900"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <h4 className="font-bold text-foreground truncate">{announcement.title}</h4>
+                            <Badge
+                              variant={announcement.state === 'published' ? 'default' : 'secondary'}
+                              className="text-xs"
+                            >
+                              {announcementStateLabel(announcement.state)}
+                            </Badge>
+                          </div>
+                          <p className="mt-2 text-sm whitespace-pre-wrap break-words text-muted-foreground">
+                            {announcement.body}
+                          </p>
+                          <div className="mt-2 text-xs text-muted-foreground" dir="ltr">
+                            {announcement.updated_at ?? announcement.created_at ?? ''}
+                          </div>
+                        </div>
+                        <div className="flex flex-shrink-0 flex-col gap-2">
+                          {announcement.state !== 'retracted' && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => announcementController.openEdit(announcement.id)}
+                              disabled={announcementSaving || announcementForm.mode !== 'closed'}
+                            >
+                              <Edit className="w-3 h-3 ml-1" />
+                              تعديل
+                            </Button>
+                          )}
+                          {announcement.state === 'draft' && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              onClick={() => void handleAnnouncementPublish(announcement.id)}
+                              disabled={announcementSaving}
+                            >
+                              نشر
+                            </Button>
+                          )}
+                          {announcement.state !== 'retracted' && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => void handleAnnouncementRetract(announcement.id)}
+                              disabled={announcementSaving}
+                              className="text-red-600 hover:bg-red-50"
+                            >
+                              سحب
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {announcementState.nextCursor !== null && (
+                <div className="flex justify-center">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void announcementController.loadMore()}
+                    disabled={announcementState.loadingMore || announcementSaving}
+                  >
+                    {announcementState.loadingMore ? 'جاري التحميل...' : 'تحميل المزيد'}
+                  </Button>
+                </div>
+              )}
+
+              {announcementForm.mode !== 'closed' && (
+                <form onSubmit={handleAnnouncementSubmit} className="space-y-3 border-t pt-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="announcement_title">عنوان الإعلان</Label>
+                    <Input
+                      id="announcement_title"
+                      value={announcementForm.title}
+                      onChange={(e) => announcementController.setField({ title: e.target.value })}
+                      maxLength={ANNOUNCEMENT_TITLE_MAX}
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="announcement_body">نص الإعلان</Label>
+                    <Textarea
+                      id="announcement_body"
+                      value={announcementForm.body}
+                      onChange={(e) => announcementController.setField({ body: e.target.value })}
+                      rows={5}
+                      maxLength={ANNOUNCEMENT_BODY_MAX}
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="announcement_state">الحالة</Label>
+                    <Select
+                      value={announcementForm.state}
+                      onValueChange={(value) =>
+                        announcementController.setField({ state: value as 'draft' | 'published' })}
+                    >
+                      <SelectTrigger id="announcement_state">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="draft">مسودة</SelectItem>
+                        <SelectItem value="published">منشور</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      السحب إجراء منفصل ونهائي ولا يمكن التراجع عنه.
+                    </p>
+                  </div>
+
+                  {announcementForm.error && (
+                    <p role="alert" className="rounded bg-red-50 p-2 text-sm text-red-700">
+                      {announcementForm.error}
+                    </p>
+                  )}
+
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => announcementController.cancel()}
+                      disabled={announcementSaving}
+                    >
+                      إلغاء
+                    </Button>
+                    <Button type="submit" disabled={announcementSaving}>
+                      {announcementForm.mode === 'edit' ? 'تحديث' : 'إضافة'}
+                    </Button>
+                  </div>
+                </form>
+              )}
+
+              <div className="flex justify-end pt-4 border-t">
+                <Button variant="outline" onClick={() => void announcementController.select(null)}>
+                  إغلاق
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
         {/* Students Dialog */}
-        <Dialog open={isStudentsDialogOpen} onOpenChange={setIsStudentsDialogOpen}>
+        <Dialog open={isStudentsDialogOpen} onOpenChange={(open) => { if (!open) setSelectedGroupId(null); }}>
           <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
@@ -541,7 +855,7 @@ const Groups = () => {
                   {searchTerm && ` من أصل ${getGroupStudents().length}`}
                 </div>
                 <Badge variant="secondary">
-                  {getGroupStudents().length} / {selectedGroup?.max_students || 50}
+                  {getGroupStudents().length} / {selectedGroup?.max_students}
                 </Badge>
               </div>
 
@@ -555,7 +869,7 @@ const Groups = () => {
                     </p>
                   </div>
                 ) : (
-                  getFilteredStudents().map((student, index) => (
+                  getFilteredStudents().map((student) => (
                     <div
                       key={student.id}
                       className="border-2 border-cyan-100 dark:border-cyan-900 rounded-xl overflow-hidden hover:shadow-lg transition-all duration-300 bg-white dark:bg-slate-900 hover:border-cyan-300 dark:hover:border-cyan-700"
@@ -576,7 +890,7 @@ const Groups = () => {
                                   🎓 {student.grade_name}
                                 </Badge>
                               )}
-                              <Badge variant={student.is_active ? "default" : "secondary"} className="bg-white/20 text-white border-0 text-xs">
+                              <Badge variant={student.is_active ? 'default' : 'secondary'} className="bg-white/20 text-white border-0 text-xs">
                                 {student.is_active ? '✓ نشط' : '⚠ غير نشط'}
                               </Badge>
                             </div>
@@ -659,7 +973,7 @@ const Groups = () => {
 
               {/* Footer */}
               <div className="flex justify-end pt-4 border-t">
-                <Button variant="outline" onClick={() => setIsStudentsDialogOpen(false)}>
+                <Button variant="outline" onClick={() => setSelectedGroupId(null)}>
                   إغلاق
                 </Button>
               </div>

@@ -20,6 +20,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { buildSecurityEventRequest } from '@/utils/VideoSecurityManager';
+import { notifySessionChange } from '@/lib/session-events';
 
 interface SecurityConfig {
     sessionId: string;
@@ -88,6 +89,11 @@ export function useSecuritySupervisor(config: SecurityConfig) {
         localStorage.removeItem('currentStudent');
         localStorage.removeItem('currentStudentSpace');
         sessionStorage.clear();
+
+        // Same-document session teardown (supervisor/026): notify after every
+        // session key is removed, so an externally visible logout invalidates
+        // cached identity/links in this document too.
+        notifySessionChange('logout');
 
         // Navigate to login
         config.onSessionKilled?.();

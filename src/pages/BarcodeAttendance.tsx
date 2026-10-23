@@ -11,55 +11,182 @@ import { Scan, CheckCircle, XCircle, MessageCircle, Calendar, Send, DollarSign, 
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
 import axios from 'axios';
-import { classifyAttendanceError, createSubmissionGuard } from '@/pages/QRAttendance';
+import { classifyAttendanceError, createSubmissionGuard, createResponseSequence } from '@/pages/QRAttendance';
+import {
+  instantToDayKey,
+  isScheduledOnDayKey,
+  parseScheduleWeekdays,
+  previousScheduledDayKey,
+  todayDayKey,
+} from '@/lib/attendance-calendar';
 
-const API_URL = import.meta.env.VITE_API_URL || '/api';
+// `import.meta.env` exists under Vite but not under a plain Node test runner,
+// so it is read defensively and falls back to the relative /api path.
+const API_URL = (import.meta.env as { VITE_API_URL?: string } | undefined)?.VITE_API_URL || '/api';
 
-// Helper: given schedule_days JSON and a reference date, return the previous scheduled day as YYYY-MM-DD
-const getPreviousScheduledDay = (referenceDate: string, schedule_days: any): string | null => {
-  let days: string[] = [];
-  if (schedule_days) {
-    if (typeof schedule_days === 'string') {
-      try {
-        days = JSON.parse(schedule_days);
-      } catch {
-        days = [];
-      }
-    } else if (Array.isArray(schedule_days)) {
-      days = schedule_days;
-    }
+// ---------------------------------------------------------------------------
+// Canonical authentication contract for the protected requests of this page.
+//
+// src/lib/api-http.ts (the canonical client) reads the session token from
+// localStorage['authToken']. The legacy 'token' key is NOT the canonical
+// session source, so reading it here produced unauthenticated requests.
+//
+// Every protected call must carry `Authorization: Bearer <authToken>`, and when
+// the token is absent the request must fail closed BEFORE the transport is
+// touched (never `Bearer null`, never an unauthenticated call). The adapter is
+// exported so the isolated tests can drive the real request construction with
+// an injected transport.
+// ---------------------------------------------------------------------------
+export const AUTH_TOKEN_STORAGE_KEY = 'authToken';
+
+export class MissingAuthTokenError extends Error {
+  readonly code = 'MISSING_AUTH_TOKEN';
+  constructor(message = 'missing auth token') {
+    super(message);
+    this.name = 'MissingAuthTokenError';
   }
-  if (days.length === 0) return null;
+}
 
-  const dayMap: { [k: string]: number } = {
-    sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6
-  };
-  const dayNums = days.map(d => dayMap[d.toLowerCase()]).filter(n => n !== undefined);
-  const refDate = new Date(referenceDate);
-  // Walk backwards up to 14 days
-  for (let i = 1; i <= 14; i++) {
-    const candidate = new Date(refDate);
-    candidate.setDate(candidate.getDate() - i);
-    if (dayNums.includes(candidate.getDay())) {
-      return candidate.toISOString().split('T')[0];
-    }
+export const isMissingAuthTokenError = (error: unknown): boolean =>
+  error instanceof MissingAuthTokenError ||
+  (typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'MISSING_AUTH_TOKEN');
+
+/** Reads the canonical session token; absent or blank means "no session". */
+export const readAuthToken = (storage?: Storage | null): string | null => {
+  try {
+    const store = storage ?? (typeof localStorage === 'undefined' ? null : localStorage);
+    if (!store) return null;
+    const raw = store.getItem(AUTH_TOKEN_STORAGE_KEY);
+    return typeof raw === 'string' && raw.trim() !== '' ? raw : null;
+  } catch {
+    return null;
   }
-  return null;
 };
 
-// Helper: check if today matches a group's schedule_days
+export interface ProtectedTransportDeps {
+  http: {
+    get: (url: string, config?: any) => Promise<any>;
+    post: (url: string, data?: any, config?: any) => Promise<any>;
+  };
+  getToken: () => string | null;
+}
+
+/**
+ * Page-scoped protected transport. The token is resolved at call time and the
+ * bearer header attached here; with no token the call rejects with
+ * MissingAuthTokenError without ever reaching the transport.
+ */
+export const createProtectedTransport = ({ http, getToken }: ProtectedTransportDeps) => {
+  const authorize = (config: any = {}) => {
+    const token = getToken();
+    if (!token) throw new MissingAuthTokenError();
+    return { ...config, headers: { ...(config.headers || {}), Authorization: `Bearer ${token}` } };
+  };
+  return {
+    get: async (url: string, config?: any) => http.get(url, authorize(config)),
+    post: async (url: string, data?: any, config?: any) => http.post(url, data, authorize(config)),
+  };
+};
+
+/**
+ * The transport used by the page. Kept in a mutable holder so the isolated
+ * tests can inject a fake transport without a module reload.
+ */
+export const barcodeTransport = {
+  current: createProtectedTransport({ http: axios, getToken: readAuthToken }),
+};
+
+export type BarcodeScanErrorKind =
+  | 'missing_token'
+  | 'duplicate'
+  | 'auth'
+  | 'validation'
+  | 'not_found'
+  | 'server'
+  | 'network';
+
+export interface ClassifiedBarcodeScanError {
+  kind: BarcodeScanErrorKind;
+  status?: number;
+  serverMessage?: string;
+  /** User-facing Arabic message, always safe to display. */
+  message: string;
+}
+
+/**
+ * Scoped classifier: a missing session is reported distinctly (no request was
+ * sent at all) while every real server/network failure keeps the shared
+ * classification, so the UI never turns a rejection into a success.
+ */
+export const classifyBarcodeScanError = (error: unknown): ClassifiedBarcodeScanError => {
+  if (isMissingAuthTokenError(error)) {
+    return { kind: 'missing_token', status: 401, message: 'انتهت الجلسة، سجّل الدخول من جديد' };
+  }
+  return classifyAttendanceError(error);
+};
+
+/**
+ * A failed scan must stay actionable: the operator keeps the barcode in the
+ * input so the same scan can be retried after the single-flight guard is
+ * released. Only an already-recorded scan (nothing left to retry) clears it.
+ */
+export const shouldClearBarcodeInputAfterFailure = (kind: BarcodeScanErrorKind): boolean =>
+  kind === 'duplicate';
+
+export interface ScopedResponseGuard {
+  /** Starts a load for `scope` and returns its token. */
+  begin(scope: string): number;
+  /** True only while the token is the newest one AND `scope` is still applied. */
+  isCurrent(token: number, scope: string): boolean;
+  /** Retires every outstanding token without starting a replacement request. */
+  invalidate(): void;
+}
+
+/**
+ * Stale-response fence used by the group-scoped loaders of this page: a
+ * response may commit only when it belongs to the newest load AND to the scope
+ * that is still selected. `invalidate()` retires an in-flight load on a scope
+ * clear/unmount even when no replacement request is issued, so a late
+ * completion (data or failure) cannot repopulate/overwrite the current state.
+ */
+export const createScopedResponseGuard = (
+  sequence: ReturnType<typeof createResponseSequence> = createResponseSequence(),
+): ScopedResponseGuard => {
+  let captured: string | null = null;
+  return {
+    begin(scope: string): number {
+      captured = scope;
+      return sequence.next();
+    },
+    isCurrent(token: number, scope: string): boolean {
+      return sequence.isCurrent(token) && scope === captured;
+    },
+    invalidate(): void {
+      sequence.invalidate();
+    },
+  };
+};
+
+// Helper: given schedule_days JSON and a reference calendar-day key, return
+// the previous scheduled day as YYYY-MM-DD. Delegates to the shared
+// Africa/Cairo attendance business-day calendar (supervisor/026): the caller
+// supplies the Cairo reference day, and the walk-back is pure calendar
+// arithmetic (the weekday of a calendar day needs no timezone).
+const getPreviousScheduledDay = (referenceDate: string, schedule_days: any): string | null => {
+  const weekdays = parseScheduleWeekdays(schedule_days);
+  return previousScheduledDayKey(referenceDate, weekdays);
+};
+
+// Helper: check if today (Africa/Cairo business day, supervisor/026) matches
+// a group's schedule_days. No schedule = available every day (preserved).
 const isTodayScheduled = (schedule_days: any): boolean => {
-  if (!schedule_days) return true; // no schedule = available every day
-  let days: string[] = [];
+  if (!schedule_days) return true;
+  let days: unknown = schedule_days;
   if (typeof schedule_days === 'string') {
     try { days = JSON.parse(schedule_days); } catch { return true; }
-  } else if (Array.isArray(schedule_days)) {
-    days = schedule_days;
   }
-  if (days.length === 0) return true; // empty array = available every day
-  const dayMap: { [k: string]: number } = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
-  const todayNum = new Date().getDay();
-  return days.some(d => dayMap[d.toLowerCase()] === todayNum);
+  if (!Array.isArray(days) || days.length === 0) return true;
+  return isScheduledOnDayKey(todayDayKey(), parseScheduleWeekdays(days));
 };
 
 // Helper: get Arabic day name from schedule_days
@@ -76,6 +203,372 @@ const getScheduleDaysArabic = (schedule_days: any): string => {
   return days.map(d => arabicDays[d.toLowerCase()] || d).join(' و ');
 };
 
+// ---------------------------------------------------------------------------
+// Group-scoped production loader/controller.
+//
+// This orchestration used to live inline in the component, which made the
+// behaviour that matters impossible to exercise without a DOM: clearing the
+// previous group's already-committed rows/maps on an A -> B scope change,
+// retiring them when the selected scope's load fails (401/403/network), and
+// representing an unavailable payment / previous-attendance lookup as UNKNOWN
+// instead of a confirmed unpaid/absent result.
+//
+// Extracting the minimum orchestration into an injectable controller lets the
+// isolated tests drive the REAL code with an injected transport and state
+// sinks (no DOM, no browser, no network).
+//
+// Date semantics are the Africa/Cairo attendance business day
+// (supervisor/026): BOTH loaders use the same Cairo day key, so the
+// today-attendance load and the absent computation can never disagree about
+// which day "today" is near midnight. Payment month/year lookups keep their
+// existing billing convention and are deliberately untouched.
+// ---------------------------------------------------------------------------
+
+export type PaymentAvailability = 'paid' | 'unpaid' | 'unknown';
+
+// ---------------------------------------------------------------------------
+// Rendering decisions consumed by BOTH table consumers.
+//
+// Regression: the absent table read the PaymentAvailability string directly
+// (`const hasPaid = monthlyPayments[id]`), so 'unpaid' and 'unknown' — both
+// truthy strings — rendered as "مدفوع" and hid the legitimate payment action,
+// and 'unknown' authorized a payment that could double-charge. The decision is
+// now a small explicit-state production helper: paid/unpaid/unknown map to
+// distinct badges, and ONLY a verified 'unpaid' state exposes the payment
+// action — unknown never authorizes payment and never implies paid/unpaid.
+// ---------------------------------------------------------------------------
+export type PaymentPresentation =
+  | { state: 'paid'; allowPayment: false }
+  | { state: 'unpaid'; allowPayment: true }
+  | { state: 'unknown'; allowPayment: false };
+
+export const describePaymentPresentation = (
+  payment: PaymentAvailability | undefined,
+): PaymentPresentation => {
+  if (payment === 'paid') return { state: 'paid', allowPayment: false };
+  if (payment === 'unpaid') return { state: 'unpaid', allowPayment: true };
+  // Missing (never loaded) or 'unknown' (lookup failed): neither paid nor
+  // unpaid may be implied, and no payment action may be offered.
+  return { state: 'unknown', allowPayment: false };
+};
+
+// ---------------------------------------------------------------------------
+// Previous-session rendering decision.
+//
+// Regression: the absent table rendered `_attended` truthiness only, so an
+// entry whose lookup FAILED (`_attended: null` + `_unavailable: true`) showed
+// "لم يحضر آخر حصة" — presenting an unavailable read as a confirmed absence.
+// A failed lookup must render "غير متاح" instead.
+// ---------------------------------------------------------------------------
+export type LastAttendancePresentation =
+  | { state: 'never' }
+  | { state: 'unavailable' }
+  | { state: 'attended' }
+  | { state: 'absent' };
+
+export const describeLastAttendancePresentation = (
+  entry: LastAttendanceEntry | undefined,
+): LastAttendancePresentation => {
+  if (!entry) return { state: 'never' };
+  if (entry._unavailable || entry._attended === null) return { state: 'unavailable' };
+  return entry._attended ? { state: 'attended' } : { state: 'absent' };
+};
+
+export interface LastAttendanceEntry {
+  _scheduledDate: string;
+  /** `true`/`false` when the server answered; `null` when the lookup failed. */
+  _attended: boolean | null;
+  /** `true` means the previous-session lookup could not be determined. */
+  _unavailable: boolean;
+  status?: string;
+  [key: string]: any;
+}
+
+export interface BarcodeLoadState {
+  loading: boolean;
+  error: ClassifiedBarcodeScanError | null;
+}
+
+export interface BarcodeAttendanceSinks {
+  setAttendanceRows(rows: any[]): void;
+  setAbsentRows(rows: any[]): void;
+  replaceLastAttendance(map: Record<string, LastAttendanceEntry>): void;
+  replaceMonthlyPayments(map: Record<string, PaymentAvailability>): void;
+  setTodayLoad(state: BarcodeLoadState): void;
+  setAbsentLoad(state: BarcodeLoadState): void;
+}
+
+export interface BarcodeAttendanceControllerDeps {
+  http: { get: (url: string, config?: any) => Promise<any> };
+  apiUrl: string;
+  readScope: () => string;
+  readStudents: () => any[];
+  readGroups: () => any[];
+  now?: () => Date;
+  sinks: BarcodeAttendanceSinks;
+}
+
+export interface BarcodeAttendanceController {
+  /**
+   * Retire every in-flight load, clear the previous scope's committed
+   * rows/maps and reset the load states. Called on every group transition
+   * (including A -> B) and on scope clear, WITHOUT issuing a request.
+   */
+  resetScope(): void;
+  /** Retire every outstanding load (unmount / teardown). */
+  invalidate(): void;
+  loadTodayAttendance(): Promise<void>;
+  loadAbsentStudents(): Promise<void>;
+}
+
+export const createBarcodeAttendanceController = (
+  deps: BarcodeAttendanceControllerDeps,
+): BarcodeAttendanceController => {
+  const { http, apiUrl, readScope, readStudents, readGroups, sinks } = deps;
+  const now = deps.now ?? (() => new Date());
+  const todayGuard = createScopedResponseGuard();
+  const absentGuard = createScopedResponseGuard();
+
+  // Rows committed by the newest successful today-load for the current scope.
+  let committedRows: any[] = [];
+  // Whether that load actually succeeded; absent computation is only honest
+  // when we know who was present.
+  let todayCommitted = false;
+  // Per-scope merged lookup maps. The original page merged each loader's
+  // entries into the previous state (`prev => ({ ...prev, ...next })`), and
+  // the page renders the present table from the today-load's map while the
+  // absent table renders from the absent-load's map — replacing the whole map
+  // in one loader would erase the other table's entries. The controller
+  // therefore owns the merge and publishes full snapshots; a scope change
+  // clears both maps entirely.
+  let committedLastAttendance: Record<string, LastAttendanceEntry> = {};
+  let committedPayments: Record<string, PaymentAvailability> = {};
+
+  const clearCommitted = () => {
+    committedRows = [];
+    todayCommitted = false;
+    committedLastAttendance = {};
+    committedPayments = {};
+    sinks.setAttendanceRows([]);
+    sinks.setAbsentRows([]);
+    sinks.replaceLastAttendance({});
+    sinks.replaceMonthlyPayments({});
+  };
+
+  // Fence every absent computation that derives from the authoritative
+  // attendance snapshot: once that snapshot is replaced or discarded, an
+  // in-flight absent loop must not repopulate rows/maps from data it can no
+  // longer vouch for, and its loading state must be cleared coherently.
+  const fenceDependentAbsentLoads = () => {
+    absentGuard.invalidate();
+    sinks.setAbsentLoad({ loading: false, error: null });
+  };
+
+  const resetLoadStates = () => {
+    sinks.setTodayLoad({ loading: false, error: null });
+    sinks.setAbsentLoad({ loading: false, error: null });
+  };
+
+  const readPreviousAttendance = async (
+    student: any,
+    groups: any[],
+    referenceDay: string,
+    isCurrent: () => boolean,
+  ): Promise<LastAttendanceEntry | null | 'superseded'> => {
+    const group = groups.find((g: any) => g.id === student.group_id);
+    const lastScheduledDate = getPreviousScheduledDay(referenceDay, group?.schedule_days);
+    if (!lastScheduledDate) return null;
+    if (!isCurrent()) return 'superseded';
+    try {
+      const attResponse = await http.get(`${apiUrl}/attendance`, {
+        params: { student_id: student.id, date: lastScheduledDate },
+      });
+      if (!isCurrent()) return 'superseded';
+      const list = Array.isArray(attResponse.data) ? attResponse.data : [];
+      return list.length > 0
+        ? { ...list[0], _scheduledDate: lastScheduledDate, _attended: list[0].status === 'present', _unavailable: false }
+        : { _scheduledDate: lastScheduledDate, _attended: false, status: 'absent', _unavailable: false };
+    } catch (err) {
+      if (!isCurrent()) return 'superseded';
+      // Denied/unknown must NOT be presented as a confirmed absence.
+      return { _scheduledDate: lastScheduledDate, _attended: null, _unavailable: true };
+    }
+  };
+
+  const loadTodayAttendance = async (): Promise<void> => {
+    const groupId = readScope();
+    const token = todayGuard.begin(groupId);
+    const isCurrent = () => todayGuard.isCurrent(token, readScope());
+    sinks.setTodayLoad({ loading: true, error: null });
+    try {
+      // Africa/Cairo business day (supervisor/026): the same day the server
+      // records, identical for every operator regardless of host timezone.
+      const today = todayDayKey(now());
+      const response = await http.get(`${apiUrl}/attendance`, {
+        params: { date: today, group_id: groupId || undefined },
+      });
+      if (!isCurrent()) return; // scope changed/cleared while the load was in flight
+      const rows = Array.isArray(response.data) ? response.data : [];
+      committedRows = rows;
+      todayCommitted = true;
+      sinks.setAttendanceRows(rows);
+      // A refreshed snapshot supersedes absent computations derived from the
+      // previous one: fence them before this load's own nested reads commit.
+      fenceDependentAbsentLoads();
+
+      const students = readStudents();
+      const groups = readGroups();
+      const reference = now();
+      const currentYear = reference.getFullYear();
+      const currentMonth = reference.getMonth() + 1;
+      const payments: Record<string, PaymentAvailability> = {};
+      const lastAttendance: Record<string, LastAttendanceEntry> = {};
+
+      for (const record of rows) {
+        // Never issue another nested read (or commit) for a superseded scope.
+        if (!isCurrent()) return;
+        const student = students.find((s: any) => s.id === record.student_id);
+        if (!student) continue;
+
+        if (!(student.id in payments)) {
+          try {
+            const feeResponse = await http.get(`${apiUrl}/fees`, {
+              params: { phone: student.phone, status: 'paid' },
+            });
+            if (!isCurrent()) return;
+            const fees = Array.isArray(feeResponse.data) ? feeResponse.data : [];
+            payments[student.id] = fees.some(
+              (fee: any) => fee.payment_year === currentYear && fee.payment_month === currentMonth,
+            )
+              ? 'paid'
+              : 'unpaid';
+          } catch (err) {
+            if (!isCurrent()) return;
+            payments[student.id] = 'unknown';
+          }
+        }
+
+        const previous = await readPreviousAttendance(student, groups, today, isCurrent);
+        if (previous === 'superseded') return;
+        if (previous) lastAttendance[student.id] = previous;
+      }
+
+      // Re-check after the per-student awaits: the maps must not land on a
+      // scope that was changed while they were being collected.
+      if (!isCurrent()) return;
+      // Merge (not replace) into the scope's maps so the absent loader's
+      // entries for the same scope survive, mirroring the original page.
+      committedPayments = { ...committedPayments, ...payments };
+      committedLastAttendance = { ...committedLastAttendance, ...lastAttendance };
+      sinks.replaceMonthlyPayments({ ...committedPayments });
+      sinks.replaceLastAttendance({ ...committedLastAttendance });
+      sinks.setTodayLoad({ loading: false, error: null });
+    } catch (error) {
+      // A failure of a superseded load must not surface as the current state.
+      if (!isCurrent()) return;
+      // A failed load for the selected scope must not leave the previous
+      // scope's committed rows/maps on screen.
+      clearCommitted();
+      // The authoritative snapshot is gone: dependent absent computations
+      // are fenced and their loading state cleared coherently.
+      fenceDependentAbsentLoads();
+      sinks.setTodayLoad({ loading: false, error: classifyBarcodeScanError(error) });
+    }
+  };
+
+  const loadAbsentStudents = async (): Promise<void> => {
+    const groupId = readScope();
+    const token = absentGuard.begin(groupId);
+    const isCurrent = () => absentGuard.isCurrent(token, readScope());
+
+    // Without a successful attendance load for this scope we cannot know who
+    // is absent; never present every student as absent.
+    if (!todayCommitted) {
+      sinks.setAbsentRows([]);
+      sinks.setAbsentLoad({ loading: false, error: null });
+      return;
+    }
+
+    sinks.setAbsentLoad({ loading: true, error: null });
+    try {
+      const reference = now();
+      // Same Africa/Cairo business-day key as the today loader above, so the
+      // previous-scheduled-day lookup cannot straddle midnight differently.
+      const today = todayDayKey(reference);
+      // Payment month/year deliberately keep the existing billing convention
+      // (supervisor/026: no payment_date/payment_month/year change).
+      const currentYear = reference.getFullYear();
+      const currentMonth = reference.getMonth() + 1;
+
+      const students = readStudents();
+      const groups = readGroups();
+      const groupStudents = students.filter((s: any) => s.group_id === groupId && s.is_active);
+      const presentIds = new Set(
+        committedRows.filter((a: any) => a.status === 'present').map((a: any) => a.student_id),
+      );
+      const absent = groupStudents.filter((s: any) => !presentIds.has(s.id));
+
+      const lastAttendance: Record<string, LastAttendanceEntry> = {};
+      const payments: Record<string, PaymentAvailability> = {};
+
+      for (const student of absent) {
+        if (!isCurrent()) return;
+
+        const previous = await readPreviousAttendance(student, groups, today, isCurrent);
+        if (previous === 'superseded') return;
+        if (previous) lastAttendance[student.id] = previous;
+
+        if (!isCurrent()) return;
+        try {
+          const feeResponse = await http.get(`${apiUrl}/fees`, {
+            params: { phone: student.phone, status: 'paid' },
+          });
+          if (!isCurrent()) return;
+          const fees = Array.isArray(feeResponse.data) ? feeResponse.data : [];
+          payments[student.id] = fees.some(
+            (fee: any) => fee.payment_year === currentYear && fee.payment_month === currentMonth,
+          )
+            ? 'paid'
+            : 'unpaid';
+        } catch (err) {
+          if (!isCurrent()) return;
+          payments[student.id] = 'unknown';
+        }
+      }
+
+      if (!isCurrent()) return;
+      // Merge (not replace) into the scope's maps so the today loader's
+      // entries for the same scope survive, mirroring the original page.
+      committedPayments = { ...committedPayments, ...payments };
+      committedLastAttendance = { ...committedLastAttendance, ...lastAttendance };
+      sinks.setAbsentRows(absent);
+      sinks.replaceLastAttendance({ ...committedLastAttendance });
+      sinks.replaceMonthlyPayments({ ...committedPayments });
+      sinks.setAbsentLoad({ loading: false, error: null });
+    } catch (error) {
+      if (!isCurrent()) return;
+      sinks.setAbsentRows([]);
+      sinks.setAbsentLoad({ loading: false, error: classifyBarcodeScanError(error) });
+    }
+  };
+
+  return {
+    resetScope() {
+      todayGuard.invalidate();
+      absentGuard.invalidate();
+      clearCommitted();
+      resetLoadStates();
+    },
+    invalidate() {
+      todayGuard.invalidate();
+      absentGuard.invalidate();
+      resetLoadStates();
+    },
+    loadTodayAttendance,
+    loadAbsentStudents,
+  };
+};
+
 const BarcodeAttendance = () => {
   const [groups, setGroups] = useState([]);
   const [grades, setGrades] = useState([]);
@@ -84,8 +577,8 @@ const BarcodeAttendance = () => {
   const [todayAttendance, setTodayAttendance] = useState([]);
   const [students, setStudents] = useState([]);
   const [absentStudents, setAbsentStudents] = useState([]);
-  const [lastAttendance, setLastAttendance] = useState<Record<string, any>>({});
-  const [monthlyPayments, setMonthlyPayments] = useState<Record<string, boolean>>({});
+  const [lastAttendance, setLastAttendance] = useState<Record<string, LastAttendanceEntry>>({});
+  const [monthlyPayments, setMonthlyPayments] = useState<Record<string, PaymentAvailability>>({});
   const [isPaymentDialogOpen, setIsPaymentDialogOpen] = useState(false);
   const [selectedStudentForPayment, setSelectedStudentForPayment] = useState<any>(null);
   const [paymentAmount, setPaymentAmount] = useState("");
@@ -101,6 +594,59 @@ const BarcodeAttendance = () => {
   // Filter groups to only show those scheduled for today
   const todayGroups = groups.filter((g: any) => isTodayScheduled(g.schedule_days));
 
+  // Non-group-scoped list loaders keep their own stale-response fences.
+  const groupsSequence = useRef(createResponseSequence());
+  const gradesSequence = useRef(createResponseSequence());
+  const studentsSequence = useRef(createResponseSequence());
+  const selectedGroupIdRef = useRef(selectedGroupId);
+  const studentsRef = useRef<any[]>([]);
+  const groupsRef = useRef<any[]>([]);
+
+  // Honest current loading/error state for the two group-scoped loads.
+  const [todayLoad, setTodayLoad] = useState<BarcodeLoadState>({ loading: false, error: null });
+  const [absentLoad, setAbsentLoad] = useState<BarcodeLoadState>({ loading: false, error: null });
+
+  useEffect(() => {
+    studentsRef.current = students;
+  }, [students]);
+
+  useEffect(() => {
+    groupsRef.current = groups;
+  }, [groups]);
+
+  // The group-scoped orchestration lives in the injectable production
+  // controller (defined above) so the isolated tests can drive the real
+  // loader behaviour with an injected transport and state sinks.
+  const controller = useRef<BarcodeAttendanceController | null>(null);
+  if (!controller.current) {
+    controller.current = createBarcodeAttendanceController({
+      http: { get: (url: string, config?: any) => barcodeTransport.current.get(url, config) },
+      apiUrl: API_URL,
+      readScope: () => selectedGroupIdRef.current,
+      readStudents: () => studentsRef.current,
+      readGroups: () => groupsRef.current,
+      sinks: {
+        setAttendanceRows: (rows) => setTodayAttendance(rows),
+        setAbsentRows: (rows) => setAbsentStudents(rows),
+        replaceLastAttendance: (map) => setLastAttendance(map),
+        replaceMonthlyPayments: (map) => setMonthlyPayments(map),
+        setTodayLoad,
+        setAbsentLoad,
+      },
+    });
+  }
+
+  const fetchTodayAttendance = () => controller.current!.loadTodayAttendance();
+  const fetchAbsentStudents = () => controller.current!.loadAbsentStudents();
+
+  // Honest retry for a failed group-scoped load: re-issue the real request for
+  // the scope that is still selected (never a fabricated/empty success).
+  const retryTodayAttendance = () => {
+    if (!selectedGroupIdRef.current) return;
+    void controller.current!.loadTodayAttendance();
+    void controller.current!.loadAbsentStudents();
+  };
+
   useEffect(() => {
     fetchGroups();
     fetchGrades();
@@ -108,15 +654,31 @@ const BarcodeAttendance = () => {
   }, []);
 
   useEffect(() => {
+    selectedGroupIdRef.current = selectedGroupId;
+    // A scope change (including A -> B) retires the previous group's in-flight
+    // loads AND clears its committed rows/maps immediately, so group A's
+    // records can never be shown while group B is selected.
+    controller.current!.resetScope();
     if (selectedGroupId) {
-      fetchTodayAttendance();
+      void controller.current!.loadTodayAttendance();
     }
   }, [selectedGroupId]);
+
+  // Unmount / page teardown: retire every outstanding load.
+  useEffect(
+    () => () => {
+      controller.current?.invalidate();
+      groupsSequence.current.invalidate();
+      gradesSequence.current.invalidate();
+      studentsSequence.current.invalidate();
+    },
+    [],
+  );
 
   // تحديث الغائبين تلقائياً عند تغيير الحضور أو الطلاب أو المجموعة
   useEffect(() => {
     if (selectedGroupId) {
-      fetchAbsentStudents();
+      void controller.current!.loadAbsentStudents();
     }
   }, [todayAttendance, selectedGroupId, students]);
 
@@ -126,217 +688,70 @@ const BarcodeAttendance = () => {
     if (!submitting) barcodeInputRef.current?.focus();
   }, [submitting]);
 
-  const fetchGroups = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get(`${API_URL}/groups`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setGroups(response.data.filter((g: any) => g.is_active));
-    } catch (error) {
-      console.error('Error fetching groups:', error);
+  // Shared failure reporter for the non-scan protected requests. A missing or
+  // rejected session is reported as such instead of as a generic load error.
+  const reportRequestFailure = (error: any, fallbackDescription: string) => {
+    const classified = classifyBarcodeScanError(error);
+    if (classified.kind === 'missing_token' || classified.kind === 'auth') {
       toast({
-        title: "خطأ",
-        description: "فشل تحميل المجموعات",
+        title: "انتهت الجلسة",
+        description: classified.message,
         variant: "destructive",
       });
+      return classified;
+    }
+    toast({
+      title: "خطأ",
+      description: classified.serverMessage ?? fallbackDescription,
+      variant: "destructive",
+    });
+    return classified;
+  };
+
+  const fetchGroups = async () => {
+    const token = groupsSequence.current.next();
+    try {
+      const response = await barcodeTransport.current.get(`${API_URL}/groups`);
+      if (!groupsSequence.current.isCurrent(token)) return; // superseded load
+      setGroups((response.data || []).filter((g: any) => g.is_active));
+    } catch (error) {
+      if (!groupsSequence.current.isCurrent(token)) return;
+      console.error('Error fetching groups:', error);
+      reportRequestFailure(error, 'فشل تحميل المجموعات');
     }
   };
 
   const fetchGrades = async () => {
+    const token = gradesSequence.current.next();
     try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get(`${API_URL}/grades`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setGrades(response.data.filter((g: any) => g.is_active));
+      const response = await barcodeTransport.current.get(`${API_URL}/grades`);
+      if (!gradesSequence.current.isCurrent(token)) return;
+      setGrades((response.data || []).filter((g: any) => g.is_active));
     } catch (error) {
+      if (!gradesSequence.current.isCurrent(token)) return;
       console.error('Error fetching grades:', error);
     }
   };
 
   const fetchStudents = async () => {
+    const token = studentsSequence.current.next();
     try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get(`${API_URL}/students`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setStudents(response.data.filter((s: any) => s.is_active));
+      const response = await barcodeTransport.current.get(`${API_URL}/students`);
+      if (!studentsSequence.current.isCurrent(token)) return;
+      setStudents((response.data || []).filter((s: any) => s.is_active));
     } catch (error) {
+      if (!studentsSequence.current.isCurrent(token)) return;
       console.error('Error fetching students:', error);
-      toast({
-        title: "خطأ",
-        description: "فشل تحميل الطلاب",
-        variant: "destructive",
-      });
+      reportRequestFailure(error, 'فشل تحميل الطلاب');
     }
   };
 
-  const fetchTodayAttendance = async () => {
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      const token = localStorage.getItem('token');
-
-      const response = await axios.get(`${API_URL}/attendance`, {
-        headers: { Authorization: `Bearer ${token}` },
-        params: {
-          date: today,
-          group_id: selectedGroupId || undefined
-        }
-      });
-
-      setTodayAttendance(response.data || []);
-
-      // Update payment status and last attendance for all students who attended
-      const paymentsData: Record<string, boolean> = {};
-      const lastAttendanceData: Record<string, any> = {};
-      const currentYear = new Date().getFullYear();
-      const currentMonth = new Date().getMonth() + 1;
-      // استخدم تعريف today في أعلى الدالة وتجنب إعادة تعريفه لتفادي الخطأ
-
-      for (const record of response.data || []) {
-        const student = students.find((s: any) => s.id === record.student_id);
-        if (student) {
-          // Fetch payment status
-          if (!paymentsData[student.id]) {
-            try {
-              const feeResponse = await axios.get(`${API_URL}/fees`, {
-                headers: { Authorization: `Bearer ${token}` },
-                params: {
-                  phone: student.phone,
-                  status: 'paid'
-                }
-              });
-              const hasMonthlyPayment = feeResponse.data.some((fee: any) => {
-                return fee.payment_year === currentYear && fee.payment_month === currentMonth;
-              });
-              paymentsData[student.id] = hasMonthlyPayment;
-            } catch (err) {
-              console.error('Error fetching payment:', err);
-              paymentsData[student.id] = false;
-            }
-          }
-
-          // Fetch last scheduled session attendance
-          try {
-            const group = groups.find((g: any) => g.id === student.group_id);
-            const lastScheduledDate = getPreviousScheduledDay(today, group?.schedule_days);
-            if (lastScheduledDate) {
-              const attResponse = await axios.get(`${API_URL}/attendance`, {
-                headers: { Authorization: `Bearer ${token}` },
-                params: {
-                  student_id: student.id,
-                  date: lastScheduledDate
-                }
-              });
-              if (attResponse.data && attResponse.data.length > 0) {
-                lastAttendanceData[student.id] = { ...attResponse.data[0], _scheduledDate: lastScheduledDate, _attended: attResponse.data[0].status === 'present' };
-              } else {
-                // No record = was absent on last scheduled session
-                lastAttendanceData[student.id] = { _scheduledDate: lastScheduledDate, _attended: false, status: 'absent' };
-              }
-            }
-          } catch (err) {
-            console.error('Error fetching last attendance:', err);
-          }
-        }
-      }
-      console.log('[Attendance] monthlyPayments (today) =>', paymentsData);
-      console.log('[Attendance] lastAttendance (today) =>', lastAttendanceData);
-      setMonthlyPayments(prev => ({ ...prev, ...paymentsData }));
-      setLastAttendance(prev => ({ ...prev, ...lastAttendanceData }));
-    } catch (error) {
-      console.error('Error fetching attendance:', error);
-      toast({
-        title: "خطأ",
-        description: "فشل تحميل سجل الحضور",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const fetchAbsentStudents = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      // Use local date parts to avoid UTC shift issues
-      const now = new Date();
-      const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-      const currentYear = new Date().getFullYear();
-      const currentMonth = new Date().getMonth() + 1;
-
-      // Get all students in the group
-      const groupStudents = students.filter((s: any) =>
-        s.group_id === selectedGroupId && s.is_active
-      );
-
-      // السجلات المسجلة حضور فعلي لهذا اليوم (نستثني الغياب حتى لو تم إدخاله يدوياً)
-      // نستخدم Set لتسريع عملية البحث وتجنب التكرار
-      const presentIds = new Set(
-        todayAttendance
-          .filter((a: any) => a.status === 'present')
-          .map((a: any) => a.student_id)
-      );
-
-      // الطلاب الذين ليس لديهم سجل حضور (present) اليوم
-      const absent = groupStudents.filter((s: any) => !presentIds.has(s.id));
-
-      // Fetch last attendance for each absent student
-      const lastAttendanceData: Record<string, any> = {};
-      // Payment data for absent students only - will be merged with existing
-      const paymentsData: Record<string, boolean> = {};
-
-      for (const student of absent) {
-        // Get last scheduled session attendance
-        const group = groups.find((g: any) => g.id === student.group_id);
-        const lastScheduledDate = getPreviousScheduledDay(today, group?.schedule_days);
-        if (lastScheduledDate) {
-          try {
-            const attResponse = await axios.get(`${API_URL}/attendance`, {
-              headers: { Authorization: `Bearer ${token}` },
-              params: {
-                student_id: student.id,
-                date: lastScheduledDate
-              }
-            });
-            if (attResponse.data && attResponse.data.length > 0) {
-              lastAttendanceData[student.id] = { ...attResponse.data[0], _scheduledDate: lastScheduledDate, _attended: attResponse.data[0].status === 'present' };
-            } else {
-              // No record = was absent on last scheduled session
-              lastAttendanceData[student.id] = { _scheduledDate: lastScheduledDate, _attended: false, status: 'absent' };
-            }
-          } catch (err) {
-            console.error('Error fetching last attendance:', err);
-          }
-        }
-
-        // Check monthly payment
-        try {
-          const feeResponse = await axios.get(`${API_URL}/fees`, {
-            headers: { Authorization: `Bearer ${token}` },
-            params: {
-              phone: student.phone,
-              status: 'paid'
-            }
-          });
-          // Check if payment exists for current month using payment_year and payment_month
-          const hasMonthlyPayment = feeResponse.data.some((fee: any) => {
-            return fee.payment_year === currentYear && fee.payment_month === currentMonth;
-          });
-          paymentsData[student.id] = hasMonthlyPayment;
-        } catch (err) {
-          console.error('Error fetching payment:', err);
-          paymentsData[student.id] = false;
-        }
-      }
-
-      setAbsentStudents(absent);
-      setLastAttendance(prev => ({ ...prev, ...lastAttendanceData }));
-      console.log('[Attendance] monthlyPayments (absent) =>', paymentsData);
-      setMonthlyPayments(prev => ({ ...prev, ...paymentsData }));
-    } catch (error) {
-      console.error('Error fetching absent students:', error);
-    }
-  };
+  // The group-scoped today-attendance load is implemented by the injectable
+  // production controller above (`createBarcodeAttendanceController`); the page
+  // only wires its sinks and calls `fetchTodayAttendance()` (see the refs
+  // section). The controller clears committed rows/maps on every scope change,
+  // retires them on a failed load, stops superseded loops before nested reads,
+  // and reports an unavailable payment / previous attendance as `unknown`.
 
   // ارسال واتساب إلى رقم ولي الأمر (أولوية) ثم رقم الطالب إن لم يتوفر
   const sendWhatsAppNotification = (student: any, status: string) => {
@@ -398,16 +813,16 @@ const BarcodeAttendance = () => {
     if (!submitGuard.current.tryAcquire()) return;
     setSubmitting(true);
     try {
-      const today = new Date().toISOString().split('T')[0];
-      const token = localStorage.getItem('token');
+      // Africa/Cairo business day (supervisor/026): the explicit day key is
+      // preserved by the server, so the write lands on the same calendar day
+      // the operator sees.
+      const today = todayDayKey();
 
-      const response = await axios.post(`${API_URL}/attendance`, {
+      const response = await barcodeTransport.current.post(`${API_URL}/attendance`, {
         student_id: student.id,
         group_id: groupId,
         attendance_date: today,
         status: 'present'
-      }, {
-        headers: { Authorization: `Bearer ${token}` }
       });
 
       if (response.data) {
@@ -429,7 +844,7 @@ const BarcodeAttendance = () => {
 
   const handleAttendanceError = (error: any) => {
     console.error('Error recording attendance:', error);
-    const classified = classifyAttendanceError(error);
+    const classified = classifyBarcodeScanError(error);
 
     if (classified.kind === 'duplicate') {
       toast({
@@ -437,7 +852,7 @@ const BarcodeAttendance = () => {
         description: "تم تسجيل الحضور مسبقاً اليوم",
         variant: "default",
       });
-    } else if (classified.kind === 'auth') {
+    } else if (classified.kind === 'missing_token' || classified.kind === 'auth') {
       toast({
         title: "انتهت الجلسة",
         description: classified.message,
@@ -450,7 +865,13 @@ const BarcodeAttendance = () => {
         variant: "destructive",
       });
     }
-    setBarcodeInput("");
+    // The single-flight guard has already been released by the caller, so a
+    // retryable failure keeps the scanned barcode in the input: the operator
+    // can press Enter (or rescan) to retry the same student. Only an
+    // already-recorded scan has nothing left to retry.
+    if (shouldClearBarcodeInputAfterFailure(classified.kind)) {
+      setBarcodeInput("");
+    }
   };
 
   // Handle cross-group confirmation
@@ -498,14 +919,13 @@ const BarcodeAttendance = () => {
     }
 
     try {
-      const today = new Date().toISOString().split('T')[0];
-      const token = localStorage.getItem('token');
+      // Africa/Cairo business day (supervisor/026): notify-absent audits the
+      // same calendar day the attendance marks were written under.
+      const today = todayDayKey();
 
-      const response = await axios.post(`${API_URL}/attendance/notify-absent`, {
+      const response = await barcodeTransport.current.post(`${API_URL}/attendance/notify-absent`, {
         group_id: selectedGroupId,
         date: today
-      }, {
-        headers: { Authorization: `Bearer ${token}` }
       });
 
       const data = response.data;
@@ -532,11 +952,7 @@ const BarcodeAttendance = () => {
 
     } catch (error: any) {
       console.error('Error sending WhatsApp to absent students:', error);
-      toast({
-        title: "خطأ",
-        description: "حدث خطأ أثناء إرسال الإشعارات",
-        variant: "destructive",
-      });
+      reportRequestFailure(error, "حدث خطأ أثناء إرسال الإشعارات");
     }
   };
 
@@ -557,7 +973,6 @@ const BarcodeAttendance = () => {
     }
 
     try {
-      const token = localStorage.getItem('token');
       const amount = parseFloat(paymentAmount);
 
       if (amount <= 0) {
@@ -573,7 +988,7 @@ const BarcodeAttendance = () => {
       const currentMonth = new Date().getMonth() + 1;
 
       // Create fee record
-      await axios.post(`${API_URL}/fees`, {
+      await barcodeTransport.current.post(`${API_URL}/fees`, {
         student_name: selectedStudentForPayment.name,
         phone: selectedStudentForPayment.phone,
         guardian_phone: selectedStudentForPayment.guardian_phone,
@@ -589,8 +1004,6 @@ const BarcodeAttendance = () => {
         payment_month: currentMonth,
         payment_date: new Date().toISOString().split('T')[0],
         notes: `دفع سريع من صفحة الحضور`
-      }, {
-        headers: { Authorization: `Bearer ${token}` }
       });
 
       toast({
@@ -608,6 +1021,12 @@ const BarcodeAttendance = () => {
 
     } catch (error: any) {
       console.error('Error processing quick payment:', error);
+
+      const classified = classifyBarcodeScanError(error);
+      if (classified.kind === 'missing_token' || classified.kind === 'auth') {
+        reportRequestFailure(error, "انتهت الجلسة، سجّل الدخول من جديد");
+        return;
+      }
 
       if (error.response?.status === 400 && error.response?.data?.error?.includes('تم الدفع مسبقاً')) {
         toast({
@@ -735,10 +1154,10 @@ const BarcodeAttendance = () => {
                 <div className="p-4 bg-red-50 dark:bg-red-950/20 rounded-lg">
                   <p className="text-sm text-muted-foreground">الغياب</p>
                   <p className="text-3xl font-bold text-red-600">
-                    {selectedGroupId
+                    {selectedGroupId && !todayLoad.loading && !todayLoad.error
                       ? students.filter((s: any) => s.group_id === selectedGroupId && s.is_active).length
                       - todayAttendance.filter((a: any) => a.status === 'present').length
-                      : 0
+                      : '—'
                     }
                   </p>
                 </div>
@@ -764,7 +1183,11 @@ const BarcodeAttendance = () => {
         {(() => {
           const presentRecords = todayAttendance.filter((r: any) => r.status === 'present');
           const presentIds = new Set(presentRecords.map((r: any) => r.student_id));
-          const filteredAbsentStudents = selectedGroupId
+          // Without a successful attendance load for the selected scope we
+          // cannot know who is absent; never derive "everyone is absent" from
+          // an empty or failed load.
+          const attendanceReady = !todayLoad.loading && !todayLoad.error;
+          const filteredAbsentStudents = selectedGroupId && attendanceReady
             ? students.filter((s: any) => s.group_id === selectedGroupId && s.is_active && !presentIds.has(s.id))
             : [];
           return (
@@ -774,6 +1197,17 @@ const BarcodeAttendance = () => {
                   <CardTitle>سجل الحضور اليوم</CardTitle>
                 </CardHeader>
                 <CardContent>
+                  {todayLoad.loading && (
+                    <p className="text-sm text-muted-foreground mb-3">جارٍ تحميل سجل الحضور…</p>
+                  )}
+                  {todayLoad.error && (
+                    <div className="mb-3 p-3 bg-red-50 dark:bg-red-950/20 rounded-lg border border-red-200 dark:border-red-800 flex items-center justify-between gap-3">
+                      <p className="text-sm text-red-700 dark:text-red-400">{todayLoad.error.message}</p>
+                      <Button variant="outline" size="sm" onClick={retryTodayAttendance}>
+                        إعادة المحاولة
+                      </Button>
+                    </div>
+                  )}
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -791,7 +1225,7 @@ const BarcodeAttendance = () => {
                     <TableBody>
                       {presentRecords.map((record: any) => {
                         const student = students.find((s: any) => s.id === record.student_id);
-                        const hasPaid = monthlyPayments[student?.id] || false;
+                        const payment = monthlyPayments[student?.id] ?? 'unknown';
                         const lastAtt = lastAttendance[student?.id];
                         return (
                           <TableRow key={record.id}>
@@ -807,13 +1241,17 @@ const BarcodeAttendance = () => {
                             <TableCell>
                               {lastAtt ? (
                                 <div className="flex flex-col gap-1">
-                                  <Badge variant={lastAtt._attended ? 'default' : 'destructive'}>
-                                    {lastAtt._attended ? (
-                                      <><CheckCircle className="ml-1 h-3 w-3" /> حضر</>
-                                    ) : (
-                                      <><XCircle className="ml-1 h-3 w-3" /> غائب</>
-                                    )}
-                                  </Badge>
+                                  {lastAtt._unavailable ? (
+                                    <Badge variant="secondary">غير متاح</Badge>
+                                  ) : (
+                                    <Badge variant={lastAtt._attended ? 'default' : 'destructive'}>
+                                      {lastAtt._attended ? (
+                                        <><CheckCircle className="ml-1 h-3 w-3" /> حضر</>
+                                      ) : (
+                                        <><XCircle className="ml-1 h-3 w-3" /> غائب</>
+                                      )}
+                                    </Badge>
+                                  )}
                                   {lastAtt._scheduledDate && (
                                     <span className="text-xs text-muted-foreground">
                                       {new Date(lastAtt._scheduledDate).toLocaleDateString('ar-SA')}
@@ -825,20 +1263,24 @@ const BarcodeAttendance = () => {
                               )}
                             </TableCell>
                             <TableCell>
-                              <Badge variant={hasPaid ? 'default' : 'destructive'}>
-                                {hasPaid ? (
-                                  <><CheckCircle className="ml-1 h-3 w-3" /> مدفوع</>
-                                ) : (
-                                  <><XCircle className="ml-1 h-3 w-3" /> غير مدفوع</>
-                                )}
-                              </Badge>
+                              {payment === 'paid' ? (
+                                <Badge variant="default">
+                                  <CheckCircle className="ml-1 h-3 w-3" /> مدفوع
+                                </Badge>
+                              ) : payment === 'unpaid' ? (
+                                <Badge variant="destructive">
+                                  <XCircle className="ml-1 h-3 w-3" /> غير مدفوع
+                                </Badge>
+                              ) : (
+                                <Badge variant="secondary">غير متاح</Badge>
+                              )}
                             </TableCell>
                             <TableCell className="text-sm">
                               {new Date(record.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
                             </TableCell>
                             <TableCell>
                               <div className="flex gap-2">
-                                {!hasPaid && (
+                                {payment === 'unpaid' && (
                                   <Button
                                     variant="default"
                                     size="sm"
@@ -897,45 +1339,58 @@ const BarcodeAttendance = () => {
                       </TableHeader>
                       <TableBody>
                         {filteredAbsentStudents.map((student: any) => {
-                          const lastAtt = lastAttendance[student.id];
-                          const hasPaid = monthlyPayments[student.id];
+                          const paymentPresentation = describePaymentPresentation(
+                            monthlyPayments[student.id],
+                          );
+                          const lastAttendancePresentation = describeLastAttendancePresentation(
+                            lastAttendance[student.id],
+                          );
                           return (
                             <TableRow key={student.id}>
                               <TableCell className="font-medium">{student.name}</TableCell>
                               <TableCell className="font-mono text-sm">{student.phone || '-'}</TableCell>
                               <TableCell className="font-mono text-sm">{student.guardian_phone || '-'}</TableCell>
                               <TableCell className="text-sm">
-                                {lastAtt ? (
+                                {lastAttendancePresentation.state === 'never' ? (
+                                  <span className="text-muted-foreground">لم يحضر من قبل</span>
+                                ) : lastAttendancePresentation.state === 'unavailable' ? (
+                                  <Badge variant="secondary" className="w-fit">غير متاح</Badge>
+                                ) : (
                                   <div className="flex flex-col gap-1">
-                                    <Badge variant={lastAtt._attended ? 'default' : 'destructive'} className="w-fit">
-                                      {lastAtt._attended ? (
+                                    <Badge
+                                      variant={lastAttendancePresentation.state === 'attended' ? 'default' : 'destructive'}
+                                      className="w-fit"
+                                    >
+                                      {lastAttendancePresentation.state === 'attended' ? (
                                         <><CheckCircle className="ml-1 h-3 w-3" /> حضر آخر حصة</>
                                       ) : (
                                         <><XCircle className="ml-1 h-3 w-3" /> لم يحضر آخر حصة</>
                                       )}
                                     </Badge>
-                                    {lastAtt._scheduledDate && (
+                                    {lastAttendance[student.id]?._scheduledDate && (
                                       <span className="text-xs text-muted-foreground">
-                                        {new Date(lastAtt._scheduledDate).toLocaleDateString('ar-SA')}
+                                        {new Date(lastAttendance[student.id]._scheduledDate).toLocaleDateString('ar-SA')}
                                       </span>
                                     )}
                                   </div>
-                                ) : (
-                                  <span className="text-muted-foreground">لم يحضر من قبل</span>
                                 )}
                               </TableCell>
                               <TableCell>
-                                <Badge variant={hasPaid ? 'default' : 'destructive'}>
-                                  {hasPaid ? (
-                                    <><CheckCircle className="ml-1 h-3 w-3" /> مدفوع</>
-                                  ) : (
-                                    <><XCircle className="ml-1 h-3 w-3" /> غير مدفوع</>
-                                  )}
-                                </Badge>
+                                {paymentPresentation.state === 'paid' ? (
+                                  <Badge variant="default">
+                                    <CheckCircle className="ml-1 h-3 w-3" /> مدفوع
+                                  </Badge>
+                                ) : paymentPresentation.state === 'unpaid' ? (
+                                  <Badge variant="destructive">
+                                    <XCircle className="ml-1 h-3 w-3" /> غير مدفوع
+                                  </Badge>
+                                ) : (
+                                  <Badge variant="secondary">غير متاح</Badge>
+                                )}
                               </TableCell>
                               <TableCell>
                                 <div className="flex gap-2">
-                                  {!hasPaid && (
+                                  {paymentPresentation.allowPayment && (
                                     <Button
                                       variant="default"
                                       size="sm"

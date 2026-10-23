@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -13,17 +13,59 @@ import {
   Bell,
   PlayCircle,
   AlertTriangle,
+  Building2,
+  RefreshCw,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import Header from '@/components/Header';
-import { getInstructorStats, getInstructorWalletTransactions, getReceivedRequests, getMyTenantSubscription, type MyTenantSubscription, User } from '@/lib/api';
+import { getInstructorStats, getInstructorWalletTransactions, getReceivedRequests, getMyTenantSubscription, getMyTenantProfile, updateMyTenantProfile, type MyTenantSubscription, User } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
+import { subscribeSessionChange } from '@/lib/session-events';
+import {
+  createTenantProfileController,
+  readCourseSessionPrincipal,
+  type TenantProfileController,
+  type TenantProfileEditState,
+  type TenantProfileState,
+} from '@/features/tenant/profile';
+import BranchManager from '@/features/tenant/BranchManager';
+import TenantBrandingCard from '@/features/tenant/TenantBrandingCard';
+import AcademicPeriodsCard from '@/features/tenant/AcademicPeriodsCard';
 
 const cardVariants = {
   hidden: { opacity: 0, y: 20 },
   visible: (i: number) => ({ opacity: 1, y: 0, transition: { delay: i * 0.1 } }),
+};
+
+/**
+ * M2-05 — read-only identity of the server-selected workspace.
+ *
+ * The page owns only rendering; the request lifecycle (loading / error /
+ * unauthorized / denied / no-workspace states, runtime DTO validation,
+ * stale-reply invalidation, session and disposal fences) lives in
+ * `src/features/tenant/profile.ts`, which the hermetic tests drive. The card
+ * shows ONLY a server-confirmed profile from the accepted M2-B01 endpoint —
+ * never a local user name, a billing DTO or a fallback identity — and the
+ * institution status is displayed as metadata, not as payment or entitlement.
+ */
+const readPrincipal = (): string | null => {
+  try {
+    return readCourseSessionPrincipal(localStorage);
+  } catch {
+    return null;
+  }
+};
+
+const PROFILE_PHASE_TEXT: Record<TenantProfileState['phase'], string> = {
+  idle: 'جارٍ تحضير هوية المساحة…',
+  loading: 'جارٍ تحميل هوية المساحة…',
+  ready: '',
+  error: '',
+  unauthorized: 'انتهت صلاحية الجلسة. سجّل الدخول مرة أخرى لعرض هوية المساحة.',
+  denied: 'تم تعطيل الحساب من الإدارة؛ لا يمكن عرض هوية المساحة.',
+  'no-workspace': 'لا توجد مساحة عمل مُصرّح بها مرتبطة بهذا الحساب.',
 };
 
 export default function InstructorDashboard() {
@@ -40,8 +82,30 @@ export default function InstructorDashboard() {
   const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
   const [pendingRequests, setPendingRequests] = useState<any[]>([]);
   const [subscription, setSubscription] = useState<MyTenantSubscription | null>(null);
+  const [profileSnapshot, setProfileSnapshot] = useState<TenantProfileState | null>(null);
+  const profileControllerRef = useRef<TenantProfileController | null>(null);
   const [graceSeconds, setGraceSeconds] = useState(0);
   const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // One controller per mount: the seam owns the request lifecycle (session
+    // fences, stale-reply invalidation, disposal). Disposal retires
+    // everything in flight on unmount and clears the private identity.
+    const instance = createTenantProfileController({
+      loadProfile: () => getMyTenantProfile(),
+      updateProfile: (businessName) => updateMyTenantProfile(businessName),
+      readPrincipal,
+      subscribeSession: (listener) => subscribeSessionChange(() => listener()),
+    });
+    profileControllerRef.current = instance;
+    const unsubscribe = instance.subscribe(setProfileSnapshot);
+    void instance.load();
+    return () => {
+      unsubscribe();
+      instance.dispose();
+      profileControllerRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const userStr = localStorage.getItem('currentUser');
@@ -124,6 +188,153 @@ export default function InstructorDashboard() {
           </h1>
           <p className="text-slate-500 mt-1">إليك ملخص حساباتك ونشاطك على المنصة</p>
         </motion.div>
+
+        {/* Selected institution identity — read-only, server-confirmed (M2-05) */}
+        <Card className="mb-8 border-0 shadow-lg">
+          <CardHeader>
+            <CardTitle className="text-indigo-700 flex items-center gap-2">
+              <Building2 className="w-5 h-5" />
+              هوية المساحة المختارة
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {(() => {
+              const phase = profileSnapshot?.phase ?? 'idle';
+              const profile = profileSnapshot?.profile ?? null;
+              const edit: TenantProfileEditState = profileSnapshot?.edit ?? {
+                status: 'closed',
+                draft: '',
+                error: null,
+                notice: null,
+              };
+              if (phase === 'ready' && profile) {
+                const subjectType = (profile.subject_type ?? '').trim();
+                const saving = edit.status === 'saving';
+                return (
+                  <div className="space-y-4">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <p className="text-lg font-bold text-slate-800 truncate" dir="auto">{profile.business_name}</p>
+                        {subjectType ? (
+                          <p className="text-sm text-slate-500 mt-1">النوع: <span dir="auto">{subjectType}</span></p>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <div className="text-sm text-slate-500">
+                          حالة المساحة (كما أكدها الخادم): <Badge variant="outline" className="mr-1" dir="auto">{profile.status}</Badge>
+                        </div>
+                        {edit.status === 'closed' ? (
+                          <Button variant="outline" size="sm"
+                            onClick={() => profileControllerRef.current?.openEditor()}>
+                            تعديل الاسم
+                          </Button>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {edit.status !== 'closed' ? (
+                      <form
+                        className="border-t border-slate-200 pt-4 space-y-3"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void profileControllerRef.current?.save();
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Escape' && !saving) {
+                            event.preventDefault();
+                            profileControllerRef.current?.cancelEdit();
+                          }
+                        }}
+                      >
+                        <label htmlFor="institution-name" className="block text-sm font-medium text-slate-700">
+                          اسم المؤسسة
+                        </label>
+                        <input
+                          id="institution-name"
+                          type="text"
+                          dir="auto"
+                          maxLength={255}
+                          disabled={saving}
+                          value={edit.draft}
+                          onChange={(event) => profileControllerRef.current?.updateDraft(event.target.value)}
+                          className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 disabled:bg-slate-100"
+                        />
+                        <p className="text-xs text-slate-500">
+                          التعديل متاح لمالك المؤسسة فقط؛ يتحقق الخادم من الملكية قبل الحفظ.
+                        </p>
+                        <div aria-live="polite" className="space-y-1">
+                          {saving ? (
+                            <p className="text-sm text-slate-500">جارٍ حفظ الاسم… بانتظار تأكيد الخادم.</p>
+                          ) : null}
+                          {edit.error ? (
+                            <p className="text-sm text-red-600 flex items-start gap-2">
+                              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                              <span>تعذّر حفظ الاسم: {edit.error}</span>
+                            </p>
+                          ) : null}
+                          {edit.notice ? (
+                            <p className="text-sm text-amber-700 flex items-start gap-2">
+                              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                              <span>{edit.notice}</span>
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button type="submit" size="sm" disabled={saving}
+                            className="bg-indigo-600 hover:bg-indigo-700">
+                            حفظ الاسم
+                          </Button>
+                          <Button type="button" size="sm" variant="outline" disabled={saving}
+                            onClick={() => profileControllerRef.current?.cancelEdit()}>
+                            إلغاء
+                          </Button>
+                          {edit.status === 'uncertain' ? (
+                            <Button type="button" size="sm" variant="outline" className="gap-2"
+                              onClick={() => { void profileControllerRef.current?.reconcile(); }}>
+                              <RefreshCw className="w-4 h-4" /> قراءة الحالة الحالية
+                            </Button>
+                          ) : null}
+                        </div>
+                      </form>
+                    ) : null}
+                  </div>
+                );
+              }
+              if (phase === 'error') {
+                return (
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-sm text-red-600 flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                      {profileSnapshot?.error || 'تعذّر تحميل هوية المساحة.'}
+                    </p>
+                    <Button variant="outline" size="sm" className="gap-2 shrink-0"
+                      onClick={() => { void profileControllerRef.current?.refresh(); }}>
+                      <RefreshCw className="w-4 h-4" /> إعادة المحاولة
+                    </Button>
+                  </div>
+                );
+              }
+              if (phase === 'idle' || phase === 'loading') {
+                return <p className="text-sm text-slate-400">{PROFILE_PHASE_TEXT[phase]}</p>;
+              }
+              return (
+                <p className="text-sm text-slate-500 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-amber-500" />
+                  {PROFILE_PHASE_TEXT[phase]}
+                </p>
+              );
+            })()}
+          </CardContent>
+        </Card>
+
+        {/* Tenant branch metadata — dedicated component, opened explicitly (M2-07) */}
+        <BranchManager />
+
+        {/* Private localized branding — dedicated card, opened explicitly (M2-12) */}
+        <TenantBrandingCard />
+
+        {/* Private academic-period planning catalog — dedicated card, opened explicitly (M2-13) */}
+        <AcademicPeriodsCard />
 
         {subscription && ['active', 'past_due', 'grace_period'].includes(subscription.subscription_status || '') && graceSeconds > 0 && (
           <Card className="mb-8 border-amber-300 bg-amber-50 shadow-md">

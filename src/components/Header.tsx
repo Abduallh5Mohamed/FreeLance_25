@@ -1,3 +1,4 @@
+import { subscribeSessionChange } from '@/lib/session-events';
 import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -72,6 +73,14 @@ const Header = () => {
       }
     }
   }, []);
+
+  useEffect(() => subscribeSessionChange(() => {
+    try {
+      const value = localStorage.getItem('currentUser');
+      const user = value ? JSON.parse(value) : null;
+      setCurrentUser(user); setUserName(user?.name || '');
+    } catch { setCurrentUser(null); setUserName(''); }
+  }), []);
 
   // Auto-expand group containing active route
   useEffect(() => {

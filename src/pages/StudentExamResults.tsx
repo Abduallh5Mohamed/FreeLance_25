@@ -79,6 +79,37 @@ export const normalizeExamResult = (result: any): ExamResult => {
 export const sortResultsByDate = (results: ExamResult[]): ExamResult[] =>
   [...results].sort((a, b) => new Date(b.attempted_at).getTime() - new Date(a.attempted_at).getTime());
 
+/**
+ * Thrown when a protected request is attempted without a stored session token.
+ * Callers fail closed (redirect to /auth) instead of sending an unauthenticated
+ * request that the strict-auth backend rejects with 401.
+ */
+export class MissingAuthTokenError extends Error {
+  constructor() {
+    super('Missing auth token');
+    this.name = 'MissingAuthTokenError';
+  }
+}
+
+/**
+ * Performs a protected request with the canonical session bearer token attached,
+ * reading the same `authToken` localStorage key as the shared transport so the
+ * strict-auth backend accepts the request. Throws MissingAuthTokenError when no
+ * token is stored, so no unauthenticated request is ever fired.
+ */
+export const authedFetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+  let token: string | null = null;
+  try {
+    token = localStorage.getItem('authToken');
+  } catch {
+    token = null;
+  }
+  if (!token) throw new MissingAuthTokenError();
+  const headers = new Headers(init.headers);
+  headers.set('Authorization', `Bearer ${token}`);
+  return fetch(url, { ...init, headers });
+};
+
 const StudentExamResults = () => {
   useScreenRecordingPrevention(); // Prevent screen recording & screenshots
   const [examResults, setExamResults] = useState<ExamResult[]>([]);
@@ -128,12 +159,21 @@ const StudentExamResults = () => {
       const currentStudentId = user.id;
       setStudentId(currentStudentId);
 
-      // Fetch exam results from backend
-      const response = await fetch(`${API_BASE_URL}/exam-results/student/${currentStudentId}`, {
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
+      // Fetch exam results from backend with the canonical session bearer
+      let response: Response;
+      try {
+        response = await authedFetch(`${API_BASE_URL}/exam-results/student/${currentStudentId}`, {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
+      } catch (authErr) {
+        if (authErr instanceof MissingAuthTokenError) {
+          navigate('/auth');
+          return;
+        }
+        throw authErr;
+      }
 
       if (requestSeq !== loadSeqRef.current) return; // stale response — a newer load superseded this one
 

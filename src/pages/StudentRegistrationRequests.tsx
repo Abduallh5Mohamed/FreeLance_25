@@ -63,32 +63,54 @@ export interface RegistrationDecisionDeps {
 
 export interface RegistrationDecisionOutcome {
   ok: boolean;
+  /**
+   * Set when the decision was refused because a CONFLICTING decision for the
+   * same request is still in flight (approve vs reject). The caller must treat
+   * it as "not applied" and must never display the other decision's result.
+   */
+  blocked?: boolean;
 }
 
+type RegistrationDecisionOp = 'approve' | 'reject';
+
 /**
- * Decision controller for registration requests. Every decision is
- * single-flight (a repeat click while a request for the same target is in
- * flight reuses it instead of issuing a duplicate request — the server
- * rejects an already-processed request with 404), the list is refreshed only
- * after the server confirms success, and failures keep the caller's state
- * untouched so no false success is shown.
+ * Decision controller for registration requests.
+ *
+ * Decisions are serialized PER REQUEST ID, not per operation: approving and
+ * rejecting the same request are mutually exclusive, so a conflicting decision
+ * is refused with a distinct blocked outcome instead of being issued (the
+ * server would otherwise record both operations). A repeat of the SAME
+ * decision while it is in flight reuses that operation's own result, the list
+ * is refreshed only after the server confirms success, and a failed decision
+ * releases the request so a deliberate retry is possible.
  */
 export const createRegistrationDecisionController = (deps: RegistrationDecisionDeps) => {
-  const inFlight = new Map<string, Promise<RegistrationDecisionOutcome>>();
+  const inFlight = new Map<string, { op: RegistrationDecisionOp; promise: Promise<RegistrationDecisionOutcome> }>();
 
-  const run = (key: string, op: () => Promise<RegistrationDecisionOutcome>): Promise<RegistrationDecisionOutcome> => {
-    const existing = inFlight.get(key);
-    if (existing) return existing;
-    const promise = op().finally(() => {
-      inFlight.delete(key);
+  const run = (
+    requestId: string,
+    op: RegistrationDecisionOp,
+    execute: () => Promise<RegistrationDecisionOutcome>,
+  ): Promise<RegistrationDecisionOutcome> => {
+    const existing = inFlight.get(requestId);
+    if (existing) {
+      // Same decision (double click) → share its result.
+      if (existing.op === op) return existing.promise;
+      // Conflicting decision → refuse distinctly; do NOT reuse the other
+      // operation's promise and never report its success as this one's.
+      return Promise.resolve({ ok: false, blocked: true });
+    }
+    const promise = execute().finally(() => {
+      const current = inFlight.get(requestId);
+      if (current && current.promise === promise) inFlight.delete(requestId);
     });
-    inFlight.set(key, promise);
+    inFlight.set(requestId, { op, promise });
     return promise;
   };
 
   return {
     approve: (request: RegistrationRequest) =>
-      run(`approve:${request.id}`, async () => {
+      run(request.id, 'approve', async () => {
         try {
           const result = await deps.approveRegistrationRequest(request.id);
           try {
@@ -110,7 +132,7 @@ export const createRegistrationDecisionController = (deps: RegistrationDecisionD
         }
       }),
     reject: (request: RegistrationRequest, reason: string) =>
-      run(`reject:${request.id}`, async () => {
+      run(request.id, 'reject', async () => {
         try {
           const result = await deps.rejectRegistrationRequest(request.id, reason);
           try {
@@ -147,18 +169,162 @@ export interface RegistrationPageDataDeps {
 }
 
 /**
- * Load every registration status — not just pending. The page renders
+ * Monotonic generation fence for a page load. A response may only commit while
+ * it is still the newest one for its resource; `invalidate()` retires every
+ * outstanding load (scope clear / unmount) without starting a replacement.
+ */
+export interface LoadSequence {
+  begin(): number;
+  isCurrent(token: number): boolean;
+  invalidate(): void;
+}
+
+export const createLoadSequence = (): LoadSequence => {
+  let latest = 0;
+  return {
+    begin(): number {
+      latest += 1;
+      return latest;
+    },
+    isCurrent(token: number): boolean {
+      return token === latest;
+    },
+    invalidate(): void {
+      latest += 1;
+    },
+  };
+};
+
+export type RegistrationResourceKey = 'requests' | 'grades' | 'groups' | 'courses';
+
+export interface RegistrationResourceResult<T> {
+  ok: boolean;
+  value: T | null;
+  /** Server/network error text when `ok` is false. */
+  error: string | null;
+}
+
+export interface RegistrationIndependentLoad {
+  requests: RegistrationResourceResult<RegistrationRequest[]>;
+  grades: RegistrationResourceResult<Grade[]>;
+  groups: RegistrationResourceResult<Group[]>;
+  courses: RegistrationResourceResult<Course[]>;
+}
+
+const errorText = (error: unknown): string =>
+  error instanceof Error && error.message ? error.message : 'خطأ غير معروف';
+
+async function settle<T>(load: () => Promise<T>): Promise<RegistrationResourceResult<T>> {
+  try {
+    const value = await load();
+    return { ok: true, value: value ?? null, error: null };
+  } catch (error) {
+    return { ok: false, value: null, error: errorText(error) };
+  }
+}
+
+/**
+ * Loads the four registration resources INDEPENDENTLY: one failing resource
+ * (e.g. the course list) must not discard the others, so a successful requests
+ * refresh can never be wiped by a selector failure and vice versa.
+ *
+ * Every registration status is loaded — not just pending. The page renders
  * pending/approved/rejected tabs and filters client-side; requesting only
  * pending would leave the approved/rejected tabs permanently empty.
  */
-export const loadRegistrationPageData = async (deps: RegistrationPageDataDeps): Promise<RegistrationPageData> => {
+export const loadRegistrationPageDataIndependently = async (
+  deps: RegistrationPageDataDeps,
+): Promise<RegistrationIndependentLoad> => {
   const [requests, grades, groups, courses] = await Promise.all([
-    deps.getRegistrationRequests(),
-    deps.getGrades(),
-    deps.getGroups(),
-    deps.getCourses(),
+    settle(() => deps.getRegistrationRequests()),
+    settle(() => deps.getGrades()),
+    settle(() => deps.getGroups()),
+    settle(() => deps.getCourses()),
   ]);
   return { requests, grades, groups, courses };
+};
+
+/**
+ * Strict all-or-nothing view of the same load: any failed resource propagates
+ * to the caller. Used where a partial page would be misleading.
+ */
+export const loadRegistrationPageData = async (deps: RegistrationPageDataDeps): Promise<RegistrationPageData> => {
+  const result = await loadRegistrationPageDataIndependently(deps);
+  const failed = ([
+    ['requests', result.requests],
+    ['grades', result.grades],
+    ['groups', result.groups],
+    ['courses', result.courses],
+  ] as Array<[string, RegistrationResourceResult<unknown>]>).find(([, r]) => !r.ok);
+  if (failed) {
+    throw new Error(failed[1].error || `HTTP failure loading ${failed[0]}`);
+  }
+  return {
+    requests: result.requests.value || [],
+    grades: result.grades.value || [],
+    groups: result.groups.value || [],
+    courses: result.courses.value || [],
+  };
+};
+
+export interface RegistrationLoadPatch {
+  requests?: RegistrationRequest[];
+  grades?: Grade[];
+  groups?: Group[];
+  courses?: Course[];
+  /** Independent error channels: the request list vs the selector lists. */
+  errors: { requests?: string | null; selectors?: string | null };
+  /** True when the request-list load settled (ends the initial spinner). */
+  done?: boolean;
+}
+
+export interface RegistrationPageLoaderDeps extends RegistrationPageDataDeps {
+  apply: (patch: RegistrationLoadPatch) => void;
+}
+
+/**
+ * Production load lifecycle of the registration page. The request list and the
+ * selector lists are fenced separately: a superseded load of either kind can no
+ * longer commit, a post-mutation refresh replaces only the list it owns, and a
+ * failed selector load keeps its own error without clearing the other channel.
+ */
+export const createRegistrationPageLoader = (deps: RegistrationPageLoaderDeps) => {
+  const requestsSequence = createLoadSequence();
+  const selectorsSequence = createLoadSequence();
+
+  return {
+    async loadRequests() {
+      const token = requestsSequence.begin();
+      try {
+        const requests = await deps.getRegistrationRequests();
+        if (!requestsSequence.isCurrent(token)) return; // superseded load
+        deps.apply({ requests: requests || [], errors: { requests: null }, done: true });
+      } catch (error) {
+        if (!requestsSequence.isCurrent(token)) return;
+        console.error('Error fetching registration requests:', error);
+        deps.apply({ errors: { requests: 'حدث خطأ أثناء تحميل الطلبات' }, done: true });
+      }
+    },
+    async loadSelectors() {
+      const token = selectorsSequence.begin();
+      const [grades, groups, courses] = await Promise.all([
+        settle(() => deps.getGrades()),
+        settle(() => deps.getGroups()),
+        settle(() => deps.getCourses()),
+      ]);
+      if (!selectorsSequence.isCurrent(token)) return;
+      deps.apply({
+        grades: grades.ok ? grades.value || [] : undefined,
+        groups: groups.ok ? groups.value || [] : undefined,
+        courses: courses.ok ? courses.value || [] : undefined,
+        errors: { selectors: grades.ok && groups.ok && courses.ok ? null : 'تعذر تحميل بعض القوائم المطلوبة' },
+      });
+    },
+    invalidate() {
+      requestsSequence.invalidate();
+      selectorsSequence.invalidate();
+    },
+  };
 };
 
 /** Split the loaded requests into the three tab lists. */
@@ -178,6 +344,8 @@ export default function StudentRegistrationRequests() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
+  const [requestsError, setRequestsError] = useState<string | null>(null);
+  const [selectorsError, setSelectorsError] = useState<string | null>(null);
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [selectedRequest, setSelectedRequest] = useState<RegistrationRequest | null>(null);
   const [rejectionReason, setRejectionReason] = useState("");
@@ -216,29 +384,43 @@ export default function StudentRegistrationRequests() {
     }
 
     fetchData();
+    pageLoader.loadSelectors();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const fetchData = async () => {
-    try {
-      const data = await loadRegistrationPageData({ getRegistrationRequests, getGrades, getGroups, getCourses });
-
-      // Show both online and offline requests
-      setRequests(data.requests);
-      setGrades(data.grades);
-      setGroups(data.groups);
-      setCourses(data.courses);
-    } catch (error) {
-      console.error('Error fetching data:', error);
-      toast({
-        title: "خطأ",
-        description: "حدث خطأ أثناء تحميل البيانات",
-        variant: "destructive"
-      });
-    } finally {
-      setLoading(false);
+  const applyRegistrationPatch = (patch: RegistrationLoadPatch) => {
+    if (patch.requests !== undefined) setRequests(patch.requests);
+    if (patch.grades !== undefined) setGrades(patch.grades);
+    if (patch.groups !== undefined) setGroups(patch.groups);
+    if (patch.courses !== undefined) setCourses(patch.courses);
+    if (patch.errors.requests !== undefined) {
+      setRequestsError(patch.errors.requests);
+      if (patch.errors.requests) {
+        toast({
+          title: "خطأ",
+          description: patch.errors.requests,
+          variant: "destructive"
+        });
+      }
     }
+    if (patch.errors.selectors !== undefined) setSelectorsError(patch.errors.selectors);
+    if (patch.done) setLoading(false);
   };
+
+  const pageLoader = useMemo(() => createRegistrationPageLoader({
+    getRegistrationRequests,
+    getGrades,
+    getGroups,
+    getCourses,
+    apply: applyRegistrationPatch,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), []);
+
+  const fetchData = () => pageLoader.loadRequests();
+
+  // Scope clear / unmount: retire every in-flight load so a late response
+  // cannot commit over the current state.
+  useEffect(() => () => pageLoader.invalidate(), [pageLoader]);
 
   const decisions = useMemo(() => createRegistrationDecisionController({
     approveRegistrationRequest,
@@ -442,6 +624,16 @@ export default function StudentRegistrationRequests() {
               </CardDescription>
             </CardHeader>
             <CardContent className="pt-6">
+              {requestsError && (
+                <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                  {requestsError}
+                </div>
+              )}
+              {selectorsError && (
+                <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-400">
+                  {selectorsError}
+                </div>
+              )}
               <Tabs defaultValue="pending" className="w-full">
                 <TabsList className="grid w-full grid-cols-3">
                   <TabsTrigger value="pending" className="flex items-center gap-2">

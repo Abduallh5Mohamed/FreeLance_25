@@ -108,6 +108,25 @@ interface Group {
   course_id: string;
 }
 
+/** api-http mutation helpers (updateExam/deleteExam) resolve to a boolean
+ *  instead of throwing, so a `false` result is a server-rejected mutation.
+ *  Treat it as failure — never as success. */
+export function assertMutationSucceeded(ok: boolean, failureMessage: string): void {
+  if (!ok) throw new Error(failureMessage);
+}
+
+/** Canonical Authorization header for the scoped raw-fetch calls. The backend
+ *  requires auth on these exam routes; the header is omitted entirely when no
+ *  token exists so a request is never sent as `Bearer null`. */
+export function buildAuthHeaders(): Record<string, string> {
+  try {
+    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('authToken') : null;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
 const ExamManager = () => {
   const [courses, setCourses] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -258,7 +277,7 @@ const ExamManager = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+          ...buildAuthHeaders()
         },
         body: JSON.stringify(examData)
       });
@@ -345,7 +364,7 @@ const handleQuestionSubmit = async (e) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+        ...buildAuthHeaders()
       },
       body: JSON.stringify({
         question_text: questionForm.question_text || null,
@@ -395,7 +414,7 @@ const handleQuestionSubmit = async (e) => {
 
 const handleDeleteExam = async (id) => {
   try {
-    await deleteExam(id);
+    assertMutationSucceeded(await deleteExam(id), 'Failed to delete exam');
 
     fetchExams();
     toast({
@@ -416,7 +435,7 @@ const handleDeleteQuestion = async (id) => {
     const response = await fetch(`${API_URL}/exams/${selectedExam.id}/questions/${id}`, {
       method: 'DELETE',
       headers: {
-        'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+        ...buildAuthHeaders()
       }
     });
 
@@ -459,12 +478,15 @@ const handleUpdateExam = async (e) => {
   setLoading(true);
 
   try {
-    await updateExam(editingExam.id, {
-      title: examForm.title,
-      duration_minutes: examForm.duration_minutes,
-      total_marks: examForm.total_marks,
-      passing_marks: examForm.passing_marks,
-    } as any);
+    assertMutationSucceeded(
+      await updateExam(editingExam.id, {
+        title: examForm.title,
+        duration_minutes: examForm.duration_minutes,
+        total_marks: examForm.total_marks,
+        passing_marks: examForm.passing_marks,
+      } as any),
+      'Failed to update exam',
+    );
 
     toast({
       title: "تم التحديث بنجاح",
@@ -570,7 +592,7 @@ const handleUpdateQuestion = async (e) => {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+        ...buildAuthHeaders()
       },
       body: JSON.stringify({
         question_text: questionForm.question_text || null,

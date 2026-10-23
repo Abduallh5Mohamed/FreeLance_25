@@ -45,6 +45,7 @@ import type { PrincipalRepository } from '../src/security/principal-repository';
 import { createAttendanceRouter } from '../src/routes/attendance';
 import { tenantScopeBranchDeps } from './helpers/tenant-scope-branch-deps';
 import { createGradesRouter } from '../src/routes/grades';
+import { todayDayKey } from '../src/lib/attendance-calendar';
 
 process.env.JWT_SECRET ??= 'hermetic-attendance-test-jwt-secret-not-a-real-key';
 const TEST_JWT_SECRET = process.env.JWT_SECRET!;
@@ -774,9 +775,13 @@ test('attendance write inputs are validated against the schema (4xx, never a dri
   });
 });
 
-test('an absent attendance_date still defaults to the current day (default preserved)', async () => {
+test('an absent attendance_date still defaults to the current Africa/Cairo business day (default preserved)', async () => {
   await withState(seedBase, async (h) => {
-    const today = new Date().toISOString().slice(0, 10);
+    // Africa/Cairo is the authoritative attendance business timezone
+    // (supervisor/026): the default is the Cairo day of the real clock,
+    // computed through the actual production helper — never the UTC day,
+    // which disagrees with Cairo between 21:00 and 24:00 UTC.
+    const today = todayDayKey();
     const res = await api(h, 'POST', '/api/attendance', sign(instr1), { student_id: 's-own-2' });
     assert.equal(res.status, 201);
     const insert = state.executed.find((e) => e.sql.includes('INSERT INTO attendance'))!;

@@ -1,0 +1,68 @@
+-- M2-18 — private student branch assignment metadata.
+--
+-- SCHEMA FILE ONLY. This file was NOT applied by the M2-18 batch
+-- (task client-m2-18-private-student-branch-assignment-20261022-01): no
+-- database was connected, no statement was executed, no seed/backfill ran and
+-- no runtime DDL exists in the application. Applying it is a separate,
+-- explicitly authorized integration gate (see
+-- docs/streams/server/M2-B10-CONTRACT.md).
+--
+-- Additive only: ONE nullable column on the existing `students` table, one
+-- lookup index and one foreign key. No table is created or dropped, no other
+-- column is altered, no data is backfilled and no existing row is rewritten.
+-- Every existing student row therefore keeps `branch_id = NULL`, which is the
+-- documented "not assigned to a branch" state — there is no default branch and
+-- no implicit assignment is invented here.
+--
+-- What this column IS (contract: docs/streams/server/M2-B10-CONTRACT.md):
+--   * OPTIONAL organization/planning metadata on a tenant-scoped student
+--     enrollment row. It records which branch of the SAME tenant the owner
+--     attached this student to, or NULL when the owner never assigned one or
+--     explicitly cleared it;
+--   * owned by the tenant that owns the student row: the route qualifies the
+--     branch by the selected tenant, so a branch of another tenant can never be
+--     stored here. The column itself carries no tenant authority;
+--   * cleared by the same route that assigns it (`branch_id: null`), so "no
+--     branch" is a first-class state rather than a missing feature.
+--
+-- What this column deliberately is NOT:
+--   * it is NOT an authorization, access, enrollment, group/course membership,
+--     academic-period, pricing, billing, wallet or capacity field. Reading or
+--     writing it grants and revokes nothing: a student's login, platform
+--     access, enrollments and groups are entirely unaffected by its value;
+--   * it is NOT unique and NOT required: many students may share one branch,
+--     and a student may have none;
+--   * it is NOT a history: the column holds the CURRENT assignment only. The
+--     audit event the route writes inside the same transaction is the record
+--     of the change;
+--   * it is NOT a denormalized copy of any branch field (no name, status or
+--     address is duplicated here); the branch row remains the single source.
+--
+-- The parent is the accepted M2-B03 table `tenant_branches`
+-- (migrations/20261019_01_tenant_branches.sql: InnoDB, utf8mb4 /
+-- utf8mb4_unicode_ci, CHAR(36) id), so the collation and engine match without
+-- rebuilding that table. The foreign key has NO ON DELETE clause: deleting a
+-- branch that still has students assigned to it is REFUSED by the database
+-- instead of silently clearing an assignment the owner never cleared or
+-- orphaning a dangling id. Branch rows carry no application hard-delete path,
+-- so this is a referential guard, not a workflow.
+--
+-- Note on the same-tenant rule: a foreign key on `branch_id` alone guarantees
+-- the branch EXISTS; it cannot by itself guarantee the branch belongs to the
+-- student's tenant, because the student's tenant lives on the child row. The
+-- route therefore qualifies EVERY branch lookup by the server-selected tenant
+-- (`WHERE b.id=? AND b.tenant_id=?`) inside its transaction, and the lookup
+-- index below is deliberately tenant-led so that qualification is the indexed
+-- path rather than a scan.
+--
+-- Index:
+--   idx_students_tenant_branch -> the tenant-safe lookup
+--                                   (WHERE tenant_id=? AND branch_id=?), used by
+--                                   the assignment read-back and by any future
+--                                   tenant-scoped listing. It is NOT unique:
+--                                   many students may share one branch.
+
+ALTER TABLE students
+  ADD COLUMN branch_id CHAR(36) NULL,
+  ADD INDEX idx_students_tenant_branch (tenant_id, branch_id),
+  ADD CONSTRAINT fk_students_branch FOREIGN KEY (branch_id) REFERENCES tenant_branches(id);
