@@ -1,0 +1,89 @@
+-- M2-20 — private instructor branch-assignment organization metadata.
+--
+-- SCHEMA FILE ONLY. This file was NOT applied by the M2-20 batch
+-- (task client-m2-20-private-instructor-branch-assignment-20261023-01): no
+-- database was connected, no statement was executed, no seed/backfill ran and
+-- no runtime DDL exists in the application. Applying it is a separate,
+-- explicitly authorized integration gate (see
+-- docs/streams/server/M2-B12-CONTRACT.md).
+--
+-- Additive only: ONE nullable column on the existing `tenant_memberships`
+-- table, two lookup indexes and one foreign key. No table is created, dropped
+-- or rebuilt, no other column is altered, no data is backfilled and no
+-- existing row is rewritten. Every existing membership row therefore keeps
+-- `branch_id = NULL`, which is the documented "no branch recorded" state —
+-- there is no default branch, no automatic assignment and no implicit
+-- reorganization of any existing instructor.
+--
+-- What this column IS (contract: docs/streams/server/M2-B12-CONTRACT.md):
+--   * OPTIONAL organization/planning metadata on an EXISTING tenant membership
+--     row. It records which branch of the SAME tenant the verified owner
+--     recorded for that instructor membership, or NULL when the owner never
+--     recorded one or explicitly cleared it;
+--   * owned by the tenant that owns the membership row: the route qualifies
+--     the branch by the server-selected tenant, so a branch of another tenant
+--     can never be stored here. The column itself carries no tenant authority;
+--   * cleared by the same route that assigns it (`branch_id: null`), so "no
+--     branch recorded" is a first-class state rather than a missing feature.
+--
+-- What this column deliberately is NOT:
+--   * it is NOT an authorization, role, permission, teaching-access, course,
+--     group, student, enrollment, login/invitation, pricing, billing, wallet
+--     or capacity field. Reading or writing it grants and revokes nothing: an
+--     instructor's ability to sign in, teach, own courses or reach a branch is
+--     entirely unaffected by its value, and no route consults it to decide
+--     access;
+--   * it is NOT the student assignment introduced by M2-18
+--     (migrations/20261022_01_student_branch_assignment.sql). That column
+--     lives on `students`; this one lives on `tenant_memberships` and records
+--     an instructor's organization, not a student's placement;
+--   * it is NOT unique and NOT required: many instructor memberships may share
+--     one branch, and a membership may have none;
+--   * it is NOT a history: the column holds the CURRENT record only. The audit
+--     event the route writes inside the same transaction is the record of the
+--     change;
+--   * it is NOT a denormalized copy of any branch field (no name, status or
+--     address is duplicated here); the `tenant_branches` row remains the
+--     single source of truth and every read joins it.
+--
+-- Parent tables and shape:
+--   * `tenant_memberships` (migrations/20260921_saas_foundation.sql): InnoDB,
+--     utf8mb4 / utf8mb4_unicode_ci, CHAR(36) id, UNIQUE (tenant_id,user_id);
+--   * `tenant_branches` (migrations/20261019_01_tenant_branches.sql): InnoDB,
+--     utf8mb4 / utf8mb4_unicode_ci, CHAR(36) id, `status` ENUM
+--     ('active','archived'). The collation and engine match without rebuilding
+--     either table.
+--
+-- The foreign key has NO ON DELETE clause: deleting a branch that still has
+-- instructor memberships recorded against it is REFUSED by the database
+-- instead of silently clearing a record the owner never cleared or orphaning a
+-- dangling id. Branch rows carry no application hard-delete path, so this is a
+-- referential guard, not a workflow.
+--
+-- Note on the same-tenant rule: a foreign key on `branch_id` alone guarantees
+-- the branch EXISTS; it cannot by itself guarantee the branch belongs to the
+-- membership's tenant, because the tenant lives on the child row. The route
+-- therefore qualifies EVERY branch lookup by the server-selected tenant
+-- (`WHERE b.id=? AND b.tenant_id=?`) inside its transaction, and the lookup
+-- index below is deliberately tenant-led so that qualification is the indexed
+-- path rather than a scan.
+--
+-- Indexes:
+--   idx_tenant_memberships_branch     -> the tenant-safe branch reference
+--                                        (WHERE tenant_id=? AND branch_id=?),
+--                                        used by the assignment read-back and
+--                                        by any future tenant-scoped listing of
+--                                        the memberships recorded on a branch.
+--                                        It is NOT unique: many instructors may
+--                                        share one branch.
+--   idx_tenant_memberships_role_page  -> the bounded keyset list
+--                                        (WHERE tenant_id=? AND role_key=?
+--                                        AND status=? AND id>? ORDER BY id),
+--                                        which is exactly the shape of the
+--                                        owner-only instructor-membership page.
+
+ALTER TABLE tenant_memberships
+  ADD COLUMN branch_id CHAR(36) NULL,
+  ADD INDEX idx_tenant_memberships_branch (tenant_id, branch_id),
+  ADD INDEX idx_tenant_memberships_role_page (tenant_id, role_key, status, id),
+  ADD CONSTRAINT fk_tenant_memberships_branch FOREIGN KEY (branch_id) REFERENCES tenant_branches(id);

@@ -1,0 +1,63 @@
+-- M2-22 — explicit course publication state and bounded public discovery.
+--
+-- SCHEMA FILE ONLY. This file was NOT applied by the M2-22 batch
+-- (task client-m2-22-published-course-discovery-20261023-01): no database was
+-- connected, no statement was executed, no seed/backfill ran and no runtime DDL
+-- exists in the application. Applying it is a separate, explicitly authorized
+-- integration gate (see docs/streams/server/M2-B14-CONTRACT.md).
+--
+-- Additive only: two new columns and one new index on `courses`. No table is
+-- created, dropped or rebuilt, no existing column is altered, renamed or
+-- retyped, no other table is touched and NO ROW IS REWRITTEN.
+--
+-- Policy encoded here (contract: docs/streams/server/M2-B14-CONTRACT.md):
+--
+--   * `publication_state` is the ONLY publication authority. It is an explicit
+--     two-value ENUM, `draft` or `published`, and it defaults to `draft`. There
+--     is deliberately no `unpublished` value: unpublishing returns a course to
+--     `draft`, so "never published" and "published then withdrawn" have exactly
+--     one reachable state and no client can imply a third one.
+--   * The column is NOT NULL with a DEFAULT, so every EXISTING row becomes
+--     `draft` and no row is ever backfilled to `published`. Publication is
+--     therefore an explicit, per-course act: this migration publishes nothing.
+--     It is also why the ALTER is safe on a populated table — MySQL fills the
+--     new NOT NULL column with the default rather than failing.
+--   * `published_at` is a nullable server timestamp: NULL exactly when the
+--     course is not published. The handler sets it on the transition INTO
+--     `published` and clears it on the transition back to `draft`; a repeated
+--     publish of an already-published course is a truthful no-op that PRESERVES
+--     the original instant instead of re-stamping it. Nothing in this batch
+--     reads it as a schedule: there is no publish-at, expiry, delivery window
+--     or timezone policy, and no consumer treats it as one.
+--   * `publication_state` is deliberately NOT derived from `is_active`.
+--     `is_active` is the existing archive flag owned by the accepted
+--     `DELETE /api/courses/:id`; a course can be archived while published, and
+--     the public read requires BOTH `publication_state='published'` AND
+--     `is_active=TRUE`, so archiving withdraws a published course from
+--     discovery without changing its publication record.
+--   * No price, payment, subscription, enrollment, access, lesson, file,
+--     owner, contact, count or branding column is added or exposed here. The
+--     public projection is assembled by the route, never by this schema.
+--
+-- The discovery index is `(publication_state, is_active, id)`:
+--   * `publication_state` leads because every public statement pins
+--     `= 'published'`; `is_active` follows because it is pinned to TRUE in the
+--     same statement; `id` last because the page is a keyset read
+--     (`AND c.id > ? ORDER BY c.id ASC LIMIT ?`), so the index supplies both
+--     the filter and the order without a filesort.
+--   * `tenant_id` is deliberately NOT part of this index. The public catalog is
+--     intentionally cross-tenant, so a tenant-led index would not serve it. The
+--     existing `idx_courses_tenant_active` remains the access path for every
+--     private, tenant-qualified read.
+--   * The index is NOT unique: publication is a state, not an identity, and
+--     many courses share `published`.
+--
+-- The foreign keys, engine, charset and collation of `courses` are unchanged by
+-- this file. `courses.tenant_id` already references `tenants(id)` with
+-- `ON DELETE SET NULL` from 20260927_course_tenant_ownership_and_instructor_subject.sql,
+-- and this batch adds no second reference to any parent row.
+
+ALTER TABLE courses
+  ADD COLUMN publication_state ENUM('draft','published') NOT NULL DEFAULT 'draft' AFTER is_active,
+  ADD COLUMN published_at TIMESTAMP NULL DEFAULT NULL AFTER publication_state,
+  ADD INDEX idx_courses_public_discovery (publication_state, is_active, id);

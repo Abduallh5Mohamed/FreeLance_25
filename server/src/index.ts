@@ -12,6 +12,7 @@ import groupsRoutes from './routes/groups';
 import gradesRoutes from './routes/grades';
 import studentsRoutes from './routes/students';
 import coursesRoutes from './routes/courses';
+import publicCatalogRoutes from './routes/public-catalog';
 import attendanceRoutes from './routes/attendance';
 import examsRoutes from './routes/exams';
 import examResultsRoutes from './routes/exam-results';
@@ -116,6 +117,14 @@ app.use('/api/groups', groupsRoutes);
 app.use('/api/grades', gradesRoutes);
 app.use('/api/students', studentsRoutes);
 app.use('/api/courses', coursesRoutes);
+// M2-22 — anonymous read-only published-course discovery. Mounted under the
+// same `/api` boundary as every other route, so `optionalAuth`, the tenant
+// authority boundary and the student workspace boundary all still run: an
+// INVALID credential is rejected upstream rather than degrading into anonymous
+// access, a client-supplied tenant selector is refused, and a student without a
+// selected workspace is refused. The router itself consults no principal and
+// answers byte-identical results to an anonymous caller.
+app.use('/api/public', publicCatalogRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/exams', examsRoutes);
 app.use('/api/exam-results', examResultsRoutes);
