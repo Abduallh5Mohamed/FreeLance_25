@@ -1,13 +1,16 @@
-import { notifySessionChange, type SessionChangeKind } from './session-events';
 /**
  * HTTP Client for Backend API
  * Replaces the mock localStorage database with real HTTP requests
  */
 
+import { notifySessionChange } from './session-events';
+
 // Get API base URL from environment or use relative path
 const getApiBaseUrl = (): string => {
-    // If VITE_API_URL is defined, use it
-    const envApiUrl = import.meta.env.VITE_API_URL;
+    // If VITE_API_URL is defined, use it. The optional chain keeps this
+    // module importable outside Vite (hermetic tests exercise the real
+    // canonical writers); under Vite `import.meta.env` always exists.
+    const envApiUrl = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_URL;
     if (envApiUrl) {
         console.log('🔗 Using API URL from environment:', envApiUrl);
         return envApiUrl;
@@ -28,12 +31,17 @@ const getAuthToken = (): string | null => {
 // Guards subscribe to local changes as well as cross-tab storage events.
 export const AUTH_SESSION_CHANGED_EVENT = 'auth-session-changed';
 let authRevision = 0;
-const publishSessionChange = (kind: SessionChangeKind = 'token') => { authRevision += 1; notifySessionChange(kind); window.dispatchEvent(new Event(AUTH_SESSION_CHANGED_EVENT)); };
+const publishAuthSessionChanged = () => {
+    authRevision += 1;
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+        window.dispatchEvent(new Event(AUTH_SESSION_CHANGED_EVENT));
+    }
+};
 
 // Helper to set auth token
 export const setAuthToken = (token: string): void => {
     localStorage.setItem('authToken', token);
-    publishSessionChange();
+    publishAuthSessionChanged();
 };
 
 // Helper to clear auth token
@@ -42,7 +50,8 @@ export const clearAuthToken = (): void => {
     localStorage.removeItem('currentUser');
     localStorage.removeItem('currentStudent');
     for (const key of ['student_session', 'offlineStudentSession', 'supabaseUser', 'currentStudentSpace']) localStorage.removeItem(key);
-    publishSessionChange('logout');
+    publishAuthSessionChanged();
+    notifySessionChange('logout');
 };
 
 /** Revoke before discarding the bearer. A local logout is not proof of revocation. */
@@ -79,9 +88,13 @@ export const signOutSession = async (): Promise<{ serverRevoked: boolean; warnin
     };
 };
 
-class ApiRequestError extends Error {
-    constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
-}
+const apiErrorMetadata = new WeakMap<Error, { status: number; code?: string }>();
+
+const apiRequestError = (message: string, status: number, code?: string): Error => {
+    const error = new Error(message);
+    apiErrorMetadata.set(error, { status, code });
+    return error;
+};
 
 // Generic HTTP request helper
 async function request<T>(
@@ -94,11 +107,13 @@ async function request<T>(
     const isCurrentSession = () => getAuthToken() === token && authRevision === requestRevision;
 
     const isFormData = typeof FormData !== 'undefined' && fetchOptions.body instanceof FormData;
-    const headers = new Headers(fetchOptions.headers);
-    if (!isFormData && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+    const headers: Record<string, string> = {
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+        ...(fetchOptions.headers as Record<string, string> | undefined),
+    };
 
     if (auth && token) {
-        headers.set('Authorization', `Bearer ${token}`);
+        headers.Authorization = `Bearer ${token}`;
     }
 
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
@@ -116,7 +131,12 @@ async function request<T>(
         if (isCurrentSession() && response.status === 403 && error.code === 'BILLING_ONLY') {
             try {
                 const current = JSON.parse(localStorage.getItem('currentUser') || 'null');
-                if (current?.role === 'instructor') { localStorage.setItem('currentUser', JSON.stringify({ ...current, billing_only: true })); notifySessionChange('identity'); }
+                if (current?.role === 'instructor') {
+                    localStorage.setItem('currentUser', JSON.stringify({ ...current, billing_only: true }));
+                    // Same-document identity change (supervisor/026): notify
+                    // after the stored identity is rewritten.
+                    notifySessionChange('identity');
+                }
             } catch { /* malformed local session will be handled by the auth guard */ }
             if (!['/instructor-subscription', '/instructor-wallet', '/support'].includes(window.location.pathname)) {
                 window.location.assign('/instructor-subscription');
@@ -128,7 +148,7 @@ async function request<T>(
         }
         if (token && isCurrentSession() && response.status === 401
             && !['/auth/login', '/auth/register'].includes(endpoint)) clearAuthToken();
-        throw new ApiRequestError(error.error || `HTTP ${response.status}`, response.status, error.code);
+        throw apiRequestError(error.error || `HTTP ${response.status}`, response.status, error.code);
     }
 
     if (response.status === 204) return undefined as T;
@@ -257,6 +277,7 @@ export const signIn = async (
         if (response.token) {
             localStorage.setItem('currentUser', JSON.stringify(response.user));
             setAuthToken(response.token);
+            notifySessionChange('login');
         }
 
         return { user: response.user, error: null, token: response.token };
@@ -290,11 +311,12 @@ export const signUp = async (
         if (response.token) {
             localStorage.setItem('currentUser', JSON.stringify(response.user));
             setAuthToken(response.token);
+            notifySessionChange('login');
         }
 
         return { user: response.user, error: null, token: response.token };
     } catch (error) {
-        if (error instanceof ApiRequestError && error.code === 'SESSION_UNAVAILABLE') {
+        if (error instanceof Error && apiErrorMetadata.get(error)?.code === 'SESSION_UNAVAILABLE') {
             return { user: null, error: 'تم إنشاء الحساب، لكن خدمة الجلسات غير متاحة الآن. حاول تسجيل الدخول لاحقًا؛ لا تحتاج إلى إنشاء الحساب مرة أخرى.' };
         }
         return { user: null, error: error instanceof Error ? error.message : 'Registration failed' };
@@ -497,8 +519,809 @@ export interface MyTenantSubscription {
 }
 export const getMyTenantSubscription = () => request<MyTenantSubscription>('/tenants/me/subscription');
 
-export interface InstructorTopupRequest {
+/**
+ * M2-05 — selected institution identity (read-only), accepted M2-B01 endpoint
+ * `GET /api/tenants/me/profile` (server/src/routes/tenant-self.ts:119-140).
+ *
+ * The exact fixed four-field DTO the server projects: no row spread, no
+ * legacy_compat/owner/billing/contact fields. `subject_type` is the existing
+ * nullable column returned verbatim (`null` when absent). The transport is the
+ * same authenticated `request` — no parallel client, no selector, no shared
+ * request/auth/error-contract change. Errors keep the documented transport
+ * behavior: the server's `error` message is thrown WITHOUT the HTTP status
+ * (api-http.ts:69-89), so only documented messages may classify outcomes.
+ */
+export interface TenantProfile {
     id: string;
+    business_name: string;
+    subject_type: string | null;
+    status: string;
+}
+
+/** Response envelope of GET /api/tenants/me/profile: `{ tenant: TenantProfile }`. */
+export interface TenantProfileEnvelope {
+    tenant: TenantProfile;
+}
+
+export const getMyTenantProfile = () => request<TenantProfileEnvelope>('/tenants/me/profile');
+
+/**
+ * M2-06 — institution-name update through the accepted M2-B02 endpoint
+ * `PATCH /api/tenants/me/profile` (server/src/routes/tenant-self.ts).
+ *
+ * Additive only: the same authenticated `request`, the same path, a strict
+ * single-field body and NO client tenant selector (header/query/body). The
+ * caller-facing validation (trim, 1..255) is the feature seam's job; the
+ * server remains authoritative and re-validates before any connection. The
+ * transport still throws the transported `error` message without the HTTP
+ * status or `code`, so callers classify only documented messages.
+ */
+export const updateMyTenantProfile = (businessName: string) =>
+    request<TenantProfileEnvelope>('/tenants/me/profile', {
+        method: 'PATCH',
+        body: JSON.stringify({ business_name: businessName }),
+    });
+
+/**
+ * M2-07 — tenant branch metadata (owner-only) through the accepted M2-B03
+ * endpoints `GET|POST /api/tenants/me/branches` and
+ * `PATCH /api/tenants/me/branches/:branchId` (server/src/routes/tenant-self.ts;
+ * contract docs/streams/server/M2-B03-CONTRACT.md, accepted under supervisor/151).
+ *
+ * Additive only: the same authenticated `request`, the same canonical paths and
+ * NO client tenant selector (header/query/body) — the server selects the
+ * tenant. The create body is the strict single field `{ name }`; the update
+ * body carries only `name` and/or `status`. The transport still throws the
+ * server's `error` message WITHOUT the HTTP status or the `code`, so callers
+ * classify only documented messages and never fabricate a status.
+ */
+export type TenantBranchStatus = 'active' | 'archived';
+
+/** The explicit five-field branch DTO the server projects (never a row spread). */
+export interface TenantBranch {
+    id: string;
+    name: string;
+    status: TenantBranchStatus;
+    created_at: string;
+    updated_at: string;
+}
+
+/** `GET /tenants/me/branches` response envelope: the bounded page and its cursor. */
+export interface TenantBranchListEnvelope {
+    branches: TenantBranch[];
+    next_cursor: string | null;
+}
+
+/** `POST`/`PATCH` response envelope: the server-confirmed branch. */
+export interface TenantBranchEnvelope {
+    branch: TenantBranch;
+}
+
+/** The bounded page the client asks for (the server default page size). */
+export const TENANT_BRANCH_PAGE_LIMIT = 25;
+
+/**
+ * Reads exactly ONE bounded page. `cursor` is the opaque position the server
+ * returned; a malformed cursor is the server's documented 400. No tenant
+ * selector is sent and no automatic all-page draining happens here.
+ */
+export const listMyTenantBranches = (options: { limit?: number; cursor?: string | null } = {}) => {
+    const params = new URLSearchParams();
+    params.set('limit', String(options.limit ?? TENANT_BRANCH_PAGE_LIMIT));
+    if (options.cursor) params.set('cursor', options.cursor);
+    const query = params.toString();
+    return request<TenantBranchListEnvelope>(`/tenants/me/branches${query ? `?${query}` : ''}`);
+};
+
+/** Creates one branch: the strict single-field body `{ name }` and nothing else. */
+export const createMyTenantBranch = (name: string) =>
+    request<TenantBranchEnvelope>('/tenants/me/branches', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+    });
+
+/**
+ * Updates one branch: only `name` and/or `status` are sent, so a status-only
+ * archive/reactivation never carries a name and a rename never carries a
+ * status. The response id must match `branchId` — the caller checks it.
+ */
+export const updateMyTenantBranch = (
+    branchId: string,
+    update: { name?: string; status?: TenantBranchStatus },
+) => {
+    const body: { name?: string; status?: TenantBranchStatus } = {};
+    if (update.name !== undefined) body.name = update.name;
+    if (update.status !== undefined) body.status = update.status;
+    return request<TenantBranchEnvelope>(
+        `/tenants/me/branches/${encodeURIComponent(branchId)}`,
+        { method: 'PATCH', body: JSON.stringify(body) },
+    );
+};
+
+/**
+ * M2-18 — private student branch assignment (owner-only) through
+ * `PATCH /api/students/:id/branch` (server/src/routes/students.ts; contract
+ * docs/streams/server/M2-B10-CONTRACT.md).
+ *
+ * Additive only: the same authenticated `request`, the same canonical path and
+ * NO client tenant selector (header/query/body) — the server selects the tenant
+ * and re-verifies the real owner row inside the same transaction that performs
+ * the write. The body is the strict single field `{ branch_id }`, whose value is
+ * a branch UUID (assign) or `null` (clear). Nothing else is ever sent, so this
+ * call can never rename, create, delete or re-tenant anything.
+ *
+ * The response is the server's explicit three-field projection and nothing
+ * else: the student row is never spread into the client. The transport throws
+ * the server's `error` message WITHOUT the HTTP status or the `code`, so the
+ * caller classifies only documented messages and never fabricates a status.
+ */
+export interface StudentBranchAssignment {
+    student_id: string;
+    branch_id: string | null;
+    branch_name: string | null;
+}
+
+/** `PATCH` response envelope: the server-confirmed assignment. */
+export interface StudentBranchEnvelope {
+    student: StudentBranchAssignment;
+}
+
+/**
+ * Assigns one student to one branch, or clears the assignment when
+ * `branchId` is `null`. The id in the path is a RESOURCE id selected by the
+ * user; it is never a tenant authority.
+ */
+export const assignStudentBranch = (studentId: string, branchId: string | null) =>
+    request<StudentBranchEnvelope>(`/students/${encodeURIComponent(studentId)}/branch`, {
+        method: 'PATCH',
+        body: JSON.stringify({ branch_id: branchId }),
+    });
+
+/**
+ * M2-20 — private instructor branch-assignment organization metadata
+ * (owner-only) through
+ * `GET /api/tenants/me/instructor-memberships` and
+ * `PATCH /api/tenants/me/instructor-memberships/:membershipId`
+ * (server/src/routes/tenant-self.ts; contract
+ * docs/streams/server/M2-B12-CONTRACT.md).
+ *
+ * Additive only: the same authenticated `request`, the same canonical path
+ * family and NO client tenant selector (header/query/body) — the server selects
+ * the tenant and re-verifies the real owner, the active same-tenant instructor
+ * membership and the active same-tenant branch inside the same transaction that
+ * performs the write. The path id is a RESOURCE selector, never an authority.
+ *
+ * The write body is the strict single field `{ branch_id }`, whose value is a
+ * branch UUID (record) or `null` (clear). Nothing else is ever sent, so this
+ * call can never change a role, a permission, a teaching-access decision, a
+ * course, a group, a student, an enrollment, a login or a price.
+ *
+ * The response is the server's explicit five-field projection and nothing else:
+ * the membership row is never spread into the client. The transport throws the
+ * server's `error` message WITHOUT the HTTP status or the `code`, so the caller
+ * classifies only documented messages and never fabricates a status.
+ */
+export interface TenantInstructorMembership {
+    membership_id: string;
+    instructor_id: string;
+    instructor_name: string;
+    branch_id: string | null;
+    branch_name: string | null;
+}
+
+/** `GET /tenants/me/instructor-memberships` envelope: the page and its cursor. */
+export interface TenantInstructorMembershipListEnvelope {
+    memberships: TenantInstructorMembership[];
+    next_cursor: string | null;
+}
+
+/** `PATCH` response envelope: the server-confirmed membership record. */
+export interface TenantInstructorMembershipEnvelope {
+    membership: TenantInstructorMembership;
+}
+
+/** The bounded page the client asks for (the server default page size). */
+export const TENANT_INSTRUCTOR_MEMBERSHIP_PAGE_LIMIT = 25;
+
+/**
+ * Reads exactly ONE bounded page of active instructor memberships. `cursor` is
+ * the opaque position the server returned; a malformed cursor is the server's
+ * documented 400. No tenant selector is sent and no automatic all-page draining
+ * happens here.
+ */
+export const listMyTenantInstructorMemberships = (
+    options: { limit?: number; cursor?: string | null } = {},
+) => {
+    const params = new URLSearchParams();
+    params.set('limit', String(options.limit ?? TENANT_INSTRUCTOR_MEMBERSHIP_PAGE_LIMIT));
+    if (options.cursor) params.set('cursor', options.cursor);
+    const query = params.toString();
+    return request<TenantInstructorMembershipListEnvelope>(
+        `/tenants/me/instructor-memberships${query ? `?${query}` : ''}`,
+    );
+};
+
+/**
+ * Records one active same-tenant branch on one active instructor membership, or
+ * clears the record when `branchId` is `null`. The membership id in the path is
+ * a RESOURCE id selected by the user; it is never a tenant authority.
+ */
+export const assignInstructorBranch = (membershipId: string, branchId: string | null) =>
+    request<TenantInstructorMembershipEnvelope>(
+        `/tenants/me/instructor-memberships/${encodeURIComponent(membershipId)}`,
+        { method: 'PATCH', body: JSON.stringify({ branch_id: branchId }) },
+    );
+
+/**
+ * M2-09 — private course-unit metadata (owner-only) through the accepted
+ * M2-B04 endpoints `GET|POST /api/tenants/me/catalog/courses/:courseId/units`
+ * and `PATCH /api/tenants/me/catalog/courses/:courseId/units/:unitId`
+ * (server/src/routes/course-units.ts; contract
+ * docs/streams/server/M2-B04-CONTRACT.md, accepted under supervisor/176).
+ *
+ * Additive only: the same authenticated `request`, the same canonical paths and
+ * NO client tenant selector (header/query/body) — the server selects the
+ * tenant and re-verifies the real owner row. The course id in the path is a
+ * RESOURCE id selected by the user; it is never a tenant authority.
+ *
+ * A course unit is private METADATA: a name, a display position and a status.
+ * There is no teacher assignment, no student entitlement, no publication, no
+ * payment and no upload rule in this contract, and nothing here changes the
+ * access of an existing course or material.
+ *
+ * The create body carries `name` and optionally `display_order`; the update
+ * body carries only `name`, `display_order` and/or `status`. `display_order`
+ * is sent as a JSON NUMBER, because the server refuses a numeric string, a
+ * float and a boolean. The transport still throws the server's `error` message
+ * WITHOUT the HTTP status and WITHOUT the `code`, so callers classify only
+ * documented messages and never fabricate a status.
+ */
+export type CourseUnitStatus = 'active' | 'archived';
+
+/** The explicit seven-field unit DTO the server projects (never a row spread). */
+export interface CourseUnit {
+    id: string;
+    course_id: string;
+    name: string;
+    display_order: number;
+    status: CourseUnitStatus;
+    created_at: string;
+    updated_at: string;
+}
+
+/** `GET .../units` response envelope: the bounded page and its cursor. */
+export interface CourseUnitListEnvelope {
+    units: CourseUnit[];
+    next_cursor: string | null;
+}
+
+/** `POST`/`PATCH` response envelope: the server-confirmed unit. */
+export interface CourseUnitEnvelope {
+    unit: CourseUnit;
+}
+
+/** The bounded page the client asks for (the server default page size). */
+export const COURSE_UNIT_PAGE_LIMIT = 25;
+
+/** The canonical unit collection path of one course. */
+const courseUnitCollectionPath = (courseId: string): string =>
+    `/tenants/me/catalog/courses/${encodeURIComponent(courseId)}/units`;
+
+/**
+ * Reads exactly ONE bounded page of the course's private unit metadata.
+ * `cursor` is the opaque position the server returned; a malformed cursor is
+ * the server's documented 400. No tenant selector is sent and no automatic
+ * all-page draining happens here.
+ */
+export const listCourseUnits = (
+    courseId: string,
+    options: { limit?: number; cursor?: string | null } = {},
+) => {
+    const params = new URLSearchParams();
+    params.set('limit', String(options.limit ?? COURSE_UNIT_PAGE_LIMIT));
+    if (options.cursor) params.set('cursor', options.cursor);
+    const query = params.toString();
+    return request<CourseUnitListEnvelope>(
+        `${courseUnitCollectionPath(courseId)}${query ? `?${query}` : ''}`,
+    );
+};
+
+/**
+ * Creates one private unit under the course of the path: the strict body
+ * `{ name }` plus an OPTIONAL `display_order` number. Nothing else is ever
+ * sent — no tenant selector, no course selector, no status, no publication or
+ * paid field. The unit id is server-generated.
+ */
+export const createCourseUnit = (
+    courseId: string,
+    input: { name: string; display_order?: number },
+) => {
+    const body: { name: string; display_order?: number } = { name: input.name };
+    if (input.display_order !== undefined) body.display_order = input.display_order;
+    return request<CourseUnitEnvelope>(courseUnitCollectionPath(courseId), {
+        method: 'POST',
+        body: JSON.stringify(body),
+    });
+};
+
+/**
+ * Updates one private unit: only `name`, `display_order` and/or `status` are
+ * sent, so a status-only archive never carries a name and a rename never
+ * carries a status. The response id must match `unitId` — the caller checks
+ * it, because a well-formed DTO for another unit is not a success here.
+ */
+export const updateCourseUnit = (
+    courseId: string,
+    unitId: string,
+    update: { name?: string; display_order?: number; status?: CourseUnitStatus },
+) => {
+    const body: { name?: string; display_order?: number; status?: CourseUnitStatus } = {};
+    if (update.name !== undefined) body.name = update.name;
+    if (update.display_order !== undefined) body.display_order = update.display_order;
+    if (update.status !== undefined) body.status = update.status;
+    return request<CourseUnitEnvelope>(
+        `${courseUnitCollectionPath(courseId)}/${encodeURIComponent(unitId)}`,
+        { method: 'PATCH', body: JSON.stringify(body) },
+    );
+};
+
+/**
+ * M2-10 — private course-lesson metadata (owner-only) through the accepted
+ * M2-B05 endpoints
+ *   GET|POST /api/tenants/me/catalog/courses/:courseId/units/:unitId/lessons
+ *   PATCH    .../lessons/:lessonId
+ *   POST     .../lessons/reorder
+ * (server/src/routes/course-lessons.ts; contract
+ * docs/streams/server/M2-B05-CONTRACT.md, accepted under supervisor/185).
+ *
+ * Additive only: the same authenticated `request`, the same canonical paths and
+ * NO client tenant selector (header/query/body) — the server selects the tenant
+ * and re-verifies the real owner row. The course id and the unit id in the path
+ * are RESOURCE ids selected by the user; neither is a tenant authority.
+ *
+ * A course lesson is private METADATA: a title, an optional description, a
+ * display position and a status. There is no lesson delivery, content, video,
+ * file, material or asset reference, no teacher assignment, no student
+ * entitlement, no publication, no progression and no payment in this contract.
+ *
+ * `display_order` is sent as a JSON NUMBER, because the server refuses a
+ * numeric string, a float and a boolean. An explicit `description: null` is a
+ * DELIBERATE clear and is distinct from an omitted description. The transport
+ * still throws the server's `error` message WITHOUT the HTTP status and WITHOUT
+ * the `code`, so callers classify only documented messages.
+ */
+export type CourseLessonStatus = 'active' | 'archived';
+
+/** The explicit eight-field lesson DTO the server projects (never a row spread). */
+export interface CourseLesson {
+    id: string;
+    unit_id: string;
+    title: string;
+    description: string | null;
+    display_order: number;
+    status: CourseLessonStatus;
+    created_at: string;
+    updated_at: string;
+}
+
+/** `GET .../lessons` response envelope: the bounded page and its cursor. */
+export interface CourseLessonListEnvelope {
+    lessons: CourseLesson[];
+    next_cursor: string | null;
+}
+
+/** `POST`/`PATCH` response envelope: the server-confirmed lesson. */
+export interface CourseLessonEnvelope {
+    lesson: CourseLesson;
+}
+
+/** `POST .../lessons/reorder` response envelope: the selected lessons only. */
+export interface CourseLessonReorderEnvelope {
+    lessons: CourseLesson[];
+}
+
+/** The bounded page the client asks for (the server default page size). */
+export const COURSE_LESSON_PAGE_LIMIT = 25;
+
+/**
+ * The client's own reorder bound: only the CURRENT visible page (at most 25
+ * rows) can be selected, so one batch never exceeds 25 unique ids. The server's
+ * own bound (100) stays a backend contract and is never used to widen this.
+ */
+export const COURSE_LESSON_REORDER_LIMIT = 25;
+
+/** The canonical lesson collection path of one course unit. */
+const courseLessonCollectionPath = (courseId: string, unitId: string): string =>
+    `/tenants/me/catalog/courses/${encodeURIComponent(courseId)}/units/${encodeURIComponent(unitId)}/lessons`;
+
+/**
+ * Reads exactly ONE bounded page of the unit's private lesson metadata.
+ * `cursor` is the opaque position the server returned; a malformed cursor is
+ * the server's documented 400. No tenant selector is sent and no automatic
+ * all-page draining happens here.
+ */
+export const listCourseLessons = (
+    courseId: string,
+    unitId: string,
+    options: { limit?: number; cursor?: string | null } = {},
+) => {
+    const params = new URLSearchParams();
+    params.set('limit', String(options.limit ?? COURSE_LESSON_PAGE_LIMIT));
+    if (options.cursor) params.set('cursor', options.cursor);
+    const query = params.toString();
+    return request<CourseLessonListEnvelope>(
+        `${courseLessonCollectionPath(courseId, unitId)}${query ? `?${query}` : ''}`,
+    );
+};
+
+/**
+ * Creates one private lesson under the unit of the path: the strict body
+ * `{ title }` plus an OPTIONAL `description` (string or `null`) and an OPTIONAL
+ * `display_order` number. Nothing else is ever sent — no tenant/course/unit
+ * selector, no status, no content/asset/publication/paid field. The lesson id
+ * is server-generated.
+ */
+export const createCourseLesson = (
+    courseId: string,
+    unitId: string,
+    input: { title: string; description?: string | null; display_order?: number },
+) => {
+    const body: { title: string; description?: string | null; display_order?: number } = {
+        title: input.title,
+    };
+    if (input.description !== undefined) body.description = input.description;
+    if (input.display_order !== undefined) body.display_order = input.display_order;
+    return request<CourseLessonEnvelope>(courseLessonCollectionPath(courseId, unitId), {
+        method: 'POST',
+        body: JSON.stringify(body),
+    });
+};
+
+/**
+ * Updates one private lesson: only `title`, `description`, `display_order`
+ * and/or `status` are sent, so a status-only archive never carries a title and
+ * a retitle never carries a status. `description: null` is an explicit clear
+ * and is sent as `null`, never as an empty string. The response id and unit
+ * must match — the caller checks them, because a well-formed DTO for another
+ * lesson is not a success here.
+ */
+export const updateCourseLesson = (
+    courseId: string,
+    unitId: string,
+    lessonId: string,
+    update: {
+        title?: string;
+        description?: string | null;
+        display_order?: number;
+        status?: CourseLessonStatus;
+    },
+) => {
+    const body: {
+        title?: string;
+        description?: string | null;
+        display_order?: number;
+        status?: CourseLessonStatus;
+    } = {};
+    if (update.title !== undefined) body.title = update.title;
+    if (update.description !== undefined) body.description = update.description;
+    if (update.display_order !== undefined) body.display_order = update.display_order;
+    if (update.status !== undefined) body.status = update.status;
+    return request<CourseLessonEnvelope>(
+        `${courseLessonCollectionPath(courseId, unitId)}/${encodeURIComponent(lessonId)}`,
+        { method: 'PATCH', body: JSON.stringify(body) },
+    );
+};
+
+/**
+ * Sets the display position of the selected lessons of ONE unit in ONE atomic
+ * request: the body is ONLY `{ items: [{ id, display_order }] }`. Nothing else
+ * is sent — no title, no status, no tenant/course/unit selector, no per-row
+ * write. The caller owns the 25-item bound and the all-positions-validated
+ * precondition; the server revalidates the whole batch and rolls it back as a
+ * unit.
+ */
+export const reorderCourseLessons = (
+    courseId: string,
+    unitId: string,
+    items: ReadonlyArray<{ id: string; display_order: number }>,
+) => {
+    const body = { items: items.map((item) => ({ id: item.id, display_order: item.display_order })) };
+    return request<CourseLessonReorderEnvelope>(
+        `${courseLessonCollectionPath(courseId, unitId)}/reorder`,
+        { method: 'POST', body: JSON.stringify(body) },
+    );
+};
+
+/**
+ * M2-12 — private tenant branding metadata (owner-only) through the M2-B06
+ * endpoints `GET|PATCH /api/tenants/me/branding`
+ * (server/src/routes/tenant-branding.ts; contract
+ * docs/streams/server/M2-B06-CONTRACT.md).
+ *
+ * Additive only: the same authenticated `request`, the same canonical path and
+ * NO client tenant selector (header/query/body) — the server selects the tenant
+ * and re-verifies the real owner row.
+ *
+ * Branding is PRESENTATION METADATA: two localized display labels and one
+ * accent color. It renames nothing (`tenants.business_name` stays the business
+ * identity), and it grants or revokes no access, pricing, billing or student
+ * entitlement. `null` means "inherit the existing presentation" — it is never
+ * the empty string and never a fabricated default color.
+ *
+ * The transport still throws the server's `error` message WITHOUT the HTTP
+ * status and WITHOUT the `code`, so callers classify only documented messages.
+ */
+export interface TenantBranding {
+    display_name_ar: string | null;
+    display_name_en: string | null;
+    accent_color: string | null;
+    updated_at: string | null;
+}
+
+/** Response envelope of both endpoints: exactly `{ branding }`. */
+export interface TenantBrandingEnvelope {
+    branding: TenantBranding;
+}
+
+export const getMyTenantBranding = () => request<TenantBrandingEnvelope>('/tenants/me/branding');
+
+/**
+ * Sends ONLY the fields the caller actually set.
+ *
+ * `undefined` means "do not send this field", while an explicit `null` means
+ * "set it back to inherit". A field left out of `update` is therefore never
+ * transmitted, so a partial save can never silently clear a value the user did
+ * not touch.
+ */
+export const updateMyTenantBranding = (update: {
+    display_name_ar?: string | null;
+    display_name_en?: string | null;
+    accent_color?: string | null;
+}) => {
+    const body: { display_name_ar?: string | null; display_name_en?: string | null; accent_color?: string | null } = {};
+    if (update.display_name_ar !== undefined) body.display_name_ar = update.display_name_ar;
+    if (update.display_name_en !== undefined) body.display_name_en = update.display_name_en;
+    if (update.accent_color !== undefined) body.accent_color = update.accent_color;
+    return request<TenantBrandingEnvelope>('/tenants/me/branding', {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+    });
+};
+
+// ---------------------------------------------------------------------------
+// M2-B07 — private academic-period planning catalog (additive)
+// ---------------------------------------------------------------------------
+
+/**
+ * One private academic period: a label plus two DATE-ONLY bounds plus a
+ * reversible archive flag.
+ *
+ * `starts_on` / `ends_on` are CALENDAR DATES (`YYYY-MM-DD`), never instants:
+ * they carry no time, no time zone and no offset, and the transport never
+ * converts them. `created_at` / `updated_at` are canonical instants.
+ */
+export interface AcademicPeriod {
+    id: string;
+    name: string;
+    starts_on: string;
+    ends_on: string;
+    is_archived: boolean;
+    created_at: string;
+    updated_at: string;
+}
+
+/** The bounded paging envelope of the catalog list. */
+export interface AcademicPeriodPagination {
+    limit: number;
+    offset: number;
+    has_more: boolean;
+}
+
+/** Response envelope of the list: exactly `{ periods, pagination }`. */
+export interface AcademicPeriodListEnvelope {
+    periods: AcademicPeriod[];
+    pagination: AcademicPeriodPagination;
+}
+
+/** Response envelope of a create or an update: exactly `{ period }`. */
+export interface AcademicPeriodEnvelope {
+    period: AcademicPeriod;
+}
+
+export const ACADEMIC_PERIOD_PAGE_LIMIT = 25;
+export const ACADEMIC_PERIOD_PAGE_MAX = 100;
+
+/**
+ * One bounded page of the catalog of the SERVER-selected tenant.
+ *
+ * The request carries no tenant selector: the workspace comes from the
+ * authenticated session. `archived` is always sent explicitly, so the caller
+ * never has to rely on the server's default.
+ */
+export const listMyAcademicPeriods = (
+    options: { limit?: number; offset?: number; archived?: boolean } = {},
+) => {
+    const params = new URLSearchParams();
+    params.set('limit', String(options.limit ?? ACADEMIC_PERIOD_PAGE_LIMIT));
+    params.set('offset', String(options.offset ?? 0));
+    params.set('archived', options.archived ? 'true' : 'false');
+    return request<AcademicPeriodListEnvelope>(`/tenants/me/academic-periods?${params.toString()}`);
+};
+
+/**
+ * Creates one period. Only the three create fields are ever sent — no id, no
+ * tenant/owner selector, no status, no enrollment/price/access field. The id is
+ * server-generated.
+ */
+export const createMyAcademicPeriod = (input: { name: string; starts_on: string; ends_on: string }) =>
+    request<AcademicPeriodEnvelope>('/tenants/me/academic-periods', {
+        method: 'POST',
+        body: JSON.stringify({ name: input.name, starts_on: input.starts_on, ends_on: input.ends_on }),
+    });
+
+/**
+ * Sends ONLY the fields the caller actually set.
+ *
+ * `undefined` means "do not send this field", so a partial save can never
+ * silently overwrite a value the user did not touch. `is_archived` is the
+ * reversible planning visibility flag.
+ */
+export const updateMyAcademicPeriod = (
+    id: string,
+    update: { name?: string; starts_on?: string; ends_on?: string; is_archived?: boolean },
+) => {
+    const body: { name?: string; starts_on?: string; ends_on?: string; is_archived?: boolean } = {};
+    if (update.name !== undefined) body.name = update.name;
+    if (update.starts_on !== undefined) body.starts_on = update.starts_on;
+    if (update.ends_on !== undefined) body.ends_on = update.ends_on;
+    if (update.is_archived !== undefined) body.is_archived = update.is_archived;
+    return request<AcademicPeriodEnvelope>(`/tenants/me/academic-periods/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+    });
+};
+
+// ====================================
+// M2-14 / M2-B08 — private student-import reconciliation (READ-ONLY)
+// ====================================
+
+/**
+ * One submitted row of the reconciliation request.
+ *
+ * Exactly four keys: the physical row number and the three exact match values.
+ * A name, a guardian phone or a grade is NEVER part of this request.
+ */
+export interface StudentImportResolutionRequestRow {
+    row_number: number;
+    email: string;
+    phone: string;
+    barcode: string;
+}
+
+/** One answered row: a physical row number and the NAMES of the matched fields. */
+export interface StudentImportResolutionRow {
+    row_number: number;
+    matched_fields: ('email' | 'phone' | 'barcode')[];
+}
+
+/** The bounded counts of one reconciliation. */
+export interface StudentImportResolutionSummary {
+    checked: number;
+    matched: number;
+    clear: number;
+}
+
+/** Response envelope: exactly `{ rows, summary }`. */
+export interface StudentImportResolutionEnvelope {
+    rows: StudentImportResolutionRow[];
+    summary: StudentImportResolutionSummary;
+}
+
+/**
+ * Submits the CURRENT locally included rows for a READ-ONLY reconciliation
+ * against the records that already exist in the server-selected tenant.
+ *
+ * This endpoint creates, updates and imports NOTHING: it answers which exact
+ * values already exist. The request carries no tenant selector, so the workspace
+ * comes from the authenticated session, and the response names the matched
+ * fields without disclosing any existing record's identity or data.
+ */
+export const resolveStudentImportRows = (rows: readonly StudentImportResolutionRequestRow[]) =>
+    request<StudentImportResolutionEnvelope>('/tenants/me/student-import/resolve', {
+        method: 'POST',
+        body: JSON.stringify({ rows }),
+    });
+
+// ====================================
+// M2-16 — private audited idempotent student-row import (WRITE)
+// ====================================
+
+/**
+ * One submitted row of the import batch.
+ *
+ * Exactly seven keys: the physical row number and the six accepted CSV columns.
+ * A selector, a status, an id or any other extra field is never part of this
+ * request.
+ */
+export interface StudentImportCommitRequestRow {
+    row_number: number;
+    name: string;
+    email: string;
+    phone: string;
+    guardian_phone: string;
+    grade: string;
+    barcode: string;
+}
+
+/** The exact request body: one opaque bounded idempotency key and the rows. */
+export interface StudentImportCommitRequest {
+    idempotency_key: string;
+    rows: readonly StudentImportCommitRequestRow[];
+}
+
+/** The exact response DTO: a batch id, a replay flag, a count and row numbers. */
+export interface StudentImportCommitResult {
+    batch_id: string;
+    replayed: boolean;
+    created: number;
+    row_numbers: number[];
+}
+
+/**
+ * The transport answer of the import endpoint.
+ *
+ * Unlike the generic `request` helper, the STATUS is part of the contract: the
+ * import controller must be able to tell a definite refusal (4xx, nothing was
+ * created) from an UNCERTAIN one (5xx, the outcome is unknown and the same
+ * idempotency key must be reused). A network failure rejects instead, which is
+ * what marks the outcome unknown.
+ */
+export interface StudentImportCommitResponse {
+    status: number;
+    body: unknown;
+}
+
+/**
+ * Submits ONE bounded, previously all-clear batch of student rows for the
+ * server-selected tenant.
+ *
+ * The caller must have obtained the current decisions, confirmed no pending or
+ * invalid row remains, and confirmed a fresh read-only reconciliation reports
+ * every included row clear. That confirmation is advisory only: the server
+ * revalidates the exact values and the tenant authority inside the transaction,
+ * and refuses the WHOLE batch when any nonblank email/phone/barcode already
+ * exists for this tenant.
+ *
+ * The tenant is never selected here: it comes from the authenticated session.
+ * The request carries no existing-record identity and the response carries no
+ * created student id and no stored value — only the batch identity, the replay
+ * flag, the created count and the submitted physical row numbers.
+ */
+export const commitStudentImportBatch = async (
+    commitRequest: StudentImportCommitRequest,
+): Promise<StudentImportCommitResponse> => {
+    const token = getAuthToken();
+    const headers: HeadersInit = { 'Content-Type': 'application/json' };
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+    const response = await fetch(`${API_BASE_URL}/tenants/me/student-import/commit`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(commitRequest),
+    });
+    // A body that cannot be parsed is `null`, which the strict client parser
+    // refuses as malformed rather than trusting.
+    let body: unknown = null;
+    try {
+        body = await response.json();
+    } catch {
+        body = null;
+    }
+    return { status: response.status, body };
+};
+
+export interface InstructorTopupRequest {    id: string;
     tenant_id?: string;
     instructor_id?: string;
     instructor_name?: string;
@@ -756,6 +1579,293 @@ export const deleteCourse = async (id: string): Promise<void> => {
     });
 };
 
+// ---------------------------------------------------------------------------
+// M2-22 — course publication (private) and published-course discovery (public)
+// ---------------------------------------------------------------------------
+//
+// Two separate surfaces, deliberately kept apart:
+//
+//   * publication is a PRIVATE write on the existing `/courses/:id` surface. It
+//     is a discovery flag only: publishing never enrolls anyone, grants access,
+//     delivers a lesson or a file, or takes payment.
+//   * discovery is a PUBLIC read on `/public/courses`. It is anonymous, read
+//     only, and returns a fixed ten-field projection.
+//
+// Every adapter here parses a 2xx body strictly. `request` already throws the
+// server's documented `error` message WITHOUT the HTTP status and WITHOUT the
+// `code`, so an outcome is classified only by a documented message and no
+// status is fabricated. A 2xx body that does not match the fixed projection is
+// a malformed response, never a fabricated course.
+
+export type CoursePublicationState = 'draft' | 'published';
+
+/** The explicit THREE-field publication projection the server returns. */
+export interface CoursePublication {
+    course_id: string;
+    publication_state: CoursePublicationState;
+    published_at: string | null;
+}
+
+/** Raised when a 2xx body is not the documented publication projection. */
+export const COURSE_PUBLICATION_MALFORMED_MESSAGE =
+    'The server returned an unexpected course publication.';
+
+const COURSE_PUBLICATION_DTO_KEYS = ['course_id', 'publication_state', 'published_at'].sort();
+
+const COURSE_PUBLICATION_STATES: ReadonlySet<string> = new Set(['draft', 'published']);
+
+const isPublicationStamp = (value: unknown): value is string | null =>
+    value === null || typeof value === 'string';
+
+/**
+ * Validates one publication record: a non-null object whose key set is EXACTLY
+ * the three projected fields, with a non-empty course id, a known state and a
+ * string-or-null SERVER stamp.
+ *
+ * An extra key, a missing field, an unknown state or a non-string stamp is a
+ * malformed response — never a fabricated publication.
+ */
+export function parseCoursePublication(body: unknown): CoursePublication | null {
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+    const row = body as Record<string, unknown>;
+
+    const keys = Object.keys(row).sort();
+    if (keys.length !== COURSE_PUBLICATION_DTO_KEYS.length) return null;
+    for (let index = 0; index < COURSE_PUBLICATION_DTO_KEYS.length; index += 1) {
+        if (keys[index] !== COURSE_PUBLICATION_DTO_KEYS[index]) return null;
+    }
+
+    const { course_id, publication_state, published_at } = row;
+    if (typeof course_id !== 'string' || course_id.trim() === '') return null;
+    if (typeof publication_state !== 'string' || !COURSE_PUBLICATION_STATES.has(publication_state)) {
+        return null;
+    }
+    if (!isPublicationStamp(published_at)) return null;
+
+    return {
+        course_id,
+        publication_state: publication_state as CoursePublicationState,
+        published_at,
+    };
+}
+
+const coursePublicationPath = (courseId: string): string =>
+    `/courses/${encodeURIComponent(courseId)}/publication`;
+
+/**
+ * `PUT /courses/:id/publication` with `publication_state: 'published'`.
+ *
+ * The response is authoritative: the returned record — not the requested
+ * intent — is what the screen renders. Publishing an already-published course
+ * is a truthful no-op that returns the ORIGINAL `published_at`, so a repeated
+ * click can never restamp a course.
+ */
+export const publishCourse = async (courseId: string): Promise<CoursePublication> => {
+    const body = await request<unknown>(coursePublicationPath(courseId), {
+        method: 'PUT',
+        body: JSON.stringify({ publication_state: 'published' }),
+    });
+    const parsed = parseCoursePublication(body);
+    if (parsed === null) throw new Error(COURSE_PUBLICATION_MALFORMED_MESSAGE);
+    return parsed;
+};
+
+/**
+ * `PUT /courses/:id/publication` with `publication_state: 'draft'`.
+ *
+ * Unpublishing an already-draft course is likewise a truthful no-op. The record
+ * is kept (with `published_at` cleared), so "never published" and "published
+ * then withdrawn" both report `draft` and remain indistinguishable to the
+ * public read.
+ */
+export const unpublishCourse = async (courseId: string): Promise<CoursePublication> => {
+    const body = await request<unknown>(coursePublicationPath(courseId), {
+        method: 'PUT',
+        body: JSON.stringify({ publication_state: 'draft' }),
+    });
+    const parsed = parseCoursePublication(body);
+    if (parsed === null) throw new Error(COURSE_PUBLICATION_MALFORMED_MESSAGE);
+    return parsed;
+};
+
+/** The fixed TEN-field public projection. Never a row spread. */
+export interface PublicCourse {
+    course_id: string;
+    name: string;
+    subject: string | null;
+    description: string | null;
+    grade: string | null;
+    tenant_id: string;
+    business_name: string;
+    display_name_ar: string | null;
+    display_name_en: string | null;
+    accent_color: string | null;
+}
+
+/** `GET /public/courses` envelope: the bounded page and its opaque cursor. */
+export interface PublicCourseListEnvelope {
+    courses: PublicCourse[];
+    next_cursor: string | null;
+}
+
+/** `GET /public/courses/:courseId` envelope: exactly one course. */
+export interface PublicCourseEnvelope {
+    course: PublicCourse;
+}
+
+/** The page size the discovery page asks for (the server default). */
+export const PUBLIC_COURSE_PAGE_LIMIT = 24;
+
+/** The server's hard page ceiling. */
+export const PUBLIC_COURSE_PAGE_MAX = 60;
+
+/** The server's search-term ceiling, in characters. */
+export const PUBLIC_COURSE_SEARCH_MAX = 100;
+
+/** Raised when a 2xx body is not the documented public projection. */
+export const PUBLIC_COURSE_MALFORMED_MESSAGE =
+    'The server returned an unexpected public course.';
+
+/**
+ * The ONE documented message the public detail returns for a course that is
+ * unpublished, belongs to another academy, or does not exist at all. The server
+ * makes those three indistinguishable on purpose; the client must not try to
+ * tell them apart either.
+ */
+export const PUBLIC_COURSE_UNAVAILABLE_MESSAGE = 'Course not found';
+
+const PUBLIC_COURSE_DTO_KEYS = [
+    'course_id',
+    'name',
+    'subject',
+    'description',
+    'grade',
+    'tenant_id',
+    'business_name',
+    'display_name_ar',
+    'display_name_en',
+    'accent_color',
+].sort();
+
+const PUBLIC_COURSE_ACCENT_PATTERN = /^#[0-9A-F]{6}$/;
+
+const isOptionalText = (value: unknown): value is string | null =>
+    value === null || typeof value === 'string';
+
+/** `null` ("inherit") or a canonical `#RRGGBB` uppercase accent. */
+const isOptionalAccent = (value: unknown): value is string | null =>
+    value === null
+    || (typeof value === 'string' && PUBLIC_COURSE_ACCENT_PATTERN.test(value));
+
+/**
+ * Validates one public course against the accepted server contract: a non-null
+ * object whose key set is EXACTLY the ten projected fields, with non-empty
+ * identity/name strings, string-or-null optional text, and an `accent_color`
+ * that is either `null` or canonical `#RRGGBB` uppercase.
+ *
+ * A non-canonical accent is rejected rather than rendered: the server already
+ * downgrades such a value to `null`, so receiving one means the contract broke.
+ */
+export function parsePublicCourse(body: unknown): PublicCourse | null {
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+    const row = body as Record<string, unknown>;
+
+    const keys = Object.keys(row).sort();
+    if (keys.length !== PUBLIC_COURSE_DTO_KEYS.length) return null;
+    for (let index = 0; index < PUBLIC_COURSE_DTO_KEYS.length; index += 1) {
+        if (keys[index] !== PUBLIC_COURSE_DTO_KEYS[index]) return null;
+    }
+
+    const {
+        course_id, name, subject, description, grade,
+        tenant_id, business_name, display_name_ar, display_name_en, accent_color,
+    } = row;
+
+    if (typeof course_id !== 'string' || course_id.trim() === '') return null;
+    if (typeof name !== 'string' || name.trim() === '') return null;
+    if (typeof tenant_id !== 'string' || tenant_id.trim() === '') return null;
+    if (typeof business_name !== 'string' || business_name.trim() === '') return null;
+    if (!isOptionalText(subject)) return null;
+    if (!isOptionalText(description)) return null;
+    if (!isOptionalText(grade)) return null;
+    if (!isOptionalText(display_name_ar)) return null;
+    if (!isOptionalText(display_name_en)) return null;
+    if (!isOptionalAccent(accent_color)) return null;
+
+    return {
+        course_id,
+        name,
+        subject,
+        description,
+        grade,
+        tenant_id,
+        business_name,
+        display_name_ar,
+        display_name_en,
+        accent_color,
+    };
+}
+
+/** Validates the bounded list envelope: exactly `courses` and `next_cursor`. */
+export function parsePublicCourseList(body: unknown): PublicCourseListEnvelope | null {
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+    const row = body as Record<string, unknown>;
+    const keys = Object.keys(row).sort();
+    if (keys.length !== 2 || keys[0] !== 'courses' || keys[1] !== 'next_cursor') return null;
+    if (!Array.isArray(row.courses)) return null;
+    if (!isOptionalText(row.next_cursor)) return null;
+
+    const courses: PublicCourse[] = [];
+    for (const item of row.courses) {
+        const parsed = parsePublicCourse(item);
+        if (parsed === null) return null;
+        courses.push(parsed);
+    }
+    return { courses, next_cursor: row.next_cursor };
+}
+
+/** Validates the detail envelope: exactly `course`. */
+export function parsePublicCourseEnvelope(body: unknown): PublicCourseEnvelope | null {
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+    const row = body as Record<string, unknown>;
+    const keys = Object.keys(row);
+    if (keys.length !== 1 || keys[0] !== 'course') return null;
+    const course = parsePublicCourse(row.course);
+    if (course === null) return null;
+    return { course };
+}
+
+/**
+ * Reads exactly ONE bounded page of published courses. `cursor` is the opaque
+ * position the server returned; a malformed cursor is the server's documented
+ * 400. `search` is optional, and a blank term is sent as no filter at all. No
+ * automatic all-page draining happens here.
+ */
+export const listPublicCourses = async (
+    options: { limit?: number; cursor?: string | null; search?: string | null } = {},
+): Promise<PublicCourseListEnvelope> => {
+    const params = new URLSearchParams();
+    params.set('limit', String(options.limit ?? PUBLIC_COURSE_PAGE_LIMIT));
+    if (options.cursor) params.set('cursor', options.cursor);
+    if (options.search) params.set('q', options.search);
+    const body = await request<unknown>(`/public/courses?${params.toString()}`);
+    const parsed = parsePublicCourseList(body);
+    if (parsed === null) throw new Error(PUBLIC_COURSE_MALFORMED_MESSAGE);
+    return parsed;
+};
+
+/**
+ * Reads exactly one published course by id. Unpublished, foreign and absent
+ * courses all raise the same documented message, so the caller cannot present
+ * them differently.
+ */
+export const getPublicCourse = async (courseId: string): Promise<PublicCourse> => {
+    const body = await request<unknown>(`/public/courses/${encodeURIComponent(courseId)}`);
+    const parsed = parsePublicCourseEnvelope(body);
+    if (parsed === null) throw new Error(PUBLIC_COURSE_MALFORMED_MESSAGE);
+    return parsed.course;
+};
+
 // ====================================
 // Groups Functions
 // ====================================
@@ -815,6 +1925,213 @@ export const deleteGroup = async (id: string): Promise<boolean> => {
     } catch {
         return false;
     }
+};
+
+/**
+ * M2-21 — private group announcements through
+ * `GET|POST /api/groups/:groupId/announcements`,
+ * `PUT /api/groups/:groupId/announcements/:announcementId` and
+ * `POST /api/groups/:groupId/announcements/:announcementId/retract`
+ * (server/src/routes/groups.ts; contract
+ * docs/streams/server/M2-B13-CONTRACT.md).
+ *
+ * Additive only: the same authenticated `request`, the same `/groups` path
+ * family and NO client tenant or instructor selector — the server selects the
+ * tenant from the session and re-verifies the caller's active membership, the
+ * owned same-tenant group and the announcement inside the same transaction
+ * that performs the write. The group and announcement ids in the path are
+ * RESOURCE selectors, never authority.
+ *
+ * A PRIVATE management surface: an announcement is a bounded title, a bounded
+ * body and an explicit `draft`/`published`/`retracted` state with SERVER
+ * timestamps. Nothing here sends an email, SMS or push, schedules a delivery
+ * (no publish-at, expiry or timezone policy), notifies a recipient, or creates
+ * an access, enrollment, role, session, attendance or billing effect.
+ *
+ * Unlike the legacy `createGroup`/`updateGroup`/`deleteGroup` helpers above,
+ * these adapters do NOT swallow an error into `null`/`false`: the transport
+ * throws the server's `error` message WITHOUT the HTTP status and WITHOUT the
+ * `code`, so only documented messages classify an outcome and no status is
+ * fabricated. A 2xx body that does not match the fixed projection is a
+ * malformed response, never a fabricated announcement.
+ */
+export type GroupAnnouncementState = 'draft' | 'published' | 'retracted';
+
+/** The explicit EIGHT-field projection the server returns (never a row spread). */
+export interface GroupAnnouncement {
+    id: string;
+    group_id: string;
+    title: string;
+    body: string;
+    state: GroupAnnouncementState;
+    created_at: string | null;
+    updated_at: string | null;
+    retracted_at: string | null;
+}
+
+/** `GET .../announcements` envelope: the bounded page and its cursor. */
+export interface GroupAnnouncementListEnvelope {
+    announcements: GroupAnnouncement[];
+    next_cursor: string | null;
+}
+
+/** The bounded page the client asks for (the server default page size). */
+export const GROUP_ANNOUNCEMENT_PAGE_LIMIT = 25;
+
+/** The server's hard page ceiling. */
+export const GROUP_ANNOUNCEMENT_PAGE_MAX = 100;
+
+/** Raised when a 2xx body is not the documented projection. */
+export const GROUP_ANNOUNCEMENT_MALFORMED_MESSAGE =
+    'The server returned an unexpected announcement.';
+
+/**
+ * A create body requires `title` and `body`; an update body carries any subset
+ * (an absent key KEEPS the stored value, so an empty patch is a truthful
+ * no-op). `state` is only ever `draft` or `published`: `retracted` is reachable
+ * solely through the explicit retract call, so a client can never forge a
+ * retraction by writing a state.
+ */
+export interface GroupAnnouncementWrite {
+    title?: string;
+    body?: string;
+    state?: 'draft' | 'published';
+}
+
+const GROUP_ANNOUNCEMENT_DTO_KEYS = [
+    'id', 'group_id', 'title', 'body', 'state', 'created_at', 'updated_at', 'retracted_at',
+].sort();
+
+const GROUP_ANNOUNCEMENT_STATES: ReadonlySet<string> = new Set(['draft', 'published', 'retracted']);
+
+const isAnnouncementStamp = (value: unknown): value is string | null =>
+    value === null || typeof value === 'string';
+
+/**
+ * Validates one announcement against the accepted server contract: a non-null
+ * object whose key set is EXACTLY the eight projected fields, with string
+ * identity/content fields, a known state and string-or-null SERVER stamps.
+ *
+ * An extra key, a missing field, an unknown state or a non-string stamp is a
+ * malformed response — never a fabricated announcement.
+ */
+export function parseGroupAnnouncement(body: unknown): GroupAnnouncement | null {
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+    const row = body as Record<string, unknown>;
+
+    const keys = Object.keys(row).sort();
+    if (keys.length !== GROUP_ANNOUNCEMENT_DTO_KEYS.length) return null;
+    for (let index = 0; index < GROUP_ANNOUNCEMENT_DTO_KEYS.length; index += 1) {
+        if (keys[index] !== GROUP_ANNOUNCEMENT_DTO_KEYS[index]) return null;
+    }
+
+    const { id, group_id, title, body: content, state, created_at, updated_at, retracted_at } = row;
+    if (typeof id !== 'string' || id.trim() === '') return null;
+    if (typeof group_id !== 'string' || group_id.trim() === '') return null;
+    if (typeof title !== 'string' || title.trim() === '') return null;
+    if (typeof content !== 'string' || content.trim() === '') return null;
+    if (typeof state !== 'string' || !GROUP_ANNOUNCEMENT_STATES.has(state)) return null;
+    if (!isAnnouncementStamp(created_at)) return null;
+    if (!isAnnouncementStamp(updated_at)) return null;
+    if (!isAnnouncementStamp(retracted_at)) return null;
+
+    return {
+        id,
+        group_id,
+        title,
+        body: content,
+        state: state as GroupAnnouncementState,
+        created_at,
+        updated_at,
+        retracted_at,
+    };
+}
+
+/** Validates the bounded list envelope: exactly `announcements` and `next_cursor`. */
+export function parseGroupAnnouncementList(body: unknown): GroupAnnouncementListEnvelope | null {
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+    const row = body as Record<string, unknown>;
+    const keys = Object.keys(row).sort();
+    if (keys.length !== 2 || keys[0] !== 'announcements' || keys[1] !== 'next_cursor') return null;
+    if (!Array.isArray(row.announcements)) return null;
+    if (!isAnnouncementStamp(row.next_cursor)) return null;
+
+    const announcements: GroupAnnouncement[] = [];
+    for (const item of row.announcements) {
+        const parsed = parseGroupAnnouncement(item);
+        if (parsed === null) return null;
+        announcements.push(parsed);
+    }
+    return { announcements, next_cursor: row.next_cursor };
+}
+
+const groupAnnouncementCollectionPath = (groupId: string): string =>
+    `/groups/${encodeURIComponent(groupId)}/announcements`;
+
+const groupAnnouncementItemPath = (groupId: string, announcementId: string): string =>
+    `${groupAnnouncementCollectionPath(groupId)}/${encodeURIComponent(announcementId)}`;
+
+/**
+ * Reads exactly ONE bounded page of one owned group's announcements. `cursor`
+ * is the opaque position the server returned; a malformed cursor is the
+ * server's documented 400. No automatic all-page draining happens here.
+ */
+export const listGroupAnnouncements = async (
+    groupId: string,
+    options: { limit?: number; cursor?: string | null } = {},
+): Promise<GroupAnnouncementListEnvelope> => {
+    const params = new URLSearchParams();
+    params.set('limit', String(options.limit ?? GROUP_ANNOUNCEMENT_PAGE_LIMIT));
+    if (options.cursor) params.set('cursor', options.cursor);
+    const body = await request<unknown>(
+        `${groupAnnouncementCollectionPath(groupId)}?${params.toString()}`,
+    );
+    const parsed = parseGroupAnnouncementList(body);
+    if (parsed === null) throw new Error(GROUP_ANNOUNCEMENT_MALFORMED_MESSAGE);
+    return parsed;
+};
+
+/** `POST .../announcements` — strict canonical create; the server defaults `state` to `draft`. */
+export const createGroupAnnouncement = async (
+    groupId: string,
+    write: GroupAnnouncementWrite,
+): Promise<GroupAnnouncement> => {
+    const body = await request<unknown>(groupAnnouncementCollectionPath(groupId), {
+        method: 'POST',
+        body: JSON.stringify(write),
+    });
+    const parsed = parseGroupAnnouncement(body);
+    if (parsed === null) throw new Error(GROUP_ANNOUNCEMENT_MALFORMED_MESSAGE);
+    return parsed;
+};
+
+/** `PUT .../announcements/:announcementId` — an absent key keeps the stored value. */
+export const updateGroupAnnouncement = async (
+    groupId: string,
+    announcementId: string,
+    patch: GroupAnnouncementWrite,
+): Promise<GroupAnnouncement> => {
+    const body = await request<unknown>(groupAnnouncementItemPath(groupId, announcementId), {
+        method: 'PUT',
+        body: JSON.stringify(patch),
+    });
+    const parsed = parseGroupAnnouncement(body);
+    if (parsed === null) throw new Error(GROUP_ANNOUNCEMENT_MALFORMED_MESSAGE);
+    return parsed;
+};
+
+/** `POST .../announcements/:announcementId/retract` — explicit, terminal and audited. */
+export const retractGroupAnnouncement = async (
+    groupId: string,
+    announcementId: string,
+): Promise<GroupAnnouncement> => {
+    const body = await request<unknown>(
+        `${groupAnnouncementItemPath(groupId, announcementId)}/retract`,
+        { method: 'POST', body: JSON.stringify({}) },
+    );
+    const parsed = parseGroupAnnouncement(body);
+    if (parsed === null) throw new Error(GROUP_ANNOUNCEMENT_MALFORMED_MESSAGE);
+    return parsed;
 };
 
 // ====================================
@@ -1341,6 +2658,9 @@ export default {
     createStudent,
     updateStudent,
     deleteStudent,
+    assignStudentBranch,
+    listMyTenantInstructorMemberships,
+    assignInstructorBranch,
 
     // Registration Requests
     createRegistrationRequest,
@@ -2370,6 +3690,13 @@ export const selectStudentSpace = async (studentEnrollmentId: string) => {
         throw new Error('تغيّرت الجلسة أثناء اختيار مساحة الطالب. أعد المحاولة.');
     }
     setAuthToken(result.token);
+    // Token-rotation writer (supervisor/029): the canonical token write IS
+    // this function's complete session mutation, so subscribers are notified
+    // here — after the write — even if the caller's identity update later
+    // fails. `setAuthToken` itself stays notification-free so login remains
+    // atomic (no subscriber ever sees a token without its identity). The
+    // page notifies 'scope' again after it persists the selected identity.
+    notifySessionChange('token');
     return result;
 };
 export const getCurrentStudentEnrollment = () => request<Student & { tenant_id: string; business_name: string }>('/students/me');
