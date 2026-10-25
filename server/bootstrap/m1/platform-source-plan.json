@@ -1,0 +1,140 @@
+{
+  "format": 1,
+  "purpose": "Explicit source assembly inventory; not execution approval or automatic hash acceptance",
+  "legacyManifest": "server/bootstrap/m1/manifest.json",
+  "entries": [
+    {
+      "name": "20261022_01_student_relations_events.sql",
+      "requires": [
+        "20260920_00_legacy_baseline.sql",
+        "20260921_saas_foundation.sql",
+        "20260922_00_tenant_media_and_subscription_requests.sql",
+        "20260929_payment_requests_tenant.sql"
+      ],
+      "sourceSha256": "8e4dc7cfd030a13e4ea323b0cc73d2694854f1ab4e3c1295c564c69e455c83ba",
+      "state": "pending-bootstrap-inclusion",
+      "executionVerified": false
+    },
+    {
+      "name": "20261022_02_billing_invoices_collections.sql",
+      "requires": [
+        "20261021_02_internal_financial_ledger.sql"
+      ],
+      "sourceSha256": "a81ccadd35814dd22dee86cf65fdf860bf38df80eadf617ebc309cac7d3aba4a",
+      "state": "pending-bootstrap-inclusion",
+      "executionVerified": false
+    },
+    {
+      "name": "20261022_03_payments_checkout.sql",
+      "requires": [
+        "20260921_saas_foundation.sql"
+      ],
+      "sourceSha256": "7fb6b0bab7a159b4bc0c4f3ea5dc05363f005ba81db90aa1a42825a5f5b3e741",
+      "state": "pending-bootstrap-inclusion",
+      "executionVerified": false
+    },
+    {
+      "name": "20261022_04_payouts_refunds_disputes.sql",
+      "requires": [
+        "20261021_02_internal_financial_ledger.sql"
+      ],
+      "sourceSha256": "229cd961c3f4a1d6f33b5f5a7d878ec7d7c2e964bfd37dfe618b3b62e93d032e",
+      "state": "pending-bootstrap-inclusion",
+      "executionVerified": false
+    },
+    {
+      "name": "20261022_06_live_sessions_recordings.sql",
+      "requires": [
+        "20260921_saas_foundation.sql"
+      ],
+      "sourceSha256": "391d02304861095056f89daf69c228e5149f8ac44ba5d499ddc0dea646566846",
+      "state": "pending-bootstrap-inclusion",
+      "executionVerified": false,
+      "upgradeHold": "Existing table types/indexes/collations/CHECK enforcement not fully verified; IF NOT EXISTS is not compatibility proof"
+    },
+    {
+      "name": "20261023_01_financial_settlement_obligations.sql",
+      "requires": [
+        "20261022_02_billing_invoices_collections.sql",
+        "20261022_03_payments_checkout.sql",
+        "20261021_02_internal_financial_ledger.sql"
+      ],
+      "sourceSha256": "b38991d867b8063a3da48fd9bfb2e4fe651dd00ac5b88ef2d0029e0c8fe064d4",
+      "state": "pending-bootstrap-inclusion",
+      "executionVerified": false
+    },
+    {
+      "name": "20261023_02_live_callback_presence_contract.sql",
+      "requires": [
+        "20261022_06_live_sessions_recordings.sql"
+      ],
+      "sourceSha256": "67a45debd60c407e241ffb20dd839be6d0af248f3da575203edee0ba7d10f1e3",
+      "state": "pending-bootstrap-inclusion",
+      "executionVerified": false
+    },
+    {
+      "name": "20261024_01_platform_ledger_account_kinds.sql",
+      "requires": [
+        "20261021_02_internal_financial_ledger.sql"
+      ],
+      "sourceSha256": "6a99245538c65270e5c8483a61b1fa05ecf5416262dda347859c8d3c46f17c18",
+      "state": "pending-bootstrap-inclusion",
+      "executionVerified": false
+    },
+    {
+      "name": "20261024_02_platform_settlement_contract.sql",
+      "requires": [
+        "20261023_01_financial_settlement_obligations.sql",
+        "20261024_01_platform_ledger_account_kinds.sql"
+      ],
+      "sourceSha256": "2887c0e86674892a5ae69f6ba63adaef2d11fc24f10de727f468e791a21480a2",
+      "state": "pending-bootstrap-inclusion",
+      "executionVerified": false
+    },
+    {
+      "name": "20261024_03_login_sessions.sql",
+      "requires": [],
+      "sourceSha256": "1812737fe6a5a833d66cf0785c71dfb2e229565e20f7550863898d64cef180f6",
+      "state": "pending-bootstrap-inclusion",
+      "executionVerified": false
+    },
+    {
+      "name": "20261024_04_live_recovery_checkpoint.sql",
+      "requires": [],
+      "sourceSha256": "8bf3b6ba2872dd071eb183852b09a84da62947f273a8cf48d59ea067c3930d20",
+      "state": "pending-bootstrap-inclusion",
+      "executionVerified": false,
+      "compositionRequires": [
+        "20261022_06_live_sessions_recordings.sql",
+        "20261023_02_live_callback_presence_contract.sql"
+      ]
+    },
+    {
+      "name": "20261024_05_tenant_export_ownership.sql",
+      "requires": [
+        "20261018_23_search_export.sql"
+      ],
+      "sourceSha256": "630f36df2fa6d94cbfb1196dae4bc79e4ba64c5601250824146c6ca90f46e69e",
+      "state": "pending-bootstrap-inclusion",
+      "executionVerified": false
+    },
+    {
+      "name": "20261024_06_assignment_cleanup_scan_fencing.sql",
+      "requires": [
+        "20261018_08_question_bank_assignments.sql"
+      ],
+      "sourceSha256": "ebde65f22cc15d982ad7a8fd07745fbf6ab0b7e27ea1be7c4ad21a6ff420cd63",
+      "state": "pending-bootstrap-inclusion",
+      "executionVerified": false,
+      "upgradeHold": "One-time migration, prior cleanup table or partial scan columns explicitly refused; reconcile partial DDL, no provenance backfill"
+    }
+  ],
+  "requirements": [
+    "Preserve existing reviewed hashes; review new sources before adding them",
+    "MySQL8 enforced CHECKs/NO PAD required",
+    "Procedure bodies and DELIMITER require compatible client runner; naive semicolon split is unsafe",
+    "Routine privileges and retained-helper failure recovery must be verified",
+    "Fresh and upgrade paths separately verified; one-time CREATE/ALTER not arbitrary reruns"
+  ],
+  "state": "held until source review and legacy manifest integration; no SQL executed"
+}

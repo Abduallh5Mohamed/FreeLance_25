@@ -308,7 +308,7 @@ export interface PlatformMfaStore {
     currentStepupEpoch(userId: string): Promise<number>;
     bumpStepupEpoch(userId: string): Promise<number>;
     /** Disable an enrolled row; returns affected rows (0 => nothing enrolled). */
-    disable(userId: string): Promise<number>;
+    disable(userId: string, expectedEpoch: number): Promise<number>;
 }
 
 export interface LockoutState {
@@ -743,13 +743,14 @@ export const createSqlPlatformMfaStore = (db: PlatformMfaDb): PlatformMfaStore =
         );
         return createSqlStoreNextEpoch(db, userId);
     },
-    disable: async (userId) => {
+    disable: async (userId, expectedEpoch) => {
+        securityInteger(expectedEpoch, 'expected enrollment epoch');
         const result = await db.execute(
             `UPDATE platform_mfa_secrets
              SET sealed_secret = NULL, status = 'disabled', last_used_step = 0,
                  stepup_epoch = stepup_epoch + 1
-             WHERE user_id = ? AND status IN ('active', 'pending')`,
-            [userId],
+             WHERE user_id = ? AND status = 'active' AND stepup_epoch = ?`,
+            [userId, expectedEpoch],
         );
         const affected = result.affectedRows ?? 0;
         // Disabling MFA must also invalidate outstanding recovery codes so a

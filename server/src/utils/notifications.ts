@@ -3,17 +3,23 @@ import { v4 as uuidv4 } from 'uuid';
 
 interface NotificationData {
     user_id: string;
-    user_type: 'admin' | 'student' | 'instructor' | 'teacher' | 'staff';
+    user_type: 'admin' | 'student' | 'instructor';
     title: string;
     message: string;
     type: 'message' | 'exam_graded' | 'payment' | 'subscription' | 'general';
     link?: string;
 }
 
+const NOTIFICATION_USER_TYPES = new Set(['admin', 'student', 'instructor']);
+
 /**
  * Create a notification for a user
  */
 export async function createNotification(data: NotificationData): Promise<void> {
+    if (!NOTIFICATION_USER_TYPES.has(data.user_type)) {
+        console.error('Refused notification for an unsupported user type');
+        return;
+    }
     try {
         const id = uuidv4();
         const sql = `

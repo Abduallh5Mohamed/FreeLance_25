@@ -37,6 +37,48 @@ function assertSafeSql(sql, name) {
   if (/\bDELETE\s+FROM\s+(?:users|students)\b/i.test(stripped)) throw new Error(`Unsafe user-row deletion in ${name}`);
 }
 
+/** Source-plan checks do not confer SQL execution or source-review approval. */
+function validatePlatformSourcePlan(plan, names, sourceHashes) {
+  if (plan?.format !== 1 || !Array.isArray(plan.entries)
+      || typeof plan.state !== 'string' || !plan.state.trim()
+      || !Array.isArray(plan.requirements)
+      || plan.requirements.some((item) => typeof item !== 'string' || !item.trim())) {
+    throw new Error('Invalid platform migration source plan.');
+  }
+  const positions = new Map(names.map((name, index) => [name, index]));
+  const seen = new Set();
+  for (const entry of plan.entries) {
+    if (!entry || typeof entry.name !== 'string'
+        || !/^\d{8}_[A-Za-z0-9_-]+\.sql$/.test(entry.name)
+        || seen.has(entry.name) || !positions.has(entry.name)
+        || !Array.isArray(entry.requires)
+        || typeof entry.state !== 'string' || !entry.state.trim()
+        || typeof entry.executionVerified !== 'boolean'
+        || typeof entry.sourceSha256 !== 'string'
+        || !/^[0-9a-f]{64}$/.test(entry.sourceSha256)) {
+      throw new Error('Invalid, duplicate or missing platform migration entry.');
+    }
+    seen.add(entry.name);
+    for (const [kind, dependencies] of [
+      ['requires', entry.requires],
+      ['compositionRequires', entry.compositionRequires === undefined ? [] : entry.compositionRequires],
+    ]) {
+      if (!Array.isArray(dependencies) || new Set(dependencies).size !== dependencies.length) {
+        throw new Error('Invalid or duplicate ' + kind + ' prerequisites for ' + entry.name);
+      }
+      for (const dependency of dependencies) {
+        if (typeof dependency !== 'string' || !positions.has(dependency)
+            || positions.get(dependency) >= positions.get(entry.name)) {
+          throw new Error('Missing or out-of-order ' + kind + ' prerequisite for ' + entry.name);
+        }
+      }
+    }
+    if (sourceHashes && sourceHashes[entry.name] !== entry.sourceSha256) {
+      throw new Error('Platform source plan hash drift for ' + entry.name);
+    }
+  }
+}
+
 export async function buildM1Bootstrap(destination) {
   if (!destination) throw new Error('An explicit destination directory is required.');
   const target = path.resolve(destination);
@@ -50,6 +92,18 @@ export async function buildM1Bootstrap(destination) {
   const reviewedManifest = JSON.parse(await readFile(path.join(repoRoot, 'server', 'bootstrap', 'm1', 'manifest.json'), 'utf8'));
   if (reviewedManifest.contentHashEncoding !== contentHashEncoding) {
     throw new Error('Reviewed manifest must explicitly declare the canonical SQL hash encoding.');
+  }
+  const platformPlanSource = await readFile(path.join(repoRoot, 'server', 'bootstrap', 'm1', 'platform-source-plan.json'), 'utf8');
+  const platformPlan = JSON.parse(platformPlanSource);
+  validatePlatformSourcePlan(platformPlan, names);
+  // New platform migrations are inventoried separately until source review
+  // integrates their hashes. Never silently bless all current checkout files.
+  const unreviewed = names.filter((name) => !Object.hasOwn(reviewedManifest.sourceSha256 ?? {}, name));
+  if (unreviewed.length > 0) {
+    throw new Error(
+      'Bootstrap source review required for: ' + unreviewed.join(', ')
+      + '. See server/bootstrap/m1/platform-source-plan.json; no files staged and no SQL executed.',
+    );
   }
   const sourceHashes = {};
   const sourceRawHashes = {};
@@ -70,6 +124,7 @@ export async function buildM1Bootstrap(destination) {
     }
     staged.push({ name, content });
   }
+  validatePlatformSourcePlan(platformPlan, names, sourceHashes);
   if (Object.keys(reviewedManifest.sourceSha256 ?? {}).sort().join('\n') !== names.join('\n')) {
     throw new Error('Migration inventory differs from reviewed manifest; refusing an incomplete or expanded plan.');
   }
@@ -109,6 +164,14 @@ export async function buildM1Bootstrap(destination) {
       sourceDirectory: 'server/migrations',
       stagedDirectory: target,
       sourceSha256: sourceHashes,
+      platformSourcePlan: {
+        source: 'server/bootstrap/m1/platform-source-plan.json',
+        sourceSha256: sha256(platformPlanSource.replace(/\r\n/g, '\n')),
+        entries: platformPlan.entries,
+        state: platformPlan.state,
+        requirements: platformPlan.requirements,
+        executionVerified: false,
+      },
       sourceRawSha256: sourceRawHashes,
       preludeSha256: preludeHash,
       databaseCollationSha256: databaseCollationHash,

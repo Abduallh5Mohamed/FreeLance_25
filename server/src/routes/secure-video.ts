@@ -1603,4 +1603,23 @@ const productionDeliveryDeps: SecureVideoDeliveryDeps = {
 
 router.use(createSecureVideoDeliveryRouter(productionDeliveryDeps));
 
+/**
+ * Lifecycle integration request (owner: Codex — the server process bootstrap,
+ * which owns `index.ts` and the runtime that mounts this router).
+ *
+ * This route owns video sessions (the only surface that creates and kills
+ * them) and therefore owns the dead-session sweep's public contract:
+ * `startDeadSessionCleanup` / `stopDeadSessionCleanup` are defined in
+ * `../services/video-security` as an explicit start/stop lifecycle. They are
+ * NOT started here. Starting the sweep on router import would schedule a timer
+ * merely from being imported, which is forbidden: an import side effect must
+ * never spin up a timer or a service.
+ *
+ * The owning process MUST call `startDeadSessionCleanup()` exactly once during
+ * bootstrap (after the router is mounted) and `stopDeadSessionCleanup()` during
+ * graceful shutdown. This route deliberately exposes no import-time side effect
+ * and starts no timer of its own; it only names the integration points. No
+ * `index.ts` edit, no timer, and no service execution is performed here.
+ */
+
 export default router;

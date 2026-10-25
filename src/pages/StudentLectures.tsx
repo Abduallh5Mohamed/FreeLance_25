@@ -1,18 +1,17 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Search, Play, PlayCircle, Clock, Users, BookOpen, ChevronRight, Star, Award, CheckCircle2, X } from "lucide-react";
+import { Search, Play, PlayCircle, Clock, Users, BookOpen, Award, CheckCircle2, AlertCircle, RefreshCw } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
 import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
-import { getStudentLectures, Lecture as APILecture, User } from "@/lib/api-http";
+import { getStudentLectures, Lecture as APILecture, User, AUTH_SESSION_CHANGED_EVENT } from "@/lib/api-http";
 import { SecureVideoPlayer } from "@/components/SecureVideoPlayer";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 
@@ -32,69 +31,96 @@ const StudentLectures = () => {
   const { toast } = useToast();
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedLecture, setSelectedLecture] = useState<Lecture | null>(null);
-  const [playingVideo, setPlayingVideo] = useState<{ videoId: string; title: string; url?: string } | null>(null);
+  const [playingVideo, setPlayingVideo] = useState<{ videoId: string; title: string; groupName?: string } | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [filterLevel, setFilterLevel] = useState<string>('all');
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const requestRef = useRef(0);
+  const sessionRef = useRef(0);
 
-  // Load lectures on component mount
-  useEffect(() => {
-    loadLectures();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const loadLectures = async () => {
+  const loadLectures = useCallback(async () => {
+    const requestId = ++requestRef.current;
+    const session = sessionRef.current;
+    const userStr = localStorage.getItem('currentUser');
+    let user: User | null = null;
     try {
-      setLoading(true);
+      user = userStr ? JSON.parse(userStr) as User : null;
+    } catch {
+      user = null;
+    }
 
-      // Get current user from localStorage
-      const userStr = localStorage.getItem('currentUser');
-      const user: User | null = userStr ? JSON.parse(userStr) : null;
+    if (!localStorage.getItem('authToken')) {
+      setLectures([]);
+      setCurrentUser(null);
+      setHasLoaded(false);
+      setLoading(false);
+      navigate('/auth', { replace: true });
+      return;
+    }
 
-      if (!user) {
-        console.error('❌ No user found in localStorage');
-        toast({
-          title: 'خطأ',
-          description: 'يرجى تسجيل الدخول مرة أخرى',
-          variant: 'destructive'
-        });
-        setLectures([]);
-        return;
-      }
+    if (!user || user.role !== 'student') {
+      setLectures([]);
+      setCurrentUser(null);
+      setHasLoaded(false);
+      setLoading(false);
+      setLoadError(true);
+      return;
+    }
 
-      console.log('✅ User found:', user.name, 'ID:', user.id);
+    setLoading(true);
+    setLoadError(false);
+    try {
+      const data = await getStudentLectures(user.id);
+      if (requestId !== requestRef.current || session !== sessionRef.current) return;
       setCurrentUser(user);
-
-      // Use student_id if available, otherwise use user id
-      const studentIdentifier = user.student_id || user.id;
-
-      // Get lectures for this student's group only
-      const data = await getStudentLectures(studentIdentifier);
-      const lecturesData = data?.map(m => ({
-        ...m,
-        completed: false,
-        progress: 0,
-        lessons: 1,
-        level: 'intermediate' as const,
-        students: Math.floor(Math.random() * 3000) + 100,
-        rating: Math.floor(Math.random() * 2) + 4,
-        reviews: Math.floor(Math.random() * 500) + 50,
-        instructor: 'المدرس'
-      })) || [];
-      setLectures(lecturesData);
+      setLectures(data || []);
+      setHasLoaded(true);
     } catch (error) {
+      if (requestId !== requestRef.current || session !== sessionRef.current) return;
       console.error('Error loading lectures:', error);
+      setLoadError(true);
       toast({
         title: 'خطأ',
         description: 'فشل تحميل المحاضرات',
         variant: 'destructive'
       });
     } finally {
-      setLoading(false);
+      if (requestId === requestRef.current && session === sessionRef.current) {
+        setLoading(false);
+      }
     }
-  };
+  }, [navigate, toast]);
+
+  useEffect(() => {
+    void loadLectures();
+
+    const refresh = () => {
+      sessionRef.current += 1;
+      requestRef.current += 1;
+      setPlayingVideo(null);
+      setCurrentUser(null);
+      setLectures([]);
+      setFilterLevel('all');
+      setHasLoaded(false);
+      setLoadError(false);
+      setLoading(false);
+      void loadLectures();
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'authToken' || event.key === 'currentUser' || event.key === null) refresh();
+    };
+
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      requestRef.current += 1;
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [loadLectures]);
 
   const getLevelLabel = (level?: string) => {
     switch (level) {
@@ -105,7 +131,7 @@ const StudentLectures = () => {
       case 'advanced':
         return 'متقدم';
       default:
-        return 'متوسط';
+        return 'غير محدد';
     }
   };
 
@@ -135,7 +161,18 @@ const StudentLectures = () => {
   });
 
   const handlePlayLecture = (lecture: Lecture) => {
-    if (!lecture.video_url) { // Changed from videoUrl to video_url based on Lecture interface
+    if (!localStorage.getItem('authToken') || !currentUser) {
+      toast({
+        variant: "destructive",
+        title: "انتهت الجلسة",
+        description: "يجب تسجيل الدخول أولاً"
+      });
+      navigate('/auth', { replace: true });
+      return;
+    }
+
+    const videoUrl = (lecture.video_url || '').trim();
+    if (!videoUrl) {
       toast({
         title: "غير متاح",
         description: "لا يوجد فيديو لهذه المحاضرة",
@@ -144,73 +181,55 @@ const StudentLectures = () => {
       return;
     }
 
-    const videoUrl = lecture.video_url || '';
-    const isInternal = videoUrl.startsWith('video://');
-
-    // Get user ID from localStorage
-    const userStr = localStorage.getItem('currentUser');
-    if (!userStr) {
-      console.error('❌ No user in localStorage!');
+    // Only the canonical platform reference (`video://<id>`) is playable.
+    // A raw/private/external URL is never played as a fallback: unproven
+    // references are withheld by the server and are treated as unavailable.
+    if (!videoUrl.startsWith('video://')) {
       toast({
-        variant: "destructive",
-        title: "خطأ",
-        description: "يجب تسجيل الدخول أولاً"
+        title: "غير متاح",
+        description: "هذه المحاضرة لا تشير إلى فيديو من المنصة",
+        variant: "destructive"
       });
       return;
     }
-    const user = JSON.parse(userStr);
-    setCurrentUser(user);
 
-    if (isInternal) {
-      const videoId = videoUrl.replace('video://', '');
-      setPlayingVideo({ videoId, title: lecture.title });
+    const videoId = videoUrl.slice('video://'.length).trim();
+    if (!videoId) {
       toast({
-        title: "جاري تشغيل المحاضرة",
-        description: lecture.title
+        title: "غير متاح",
+        description: "مرجع الفيديو غير صالح",
+        variant: "destructive"
       });
-    } else {
-      // Use SecureVideoPlayer for external videos too
-      setPlayingVideo({
-        videoId: 'external', // A placeholder videoId for external URLs
-        title: lecture.title,
-        url: videoUrl
-      });
-      toast({
-        title: "جاري تشغيل المحاضرة",
-        description: lecture.title
-      });
+      return;
     }
+    setPlayingVideo({ videoId, title: lecture.title, groupName: lecture.group_name });
+
+    toast({
+      title: "جاري تشغيل المحاضرة",
+      description: lecture.title
+    });
   };
 
-  const renderStars = (rating?: number) => {
-    const rate = rating || 4.5;
-    return (
-      <div className="flex items-center gap-1">
-        {[...Array(5)].map((_, i) => (
-          <Star
-            key={i}
-            className={`w-4 h-4 ${i < Math.floor(rate) ? 'fill-yellow-400 text-yellow-400' : 'text-gray-300'}`}
-          />
-        ))}
-        <span className="text-sm font-medium ml-1">({rate.toFixed(1)})</span>
-      </div>
-    );
-  };
+  const hasLevels = lectures.some((lecture) => Boolean(lecture.level));
+  const progressLectures = lectures.filter((lecture) => typeof lecture.progress === 'number');
+  const averageProgress = progressLectures.length > 0
+    ? Math.round(progressLectures.reduce((total, lecture) => total + (lecture.progress || 0), 0) / progressLectures.length)
+    : null;
+  const hasCompletionData = lectures.some((lecture) => typeof lecture.completed === 'boolean');
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 relative overflow-x-hidden" dir="rtl">
       <FloatingParticles />
       <StudentHeader />
 
-      {/* Video Player Modal - Handles ALL Videos */}
+      {/* Video Player Modal - canonical platform references only */}
       {playingVideo && currentUser && (
         <SecureVideoPlayer
           videoId={playingVideo.videoId}
           userId={currentUser.id}
-          studentName={currentUser.name || 'طالب'}
-          groupName={'المجموعة'}
+          studentName={currentUser.name || ''}
+          groupName={playingVideo.groupName || ''}
           onClose={() => setPlayingVideo(null)}
-          directUrl={playingVideo.url} // Pass external URL if present
         />
       )}
 
@@ -254,25 +273,27 @@ const StudentLectures = () => {
                 </div>
 
                 {/* Level Filter */}
-                <div className="flex gap-1.5 xs:gap-2 sm:gap-2 flex-wrap items-center">
-                  <span className="text-xs sm:text-sm font-medium flex items-center">المستوى:</span>
-                  {[
-                    { value: 'all', label: 'الكل' },
-                    { value: 'beginner', label: 'مبتدئ' },
-                    { value: 'intermediate', label: 'متوسط' },
-                    { value: 'advanced', label: 'متقدم' }
-                  ].map((filter) => (
-                    <Button
-                      key={filter.value}
-                      variant={filterLevel === filter.value ? 'default' : 'outline'}
-                      onClick={() => setFilterLevel(filter.value)}
-                      size="sm"
-                      className="text-[10px] xs:text-xs sm:text-sm px-2 xs:px-3 sm:px-4 h-7 xs:h-8 sm:h-9"
-                    >
-                      {filter.label}
-                    </Button>
-                  ))}
-                </div>
+                {hasLevels && (
+                  <div className="flex gap-1.5 xs:gap-2 sm:gap-2 flex-wrap items-center">
+                    <span className="text-xs sm:text-sm font-medium flex items-center">المستوى:</span>
+                    {[
+                      { value: 'all', label: 'الكل' },
+                      { value: 'beginner', label: 'مبتدئ' },
+                      { value: 'intermediate', label: 'متوسط' },
+                      { value: 'advanced', label: 'متقدم' }
+                    ].map((filter) => (
+                      <Button
+                        key={filter.value}
+                        variant={filterLevel === filter.value ? 'default' : 'outline'}
+                        onClick={() => setFilterLevel(filter.value)}
+                        size="sm"
+                        className="text-[10px] xs:text-xs sm:text-sm px-2 xs:px-3 sm:px-4 h-7 xs:h-8 sm:h-9"
+                      >
+                        {filter.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
               </div>
             </CardContent>
           </GlassmorphicCard>
@@ -293,16 +314,26 @@ const StudentLectures = () => {
                 <Card className="overflow-hidden hover:shadow-2xl transition-all duration-300 h-full flex flex-col group bg-gradient-to-br from-card to-card/50">
                   {/* Thumbnail */}
                   <div className="relative h-32 xs:h-36 sm:h-40 md:h-44 lg:h-48 bg-gradient-to-br from-primary/20 to-accent/20 overflow-hidden">
-                    <img
-                      src={lecture.video_url.includes('drive.google.com')
-                        ? `https://drive.google.com/thumbnail?id=${lecture.video_url.match(/\/d\/([a-zA-Z0-9-_]+)/)?.[1]}&sz=w500`
-                        : 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=500'}
-                      alt={lecture.title}
-                      className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=500';
-                      }}
-                    />
+                    {(() => {
+                      const driveMatch = (lecture.video_url || '').match(/\/d\/([a-zA-Z0-9-_]+)/);
+                      if (!driveMatch) {
+                        return (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <BookOpen className="w-10 h-10 sm:w-12 sm:h-12 text-primary/40" />
+                          </div>
+                        );
+                      }
+                      return (
+                        <img
+                          src={`https://drive.google.com/thumbnail?id=${driveMatch[1]}&sz=w500`}
+                          alt={lecture.title}
+                          className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
+                          onError={(event) => {
+                            event.currentTarget.style.display = 'none';
+                          }}
+                        />
+                      );
+                    })()}
 
                     {/* Overlay */}
                     <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
@@ -311,9 +342,11 @@ const StudentLectures = () => {
 
                     {/* Badges */}
                     <div className="absolute top-1.5 sm:top-2 right-1.5 sm:right-2 flex gap-1 sm:gap-2">
-                      <Badge className={`${getLevelColor(lecture.level)} text-[9px] xs:text-[10px] sm:text-xs px-1.5 sm:px-2`}>
-                        {getLevelLabel(lecture.level)}
-                      </Badge>
+                      {lecture.level && (
+                        <Badge className={`${getLevelColor(lecture.level)} text-[9px] xs:text-[10px] sm:text-xs px-1.5 sm:px-2`}>
+                          {getLevelLabel(lecture.level)}
+                        </Badge>
+                      )}
                       {lecture.completed && (
                         <Badge className="bg-green-500/20 text-green-700 text-[9px] xs:text-[10px] sm:text-xs px-1.5 sm:px-2">
                           <CheckCircle2 className="w-2.5 h-2.5 sm:w-3 sm:h-3 ml-0.5 sm:ml-1" />
@@ -325,13 +358,13 @@ const StudentLectures = () => {
                     {/* Duration */}
                     <div className="absolute bottom-1.5 sm:bottom-2 right-1.5 sm:right-2 bg-black/80 text-white px-1.5 sm:px-2 py-0.5 sm:py-1 rounded text-[10px] sm:text-xs md:text-sm flex items-center gap-0.5 sm:gap-1">
                       <Clock className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-                      {lecture.duration_minutes || 0} دقيقة
+                      {lecture.duration_minutes ? `${lecture.duration_minutes} دقيقة` : 'مدة غير متاحة'}
                     </div>
 
                     {/* Progress Bar */}
-                    {lecture.progress > 0 && (
+                    {(lecture.progress || 0) > 0 && (
                       <div className="absolute bottom-0 left-0 right-0">
-                        <Progress value={lecture.progress} className="h-0.5 sm:h-1 rounded-none" />
+                        <Progress value={lecture.progress || 0} className="h-0.5 sm:h-1 rounded-none" />
                       </div>
                     )}
                   </div>
@@ -340,7 +373,7 @@ const StudentLectures = () => {
                   <CardContent className="p-2.5 xs:p-3 sm:p-4 flex-1 flex flex-col">
                     <div className="flex-1">
                       <Badge variant="outline" className="mb-1.5 sm:mb-2 text-[9px] xs:text-[10px] sm:text-xs">
-                        {lecture.course_name || 'دورة عامة'}
+                        {lecture.course_name || 'دورة غير محددة'}
                       </Badge>
                       <h3 className="font-bold text-xs xs:text-sm sm:text-base mb-1.5 sm:mb-2 line-clamp-2 group-hover:text-primary transition-colors">
                         {lecture.title}
@@ -350,24 +383,32 @@ const StudentLectures = () => {
                       </p>
 
                       {/* Instructor */}
-                      <div className="mb-2 sm:mb-3 pb-2 sm:pb-3 border-b">
-                        <p className="text-[10px] xs:text-xs font-medium text-muted-foreground">المدرس</p>
-                        <p className="text-xs sm:text-sm">{lecture.instructor || 'المدرس'}</p>
-                      </div>
+                      {lecture.instructor && (
+                        <div className="mb-2 sm:mb-3 pb-2 sm:pb-3 border-b">
+                          <p className="text-[10px] xs:text-xs font-medium text-muted-foreground">المدرس</p>
+                          <p className="text-xs sm:text-sm">{lecture.instructor}</p>
+                        </div>
+                      )}
 
                       {/* Stats */}
-                      <div className="space-y-1.5 sm:space-y-2 text-[10px] xs:text-xs text-muted-foreground mb-2 sm:mb-3">
-                        <div className="flex items-center justify-between">
-                          <span className="flex items-center gap-0.5 sm:gap-1">
-                            <Users className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-                            {(lecture.students || 0).toLocaleString('ar-EG')} طالب
-                          </span>
-                          <span className="flex items-center gap-0.5 sm:gap-1">
-                            <Award className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-                            {lecture.lessons || 1} درس
-                          </span>
+                      {(typeof lecture.students === 'number' || typeof lecture.lessons === 'number') && (
+                        <div className="space-y-1.5 sm:space-y-2 text-[10px] xs:text-xs text-muted-foreground mb-2 sm:mb-3">
+                          <div className="flex items-center justify-between">
+                            {typeof lecture.students === 'number' && (
+                              <span className="flex items-center gap-0.5 sm:gap-1">
+                                <Users className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                                {lecture.students.toLocaleString('ar-EG')} طالب
+                              </span>
+                            )}
+                            {typeof lecture.lessons === 'number' && (
+                              <span className="flex items-center gap-0.5 sm:gap-1">
+                                <Award className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                                {lecture.lessons} درس
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      </div>
+                      )}
 
                       {/* Progress */}
                       {(lecture.progress || 0) > 0 && (
@@ -397,8 +438,36 @@ const StudentLectures = () => {
           </AnimatePresence>
         </div>
 
+        {loading && lectures.length === 0 && !loadError && (
+          <div className="text-center py-10 sm:py-16 text-muted-foreground" aria-live="polite">
+            جارٍ تحميل المحاضرات...
+          </div>
+        )}
+
+        {loadError && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="text-center py-10 sm:py-16"
+          >
+            <GlassmorphicCard className="max-w-xs sm:max-w-sm md:max-w-md mx-auto">
+              <CardContent className="pt-6 sm:pt-8 pb-6 sm:pb-8 px-4 sm:px-6">
+                <AlertCircle className="w-12 h-12 sm:w-14 sm:h-14 md:w-16 md:h-16 mx-auto mb-3 sm:mb-4 text-destructive" />
+                <h3 className="text-base sm:text-lg font-semibold mb-1.5 sm:mb-2">تعذّر تحميل المحاضرات</h3>
+                <p className="text-xs sm:text-sm text-muted-foreground mb-4">
+                  لم نتمكن من التحقق من محاضراتك الآن. لا توجد قائمة فارغة مؤكدة.
+                </p>
+                <Button onClick={() => void loadLectures()} disabled={loading} className="gap-2">
+                  <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                  إعادة المحاولة
+                </Button>
+              </CardContent>
+            </GlassmorphicCard>
+          </motion.div>
+        )}
+
         {/* Empty State */}
-        {filteredLectures.length === 0 && (
+        {!loading && !loadError && hasLoaded && filteredLectures.length === 0 && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -417,6 +486,7 @@ const StudentLectures = () => {
         )}
 
         {/* Stats Footer */}
+        {!loadError && hasLoaded && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -426,8 +496,12 @@ const StudentLectures = () => {
           <GlassmorphicCard>
             <CardContent className="pt-4 sm:pt-5 md:pt-6 pb-4 sm:pb-5 md:pb-6 text-center px-2 sm:px-4">
               <Award className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 mx-auto mb-1.5 sm:mb-2 text-primary" />
-              <p className="text-lg sm:text-xl md:text-2xl font-bold">{lectures.filter(l => l.completed).length}</p>
-              <p className="text-[10px] sm:text-xs md:text-sm text-muted-foreground">محاضرات مكتملة</p>
+              <p className="text-lg sm:text-xl md:text-2xl font-bold">
+                {hasCompletionData ? lectures.filter(l => l.completed === true).length : 'غير متاح'}
+              </p>
+              <p className="text-[10px] sm:text-xs md:text-sm text-muted-foreground">
+                {hasCompletionData ? 'محاضرات مكتملة' : 'حالة الإكمال غير متاحة'}
+              </p>
             </CardContent>
           </GlassmorphicCard>
 
@@ -443,12 +517,15 @@ const StudentLectures = () => {
             <CardContent className="pt-6 text-center">
               <Play className="w-8 h-8 mx-auto mb-2 text-green-500" />
               <p className="text-2xl font-bold">
-                {lectures.length > 0 ? Math.round(lectures.reduce((acc, l) => acc + (l.progress || 0), 0) / lectures.length) : 0}%
+                {averageProgress === null ? 'غير متاح' : `${averageProgress}%`}
               </p>
-              <p className="text-sm text-muted-foreground">متوسط التقدم</p>
+              <p className="text-sm text-muted-foreground">
+                {averageProgress === null ? 'بيانات التقدم غير متاحة' : 'متوسط التقدم'}
+              </p>
             </CardContent>
           </GlassmorphicCard>
         </motion.div>
+        )}
       </div>
     </div>
   );

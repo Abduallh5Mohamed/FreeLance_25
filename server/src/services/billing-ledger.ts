@@ -27,6 +27,8 @@ export const ACCOUNT_KINDS = [
     'merchant_reserved',
     'subscription_credit',
     'cash_receipt_clearing',
+    'platform_subscription_revenue',
+    'platform_unallocated_receipts',
 ] as const;
 
 export type AccountKind = (typeof ACCOUNT_KINDS)[number];
@@ -41,7 +43,79 @@ export const ACCOUNT_NORMAL_SIDE: Readonly<Record<AccountKind, NormalSide>> = Ob
     merchant_reserved: 'credit',
     subscription_credit: 'credit',
     cash_receipt_clearing: 'credit',
+    platform_subscription_revenue: 'credit',
+    platform_unallocated_receipts: 'credit',
 });
+
+/**
+ * Platform obligation journal discrimination. There is no journal-kind column:
+ * the idempotency key prefix names the role, and the reference pattern plus the
+ * closed two-line shape must also match (docs/streams/server/CL-B-BILLING
+ * section 14.4.2-14.4.3).
+ */
+export const PLATFORM_RECEIPT_KEY_PREFIX = 'settlement:platform_receipt:';
+export const PLATFORM_ALLOCATION_KEY_PREFIX = 'settlement:platform_alloc:';
+export const PLATFORM_ALLOCATION_REVERSAL_KEY_PREFIX = 'settlement:platform_alloc_rev:';
+export const PLATFORM_ISSUANCE_KEY_PREFIX = 'billing:invoice_issue:';
+export const LEGACY_INVOICE_PAYMENT_KEY_PREFIX = 'settlement:invoice_payment:';
+
+export type PlatformJournalRole =
+    | 'receipt'
+    | 'allocation'
+    | 'allocation_reversal'
+    | 'issuance'
+    | 'legacy_direct_allocation';
+
+export interface PlatformJournalShape {
+    readonly debit: AccountKind;
+    readonly credit: AccountKind;
+    readonly referencePrefix: string;
+}
+
+export const PLATFORM_JOURNAL_SHAPES: Readonly<Record<'receipt' | 'allocation' | 'issuance', PlatformJournalShape>> =
+    Object.freeze({
+        receipt: Object.freeze({
+            debit: 'platform_cash',
+            credit: 'platform_unallocated_receipts',
+            referencePrefix: 'platform_receipt:',
+        } as const),
+        allocation: Object.freeze({
+            debit: 'platform_unallocated_receipts',
+            credit: 'platform_receivable',
+            referencePrefix: 'platform_alloc:',
+        } as const),
+        issuance: Object.freeze({
+            debit: 'platform_receivable',
+            credit: 'platform_subscription_revenue',
+            referencePrefix: 'invoice_issue:',
+        } as const),
+    });
+
+/** Allocation reversal is the swapped allocation shape with its own reference prefix. */
+export const PLATFORM_ALLOCATION_REVERSAL_REFERENCE_PREFIX = 'platform_alloc_rev:';
+/** Frozen legacy history: platform_cash debit / platform_receivable credit, reference `invoice:<invoiceId>`. */
+export const LEGACY_DIRECT_ALLOCATION_SHAPE: PlatformJournalShape = Object.freeze({
+    debit: 'platform_cash',
+    credit: 'platform_receivable',
+    referencePrefix: 'invoice:',
+} as const);
+
+const PLATFORM_KEY_ROLES: ReadonlyArray<readonly [string, PlatformJournalRole]> = [
+    [PLATFORM_ALLOCATION_REVERSAL_KEY_PREFIX, 'allocation_reversal'],
+    [PLATFORM_ALLOCATION_KEY_PREFIX, 'allocation'],
+    [PLATFORM_RECEIPT_KEY_PREFIX, 'receipt'],
+    [PLATFORM_ISSUANCE_KEY_PREFIX, 'issuance'],
+    [LEGACY_INVOICE_PAYMENT_KEY_PREFIX, 'legacy_direct_allocation'],
+];
+
+/** Pure classifier: the role named by the idempotency key prefix, or null for a non-platform journal. */
+export function classifyPlatformJournal(idempotencyKey: string): PlatformJournalRole | null {
+    if (typeof idempotencyKey !== 'string') return null;
+    for (const [prefix, role] of PLATFORM_KEY_ROLES) {
+        if (idempotencyKey.startsWith(prefix)) return role;
+    }
+    return null;
+}
 
 export const LINE_DIRECTIONS = ['debit', 'credit'] as const;
 export type LineDirection = (typeof LINE_DIRECTIONS)[number];
@@ -85,8 +159,11 @@ export type LedgerErrorCode =
     | 'account_version_conflict'
     | 'journal_not_found'
     | 'already_reversed'
+    | 'reservation_managed_journal'
     | 'credit_not_withdrawable'
     | 'cash_receipt_not_available'
+    | 'platform_posting_shape'
+    | 'platform_managed_journal'
     | 'invalid_reversal';
 
 export class LedgerError extends Error {
@@ -179,6 +256,19 @@ export interface JournalRecord {
     readonly lines: readonly JournalLineRecord[];
 }
 
+export type ReservationJournalRole = 'reserve' | 'release' | 'consume' | 'reversal';
+
+/**
+ * Persisted link from a journal back to the reservation state machine. The
+ * direct reversal path refuses these journals; only the reservation domain
+ * (release/consume) may compensate them while preserving its row state.
+ */
+export interface ReservationJournalLink {
+    readonly tenantId: string;
+    readonly reservationId: string;
+    readonly journalRole: ReservationJournalRole;
+}
+
 export interface AccountBalanceChange {
     readonly accountId: string;
     readonly expectedVersion: number;
@@ -209,6 +299,7 @@ export type InsertJournalResult =
     | { readonly ok: true; readonly journal: JournalRecord }
     | { readonly ok: false; readonly reason: 'idempotent_replay'; readonly journal: JournalRecord }
     | { readonly ok: false; readonly reason: 'idempotency_conflict' }
+    | { readonly ok: false; readonly reason: 'already_reversed' }
     | { readonly ok: false; readonly reason: 'account_version_conflict'; readonly accountId: string };
 
 /**
@@ -231,6 +322,26 @@ export interface LedgerTransaction {
     getJournal(tenantId: string, journalId: string): Promise<JournalRecord | null>;
     findReversalOf(tenantId: string, journalId: string): Promise<JournalRecord | null>;
     insertJournal(input: InsertJournalInput): Promise<InsertJournalResult>;
+    /**
+     * Persisted reservation/journal link lookup, tenant-scoped and read inside
+     * the same unit of work. A store that persists reservations MUST implement
+     * it; the direct reversal guard uses this authority before falling back to
+     * the reservation key convention for stores that predate the lookup.
+     */
+    findReservationJournalLink?(
+        tenantId: string,
+        journalId: string,
+    ): Promise<ReservationJournalLink | null>;
+    /**
+     * Idempotently provision one zero-balance account keyed by
+     * (tenant, kind, currency). An existing row is returned unchanged; the
+     * balance is never seeded or overwritten.
+     */
+    provisionAccountIdempotent?(
+        tenantId: string,
+        kind: AccountKind,
+        currency: string,
+    ): Promise<LedgerAccount>;
 }
 
 export interface LedgerStore<Tx extends LedgerTransaction = LedgerTransaction> {
@@ -422,6 +533,141 @@ function assertNoForbiddenWalletTransfers(kinds: ReadonlySet<AccountKind>): void
     }
 }
 
+const NEW_PLATFORM_KINDS: readonly AccountKind[] = ['platform_subscription_revenue', 'platform_unallocated_receipts'];
+const NON_PLATFORM_LIABILITY_KINDS: readonly AccountKind[] = [
+    'merchant_pending',
+    'merchant_available',
+    'merchant_reserved',
+    'subscription_credit',
+    'cash_receipt_clearing',
+];
+
+export interface JournalSeparationDraft {
+    readonly idempotencyKey: string;
+    readonly reference: string | null;
+    readonly journalType: 'standard' | 'reversal';
+    readonly lines: ReadonlyArray<{
+        readonly accountId: string;
+        readonly direction: LineDirection;
+        readonly amountMinor: bigint;
+    }>;
+}
+
+function requireTwoLineShape(
+    draft: JournalSeparationDraft,
+    accounts: ReadonlyMap<string, LedgerAccount>,
+    debit: AccountKind,
+    credit: AccountKind,
+    role: string,
+): void {
+    if (draft.lines.length !== 2) {
+        fail('platform_posting_shape', `a ${role} journal must have exactly two lines`);
+    }
+    const [first, second] = draft.lines;
+    if (first === undefined || second === undefined || first.accountId === second.accountId) {
+        fail('platform_posting_shape', `a ${role} journal must use two distinct accounts`);
+    }
+    const debitLine = first.direction === 'debit' ? first : second;
+    const creditLine = first.direction === 'debit' ? second : first;
+    if (debitLine.direction !== 'debit' || creditLine.direction !== 'credit') {
+        fail('platform_posting_shape', `a ${role} journal must have one debit line and one credit line`);
+    }
+    if (debitLine.amountMinor !== creditLine.amountMinor) {
+        fail('platform_posting_shape', `a ${role} journal must have equal debit and credit amounts`);
+    }
+    if (accounts.get(debitLine.accountId)?.kind !== debit || accounts.get(creditLine.accountId)?.kind !== credit) {
+        fail('platform_posting_shape', `a ${role} journal must debit ${debit} and credit ${credit}`);
+    }
+}
+
+function requireReferenceMatchesKey(
+    draft: JournalSeparationDraft,
+    keyPrefix: string,
+    referencePrefix: string,
+    role: string,
+): void {
+    const keyTail = draft.idempotencyKey.slice(keyPrefix.length);
+    if (keyTail.length === 0) {
+        fail('platform_posting_shape', `a ${role} idempotency key must carry its stable identifier`);
+    }
+    if (draft.reference !== `${referencePrefix}${keyTail}`) {
+        fail('platform_posting_shape', `a ${role} reference must be ${referencePrefix}<identifier of the key>`);
+    }
+}
+
+/**
+ * Journal-level separation guard (CL-B-BILLING section 14.4.4). Keeps the
+ * wallet-transfer rules and adds the closed platform posting shapes. For a
+ * reversal draft the caller passes the loaded original journal.
+ */
+export function assertJournalSeparation(
+    draft: JournalSeparationDraft,
+    accounts: ReadonlyMap<string, LedgerAccount>,
+    options: { readonly reversalOriginal?: Pick<JournalRecord, 'idempotencyKey'> | null } = {},
+): void {
+    const kinds = new Set<AccountKind>();
+    for (const line of draft.lines) {
+        const account = accounts.get(line.accountId);
+        if (account === undefined) fail('account_not_found', `account ${line.accountId} was not found`);
+        kinds.add(account.kind);
+    }
+    assertNoForbiddenWalletTransfers(kinds);
+
+    const touchesNew = NEW_PLATFORM_KINDS.some((kind) => kinds.has(kind));
+    const role = classifyPlatformJournal(draft.idempotencyKey);
+
+    if (touchesNew && NON_PLATFORM_LIABILITY_KINDS.some((kind) => kinds.has(kind))) {
+        fail(
+            'platform_posting_shape',
+            'platform subscription revenue and unallocated receipts can never share a journal with merchant, credit or clearing accounts',
+        );
+    }
+    if (role === null) {
+        if (touchesNew) {
+            fail('platform_posting_shape', 'platform subscription revenue and unallocated receipts require a platform journal key');
+        }
+        return;
+    }
+
+    if (role === 'legacy_direct_allocation') {
+        // Existing identical journals replay before this new-posting guard.
+        fail('platform_posting_shape', 'legacy direct allocation journals are replay-only');
+    }
+
+    if (role === 'allocation_reversal') {
+        if (draft.journalType !== 'reversal') {
+            fail('platform_posting_shape', 'an allocation reversal key requires a reversal journal');
+        }
+        const originalRole = options.reversalOriginal === undefined || options.reversalOriginal === null
+            ? null
+            : classifyPlatformJournal(options.reversalOriginal.idempotencyKey);
+        if (originalRole !== 'allocation') {
+            fail('platform_posting_shape', 'an allocation reversal may only compensate a platform allocation journal');
+        }
+        const allocation = PLATFORM_JOURNAL_SHAPES.allocation;
+        requireTwoLineShape(draft, accounts, allocation.credit, allocation.debit, 'allocation reversal');
+        requireReferenceMatchesKey(
+            draft,
+            PLATFORM_ALLOCATION_REVERSAL_KEY_PREFIX,
+            PLATFORM_ALLOCATION_REVERSAL_REFERENCE_PREFIX,
+            'allocation reversal',
+        );
+        return;
+    }
+
+    if (draft.journalType !== 'standard') {
+        fail('platform_posting_shape', `a ${role} journal cannot be a reversal`);
+    }
+    const shape = PLATFORM_JOURNAL_SHAPES[role];
+    requireTwoLineShape(draft, accounts, shape.debit, shape.credit, role);
+    const keyPrefix = role === 'receipt'
+        ? PLATFORM_RECEIPT_KEY_PREFIX
+        : role === 'allocation'
+            ? PLATFORM_ALLOCATION_KEY_PREFIX
+            : PLATFORM_ISSUANCE_KEY_PREFIX;
+    requireReferenceMatchesKey(draft, keyPrefix, shape.referencePrefix, role);
+}
+
 function balanceDelta(account: LedgerAccount, direction: LineDirection, amountMinor: bigint): bigint {
     const signedAmount = direction === account.normalSide ? amountMinor : -amountMinor;
     return signedAmount;
@@ -499,6 +745,36 @@ function assertReversalMirrorsOriginal(original: JournalRecord, lines: readonly 
     }
 }
 
+const RESERVATION_JOURNAL_KEY = /^(reserve|release|consume):/;
+
+/**
+ * Resolve the persisted reservation link for a journal. The SQL store answers
+ * from `billing_reservations`/`billing_reservation_events`; when a legacy store
+ * exposes no lookup, the reservation key convention is the fail-safe fallback.
+ */
+async function findReservationJournalLink(
+    tx: LedgerTransaction,
+    tenantId: string,
+    journal: JournalRecord,
+): Promise<ReservationJournalLink | null> {
+    if (typeof tx.findReservationJournalLink === 'function') {
+        const link = await tx.findReservationJournalLink(tenantId, journal.id);
+        if (link !== null) {
+            if (link.tenantId !== tenantId) fail('tenant_mismatch', 'reservation journal link belongs to another tenant');
+            return link;
+        }
+    }
+        const match = RESERVATION_JOURNAL_KEY.exec(journal.idempotencyKey);
+        if (match === null) return null;
+        const keyPrefix = `${match[1]}:`;
+        const reservationId = journal.idempotencyKey.slice(keyPrefix.length);
+        return {
+            tenantId,
+            reservationId,
+            journalRole: match[1] as ReservationJournalRole,
+        };
+}
+
 /**
  * Post one journal through an already-open transaction. Used directly by
  * `billing-reservations.ts`; other callers should use `postJournal`.
@@ -517,6 +793,7 @@ export async function postJournalInTransaction(
         return { journal: existing, replayed: true };
     }
 
+    let reversalOriginal: JournalRecord | null = null;
     if (draft.journalType === 'reversal' && draft.reversalOfJournalId !== null) {
         const original = await tx.getJournal(draft.tenantId, draft.reversalOfJournalId);
         if (original === null) fail('journal_not_found', 'the journal being reversed was not found');
@@ -524,17 +801,34 @@ export async function postJournalInTransaction(
         if (original.currency !== draft.currency) {
             fail('currency_mismatch', 'a reversal must use the original journal currency');
         }
+        const reservationLink = await findReservationJournalLink(tx, draft.tenantId, original);
+        if (reservationLink !== null) {
+            fail(
+                'reservation_managed_journal',
+                `journal ${original.id} is managed by reservation ${reservationLink.reservationId} `
+                + `(${reservationLink.journalRole}); compensate through the reservation domain`,
+            );
+        }
+        const originalRole = classifyPlatformJournal(original.idempotencyKey);
+        if (
+            originalRole !== null
+            && !(originalRole === 'allocation' && draft.idempotencyKey.startsWith(PLATFORM_ALLOCATION_REVERSAL_KEY_PREFIX))
+        ) {
+            fail(
+                'platform_managed_journal',
+                `journal ${original.id} is a platform ${originalRole} journal; it cannot be reversed directly`,
+            );
+        }
         const existingReversal = await tx.findReversalOf(draft.tenantId, draft.reversalOfJournalId);
         if (existingReversal !== null) {
             fail('already_reversed', 'journal already has a reversal');
         }
         assertReversalMirrorsOriginal(original, draft.lines);
+        reversalOriginal = original;
     }
 
     const accounts = await loadAccounts(tx, draft.tenantId, draft.currency, draft.lines);
-    const kinds = new Set<AccountKind>();
-    for (const account of accounts.values()) kinds.add(account.kind);
-    assertNoForbiddenWalletTransfers(kinds);
+    assertJournalSeparation(draft, accounts, { reversalOriginal });
 
     const totals = computeTotals(draft.lines);
     if (totals.debits !== totals.credits) {
@@ -611,6 +905,9 @@ export async function postJournalInTransaction(
     if (inserted.reason === 'idempotency_conflict') {
         fail('idempotency_conflict', 'idempotency key was reused with a different payload');
     }
+    if (inserted.reason === 'already_reversed') {
+        fail('already_reversed', 'journal already has a reversal');
+    }
     fail('account_version_conflict', `account ${inserted.accountId} changed during the posting`);
 }
 
@@ -619,6 +916,124 @@ export async function postJournal<Tx extends LedgerTransaction>(
     input: PostJournalInput,
 ): Promise<PostJournalResult> {
     return store.runAtomic((tx) => postJournalInTransaction(tx, input));
+}
+
+export interface ProvisionAccountRequest {
+    readonly kind: AccountKind;
+    readonly currency: string;
+}
+
+export interface ProvisionAccountsInput {
+    readonly tenantId: string;
+    readonly accounts: readonly ProvisionAccountRequest[];
+}
+
+/**
+ * Validate, de-duplicate and order provisioning requests by (kind, currency)
+ * before touching the store, so every caller locks accounts in the same order.
+ */
+function normalizeProvisionRequests(input: ProvisionAccountsInput): {
+    tenantId: string;
+    accounts: ReadonlyArray<{ kind: AccountKind; currency: string }>;
+} {
+    const tenantId = requireBoundedString(input.tenantId, 'tenantId', MAX_TENANT_ID_LENGTH, 'invalid_tenant');
+    if (!Array.isArray(input.accounts)) fail('invalid_input', 'accounts must be an array');
+
+    const seen = new Set<string>();
+    const accounts: Array<{ kind: AccountKind; currency: string }> = [];
+    for (const raw of input.accounts) {
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+            fail('invalid_input', 'each provisioned account must be an object');
+        }
+        const request = raw as ProvisionAccountRequest;
+        if (!(ACCOUNT_KINDS as readonly string[]).includes(request.kind)) {
+            fail('account_kind_mismatch', `unknown account kind ${String(request.kind)}`);
+        }
+        const currency = requireCurrency(request.currency);
+        const identity = `${request.kind}:${currency}`;
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        accounts.push({ kind: request.kind, currency });
+    }
+    accounts.sort((left, right) => {
+        if (left.kind !== right.kind) return left.kind < right.kind ? -1 : 1;
+        if (left.currency !== right.currency) return left.currency < right.currency ? -1 : 1;
+        return 0;
+    });
+    return { tenantId, accounts };
+}
+
+/**
+ * Provision zero-balance accounts inside an already-open financial transaction,
+ * in ascending (kind, currency) order. An existing account is returned as-is;
+ * the helper never writes a seed balance and never edits an existing balance.
+ */
+export async function provisionAccountsInTransaction(
+    tx: LedgerTransaction,
+    input: ProvisionAccountsInput,
+): Promise<readonly LedgerAccount[]> {
+    const { tenantId, accounts } = normalizeProvisionRequests(input);
+    const provision = tx.provisionAccountIdempotent;
+    if (typeof provision !== 'function') {
+        fail('invalid_input', 'the ledger transaction does not support idempotent account provisioning');
+    }
+
+    const provisioned: LedgerAccount[] = [];
+    for (const request of accounts) {
+        const account = await provision.call(tx, tenantId, request.kind, request.currency);
+        if (account.tenantId !== tenantId) fail('tenant_mismatch', 'a provisioned account belongs to another tenant');
+        if (account.kind !== request.kind) fail('account_kind_mismatch', 'a provisioned account kind does not match');
+        if (account.currency !== request.currency) {
+            fail('currency_mismatch', 'a provisioned account currency does not match');
+        }
+        const expectedSide = ACCOUNT_NORMAL_SIDE[request.kind];
+        if (account.normalSide !== expectedSide) {
+            fail('account_kind_mismatch', 'a provisioned account normal side does not match its kind');
+        }
+        if (!Number.isSafeInteger(account.version) || account.version < 0) {
+            fail('invalid_input', 'a provisioned account has an invalid version');
+        }
+        provisioned.push(account);
+    }
+    return provisioned;
+}
+
+export async function provisionAccountsIdempotently<Tx extends LedgerTransaction>(
+    store: LedgerStore<Tx>,
+    input: ProvisionAccountsInput,
+): Promise<readonly LedgerAccount[]> {
+    return store.runAtomic((tx) => provisionAccountsInTransaction(tx, input));
+}
+
+export interface PostJournalWithProvisioningInput extends PostJournalInput {
+    readonly provision?: readonly ProvisionAccountRequest[];
+}
+
+/**
+ * Provision any missing zero-balance accounts first, then post the journal, all
+ * on the same transaction handle so the accounts are locked before insertion.
+ */
+export async function postJournalWithAccountProvisioning<Tx extends LedgerTransaction>(
+    store: LedgerStore<Tx>,
+    input: PostJournalWithProvisioningInput,
+): Promise<PostJournalResult> {
+    return store.runAtomic(async (tx) => {
+        await provisionAccountsInTransaction(tx, {
+            tenantId: input.tenantId,
+            accounts: input.provision ?? [],
+        });
+        return postJournalInTransaction(tx, {
+            tenantId: input.tenantId,
+            currency: input.currency,
+            idempotencyKey: input.idempotencyKey,
+            lines: input.lines,
+            reference: input.reference,
+            description: input.description,
+            createdAt: input.createdAt,
+            journalType: input.journalType,
+            reversalOfJournalId: input.reversalOfJournalId,
+        });
+    });
 }
 
 export interface ReverseJournalInput {
@@ -651,6 +1066,13 @@ export async function reverseJournal<Tx extends LedgerTransaction>(
     return store.runAtomic(async (tx) => {
         const original = await tx.getJournal(tenantId, journalId);
         if (original === null) fail('journal_not_found', 'journal was not found');
+        const originalRole = classifyPlatformJournal(original.idempotencyKey);
+        if (originalRole !== null) {
+            fail(
+                'platform_managed_journal',
+                `journal ${original.id} is a platform ${originalRole} journal; compensate through the settlement domain`,
+            );
+        }
 
         const existingReversal = await tx.findReversalOf(tenantId, journalId);
         if (existingReversal !== null && existingReversal.idempotencyKey !== idempotencyKey) {

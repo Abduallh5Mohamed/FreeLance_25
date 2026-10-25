@@ -87,7 +87,15 @@ import type {
     AssignmentCleanupHandle,
     AssignmentCleanupObligationStore,
     AssignmentCleanupTarget,
+    AssignmentObjectListing,
+    AssignmentSubmissionLookup,
 } from '../services/assignment-cleanup-recovery';
+import { createAssignmentRecoveryRuntime } from '../services/assignment-recovery-factory';
+import type {
+    AssignmentRecoveryBounds,
+    AssignmentRecoveryRuntime,
+} from '../services/assignment-recovery-factory';
+import type { AssignmentScanStore } from '../services/assignment-scan-worker';
 import {
     AssignmentObjectMetadata,
     AssignmentObjectStore,
@@ -119,6 +127,13 @@ export interface AssignmentsDataAccess {
     execute: (sql: string, params?: unknown[]) => Promise<{ insertId?: number; affectedRows?: number }>;
 }
 
+/**
+ * The unit-of-work seam. A router built without one cannot write atomically,
+ * so every mutating path admits on it before its first effect (see
+ * `admitAtomic`).
+ */
+type TransactionSeam = <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>) => Promise<T>;
+
 export interface AssignmentsDeps {
     db: AssignmentsDataAccess;
     authenticate: RequestHandler;
@@ -126,7 +141,13 @@ export interface AssignmentsDeps {
     /** Branch membership authority; defaults to the real pool. */
     branchAccess?: BranchAccessDeps;
     now?: () => Date;
-    transaction?: <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>) => Promise<T>;
+    /**
+     * Required for every mutating route. Absent, those routes answer 503
+     * (`transaction_unavailable`) before their first write or external call:
+     * there is no autocommit fallback, so a mutation can never commit without
+     * its audit event and its cleanup obligation.
+     */
+    transaction?: TransactionSeam;
     /**
      * Server-owned private object store for submission files. Every object
      * fact (key, size, content type, signature) is read through this adapter;
@@ -175,6 +196,28 @@ const isDuplicateKeyError = (error: unknown): boolean => {
     const code = (error as { code?: unknown }).code;
     const errno = (error as { errno?: unknown }).errno;
     return code === 'ER_DUP_ENTRY' || errno === 1062;
+};
+
+/**
+ * A driver answer a single-row guard can act on.
+ *
+ * `affectedRows` is optional in `AssignmentsDataAccess`, and `undefined === 0`
+ * is false — so a seam that reported no count used to fall through every guard
+ * below as a *successful* write: a cancellation would commit without its
+ * revocation, a finalize would be treated as recorded, a grade as corrected.
+ * `undefined` is neither zero nor one. The production transaction seam already
+ * throws here; keeping the check local to the guards means an injected seam
+ * cannot weaken it. A genuine `0` still fails closed at each call site.
+ */
+const affectedRowsOf = (result: { affectedRows?: number } | null | undefined): number => {
+    const reported = result?.affectedRows;
+    if (typeof reported !== 'number' || !Number.isSafeInteger(reported) || reported < 0) {
+        throw new Error(
+            'assignments write did not report a usable affected-row count;'
+            + ' a single-row write cannot be confirmed without it',
+        );
+    }
+    return reported;
 };
 
 interface AssignmentRow {
@@ -302,9 +345,37 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
     const router = Router();
     const { db } = deps;
     const now = deps.now ?? ((): Date => new Date());
-    const runAtomic = deps.transaction
-        ? deps.transaction
-        : <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>): Promise<T> => fn(db);
+    /**
+     * The unit-of-work seam, verbatim — never a pass-through to `db`.
+     *
+     * Running a mutation on the shared pool commits the row, its audit event
+     * and (where owed) its cleanup obligation as independent statements, so a
+     * failed audit or an unrecorded obligation would survive the state change.
+     * There is therefore no autocommit fallback; a path that needs the seam
+     * admits on it first (`admitAtomic`) and fails closed when it is absent.
+     */
+    // Keep the injected method receiver: class-based seams may use this.
+    const runAtomic: TransactionSeam | undefined = typeof deps.transaction === 'function'
+        ? <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>): Promise<T> => deps.transaction!(fn)
+        : undefined;
+    /**
+     * Transaction-capability admission.
+     *
+     * Every mutating path below writes its row, its audit event and any cleanup
+     * obligation as one unit. Without an injected seam there is no unit, so the
+     * seam is a precondition rather than an assumption: it is checked before the
+     * first write, delete or storage/scanner call of each such path, and its
+     * absence answers 503 having touched nothing — never late, after a side
+     * effect has already landed.
+     */
+    const admitAtomic = (res: Response): TransactionSeam | null => {
+        if (runAtomic) return runAtomic;
+        res.status(503).json({
+            error: 'Atomic writes are not configured',
+            code: 'transaction_unavailable',
+        });
+        return null;
+    };
     const objectStore = deps.objectStore;
     const malwareScanner = deps.malwareScanner;
     const scanWindowMs = scanTimeoutMs(deps.scanTimeoutMs);
@@ -657,46 +728,29 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
     });
 
     /**
-     * Write the obligation ahead of the delete.
+     * Write the obligation ahead of the delete, on the caller's unit of work.
      *
-     * With a `tx` the insert joins the caller's unit of work and a failure
-     * **propagates**, so a rejection or cancellation rolls back rather than
-     * committing a state change whose cleanup was never recorded. Without one it
-     * runs in its own transaction and a failure is reported instead of thrown;
-     * the caller must then delete nothing.
+     * The insert joins the caller's transaction and a failure **propagates**, so
+     * a rejection or cancellation rolls back rather than committing a state
+     * change whose cleanup was never recorded. There is no standalone variant:
+     * an obligation written outside a transaction would be an autocommit write,
+     * so a caller with no transaction of its own runs this through the admitted
+     * seam.
      */
     const recordCleanup = async (
         target: AssignmentCleanupTarget | null,
-        tx?: AssignmentsDataAccess,
-    ): Promise<AssignmentCleanupHandle> => {
-        if (tx) {
-            // The same transaction, on the same connection: the adapter's
-            // idempotent insert **and** the read-back that classifies it both run
-            // here, so the obligation cannot commit apart from the decision.
-            return recordCleanupObligation(deps.cleanupObligations, target, {
-                // Wrapped, not extracted: `query`/`execute` are interface
-                // properties, and an implementation that reads `this` would
-                // break the moment the method is passed unbound.
-                query: (sql, params) => tx.query(sql, params),
-                execute: (sql, params) => tx.execute(sql, params),
-            });
-        }
-        try {
-            const handle = await runAtomic(
-                async (unit) => recordCleanupObligation(deps.cleanupObligations, target, {
-                    query: (sql, params) => unit.query(sql, params),
-                    execute: (sql, params) => unit.execute(sql, params),
-                }),
-            );
-            return handle;
-        } catch (error) {
-            console.error(
-                `Assignment cleanup obligation could not be recorded for submission ${target?.submissionId ?? 'unknown'}:`,
-                error,
-            );
-            return { id: null, claimVersion: null, recording: 'record_failed' };
-        }
-    };
+        tx: AssignmentsDataAccess,
+    ): Promise<AssignmentCleanupHandle> =>
+        // The same transaction, on the same connection: the adapter's
+        // idempotent insert **and** the read-back that classifies it both run
+        // here, so the obligation cannot commit apart from the decision.
+        recordCleanupObligation(deps.cleanupObligations, target, {
+            // Wrapped, not extracted: `query`/`execute` are interface
+            // properties, and an implementation that reads `this` would
+            // break the moment the method is passed unbound.
+            query: (sql, params) => tx.query(sql, params),
+            execute: (sql, params) => tx.execute(sql, params),
+        });
 
     /**
      * Delete **exactly** the recorded version, then settle the obligation.
@@ -713,6 +767,10 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
         target: AssignmentCleanupTarget,
         handle: AssignmentCleanupHandle,
     ): Promise<QuarantineCleanup> => {
+        // A configured store must have confirmed its write-ahead row. Only
+        // the separately documented absent-store legacy path is unconfigured.
+        if (handle.recording !== 'recorded' && handle.recording !== 'existing'
+            && handle.recording !== 'unconfigured') return 'unsupported';
         if (!objectStore) return 'unsupported';
         const cleanup = await removeScannedObjectVersion(
             objectStore,
@@ -753,6 +811,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
     const removeRejectedObject = async (
         target: AssignmentCleanupTarget | null,
         submissionId: string,
+        atomic: TransactionSeam,
     ): Promise<QuarantineCleanup | 'not_attempted'> => {
         if (!objectStore) return 'unsupported';
         if (!target) {
@@ -762,12 +821,24 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             );
             return 'not_attempted';
         }
-        const handle = await recordCleanup(target);
+        let handle: AssignmentCleanupHandle;
+        try {
+            // Its own unit of work, on a real transaction connection: the
+            // obligation is written ahead of the delete and never as an
+            // autocommit statement on the shared pool.
+            handle = await atomic(async (unit) => recordCleanup(target, unit));
+        } catch (error) {
+            console.error(
+                `Assignment cleanup obligation could not be recorded for submission ${submissionId}:`,
+                error,
+            );
+            return 'not_attempted';
+        }
         // `record_failed`: the write did not land. `store_invalid_row`: it landed
         // but cannot be read, so we cannot say whether this version is already
         // owed. Both mean the write-ahead property is unavailable, and the only
         // honest answer is to issue no delete.
-        if (handle.recording === 'record_failed' || handle.recording === 'store_invalid_row') {
+        if (handle.recording === 'record_failed' || handle.recording === 'store_invalid_row' || handle.recording === 'store_unavailable') {
             return 'not_attempted';
         }
         if (handle.recording === 'conflict') {
@@ -928,8 +999,12 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             if (value.groupId && !(await groupInTenant(scope, value.groupId))) {
                 return res.status(403).json({ error: 'Group is outside this tenant' });
             }
+            // Admission before the first write: the row and its audit event
+            // commit together or not at all.
+            const atomic = admitAtomic(res);
+            if (!atomic) return;
             const id = randomUUID();
-            await runAtomic(async (tx) => {
+            await atomic(async (tx) => {
                 await tx.execute(
                     `INSERT INTO assignments
                        (id,tenant_id,branch_id,branch_scope,course_id,group_id,title,instructions,deadline_at,deadline_timezone,
@@ -1029,6 +1104,11 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 return res.status(403).json({ error: 'Submission is not allowed', code: decision.reason });
             }
 
+            // Admission before the upload is authorized and before the version
+            // row is written: the row and its audit event are one unit.
+            const atomic = admitAtomic(res);
+            if (!atomic) return;
+
             const submissionId = randomUUID();
             const storageKey = buildSubmissionStorageKey({
                 tenantId: enrollment.tenantId,
@@ -1059,7 +1139,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
 
             const status = decision.late ? 'late' : 'submitted';
             try {
-                await runAtomic(async (tx) => {
+                await atomic(async (tx) => {
                     await tx.execute(
                         `INSERT INTO assignment_submissions
                            (id,tenant_id,assignment_id,student_enrollment_id,student_user_id,version,status,
@@ -1245,6 +1325,12 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 });
             }
 
+            // Admission before the object is stat'ed and before the revocation
+            // is written: the revocation, its audit event and the cleanup
+            // obligation for the abandoned version are one unit.
+            const atomic = admitAtomic(res);
+            if (!atomic) return;
+
             // The abandoned upload's version is proven **before** the revocation
             // transaction, so the cleanup obligation can be recorded in the same
             // unit of work as the revocation and its audit event. The stat is a
@@ -1279,7 +1365,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             let cancelled = false;
             let cancelHandle: AssignmentCleanupHandle = UNRECORDED_CLEANUP_HANDLE;
             try {
-                cancelled = await runAtomic(async (tx) => {
+                cancelled = await atomic(async (tx) => {
                     const updated = await tx.execute(
                         `UPDATE assignment_submissions
                          SET status='revoked', revoked_at=UTC_TIMESTAMP(), revoked_by=?,
@@ -1288,7 +1374,10 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                            AND status<>'revoked' AND file_size_bytes=0`,
                         [enrollment.userId, submissionId, assignmentId, enrollment.tenantId, enrollment.id],
                     );
-                    if ((updated.affectedRows ?? 0) === 0) return false;
+                    // Exactly one row: the revocation CAS names a single row by
+                    // id, so `0` is a genuine miss and an unreported count is a
+                    // driver-contract error, not a success.
+                    if (affectedRowsOf(updated) !== 1) return false;
                     await recordAudit(tx.execute, {
                         actorUserId: enrollment.userId,
                         tenantId: enrollment.tenantId,
@@ -1422,6 +1511,13 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 });
             }
 
+            // Admission before the first storage call: every rejection below
+            // can delete bytes and owes a recorded obligation, and the verdict
+            // below writes the row, its audit event and its obligation as one
+            // unit. Without the seam nothing is read, deleted or written.
+            const atomic = admitAtomic(res);
+            if (!atomic) return;
+
             let metadata: Awaited<ReturnType<AssignmentObjectStore['statObject']>>;
             try {
                 metadata = await objectStore.statObject(row.storage_key);
@@ -1458,7 +1554,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                     submissionId,
                 }, reason);
             if (Number.isInteger(metadata.sizeBytes) && metadata.sizeBytes > limits.maxFileBytes) {
-                await removeRejectedObject(rejectionTarget('admission_oversize'), submissionId);
+                await removeRejectedObject(rejectionTarget('admission_oversize'), submissionId, atomic);
                 return res.status(413).json({
                     error: 'Uploaded file exceeds the assignment size limit',
                     code: 'file_size_out_of_bounds',
@@ -1466,13 +1562,13 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             }
             const verifiedSize = validateVerifiedUpload(metadata.sizeBytes, limits);
             if (!verifiedSize.ok) {
-                await removeRejectedObject(rejectionTarget('admission_size_out_of_bounds'), submissionId);
+                await removeRejectedObject(rejectionTarget('admission_size_out_of_bounds'), submissionId, atomic);
                 return res.status(400).json({ error: verifiedSize.error, code: 'file_size_out_of_bounds' });
             }
 
             const storedType = normalizeContentType(metadata.contentType);
             if (storedType !== expectedType) {
-                await removeRejectedObject(rejectionTarget('admission_content_type_mismatch'), submissionId);
+                await removeRejectedObject(rejectionTarget('admission_content_type_mismatch'), submissionId, atomic);
                 return res.status(422).json({
                     error: 'Stored content type does not match the declared file type',
                     code: 'content_type_mismatch',
@@ -1488,7 +1584,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             }
             const signature = verifyObjectSignature(extension, prefix);
             if (!signature.ok) {
-                await removeRejectedObject(rejectionTarget('admission_signature_mismatch'), submissionId);
+                await removeRejectedObject(rejectionTarget('admission_signature_mismatch'), submissionId, atomic);
                 return res.status(422).json({
                     error: 'Uploaded content does not match its file type',
                     code: signature.reason === 'unsupported_type' ? 'unsupported_file_type' : 'signature_mismatch',
@@ -1579,7 +1675,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
 
             let recorded = false;
             try {
-                recorded = await runAtomic(async (tx) => {
+                recorded = await atomic(async (tx) => {
                     // The verified object version is recorded with the verdict when
                     // the column is declared. Without it the row has no version
                     // binding, and the fenced scan store deliberately refuses to
@@ -1609,7 +1705,10 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                                 enrollment.id,
                             ],
                     );
-                    if ((result.affectedRows ?? 0) === 0) return false;
+                    // The verdict CAS names one row by id: `0` is a genuine
+                    // concurrent write, and an unreported count is a
+                    // driver-contract error rather than a recorded verdict.
+                    if (affectedRowsOf(result) !== 1) return false;
                     await recordAudit(tx.execute, {
                         actorUserId: enrollment.userId,
                         tenantId: enrollment.tenantId,
@@ -1744,14 +1843,18 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             if (existing.status === 'revoked') return res.status(409).json({ error: 'Submission is already revoked' });
             const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as Record<string, unknown>;
             const reason = typeof body['reason'] === 'string' ? body['reason'].trim().slice(0, 255) : null;
-            const result = await runAtomic(async (tx) => {
+            // Admission before the first write: the revocation and its audit
+            // event are one unit.
+            const atomic = admitAtomic(res);
+            if (!atomic) return;
+            const result = await atomic(async (tx) => {
                 const updated = await tx.execute(
                     `UPDATE assignment_submissions
                      SET status='revoked', revoked_at=UTC_TIMESTAMP(), revoked_by=?, revoke_reason=?
                      WHERE id=? AND assignment_id=? AND tenant_id=? AND status<>'revoked'`,
                     [scope.userId, reason, submissionId, assignmentId, scope.tenantId],
                 );
-                if ((updated.affectedRows ?? 0) === 0) return false;
+                if (affectedRowsOf(updated) !== 1) return false;
                 await recordAudit(tx.execute, {
                     actorUserId: scope.userId,
                     tenantId: scope.tenantId,
@@ -1886,8 +1989,13 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             });
             if (!scoreId) return res.status(400).json({ error: 'invalid grade identity' });
 
+            // Admission before the gradebook row is read FOR UPDATE and written:
+            // the score and its audit event are one unit.
+            const atomic = admitAtomic(res);
+            if (!atomic) return;
+
             let outcome: 'created' | 'unchanged' | 'corrected' = 'created';
-            const applied = await runAtomic(async (tx) => {
+            const applied = await atomic(async (tx) => {
                 const existing = await tx.queryOne<{ id: string; score: number; max_score: number; weight: number | null }>(
                     'SELECT id, score, max_score, weight FROM gradebook_scores WHERE id=? AND tenant_id=? FOR UPDATE',
                     [scoreId, scope.tenantId],
@@ -1908,7 +2016,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                         'UPDATE gradebook_scores SET score=?, max_score=?, weight=?, recorded_by=?, recorded_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=?',
                         [grade.score, grade.maxScore, grade.weight, scope.userId, scoreId, scope.tenantId],
                     );
-                    if ((updated.affectedRows ?? 0) === 0) {
+                    if (affectedRowsOf(updated) === 0) {
                         outcome = 'unchanged';
                         return true;
                     }
@@ -2059,7 +2167,11 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             if (value.groupId && !(await groupInTenant(scope, value.groupId))) {
                 return res.status(403).json({ error: 'Group is outside this tenant' });
             }
-            const result = await runAtomic(async (tx) => {
+            // Admission before the first write: the versioned update and its
+            // audit event are one unit.
+            const atomic = admitAtomic(res);
+            if (!atomic) return;
+            const result = await atomic(async (tx) => {
                 const updated = await tx.execute(
                     `UPDATE assignments
                      SET branch_id=?, branch_scope=?, course_id=?, group_id=?, title=?, instructions=?, deadline_at=?,
@@ -2073,7 +2185,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                         value.maxFileBytes, JSON.stringify(value.allowedFileTypes), assignmentId, scope.tenantId, existing.version,
                     ],
                 );
-                if ((updated.affectedRows ?? 0) === 0) return false;
+                if (affectedRowsOf(updated) !== 1) return false;
                 await recordAudit(tx.execute, {
                     actorUserId: scope.userId,
                     tenantId: scope.tenantId,
@@ -2105,13 +2217,17 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             const existing = await loadAssignmentForStaff(scope, assignmentId);
             if (!existing) return res.status(404).json({ error: 'Assignment not found' });
             if (existing.status === 'published') return res.status(409).json({ error: 'Assignment is already published' });
-            const result = await runAtomic(async (tx) => {
+            // Admission before the first write: the status change and its audit
+            // event are one unit.
+            const atomic = admitAtomic(res);
+            if (!atomic) return;
+            const result = await atomic(async (tx) => {
                 const updated = await tx.execute(
                     `UPDATE assignments SET status='published', version=version+1, updated_at=CURRENT_TIMESTAMP
                      WHERE id=? AND tenant_id=? AND status<>'published' AND archived_at IS NULL`,
                     [assignmentId, scope.tenantId],
                 );
-                if ((updated.affectedRows ?? 0) === 0) return false;
+                if (affectedRowsOf(updated) !== 1) return false;
                 await recordAudit(tx.execute, {
                     actorUserId: scope.userId,
                     tenantId: scope.tenantId,
@@ -2145,13 +2261,17 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             if (existing.archived_at !== null && existing.archived_at !== undefined) {
                 return res.status(409).json({ error: 'Assignment is already archived' });
             }
-            const result = await runAtomic(async (tx) => {
+            // Admission before the first write: the archive stamp and its audit
+            // event are one unit.
+            const atomic = admitAtomic(res);
+            if (!atomic) return;
+            const result = await atomic(async (tx) => {
                 const updated = await tx.execute(
                     `UPDATE assignments SET archived_at=UTC_TIMESTAMP(), version=version+1, updated_at=CURRENT_TIMESTAMP
                      WHERE id=? AND tenant_id=? AND archived_at IS NULL`,
                     [assignmentId, scope.tenantId],
                 );
-                if ((updated.affectedRows ?? 0) === 0) return false;
+                if (affectedRowsOf(updated) !== 1) return false;
                 await recordAudit(tx.execute, {
                     actorUserId: scope.userId,
                     tenantId: scope.tenantId,
@@ -2267,9 +2387,85 @@ const productionTransaction = async <T>(fn: (tx: AssignmentsDataAccess) => Promi
         execute: async (sql: string, params?: unknown[]) => {
             const [result] = await connection.execute(sql, params as never);
             const header = result as { insertId?: number; affectedRows?: number };
-            return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+            const affectedRows = header.affectedRows;
+            if (typeof affectedRows !== 'number' || !Number.isSafeInteger(affectedRows)) {
+                throw new Error('assignments transaction execute did not report a usable affected-row count');
+            }
+            return { insertId: typeof header.insertId === 'number' && Number.isSafeInteger(header.insertId) ? header.insertId : 0, affectedRows };
         },
     }));
+};
+
+/**
+ * R09/R10 — ONE composition contract for this lane.
+ *
+ * The route and the recovery coordinator need the SAME ports, but until now a
+ * caller had to derive that mapping itself from two differently-named option
+ * objects: this router calls the obligation store `cleanupObligations` and the
+ * scanner `malwareScanner`, while `createAssignmentRecoveryRuntime` calls the
+ * same two TYPES `cleanupStore` and `scanner`. Deriving that twice is how a
+ * deployment ends up with a router writing its write-ahead obligation through
+ * one store object while the coordinator claims from another, or with two
+ * object-store clients holding different credentials and prefixes.
+ *
+ * This function derives both from a single injected port set, so the obligation
+ * store, the object store and the scanner are the SAME instances on both sides.
+ * The recovery-only ports (`scanStore`, `listing`, `submissionLookup`) stay
+ * optional and absent by default: absence is reported by
+ * `recovery.describeReadiness()` as `unconfigured` with a reason, never
+ * simulated. A missing scanner does not become a verdict and a missing
+ * exact-version delete does not become a key delete — the route and the
+ * coordinator each fail closed on their own, unchanged.
+ *
+ * LIFECYCLE IS THE CALLER'S. Construction is inert: no port is called, nothing
+ * is claimed, nothing is scheduled, no timer is opened and nothing is mounted.
+ * `recovery.runOnce()` must be invoked explicitly by a scheduler the caller
+ * owns, and `stop()`/`drain()` are exposed here only so a shutdown path has one
+ * object to hold. This module never calls either of them itself.
+ */
+export interface AssignmentsRuntimeOptions extends AssignmentsDeps {
+    /** Row store for the scan pass. Absent ⇒ `scan-store-unconfigured`. */
+    scanStore?: AssignmentScanStore;
+    /** Tenant-scoped listing for orphan *planning* only. */
+    listing?: AssignmentObjectListing;
+    /** Row lookup used by orphan planning. */
+    submissionLookup?: AssignmentSubmissionLookup;
+    /** Bounds for one recovery pass; the coordinator clamps them. */
+    recoveryBounds?: AssignmentRecoveryBounds;
+    /** Observability hook for the recovery pass. Must never alter an outcome. */
+    recoveryOnError?: (error: unknown) => void;
+    /** Stable claim owner for recovery. Defaults to a fresh id per runtime. */
+    recoveryOwnerId?: () => string;
+}
+
+export interface AssignmentsRuntime {
+    /** The HTTP surface, identical to `createAssignmentsRouter(deps)`. */
+    readonly router: Router;
+    /** The recovery coordinator over the SAME ports. Never started here. */
+    readonly recovery: AssignmentRecoveryRuntime;
+}
+
+export const createAssignmentsRuntime = (options: AssignmentsRuntimeOptions): AssignmentsRuntime => {
+    // Capture the port identities once for BOTH consumers. Caller mutation of
+    // the options object must not redirect route writes away from recovery.
+    const deps: AssignmentsRuntimeOptions = Object.freeze({ ...options });
+    return Object.freeze({
+    router: createAssignmentsRouter(deps),
+    recovery: createAssignmentRecoveryRuntime({
+        // Same instances, derived once. The two name differences are the whole
+        // reason this function exists.
+        objectStore: deps.objectStore,
+        cleanupStore: deps.cleanupObligations,
+        scanner: deps.malwareScanner,
+        scanStore: deps.scanStore,
+        listing: deps.listing,
+        submissionLookup: deps.submissionLookup,
+        now: deps.now,
+        newOwnerId: deps.recoveryOwnerId,
+        bounds: deps.recoveryBounds,
+        onError: deps.recoveryOnError,
+    }),
+    });
 };
 
 export default createAssignmentsRouter({

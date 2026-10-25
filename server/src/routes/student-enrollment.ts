@@ -752,6 +752,8 @@ export const createStudentWorkspaceSelectHandler = (deps: {
             tenant_id: enrollment.tenant_id, student_enrollment_id: enrollment.id, instructor_id: enrollment.instructor_id,
             group_id: enrollment.group_id, grade_id: enrollment.grade_id,
             tv: Number(req.user.tokenVersion || 0),
+            // Carry only the authenticated server principal session, never request data.
+            ...(req.user.sessionId ? { sid: req.user.sessionId } : {}),
             ...branchClaims,
             type: 'student_scoped' }, getJwtSecret(),
             { expiresIn: resolveJwtLifetimeSeconds(process.env.JWT_EXPIRES_IN) } as jwt.SignOptions);

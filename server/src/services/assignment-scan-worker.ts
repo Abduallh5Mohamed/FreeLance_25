@@ -201,6 +201,25 @@ const scanAffectedRows = (result: { affectedRows?: number } | null | undefined):
     return reported;
 };
 
+/**
+ * The single-row reading of a CAS result.
+ *
+ * `0` is a genuine miss: another writer owns the row, or the predicate no longer
+ * holds. More than one is not a miss — the statement matched rows its identity
+ * does not name, which is a fence breach (a dropped tenant/version predicate
+ * would look exactly like this). Reading that as `false` would report a breach
+ * as an ordinary lost race, so it throws and the caller fails closed.
+ */
+const scanSingleRow = (result: { affectedRows?: number } | null | undefined): boolean => {
+    const affected = scanAffectedRows(result);
+    if (affected > 1) {
+        throw new Error(
+            `assignment scan CAS matched ${affected} rows; its single-row fence was violated`,
+        );
+    }
+    return affected === 1;
+};
+
 /* ------------------------------------------------------------------------- */
 /* Store contract                                                            */
 /* ------------------------------------------------------------------------- */
@@ -443,7 +462,12 @@ export interface AssignmentScanRunResult {
     clean: number;
     /** Rows left with an infected verdict, including those whose cleanup is pending. */
     quarantined: number;
-    /** Rows left pending because no verdict could be recorded (incl. storage errors). */
+    /**
+     * Rows left at `pending_scan` by this pass — exactly the `ROW_STAYS_PENDING`
+     * outcomes, including storage errors, a binding mismatch, a changed or
+     * missing object, and a verdict the CAS refused. `clean + quarantined +
+     * failed` is the number of rows processed.
+     */
     failed: number;
     outcomes: ScanOutcome[];
     /**
@@ -629,6 +653,17 @@ export const createAssignmentScanWorker = (
         // supervisor that halts on `invalid_row` stops scanning permanently.
         claimAbort = null;
         for (let attempt = 1; attempt <= claimAttempts; attempt += 1) {
+            // Read before *every* claim, including a retry. A stop that lands
+            // during the backoff used to be followed by another claim anyway,
+            // which took a fresh lease on up to `batchSize` rows for a run the
+            // caller had already cancelled; only the post-claim release loop
+            // could hand them back, and a process that died there held them
+            // until the lease expired. `stopped` is reported instead of
+            // `claim_failed` so a drain is never mistaken for a broken store.
+            if (!shouldContinue()) {
+                claimAbort = 'stopped';
+                return null;
+            }
             try {
                 if (durableClaims) {
                     const claimNowMs = now().getTime();
@@ -750,7 +785,16 @@ export const createAssignmentScanWorker = (
             return { outcome: 'object_changed' };
         }
 
-        const scanStatus = verdict.verdict === 'infected' ? 'infected' : 'clean';
+        // Only a verdict the scanner actually produced may become a
+        // `scan_status`. `scanVerifiedObject` never returns `failed`, but a
+        // default arm of "not infected ⇒ clean" is precisely the shape of an
+        // uploaded⇒clean shortcut: a `failed` that escaped, or a third verdict
+        // added later, would be persisted as clean. Fail closed — the row stays
+        // `pending_scan`.
+        const scanStatus: 'clean' | 'infected' | null = verdict.verdict === 'infected'
+            ? 'infected'
+            : (verdict.verdict === 'clean' ? 'clean' : null);
+        if (scanStatus === null) return { outcome: 'scan_failed' };
         let recorded = false;
         let writeFailed = false;
         try {
@@ -927,9 +971,15 @@ export const createAssignmentScanWorker = (
                     (entry) => entry.outcome === 'quarantined'
                         || entry.outcome === 'quarantined_cleanup_pending',
                 ).length,
-                failed: results.filter(
-                    (entry) => entry.outcome === 'scan_failed' || entry.outcome === 'storage_error',
-                ).length,
+                // Every row left at `pending_scan` is a failure of this pass,
+                // and `ROW_STAYS_PENDING` is the exact set of them. Counting
+                // only `scan_failed`/`storage_error` made a pass that left ten
+                // rows on `binding_mismatch`/`object_changed` report
+                // `aborted: null, failed: 0` — indistinguishable from an empty
+                // pass. With the full set, `clean + quarantined + failed` equals
+                // the number of rows processed, and `outcomes[]` still carries
+                // each exact code.
+                failed: results.filter((entry) => ROW_STAYS_PENDING.has(entry.outcome)).length,
                 outcomes,
                 quarantineCleanup: unique.flatMap((candidate, index) => {
                     const cleanup = results[index].cleanup;
@@ -1053,7 +1103,7 @@ const createReferenceScanStore = (client: AssignmentScanSqlClient): AssignmentSc
                 write.expectedSizeBytes,
             ],
         );
-        return scanAffectedRows(result) === 1;
+        return scanSingleRow(result);
     },
 });
 
@@ -1145,7 +1195,7 @@ const createFencedScanStore = (
                         [owner, version, leaseUntilMs, row.id, nowMs],
                     );
                     // Exactly one row: anything else means we did not win this row.
-                    if (scanAffectedRows(stamped) !== 1) continue;
+                    if (!scanSingleRow(stamped)) continue;
                     claimed.push({
                         submissionId: row.id,
                         tenantId: row.tenant_id,
@@ -1189,7 +1239,7 @@ const createFencedScanStore = (
                     request.nowMs,
                 ],
             );
-            return scanAffectedRows(result) === 1;
+            return scanSingleRow(result);
         },
     };
 
@@ -1233,7 +1283,7 @@ const createFencedScanStore = (
                     now().getTime(),
                 ],
             );
-            return scanAffectedRows(result) === 1;
+            return scanSingleRow(result);
         },
     };
 };

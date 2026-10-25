@@ -966,6 +966,18 @@ export const createLiveRuntime = (deps: LiveRuntimeDeps): LiveRuntime => {
     const compositionContext = readCompositionContext(deps.compositionContext);
 
     /**
+     * The operational grant, captured ONCE at construction for the same reason
+     * the composition context is: `deps` is the caller's object, and reading
+     * `deps.operationalEvidence` on every `readiness()` call leaves a channel
+     * that can substitute a different grant after composition. The grant is
+     * still re-checked on every call (provenance, executor, deployment,
+     * contract, scope, expiry), so capturing it removes a mutation channel
+     * without weakening a single check — and it matches the documented contract
+     * that the grant is loaded BEFORE composition.
+     */
+    const operationalEvidence: OperationalEvidenceGrant | null = deps.operationalEvidence ?? null;
+
+    /**
      * F1: a schema report is accepted ONLY when this module's verifier produced
      * it for THIS executor object, and only under the contract version this
      * source speaks. A look-alike literal, or a report measured against another
@@ -1236,8 +1248,8 @@ export const createLiveRuntime = (deps: LiveRuntimeDeps): LiveRuntime => {
         }
         const ageMs = schemaReport === null
             ? null
-            : Math.max(0, evaluatedAtMs - schemaReport.checkedAtMs);
-        const fresh = ageMs !== null && ageMs <= schemaFreshnessMs;
+            : evaluatedAtMs - schemaReport.checkedAtMs;
+        const fresh = ageMs !== null && Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= schemaFreshnessMs;
 
         const requiredAreas: readonly LiveSchemaArea[] = [
             'sessionLifecycle',
@@ -1250,6 +1262,8 @@ export const createLiveRuntime = (deps: LiveRuntimeDeps): LiveRuntime => {
         if (schemaReport === null) {
             reasonsOut.schema = 'no schema report applied: call verifyLiveSchema(executor) explicitly and pass its '
                 + 'result; wired dependencies are not a measurement';
+        } else if (ageMs !== null && ageMs < 0) {
+            reasonsOut.schema = 'the schema report is dated after the evaluation clock; future evidence cannot prove readiness';
         } else if (!fresh) {
             reasonsOut.schema = `the schema report is ${String(ageMs)} ms old, beyond the ${schemaFreshnessMs} ms `
                 + 'freshness window';
@@ -1259,12 +1273,24 @@ export const createLiveRuntime = (deps: LiveRuntimeDeps): LiveRuntime => {
             }`;
         }
 
+        // `router` BELONGS in this list, and it was the last false verdict left
+        // in the composition. `fullyReady` is scoped to `'live.callback-path'`
+        // (see `LiveRuntimeReadiness.scope`), and that path is an HTTP surface:
+        // with `router: null` — no `optionalAuthenticate` supplied — no callback
+        // can ever reach this process, yet the verdict said `configured` as soon
+        // as the five wiring flags and the schema were in place. A composition
+        // that cannot receive a callback is not a ready callback path, and
+        // `operational` (which requires `fullyReady === 'configured'`) must not
+        // become claimable for one either. The recording question is answered
+        // separately by `recordingConfigured`, so nothing is lost by naming the
+        // missing surface here.
         const missingConfig = [
             participantMappingConfigured ? null : 'participantMapping',
             presenceOrderingConfigured ? null : 'presenceOrdering',
             sessionLifecycleConfigured ? null : 'sessionLifecycle',
             callbacksConfigured ? null : 'callbacks',
             ticketSigningConfigured ? null : 'ticketSigning',
+            routerConfigured ? null : 'router',
         ].filter((name): name is string => name !== null);
         const configReady = missingConfig.length === 0;
 
@@ -1276,7 +1302,7 @@ export const createLiveRuntime = (deps: LiveRuntimeDeps): LiveRuntime => {
         }
 
         const operationalCheck = describeOperationalState(
-            deps.operationalEvidence,
+            operationalEvidence,
             executor,
             compositionContext,
             evaluatedAtMs,

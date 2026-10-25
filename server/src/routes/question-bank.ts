@@ -398,7 +398,7 @@ export const createQuestionBankRouter = (deps: QuestionBankDeps): Router => {
                         nextVersion, questionId, scope.tenantId, existing.current_version,
                     ],
                 );
-                if ((updated.affectedRows ?? 0) === 0) return { kind: 'conflict' as const };
+                if (updated.affectedRows === 0) return { kind: 'conflict' as const };
                 await insertVersion(tx, scope, questionId, nextVersion, validated.value);
                 await recordAudit(tx.execute, {
                     actorUserId: scope.userId,
@@ -445,7 +445,7 @@ export const createQuestionBankRouter = (deps: QuestionBankDeps): Router => {
                      WHERE id=? AND tenant_id=? AND archived_at IS NULL`,
                     [questionId, scope.tenantId],
                 );
-                if ((updated.affectedRows ?? 0) === 0) return false;
+                if (updated.affectedRows === 0) return false;
                 await recordAudit(tx.execute, {
                     actorUserId: scope.userId,
                     tenantId: scope.tenantId,
@@ -618,7 +618,11 @@ const productionTransaction = async <T>(fn: (tx: QuestionBankDataAccess) => Prom
         execute: async (sql: string, params?: unknown[]) => {
             const [result] = await connection.execute(sql, params as never);
             const header = result as { insertId?: number; affectedRows?: number };
-            return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+            const affectedRows = header.affectedRows;
+            if (typeof affectedRows !== 'number' || !Number.isSafeInteger(affectedRows)) {
+                throw new Error('question-bank transaction execute did not report a usable affected-row count');
+            }
+            return { insertId: typeof header.insertId === 'number' && Number.isSafeInteger(header.insertId) ? header.insertId : 0, affectedRows };
         },
     }));
 };

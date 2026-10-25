@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,15 +16,66 @@ import { useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import { VideoUploader } from '@/components/VideoUploader';
 import { SecureVideoPlayer } from '@/components/SecureVideoPlayer';
+import { SecureYouTubePlayer } from '@/components/SecureYouTubePlayer';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  getPremiumLectures, createPremiumLecture, updatePremiumLecture, deletePremiumLecture,
+  getPremiumLectures, createPremiumLecture, updatePremiumLecture,
   getPendingPremiumPayments, getAllPremiumPayments, approvePremiumPayment, rejectPremiumPayment,
-  getGrades, getGroups, PremiumLecture, PremiumLecturePayment, User, Grade, Group
+  getGrades, getGroups, AUTH_SESSION_CHANGED_EVENT,
+  authenticatedApiFetch, readAuthenticatedApiJson,
+  PremiumLecture, PremiumLecturePayment, User, Grade, Group
 } from '@/lib/api-http';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Switch } from '@/components/ui/switch';
+
+const readSessionToken = () => localStorage.getItem('authToken') ?? '';
+
+const getErrorStatus = (error: unknown): number | undefined => {
+  if (typeof error === 'object' && error !== null) {
+    if ('status' in error) {
+      const status = (error as { status?: unknown }).status;
+      if (typeof status === 'number') return status;
+    }
+    if ('response' in error) {
+      const response = (error as { response?: { status?: unknown } }).response;
+      if (typeof response?.status === 'number') return response.status;
+    }
+  }
+  return undefined;
+};
+
+const describePremiumActionError = (error: unknown, fallback: string): string => {
+  const status = getErrorStatus(error);
+  if (status === 401) return 'انتهت صلاحية الجلسة. سجّل الدخول مرة أخرى.';
+  if (status === 403) return 'لا تملك صلاحية تنفيذ هذا الإجراء في هذه المساحة.';
+  if (status === 409 && (error as { code?: unknown })?.code === 'CLIENT_SESSION_CHANGED') {
+    return 'تغيّرت الجلسة. أعد المحاولة بعد التأكد من الجلسة الحالية.';
+  }
+  if (typeof status === 'number') return fallback;
+  return 'تعذر الاتصال بالخادم. تحقق من الشبكة وحاول مرة أخرى.';
+};
+
+const safeHttpUrl = (value: string): URL | null => {
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const isYouTubeUrl = (value: string): boolean => {
+  const parsed = safeHttpUrl(value);
+  if (!parsed) return false;
+  const host = parsed.hostname.toLowerCase();
+  return host === 'youtu.be' || host === 'youtube.com' || host.endsWith('.youtube.com');
+};
+
+const isGoogleDriveUrl = (value: string): boolean => {
+  const parsed = safeHttpUrl(value);
+  return parsed?.hostname.toLowerCase() === 'drive.google.com';
+};
 
 export default function TeacherPremiumLectures() {
   const { toast } = useToast();
@@ -35,8 +86,11 @@ export default function TeacherPremiumLectures() {
   const [allPayments, setAllPayments] = useState<PremiumLecturePayment[]>([]);
   const [grades, setGrades] = useState<Grade[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [playingVideo, setPlayingVideo] = useState<{ videoId: string; title: string } | null>(null);
+  const [playingYouTube, setPlayingYouTube] = useState<{ videoUrl: string; title: string } | null>(null);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [editingLecture, setEditingLecture] = useState<PremiumLecture | null>(null);
   const [viewingReceipt, setViewingReceipt] = useState<string | null>(null);
@@ -59,44 +113,58 @@ export default function TeacherPremiumLectures() {
     is_published: false
   });
 
+  const latestDraftRef = useRef(formData);
+  latestDraftRef.current = formData;
+
+  const isMountedRef = useRef(true);
+  const loadSeqRef = useRef(0);
+  const submitGuardRef = useRef(false);
+  const uploadGuardRef = useRef(false);
+  const deleteGuardRef = useRef<Set<string>>(new Set());
+  const paymentGuardRef = useRef<Set<string>>(new Set());
+  const dialogTokenRef = useRef('');
+  const dialogGenerationRef = useRef(0);
+
   const handleCloseVideo = useCallback(() => {
     setPlayingVideo(null);
   }, []);
 
-  useEffect(() => {
-    checkAuth();
-  }, []);
-
-  useEffect(() => {
-    if (currentUser) {
-      loadData();
+  const checkAuth = useCallback(() => {
+    const token = readSessionToken();
+    const userStr = localStorage.getItem('currentUser');
+    if (!token || !userStr) {
+      navigate('/auth');
+      return;
     }
-  }, [currentUser]);
 
-  const checkAuth = async () => {
     try {
-      const userStr = localStorage.getItem('currentUser');
-      if (!userStr) {
-        navigate('/auth');
-        return;
-      }
-
       const user = JSON.parse(userStr) as User;
-      if (user.role !== 'admin' && user.role !== 'teacher') {
-        navigate('/auth');
+      if (user.role !== 'admin' && user.role !== 'teacher' && user.role !== 'instructor') {
+        navigate('/forbidden');
         return;
       }
-
       setCurrentUser(user);
     } catch (error) {
       console.error('Auth check error:', error);
       navigate('/auth');
     }
-  };
+  }, [navigate]);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
+    const requestSeq = ++loadSeqRef.current;
+    const startingToken = readSessionToken();
+    const isCurrent = () =>
+      isMountedRef.current
+      && requestSeq === loadSeqRef.current
+      && startingToken === readSessionToken();
+
     setLoading(true);
+    setLoadError(null);
     try {
+      if (!startingToken) {
+        navigate('/auth');
+        return;
+      }
       const [lecturesData, gradesData, groupsData, pendingData, allPaymentsData] = await Promise.all([
         getPremiumLectures(),
         getGrades(),
@@ -104,79 +172,210 @@ export default function TeacherPremiumLectures() {
         getPendingPremiumPayments(),
         getAllPremiumPayments()
       ]);
-      setLectures(lecturesData || []);
-      setGrades(gradesData || []);
-      setGroups(groupsData || []);
-      setPendingPayments(pendingData || []);
-      setAllPayments(allPaymentsData || []);
+      if (!isCurrent()) return;
+      if (!Array.isArray(lecturesData)
+        || !Array.isArray(gradesData)
+        || !Array.isArray(groupsData)
+        || !Array.isArray(pendingData)
+        || !Array.isArray(allPaymentsData)) {
+        throw new Error('Invalid premium lectures response');
+      }
+      setLectures(lecturesData);
+      setGrades(gradesData);
+      setGroups(groupsData);
+      setPendingPayments(pendingData);
+      setAllPayments(allPaymentsData);
     } catch (error) {
+      if (!isCurrent()) return;
       console.error('Error loading data:', error);
+      if (getErrorStatus(error) === 401) {
+        navigate('/auth');
+        return;
+      }
+      setLectures([]);
+      setGrades([]);
+      setGroups([]);
+      setPendingPayments([]);
+      setAllPayments([]);
+      setLoadError(describePremiumActionError(error, 'تعذر تحميل بيانات الحصص المدفوعة. حاول مرة أخرى.'));
+    } finally {
+      if (isCurrent()) setLoading(false);
+    }
+  }, [navigate]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    checkAuth();
+
+    const refreshSession = () => {
+      loadSeqRef.current += 1;
+      setCurrentUser(null);
+      setLectures([]);
+      setGrades([]);
+      setGroups([]);
+      setPendingPayments([]);
+      setAllPayments([]);
+      setPlayingVideo(null);
+      setPlayingYouTube(null);
+      setViewingReceipt(null);
+      setRejectDialogOpen(false);
+      setRejectingPayment(null);
+      setRejectionReason('');
+      setLoadError(null);
+      resetForm();
+      checkAuth();
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (!event.key || event.key === 'authToken' || event.key === 'currentUser') refreshSession();
+    };
+
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, refreshSession);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      isMountedRef.current = false;
+      dialogGenerationRef.current += 1;
+      loadSeqRef.current += 1;
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, refreshSession);
+      window.removeEventListener('storage', onStorage);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkAuth]);
+
+  useEffect(() => {
+    if (currentUser) void loadData();
+  }, [currentUser, loadData]);
+
+  const validateAndBuildLecture = (videoUrlOverride?: string, draft = latestDraftRef.current) => {
+    const videoUrl = (videoUrlOverride ?? draft.video_url).trim();
+    if (!draft.title.trim() || !videoUrl || !draft.price.trim() || !draft.grade_id || !draft.group_id) {
       toast({
         variant: "destructive",
         title: "خطأ",
-        description: "فشل في تحميل البيانات",
+        description: "العنوان ورابط الفيديو والسعر والصف والمجموعة مطلوبين",
       });
+      return null;
+    }
+
+    const price = Number(draft.price);
+    const durationMinutes = draft.duration_minutes.trim()
+      ? Number.parseInt(draft.duration_minutes, 10)
+      : 0;
+    if (!Number.isFinite(price) || price < 0 || !Number.isFinite(durationMinutes) || durationMinutes < 0) {
+      toast({
+        variant: "destructive",
+        title: "بيانات غير صالحة",
+        description: "تحقق من السعر والمدة قبل الحفظ.",
+      });
+      return null;
+    }
+
+    return {
+      title: draft.title.trim(),
+      description: draft.description.trim() || undefined,
+      video_url: videoUrl,
+      thumbnail_url: draft.thumbnail_url.trim() || undefined,
+      duration_minutes: durationMinutes,
+      price,
+      grade_id: draft.grade_id,
+      group_id: draft.group_id,
+      is_published: draft.is_published,
+    };
+  };
+
+  const persistLecture = async (
+    videoUrlOverride?: string,
+    expectedGeneration = dialogGenerationRef.current,
+    expectedToken = readSessionToken(),
+  ): Promise<boolean> => {
+    const isCurrent = () => isMountedRef.current
+      && expectedGeneration === dialogGenerationRef.current
+      && expectedToken === readSessionToken();
+    if (!isCurrent()) return false;
+    const submittedDraft = { ...latestDraftRef.current, ...(videoUrlOverride === undefined ? {} : { video_url: videoUrlOverride }) };
+    const submittedFingerprint = JSON.stringify(submittedDraft);
+    const lectureData = validateAndBuildLecture(videoUrlOverride, submittedDraft);
+    if (!lectureData) return false;
+
+    const startingToken = readSessionToken();
+    if (!startingToken) {
+      navigate('/auth');
+      return false;
+    }
+    if (!dialogTokenRef.current || dialogTokenRef.current !== startingToken) {
+      toast({
+        variant: "destructive",
+        title: "تغيّرت الجلسة",
+        description: "أُغلق نموذج الحصة أو تغيّرت الجلسة. لم يتم حفظ أي تغيير.",
+      });
+      return false;
+    }
+    if (submitGuardRef.current) return false;
+
+    submitGuardRef.current = true;
+    setSaving(true);
+    try {
+      const saved = editingLecture
+        ? await updatePremiumLecture(editingLecture.id, lectureData)
+        : await createPremiumLecture(lectureData);
+
+      if (!isCurrent()) return false;
+      if (readSessionToken() !== startingToken) {
+        toast({
+          variant: "destructive",
+          title: "تغيّرت الجلسة",
+          description: "لم نتأكد من نتيجة الحفظ. بيانات النموذج باقية؛ راجع القائمة قبل إعادة المحاولة.",
+        });
+        return false;
+      }
+      if (!saved || typeof saved.id !== 'string' || !saved.id) {
+        toast({
+          variant: "destructive",
+          title: "تعذر تأكيد الحفظ",
+          description: "لم نتأكد من حفظ الحصة. بيانات النموذج باقية؛ راجع القائمة قبل إعادة المحاولة.",
+        });
+        return false;
+      }
+
+      toast({
+        title: editingLecture ? "تم التحديث" : "تم الإنشاء",
+        description: editingLecture
+          ? "تم تحديث الحصة المدفوعة بنجاح"
+          : "تم إنشاء الحصة المدفوعة بنجاح",
+      });
+      resetForm();
+      await loadData();
+      return true;
+    } catch (error) {
+      if (!isCurrent()) return false;
+      console.error('Error saving lecture:', error);
+      const status = getErrorStatus(error);
+      if (status === 401) {
+        navigate('/auth');
+        return false;
+      }
+      toast({
+        variant: "destructive",
+        title: "خطأ",
+        description: describePremiumActionError(error, "فشل في حفظ الحصة المدفوعة"),
+      });
+      return false;
     } finally {
-      setLoading(false);
+      if (isCurrent()) {
+        submitGuardRef.current = false;
+        setSaving(false);
+      }
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-
-    if (!formData.title || !formData.video_url || !formData.price) {
-      toast({
-        variant: "destructive",
-        title: "خطأ",
-        description: "العنوان ورابط الفيديو والسعر مطلوبين",
-      });
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const lectureData = {
-        title: formData.title,
-        description: formData.description || undefined,
-        video_url: formData.video_url,
-        thumbnail_url: formData.thumbnail_url || undefined,
-        duration_minutes: formData.duration_minutes ? parseInt(formData.duration_minutes) : 0,
-        price: parseFloat(formData.price),
-        grade_id: formData.grade_id || undefined,
-        group_id: formData.group_id || undefined,
-        is_published: formData.is_published,
-        created_by: currentUser?.id
-      };
-
-      if (editingLecture) {
-        await updatePremiumLecture(editingLecture.id, lectureData);
-        toast({
-          title: "تم التحديث",
-          description: "تم تحديث الحصة المدفوعة بنجاح",
-        });
-      } else {
-        await createPremiumLecture(lectureData);
-        toast({
-          title: "تم الإنشاء",
-          description: "تم إنشاء الحصة المدفوعة بنجاح",
-        });
-      }
-
-      resetForm();
-      loadData();
-    } catch (error) {
-      console.error('Error saving lecture:', error);
-      toast({
-        variant: "destructive",
-        title: "خطأ",
-        description: "فشل في حفظ الحصة المدفوعة",
-      });
-    } finally {
-      setLoading(false);
-    }
+    void persistLecture();
   };
 
   const resetForm = () => {
+    dialogGenerationRef.current += 1;
+    submitGuardRef.current = false;
+    uploadGuardRef.current = false;
     setFormData({
       title: '',
       description: '',
@@ -190,9 +389,18 @@ export default function TeacherPremiumLectures() {
     });
     setEditingLecture(null);
     setShowAddDialog(false);
+    setSaving(false);
+    dialogTokenRef.current = '';
+  };
+
+  const openAddDialog = () => {
+    resetForm();
+    dialogTokenRef.current = readSessionToken();
+    setShowAddDialog(true);
   };
 
   const handleEdit = (lecture: PremiumLecture) => {
+    resetForm();
     setFormData({
       title: lecture.title,
       description: lecture.description || '',
@@ -205,52 +413,150 @@ export default function TeacherPremiumLectures() {
       is_published: lecture.is_published
     });
     setEditingLecture(lecture);
+    dialogTokenRef.current = readSessionToken();
     setShowAddDialog(true);
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm('هل أنت متأكد من حذف هذه الحصة؟')) return;
+    if (deleteGuardRef.current.has(id)) return;
+    deleteGuardRef.current.add(id);
 
+    const startingToken = readSessionToken();
     try {
-      await deletePremiumLecture(id);
+      if (!startingToken) {
+        navigate('/auth');
+        return;
+      }
+      const response = await authenticatedApiFetch(`/premium-lectures/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+      if (response.status === 401) {
+        navigate('/auth');
+        return;
+      }
+      if (!response.ok) {
+        const payload = await readAuthenticatedApiJson(response).catch(() => null);
+        const message = payload && typeof payload === 'object' && typeof (payload as { error?: unknown }).error === 'string'
+          ? (payload as { error: string }).error
+          : null;
+        throw new Error(message || 'فشل في حذف الحصة المدفوعة');
+      }
+      const result = await readAuthenticatedApiJson(response);
+      if (readSessionToken() !== startingToken) {
+        toast({
+          variant: "destructive",
+          title: "تغيّرت الجلسة",
+          description: "لم نتأكد من نتيجة الحذف. أعد تحميل القائمة قبل المحاولة مرة أخرى.",
+        });
+        return;
+      }
+      if (!result || typeof result !== 'object' || (result as { success?: unknown }).success !== true) {
+        toast({
+          variant: "destructive",
+          title: "تعذر تأكيد الحذف",
+          description: "لم نتأكد من حذف الحصة. أعد تحميل القائمة قبل المحاولة مرة أخرى.",
+        });
+        return;
+      }
       toast({
         title: "تم الحذف",
         description: "تم حذف الحصة المدفوعة بنجاح",
       });
-      loadData();
+      await loadData();
     } catch (error) {
       console.error('Error deleting lecture:', error);
+      if (getErrorStatus(error) === 401) {
+        navigate('/auth');
+        return;
+      }
       toast({
         variant: "destructive",
         title: "خطأ",
-        description: "فشل في حذف الحصة المدفوعة",
+        description: describePremiumActionError(error, "فشل في حذف الحصة المدفوعة"),
       });
+    } finally {
+      deleteGuardRef.current.delete(id);
     }
   };
 
   const handleApprovePayment = async (payment: PremiumLecturePayment) => {
+    if (paymentGuardRef.current.has(payment.id)) return;
+    paymentGuardRef.current.add(payment.id);
+
+    const startingToken = readSessionToken();
     try {
-      await approvePremiumPayment(payment.id, currentUser?.id);
+      if (!startingToken) {
+        navigate('/auth');
+        return;
+      }
+      const result = await approvePremiumPayment(payment.id, currentUser?.id);
+      if (readSessionToken() !== startingToken) {
+        toast({
+          variant: "destructive",
+          title: "تغيّرت الجلسة",
+          description: "لم نتأكد من نتيجة الموافقة. أعد تحميل الطلبات قبل المحاولة مرة أخرى.",
+        });
+        return;
+      }
+      if (!result || result.success !== true) {
+        toast({
+          variant: "destructive",
+          title: "تعذر تأكيد الموافقة",
+          description: "لم نتأكد من الموافقة على الطلب. أعد تحميل الطلبات قبل المحاولة مرة أخرى.",
+        });
+        return;
+      }
       toast({
         title: "تمت الموافقة",
         description: "تمت الموافقة على طلب الدفع ومنح الطالب حق الوصول للحصة",
       });
-      loadData();
+      await loadData();
     } catch (error) {
       console.error('Error approving payment:', error);
+      if (getErrorStatus(error) === 401) {
+        navigate('/auth');
+        return;
+      }
       toast({
         variant: "destructive",
         title: "خطأ",
-        description: "فشل في الموافقة على طلب الدفع",
+        description: describePremiumActionError(error, "فشل في الموافقة على طلب الدفع"),
       });
+    } finally {
+      paymentGuardRef.current.delete(payment.id);
     }
   };
 
   const handleRejectPayment = async () => {
     if (!rejectingPayment) return;
+    const paymentId = rejectingPayment.id;
+    if (paymentGuardRef.current.has(paymentId)) return;
+    paymentGuardRef.current.add(paymentId);
 
+    const startingToken = readSessionToken();
     try {
-      await rejectPremiumPayment(rejectingPayment.id, rejectionReason, currentUser?.id);
+      if (!startingToken) {
+        navigate('/auth');
+        return;
+      }
+      const result = await rejectPremiumPayment(paymentId, rejectionReason, currentUser?.id);
+      if (readSessionToken() !== startingToken) {
+        toast({
+          variant: "destructive",
+          title: "تغيّرت الجلسة",
+          description: "لم نتأكد من نتيجة الرفض. سبب الرفض باقٍ في النموذج؛ أعد تحميل الطلبات قبل المحاولة.",
+        });
+        return;
+      }
+      if (!result || result.success !== true) {
+        toast({
+          variant: "destructive",
+          title: "تعذر تأكيد الرفض",
+          description: "لم نتأكد من رفض الطلب. سبب الرفض باقٍ؛ أعد تحميل الطلبات قبل المحاولة.",
+        });
+        return;
+      }
       toast({
         title: "تم الرفض",
         description: "تم رفض طلب الدفع",
@@ -258,23 +564,69 @@ export default function TeacherPremiumLectures() {
       setRejectDialogOpen(false);
       setRejectingPayment(null);
       setRejectionReason('');
-      loadData();
+      await loadData();
     } catch (error) {
       console.error('Error rejecting payment:', error);
+      if (getErrorStatus(error) === 401) {
+        navigate('/auth');
+        return;
+      }
       toast({
         variant: "destructive",
         title: "خطأ",
-        description: "فشل في رفض طلب الدفع",
+        description: describePremiumActionError(error, "فشل في رفض طلب الدفع"),
       });
+    } finally {
+      paymentGuardRef.current.delete(paymentId);
     }
   };
 
-  const handleVideoUploadComplete = (url: string, duration?: number) => {
-    setFormData(prev => ({
-      ...prev,
-      video_url: url,
-      duration_minutes: duration ? Math.ceil(duration / 60).toString() : prev.duration_minutes
-    }));
+  // Global upload tasks can retain callbacks after the originating dialog closes.
+  const uploadDialogGeneration = dialogGenerationRef.current;
+  const uploadDialogToken = readSessionToken();
+  const handleVideoUploadComplete = async (videoId: string) => {
+    const ownsUpload = () => !!uploadDialogToken && isMountedRef.current
+      && uploadDialogGeneration === dialogGenerationRef.current
+      && uploadDialogToken === readSessionToken()
+      && dialogTokenRef.current === uploadDialogToken;
+    if (!ownsUpload()) return;
+    if (uploadGuardRef.current) return;
+    uploadGuardRef.current = true;
+    const videoUrl = `video://${videoId}`;
+    const uploadedDraft = { ...latestDraftRef.current, video_url: videoUrl };
+    latestDraftRef.current = uploadedDraft;
+    setFormData(uploadedDraft);
+    try {
+      await persistLecture(videoUrl, uploadDialogGeneration, uploadDialogToken);
+    } finally {
+      if (ownsUpload()) uploadGuardRef.current = false;
+    }
+  };
+
+  const handlePreviewLecture = (lecture: PremiumLecture) => {
+    const videoUrl = lecture.video_url?.trim() ?? '';
+    if (videoUrl.startsWith('video://')) {
+      const videoId = videoUrl.slice('video://'.length).trim();
+      if (!videoId) {
+        toast({
+          variant: "destructive",
+          title: "رابط الفيديو غير صالح",
+          description: "لا يمكن معاينة هذه الحصة الآن.",
+        });
+        return;
+      }
+      setPlayingVideo({ videoId, title: lecture.title });
+      return;
+    }
+    if (isYouTubeUrl(videoUrl) || isGoogleDriveUrl(videoUrl)) {
+      setPlayingYouTube({ videoUrl, title: lecture.title });
+      return;
+    }
+    toast({
+      variant: "destructive",
+      title: "رابط الفيديو غير مدعوم",
+      description: "نوع رابط هذه الحصة غير معروف. استخدم رابط YouTube أو Google Drive أو ارفع الفيديو.",
+    });
   };
 
   const filteredLectures = lectures.filter(lecture =>
@@ -306,6 +658,18 @@ export default function TeacherPremiumLectures() {
           studentName={currentUser.name || 'معاينة'}
           groupName={'معاينة المدرس'}
           onClose={handleCloseVideo}
+        />
+      )}
+
+      {/* YouTube/Drive Preview Modal */}
+      {playingYouTube && currentUser && (
+        <SecureYouTubePlayer
+          videoUrl={playingYouTube.videoUrl}
+          userId={currentUser.id}
+          studentName={currentUser.name || 'معاينة'}
+          groupName={'معاينة المدرس'}
+          title={playingYouTube.title}
+          onClose={() => setPlayingYouTube(null)}
         />
       )}
 
@@ -345,7 +709,13 @@ export default function TeacherPremiumLectures() {
       </AnimatePresence>
 
       {/* Reject Dialog */}
-      <Dialog open={rejectDialogOpen} onOpenChange={setRejectDialogOpen}>
+      <Dialog
+        open={rejectDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && rejectingPayment && paymentGuardRef.current.has(rejectingPayment.id)) return;
+          setRejectDialogOpen(open);
+        }}
+      >
         <DialogContent className="bg-slate-800 border-white/10 text-white">
           <DialogHeader>
             <DialogTitle>رفض طلب الدفع</DialogTitle>
@@ -365,7 +735,15 @@ export default function TeacherPremiumLectures() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setRejectDialogOpen(false)}>إلغاء</Button>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                if (rejectingPayment && paymentGuardRef.current.has(rejectingPayment.id)) return;
+                setRejectDialogOpen(false);
+              }}
+            >
+              إلغاء
+            </Button>
             <Button variant="destructive" onClick={handleRejectPayment}>تأكيد الرفض</Button>
           </DialogFooter>
         </DialogContent>
@@ -383,7 +761,7 @@ export default function TeacherPremiumLectures() {
             </div>
           </div>
           <Button
-            onClick={() => setShowAddDialog(true)}
+            onClick={openAddDialog}
             className="bg-gradient-to-r from-cyan-500 to-teal-600 hover:from-cyan-600 hover:to-teal-700"
           >
             <Plus className="w-4 h-4 ml-2" />
@@ -391,6 +769,17 @@ export default function TeacherPremiumLectures() {
           </Button>
         </div>
 
+        {loading ? (
+          <div className="text-center text-muted-foreground py-12">جاري التحميل...</div>
+        ) : loadError ? (
+          <Card className="shadow-lg">
+            <CardContent className="py-12 text-center">
+              <AlertCircle className="w-12 h-12 mx-auto text-destructive/60 mb-4" />
+              <p role="alert" className="text-destructive mb-4">{loadError}</p>
+              <Button variant="outline" onClick={() => void loadData()}>إعادة المحاولة</Button>
+            </CardContent>
+          </Card>
+        ) : (
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="mb-6">
             <TabsTrigger value="lectures" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white">
@@ -422,9 +811,7 @@ export default function TeacherPremiumLectures() {
               </div>
             </div>
 
-            {loading ? (
-              <div className="text-center text-muted-foreground py-12">جاري التحميل...</div>
-            ) : filteredLectures.length === 0 ? (
+            {filteredLectures.length === 0 ? (
               <Card className="shadow-lg">
                 <CardContent className="py-12 text-center">
                   <Video className="w-16 h-16 mx-auto text-muted-foreground/40 mb-4" />
@@ -504,13 +891,7 @@ export default function TeacherPremiumLectures() {
                             variant="outline"
                             size="sm"
                             className="flex-1"
-                            onClick={() => {
-                              // Extract video ID from video:// URL
-                              const videoId = lecture.video_url?.startsWith('video://')
-                                ? lecture.video_url.replace('video://', '')
-                                : lecture.video_url;
-                              setPlayingVideo({ videoId, title: lecture.title });
-                            }}
+                            onClick={() => handlePreviewLecture(lecture)}
                           >
                             <Play className="w-4 h-4 ml-1" />
                             تشغيل
@@ -614,6 +995,7 @@ export default function TeacherPremiumLectures() {
                               variant="destructive"
                               onClick={() => {
                                 setRejectingPayment(payment);
+                                setRejectionReason('');
                                 setRejectDialogOpen(true);
                               }}
                             >
@@ -695,10 +1077,21 @@ export default function TeacherPremiumLectures() {
             )}
           </TabsContent>
         </Tabs>
+        )}
       </main>
 
       {/* Add/Edit Dialog */}
-      <Dialog open={showAddDialog} onOpenChange={(open) => { if (!open) resetForm(); else setShowAddDialog(true); }}>
+      <Dialog
+        open={showAddDialog}
+        onOpenChange={(open) => {
+          if (open) {
+            setShowAddDialog(true);
+            return;
+          }
+          if (saving) return;
+          resetForm();
+        }}
+      >
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingLecture ? 'تعديل الحصة المدفوعة' : 'إضافة حصة مدفوعة جديدة'}</DialogTitle>
@@ -838,45 +1231,22 @@ export default function TeacherPremiumLectures() {
                     uploadedBy={currentUser?.id || ''}
                     title={formData.title}
                     description={formData.description}
-                    onUploadComplete={async (videoId) => {
-                      try {
-                        const lectureData = {
-                          title: formData.title,
-                          description: formData.description || undefined,
-                          video_url: `video://${videoId}`,
-                          thumbnail_url: formData.thumbnail_url || undefined,
-                          duration_minutes: formData.duration_minutes ? parseInt(formData.duration_minutes) : 0,
-                          price: parseFloat(formData.price),
-                          grade_id: formData.grade_id || undefined,
-                          group_id: formData.group_id || undefined,
-                          is_published: formData.is_published,
-                          created_by: currentUser?.id
-                        };
-
-                        if (editingLecture) {
-                          await updatePremiumLecture(editingLecture.id, lectureData);
-                        } else {
-                          await createPremiumLecture(lectureData);
-                        }
-
-                        toast({
-                          title: 'نجح',
-                          description: 'تم رفع الحصة والفيديو بنجاح'
-                        });
-
-                        resetForm();
-                        loadData();
-                      } catch (error) {
-                        console.error('Error creating lecture:', error);
-                        toast({
-                          title: 'خطأ',
-                          description: 'الفيديو تم رفعه لكن فشل حفظ بيانات الحصة',
-                          variant: 'destructive'
-                        });
-                      }
+                    onUploadComplete={handleVideoUploadComplete}
+                    onCancel={() => {
+                      if (saving) return;
+                      resetForm();
                     }}
-                    onCancel={resetForm}
                   />
+                  {formData.video_url.startsWith('video://') && (
+                    <Button
+                      type="button"
+                      onClick={() => void persistLecture(formData.video_url)}
+                      disabled={saving}
+                      className="mt-4 bg-gradient-to-r from-cyan-500 to-teal-600"
+                    >
+                      {saving ? 'جاري الحفظ...' : 'حفظ بيانات الحصة'}
+                    </Button>
+                  )}
                 </div>
               )}
             </TabsContent>
@@ -1002,13 +1372,13 @@ export default function TeacherPremiumLectures() {
                 </div>
 
                 <DialogFooter>
-                  <Button type="button" variant="ghost" onClick={resetForm}>إلغاء</Button>
+                  <Button type="button" variant="ghost" onClick={resetForm} disabled={saving}>إلغاء</Button>
                   <Button
                     type="submit"
-                    disabled={loading}
+                    disabled={saving}
                     className="bg-gradient-to-r from-cyan-500 to-teal-600"
                   >
-                    {loading ? 'جاري الحفظ...' : (editingLecture ? 'تحديث' : 'إنشاء')}
+                    {saving ? 'جاري الحفظ...' : (editingLecture ? 'تحديث' : 'إنشاء')}
                   </Button>
                 </DialogFooter>
               </form>
@@ -1135,13 +1505,13 @@ export default function TeacherPremiumLectures() {
                 </div>
 
                 <DialogFooter>
-                  <Button type="button" variant="ghost" onClick={resetForm}>إلغاء</Button>
+                  <Button type="button" variant="ghost" onClick={resetForm} disabled={saving}>إلغاء</Button>
                   <Button
                     type="submit"
-                    disabled={loading}
+                    disabled={saving}
                     className="bg-gradient-to-r from-cyan-500 to-teal-600"
                   >
-                    {loading ? 'جاري الحفظ...' : (editingLecture ? 'تحديث' : 'إنشاء')}
+                    {saving ? 'جاري الحفظ...' : (editingLecture ? 'تحديث' : 'إنشاء')}
                   </Button>
                 </DialogFooter>
               </form>

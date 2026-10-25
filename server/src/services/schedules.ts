@@ -525,7 +525,10 @@ export function validateRescheduleInput(
     context: { timezone: string; durationMinutes: number },
 ): ValidationResult<ValidatedReschedule> {
     const record = isRecord(body) ? body : {};
-    const timezone = isValidTimeZone(context.timezone) ? context.timezone : 'UTC';
+    if (!isValidTimeZone(context.timezone)) {
+        return { ok: false, error: 'session timezone is invalid' };
+    }
+    const timezone = context.timezone;
 
     const rawStart = record['starts_at'];
     if (typeof rawStart !== 'string' || rawStart.trim() === '') {

@@ -29,10 +29,25 @@ import type {
  *    injected verifier before reading a single field, and the tenant comes from
  *    the session row.
  *
- * Deliberately NOT default-exported: there is no production `LiveSessionStore`
- * yet (the durable tables are the I2 request), and mounting a router over an
- * unimplemented store would be a false success. `server/src/index.ts` is not
- * this lane's file either; the mount is a separate, explicit request.
+ * ONE COMPOSITION CONTRACT — `createLiveRuntime(...)` in
+ * `services/live-runtime-factory.ts` is the single supported entry point, and it
+ * is what actually consumes BOTH of this lane's runtimes: it builds this router
+ * over its own core (`:1067-1069`) and it drives the bounded recovery pass
+ * (`:1388-1392`). A caller therefore never assembles a core, a store or a
+ * router by hand; it constructs the runtime once and mounts `runtime.router`.
+ *
+ * This builder is the INTERNAL seam that runtime uses. It is exported because
+ * the factory lives in `services/` and imports it, NOT because it is a second
+ * composition path: constructing it from a hand-built `core` produces a router
+ * with no `readiness()`, no `beginShutdown()` and no schema-report provenance,
+ * so such a mount is unsupported by contract even though the type allows it.
+ *
+ * What is still missing is only the CALLER. `server/src/index.ts` does not
+ * import the factory at all, so no live route is mounted today; that file is
+ * Codex's, and the exact mount is reported as an integration request rather
+ * than written from this lane. Lifecycle ordering the caller must follow:
+ * verify → construct → mount → loop, and on the way out
+ * stop-new-work (`beginShutdown`) → drain → release → close.
  */
 
 export interface LiveSessionsRouterDeps {

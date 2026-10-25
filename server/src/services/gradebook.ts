@@ -244,6 +244,12 @@ export function normalizeScoreEntry(value: unknown): ScoreEntry | null {
     const maxScore = typeof value['max_score'] === 'number' ? value['max_score'] : Number(value['max_score'] ?? value['maxScore']);
     if (!Number.isFinite(score) || !Number.isFinite(maxScore) || maxScore <= 0 || score < 0) return null;
     if (score > MAX_SCORE || maxScore > MAX_SCORE) return null;
+    // An award can never exceed the item maximum. This check existed only in
+    // `validateLinkedGradeInput`, which the score route does not use, so
+    // `POST /gradebook/scores {score: 120, max_score: 100}` was accepted and
+    // `calculateGrade` then produced `percent = 120, passed = true` — an
+    // impossible grade, contradicting the service's own documented contract.
+    if (score > maxScore) return null;
     const categoryId = value['category_id'] === undefined || value['category_id'] === null || value['category_id'] === '' ? null : (typeof value['category_id'] === 'string' ? value['category_id'].trim() : null);
     const weightRaw = value['weight'];
     let weight: number | null = null;

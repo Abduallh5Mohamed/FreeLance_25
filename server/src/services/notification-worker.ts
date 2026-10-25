@@ -394,9 +394,12 @@ export const createNotificationWorker = (deps: NotificationWorkerDeps): Notifica
     };
 
     const reapStaleClaims = async (): Promise<StaleClaimReapResult> => {
+        // Tenant-bound, exactly like the claim/dispatch path: this worker may
+        // not touch rows owned by another tenant's worker, even losslessly.
         const result = await recoverStaleSendingRows(deps.db, {
             olderThanMs: limits.leaseMs,
             limit: limits.batchSize,
+            tenantId: deps.scope.tenantId,
             now,
             log,
         });

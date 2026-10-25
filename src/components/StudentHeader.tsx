@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { signOutSession } from '@/lib/api-http';
@@ -47,7 +47,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
-import { getGrades, getGroups, createSubscriptionRequest, getSubscriptions, type Subscription } from "@/lib/api-http";
+import { getGrades, getGroups, createSubscriptionRequest, getSubscriptions, AUTH_SESSION_CHANGED_EVENT, type Subscription } from "@/lib/api-http";
 import tabwebAcademyLogo from "@/assets/Tabweb_Academy_Logo.png";
 
 const StudentHeader = () => {
@@ -66,8 +66,54 @@ const StudentHeader = () => {
   const [paymentImage, setPaymentImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitInFlightRef = useRef(false);
+  const receiptSelectionRef = useRef(0);
+  const optionsLoadRef = useRef(0);
+  const [optionsReady, setOptionsReady] = useState(false);
+  const sessionGenerationRef = useRef(0);
+  const mountedRef = useRef(true);
   const { toast } = useToast();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const resetForSessionChange = () => {
+      sessionGenerationRef.current += 1;
+      receiptSelectionRef.current += 1;
+      optionsLoadRef.current += 1;
+      setOptionsReady(false);
+      submitInFlightRef.current = false;
+      setIsSubmitting(false);
+      setShowPaymentDialog(false);
+      setGrades([]);
+      setGroups([]);
+      setSubscriptionPlans([]);
+      setStudentName("");
+      setStudentPhone("");
+      setGuardianPhone("");
+      setPaymentAmount("");
+      setSelectedGrade("");
+      setSelectedGroup("");
+      setSelectedPlan("");
+      setNotes("");
+      setPaymentImage(null);
+      setImagePreview(null);
+    };
+    const storage = (event: StorageEvent) => {
+      if (event.key === "authToken" || event.key === null) resetForSessionChange();
+    };
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, resetForSessionChange);
+    window.addEventListener("storage", storage);
+
+    return () => {
+      mountedRef.current = false;
+      sessionGenerationRef.current += 1;
+      submitInFlightRef.current = false;
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, resetForSessionChange);
+      window.removeEventListener("storage", storage);
+    };
+  }, []);
 
   useEffect(() => {
     if (showPaymentDialog) {
@@ -76,12 +122,18 @@ const StudentHeader = () => {
   }, [showPaymentDialog]);
 
   const loadGradesAndGroups = async () => {
+    const generation = sessionGenerationRef.current;
+    const load = ++optionsLoadRef.current;
+    setOptionsReady(false);
     try {
       const [gradesData, groupsData, plansData] = await Promise.all([
         getGrades(),
         getGroups(),
         getSubscriptions()
       ]);
+      if (!mountedRef.current || generation !== sessionGenerationRef.current) return;
+      if (load !== optionsLoadRef.current) return;
+      setOptionsReady(true);
       setGrades(gradesData || []);
       setGroups(groupsData || []);
       setSubscriptionPlans(plansData || []);
@@ -113,20 +165,140 @@ const StudentHeader = () => {
         return;
       }
 
+      const selection = ++receiptSelectionRef.current;
+      setImagePreview(null);
       setPaymentImage(file);
 
       // Create preview
+      const generation = sessionGenerationRef.current;
       const reader = new FileReader();
       reader.onloadend = () => {
-        setImagePreview(reader.result as string);
+        if (!mountedRef.current || generation !== sessionGenerationRef.current) return;
+        if (selection !== receiptSelectionRef.current || typeof reader.result !== "string") return;
+        setImagePreview(reader.result);
       };
       reader.readAsDataURL(file);
     }
   };
 
   const removeImage = () => {
+    receiptSelectionRef.current += 1;
     setPaymentImage(null);
     setImagePreview(null);
+  };
+
+  const handleSubmitPayment = async () => {
+    if (submitInFlightRef.current || !mountedRef.current || !optionsReady || !imagePreview) return;
+    submitInFlightRef.current = true;
+    const generation = sessionGenerationRef.current;
+    const isCurrent = () => mountedRef.current && generation === sessionGenerationRef.current;
+
+    try {
+      if (!paymentImage) {
+        toast({
+          title: "يرجى رفع صورة الإيصال",
+          description: "قم برفع صورة إيصال الدفع أولاً",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!studentName || !studentPhone) {
+        toast({
+          title: "بيانات ناقصة",
+          description: "يرجى إدخال الاسم ورقم الهاتف",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!guardianPhone || guardianPhone.length < 11) {
+        toast({
+          title: "بيانات ناقصة",
+          description: "يرجى إدخال رقم هاتف ولي الأمر صحيح (11 رقم)",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!selectedGrade || !selectedGroup) {
+        toast({
+          title: "بيانات ناقصة",
+          description: "يرجى اختيار الصف والمجموعة",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!selectedPlan) {
+        toast({
+          title: "بيانات ناقصة",
+          description: "يرجى اختيار خطة الاشتراك",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!paymentAmount || parseFloat(paymentAmount) <= 0) {
+        toast({
+          title: "بيانات ناقصة",
+          description: "يرجى إدخال المبلغ المدفوع",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setIsSubmitting(true);
+
+      const selectedGradeData = grades.find(g => g.id === selectedGrade);
+      const selectedGroupData = groups.find(g => g.id === selectedGroup);
+      const selectedPlanData = subscriptionPlans.find(p => p.id === selectedPlan);
+
+      await createSubscriptionRequest({
+        student_name: studentName,
+        phone: studentPhone,
+        guardian_phone: guardianPhone,
+        grade_id: parseInt(selectedGrade),
+        grade_name: selectedGradeData?.name || '',
+        group_id: parseInt(selectedGroup),
+        group_name: selectedGroupData?.name || '',
+        subscription_plan_id: selectedPlan,
+        subscription_plan_name: selectedPlanData?.name || '',
+        amount: parseFloat(paymentAmount),
+        notes: notes || null,
+        receipt_image_url: imagePreview || null,
+      });
+
+      if (!isCurrent()) return;
+
+      toast({
+        title: "✅ تم إرسال الطلب بنجاح",
+        description: "سيتم مراجعة طلبك والرد عليك قريباً",
+      });
+
+      setShowPaymentDialog(false);
+      setStudentName("");
+      setStudentPhone("");
+      setGuardianPhone("");
+      setPaymentAmount("");
+      setSelectedGrade("");
+      setSelectedGroup("");
+      setSelectedPlan("");
+      setNotes("");
+      removeImage();
+    } catch (error) {
+      if (!isCurrent()) return;
+      toast({
+        title: "خطأ في إرسال الطلب",
+        description: error instanceof Error ? error.message : "حاول مرة أخرى",
+        variant: "destructive",
+      });
+    } finally {
+      if (generation === sessionGenerationRef.current) {
+        submitInFlightRef.current = false;
+        if (mountedRef.current) setIsSubmitting(false);
+      }
+    }
   };
 
   const handleNavigate = (href: string, name: string, scrollTo?: string) => {
@@ -474,106 +646,11 @@ const StudentHeader = () => {
                   <Button
                     type="button"
                     className="w-full bg-gradient-to-r from-green-500 to-emerald-600"
-                    onClick={async () => {
-                      if (!paymentImage) {
-                        toast({
-                          title: "يرجى رفع صورة الإيصال",
-                          description: "قم برفع صورة إيصال الدفع أولاً",
-                          variant: "destructive",
-                        });
-                        return;
-                      }
-
-                      if (!studentName || !studentPhone) {
-                        toast({
-                          title: "بيانات ناقصة",
-                          description: "يرجى إدخال الاسم ورقم الهاتف",
-                          variant: "destructive",
-                        });
-                        return;
-                      }
-
-                      if (!guardianPhone || guardianPhone.length < 11) {
-                        toast({
-                          title: "بيانات ناقصة",
-                          description: "يرجى إدخال رقم هاتف ولي الأمر صحيح (11 رقم)",
-                          variant: "destructive",
-                        });
-                        return;
-                      }
-
-                      if (!selectedGrade || !selectedGroup) {
-                        toast({
-                          title: "بيانات ناقصة",
-                          description: "يرجى اختيار الصف والمجموعة",
-                          variant: "destructive",
-                        });
-                        return;
-                      }
-
-                      if (!selectedPlan) {
-                        toast({
-                          title: "بيانات ناقصة",
-                          description: "يرجى اختيار خطة الاشتراك",
-                          variant: "destructive",
-                        });
-                        return;
-                      }
-
-                      if (!paymentAmount || parseFloat(paymentAmount) <= 0) {
-                        toast({
-                          title: "بيانات ناقصة",
-                          description: "يرجى إدخال المبلغ المدفوع",
-                          variant: "destructive",
-                        });
-                        return;
-                      }
-
-                      try {
-                        const selectedGradeData = grades.find(g => g.id === selectedGrade);
-                        const selectedGroupData = groups.find(g => g.id === selectedGroup);
-                        const selectedPlanData = subscriptionPlans.find(p => p.id === selectedPlan);
-
-                        await createSubscriptionRequest({
-                          student_name: studentName,
-                          phone: studentPhone,
-                          guardian_phone: guardianPhone,
-                          grade_id: parseInt(selectedGrade),
-                          grade_name: selectedGradeData?.name || '',
-                          group_id: parseInt(selectedGroup),
-                          group_name: selectedGroupData?.name || '',
-                          subscription_plan_id: selectedPlan,
-                          subscription_plan_name: selectedPlanData?.name || '',
-                          amount: parseFloat(paymentAmount),
-                          notes: notes || null,
-                          receipt_image_url: imagePreview || null,
-                        });
-
-                        toast({
-                          title: "✅ تم إرسال الطلب بنجاح",
-                          description: "سيتم مراجعة طلبك والرد عليك قريباً",
-                        });
-
-                        setShowPaymentDialog(false);
-                        setStudentName("");
-                        setStudentPhone("");
-                        setGuardianPhone("");
-                        setPaymentAmount("");
-                        setSelectedGrade("");
-                        setSelectedGroup("");
-                        setSelectedPlan("");
-                        setNotes("");
-                        removeImage();
-                      } catch (error) {
-                        toast({
-                          title: "خطأ في إرسال الطلب",
-                          description: error instanceof Error ? error.message : "حاول مرة أخرى",
-                          variant: "destructive",
-                        });
-                      }
-                    }}
+                    onClick={handleSubmitPayment}
+                    disabled={isSubmitting || !optionsReady || !imagePreview}
+                    aria-busy={isSubmitting}
                   >
-                    دفع الآن
+                    {isSubmitting ? "جارٍ إرسال الطلب..." : "دفع الآن"}
                   </Button>
                 </form>
               </DialogContent>

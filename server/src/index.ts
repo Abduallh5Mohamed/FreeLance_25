@@ -1,3 +1,4 @@
+import { startDeadSessionCleanup, stopDeadSessionCleanup } from './services/video-security';
 // Load environment before route defaults capture dedicated service secrets.
 import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
@@ -79,7 +80,7 @@ import platformFlagsRoutes from './routes/platform-flags';
 import auditLogsRoutes from './routes/audit-logs';
 import moderationRoutes from './routes/moderation';
 import searchRoutes from './routes/search';
-import tenantExportRoutes from './routes/tenant-export';
+import tenantExportRoutes, { initializeTenantExportOwnership } from './routes/tenant-export';
 import platformMfaRoutes from './routes/platform-mfa';
 import impersonationRoutes from './routes/impersonation';
 import { mountObservability, createDatabaseReadinessCheck } from './routes/ops';
@@ -101,6 +102,23 @@ const PORT = process.env.PORT || 3001;
 
 /** The single processing-queue consumer; started when the DB is available. */
 let videoQueueConsumer: ReturnType<typeof scheduleVideoQueueConsumer> | null = null;
+
+/** Single-flight shutdown: every signal/error observes the same promise. */
+let shutdownPromise: Promise<void> | null = null;
+
+/** Intervals this bootstrap starts and therefore must stop. */
+const ownedIntervals = new Set<NodeJS.Timeout>();
+
+const startOwnedInterval = (callback: () => void, intervalMs: number): void => {
+    const timer = setInterval(callback, intervalMs);
+    timer.unref();
+    ownedIntervals.add(timer);
+};
+
+const stopOwnedIntervals = (): void => {
+    for (const timer of ownedIntervals) clearInterval(timer);
+    ownedIntervals.clear();
+};
 
 function isAllowedCorsOrigin(origin: string | undefined, corsOrigin: string | undefined, vercelUrl: string | undefined): boolean {
     const allowedOrigins = [
@@ -158,7 +176,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Initialize Socket.IO
-setupSocketIO(httpServer);
+const socketServer = setupSocketIO(httpServer);
 
 // One structured request observer; no raw URL/query logging of signed tokens.
 mountObservability(app, {
@@ -350,7 +368,23 @@ const startServer = async () => {
             console.warn('⚠️ SKIP_DB_ON_START is set — skipping DB connectivity check (dev only)');
         }
 
+        // Explicit deployment opt-in; no catalog access during module import.
+        // Failure leaves the mounted export surface at its audited 503.
+        if (!skipDb && process.env.TENANT_EXPORT_VERIFY_ON_START === 'true') {
+            const report = await initializeTenantExportOwnership();
+            console.log('[Tenant export] Ownership catalog verification:', report.status);
+        }
+
+        if (shutdownPromise) {
+            console.warn('⚠️  Shutdown requested during startup; not opening the listener');
+            return;
+        }
+
         const server = httpServer.listen(Number(PORT), '0.0.0.0', () => {
+            if (shutdownPromise) {
+                httpServer.close();
+                return;
+            }
             console.log(`
 ╔════════════════════════════════════════════════╗
 ║                                                ║
@@ -420,8 +454,7 @@ const startServer = async () => {
                     }
                 };
                 void reconcile();
-                const lifecycleTimer = setInterval(() => void reconcile(), 60 * 1000);
-                lifecycleTimer.unref();
+                startOwnedInterval(() => void reconcile(), 60 * 1000);
             }
 
             // Single coherent consumer of the processing queue: an immediate
@@ -435,6 +468,8 @@ const startServer = async () => {
             if (!skipDb) {
                 videoQueueConsumer ??= scheduleVideoQueueConsumer();
                 videoQueueConsumer.start();
+                // Bootstrap owns the sweep; importing the router never starts it.
+                startDeadSessionCleanup();
             }
 
             if (!skipDb) {
@@ -443,8 +478,7 @@ const startServer = async () => {
                     catch (error) { console.error('[Privacy cleanup] Failed:', error); }
                 };
                 void cleanupPrivacyData();
-                const privacyTimer = setInterval(() => void cleanupPrivacyData(), 6 * 60 * 60 * 1000);
-                privacyTimer.unref();
+                startOwnedInterval(() => void cleanupPrivacyData(), 6 * 60 * 60 * 1000);
             }
 
             // Non-interactive auto-submit: expire overdue exam attempts that no
@@ -461,8 +495,7 @@ const startServer = async () => {
                     finally { examExpiryInFlight = false; }
                 };
                 void expireExamAttempts();
-                const examExpiryTimer = setInterval(() => void expireExamAttempts(), 60 * 1000);
-                examExpiryTimer.unref();
+                startOwnedInterval(() => void expireExamAttempts(), 60 * 1000);
             }
 
             // Recover stuck video processing happens through the unified
@@ -474,22 +507,13 @@ const startServer = async () => {
 
         server.on('error', (error: NodeJS.ErrnoException) => {
             if (error.code === 'EADDRINUSE') {
-                console.error(`❌ Port ${PORT} is already in use`);
-                // Try to kill the process on the port and retry once
-                const { execSync } = require('child_process');
-                try {
-                    execSync(`fuser -k ${PORT}/tcp 2>/dev/null || true`, { stdio: 'ignore' });
-                    console.log(`🔄 Killed process on port ${PORT}, retrying in 3s...`);
-                    setTimeout(() => {
-                        server.listen(Number(PORT), '0.0.0.0');
-                    }, 3000);
-                } catch {
-                    process.exit(1);
-                }
-            } else {
-                console.error('❌ Server error:', error);
+                // Never locate or kill the unrelated owner of this port, and
+                // never retry the same listener: startup fails explicitly.
+                console.error(`❌ Port ${PORT} is already in use; refusing to kill the existing listener or retry`);
                 process.exit(1);
             }
+            console.error('❌ Server error:', error);
+            void beginShutdown('Server error', 1);
         });
     } catch (error) {
         console.error('❌ Server startup failed:', error);
@@ -500,37 +524,85 @@ const startServer = async () => {
 // Handle graceful shutdown
 /** Bounded drain: in-flight processing runs settle, or the process exits anyway. */
 const VIDEO_SHUTDOWN_DRAIN_MS = 30_000;
+/** Dedicated lock pools should close immediately once processing has drained. */
+const LOCK_POOL_CLOSE_DRAIN_MS = 5_000;
 
-const gracefulShutdown = async (signal: string): Promise<void> => {
-    console.log(`⚠️  ${signal} received, shutting down gracefully...`);
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Lets one close/drain promise settle, but never past its deadline. */
+const waitForShutdownStep = async (work: Promise<unknown>, deadline: number): Promise<void> => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+        await Promise.race([
+            work,
+            new Promise<void>((resolve) => {
+                timer = setTimeout(resolve, remaining);
+            }),
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+};
+
+const gracefulShutdown = async (exitCode: number): Promise<void> => {
+    // Stop every interval this bootstrap owns, plus the timers owned by the
+    // dead-session/queue services through their explicit stop ports.
+    stopOwnedIntervals();
+    stopDeadSessionCleanup();
     // Stop the queue consumer first: no NEW processing runs during shutdown.
     if (videoQueueConsumer) videoQueueConsumer.stop();
     requestVideoProcessingShutdown();
+
+    // Stop admitting HTTP connections, then disconnect Socket.IO clients.
+    // io.close() also closes/waits for the attached HTTP server; the earlier
+    // httpServer.close() is the admission cut and is safe to repeat.
+    const deadline = Date.now() + VIDEO_SHUTDOWN_DRAIN_MS;
     httpServer.close();
+    const socketClose = socketServer.close().catch((error) => {
+        console.error('⚠️  Socket/HTTP close failed:', error);
+    });
 
     // Bounded drain: an in-flight run holds a dedicated lock connection and
-    // will settle its queue row when it finishes.
-    const deadline = Date.now() + VIDEO_SHUTDOWN_DRAIN_MS;
+    // will settle its queue row when it finishes. It runs while sockets/HTTP
+    // finish closing, so neither drain starves the other before the deadline.
     while (inFlightVideoProcessingCount() > 0 && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        await sleep(500);
     }
     if (inFlightVideoProcessingCount() > 0) {
         console.warn('⚠️  Shutdown drain timed out with processing still in flight; exiting (MySQL releases owner-dead locks with their sessions)');
     }
+    await waitForShutdownStep(socketClose, deadline);
 
     // Dedicated lock pools: closing them returns their sessions cleanly; a
     // held named lock dies with its connection either way. Never the
     // request pool — db.ts owns that one.
-    await Promise.allSettled([closeUploadLockPool(), closeProcessingLockPool()]);
-    process.exit(0);
+    const closeLockPools = Promise.allSettled([closeUploadLockPool(), closeProcessingLockPool()]);
+    await waitForShutdownStep(closeLockPools, Date.now() + LOCK_POOL_CLOSE_DRAIN_MS);
+    process.exit(exitCode);
+};
+
+/** Single-flight: duplicate SIGINT/SIGTERM or a late server error is a no-op. */
+const beginShutdown = (reason: string, exitCode = 0): Promise<void> => {
+    if (shutdownPromise) {
+        console.warn(`⚠️  Shutdown already in progress; ignoring ${reason}`);
+        return shutdownPromise;
+    }
+    console.log(`⚠️  ${reason}, shutting down gracefully...`);
+    shutdownPromise = gracefulShutdown(exitCode).catch((error) => {
+        console.error('❌ Graceful shutdown failed:', error);
+        process.exit(1);
+    });
+    return shutdownPromise;
 };
 
 process.on('SIGTERM', () => {
-    void gracefulShutdown('SIGTERM');
+    void beginShutdown('SIGTERM received');
 });
 
 process.on('SIGINT', () => {
-    void gracefulShutdown('SIGINT');
+    void beginShutdown('SIGINT received');
 });
 
 startServer();

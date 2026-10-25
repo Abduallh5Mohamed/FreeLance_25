@@ -31,8 +31,13 @@ async function expireOverdue() {
   }
 }
 
-const expiryTimer = setInterval(() => void expireOverdue().catch(console.error), 60_000);
-expiryTimer.unref();
+// Expiry is applied LAZILY, on every path that can observe a request
+// (`ownRequest`, `GET /`, `GET /mine`, the preview read, and reject), so
+// importing this router starts nothing. A module-scope `setInterval` used to
+// run here; importing a router must not start a timer — the same ruling that
+// removed the dead-session sweep from `routes/secure-video.ts`. If a proactive
+// sweep is wanted, the bootstrap owner should export a start/stop pair and call
+// it from `index.ts`; it must not happen at import time.
 
 async function ownRequest(id: string, userId: string) {
   await expireOverdue();
@@ -208,6 +213,66 @@ router.post('/offers/:offerId/accept', requireRoles('instructor'), async (req: A
       await connection.execute("UPDATE instructor_video_requests SET status='expired' WHERE id=?", [offer.request_id]);
       await connection.commit(); return res.status(409).json({ error: 'انتهت مهلة الطلب' });
     }
+
+    // ── Offered-identity fence ────────────────────────────────────────────
+    // The offer already records WHICH video was offered:
+    // `instructor_video_offers.video_id VARCHAR(36) NOT NULL` with an FK to
+    // `videos(id)` (20260924_instructor_video_exchange.sql:60,69), written once
+    // at offer creation, and NO statement in the codebase ever updates it —
+    // only `status`, `decided_at` and `rejection_reason` are written. So the
+    // snapshot EXISTS; this is not an invented historical proof, and the
+    // guarantee does not come from the FK lock.
+    //
+    // What was missing is that acceptance never compared it against the
+    // lecture's CURRENT binding. `lectures.video_url` can be replaced by
+    // `PUT /api/lectures/:id`, and that route refuses only when access has
+    // ALREADY been sold — an offer that has not been accepted yet is invisible
+    // to it. Accepting such an offer would charge the buyer and grant access to
+    // a different video than the seller offered and the buyer previewed.
+    //
+    // The comparison is exact and fail-closed: a legacy non-canonical value
+    // (for example `video:// x `) does not match and is refused, because it
+    // cannot be proven to name the offered video.
+    //
+    // LOCK ORDER — why this closes the window and why it cannot deadlock: this
+    // transaction locks the lecture row FOR UPDATE *before* it writes the
+    // purchase, the ledger and the share. `PUT /api/lectures/:id` locks the
+    // same row FOR UPDATE first and only then probes the share range, so the
+    // two writers serialize on `lectures(id)` and neither waits on a resource
+    // the other holds while waiting for it. Whichever wins:
+    //   · acceptance first ⇒ it sees the offered video, commits; the later
+    //     replacement finds a share row and is refused as sold;
+    //   · replacement first ⇒ acceptance wakes, re-reads the NEW `video_url`,
+    //     and refuses here.
+    // Either way the buyer is never charged for a video that was not offered.
+    const [lectureRows] = await connection.execute<RowDataPacket[]>(
+      'SELECT video_url, instructor_id FROM lectures WHERE id = ? FOR UPDATE', [offer.lecture_id]);
+    const lecture = lectureRows[0] as { video_url: string | null; instructor_id: string | null } | undefined;
+    const offeredVideoUrl = `video://${String(offer.video_id)}`;
+    if (!lecture || String(lecture.video_url ?? '') !== offeredVideoUrl) {
+      // No write has happened yet in this transaction, so the rollback only
+      // releases the locks taken above. The offer is deliberately left
+      // `proposed`: closing or superseding it here would be a state transition
+      // this contract does not authorise, and the requester can still reject it.
+      await connection.rollback();
+      return res.status(409).json({
+        error: 'تغيّر فيديو الحصة منذ إنشاء العرض، لذلك لا يمكن قبول هذا العرض',
+        code: 'OFFER_VIDEO_CHANGED',
+      });
+    }
+    // The creation path proved `lectures.instructor_id = owner` when the offer
+    // was made; nothing re-proved it at acceptance. A lecture reassigned to
+    // another instructor would otherwise still be sold, and the recorded
+    // `seller_id` would name someone who no longer owns it. Re-proved here on
+    // the row this transaction already locks.
+    if (String(lecture.instructor_id ?? '') !== String(offer.owner_id)) {
+      await connection.rollback();
+      return res.status(409).json({
+        error: 'لم تعد الحصة مملوكة لبائع العرض، لذلك لا يمكن قبول هذا العرض',
+        code: 'OFFER_LECTURE_REASSIGNED',
+      });
+    }
+
     await connection.execute('INSERT IGNORE INTO instructor_wallets(instructor_id,balance) VALUES (?,0),(?,0)', [offer.requester_id, offer.owner_id]);
     const [walletRows] = await connection.execute<RowDataPacket[]>('SELECT instructor_id,balance FROM instructor_wallets WHERE instructor_id IN (?,?) ORDER BY instructor_id FOR UPDATE', [offer.requester_id, offer.owner_id]);
     const balances = new Map(walletRows.map(row => [String(row.instructor_id), Number(row.balance)]));

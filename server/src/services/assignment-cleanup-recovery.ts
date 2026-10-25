@@ -46,9 +46,7 @@
 
 import { randomUUID } from 'crypto';
 import {
-    boundObjectVersion,
     parseSubmissionStorageKey,
-    removeScannedObjectVersion,
     supportsExactVersionRemoval,
 } from './assignment-storage';
 import type { AssignmentObjectStore, BoundObjectVersion, QuarantineCleanup } from './assignment-storage';
@@ -72,10 +70,25 @@ export const MAX_CLEANUP_MAX_ITEMS = 200;
 /** Wall-clock budget for one run (external deletes are the slow part). */
 export const DEFAULT_CLEANUP_RUN_BUDGET_MS = 5_000;
 export const MAX_CLEANUP_RUN_BUDGET_MS = 30_000;
-/** Claim lease. A run never takes longer than its budget, so this only has to cover it. */
+/**
+ * Claim lease. A run never takes longer than its budget, so this only has to
+ * cover it — and `createAssignmentCleanupRecovery` enforces that by raising the
+ * effective lease to the run budget, because the two clamps are independent and
+ * a shorter configured lease would expire under a live run.
+ */
 export const DEFAULT_CLEANUP_LEASE_MS = 30_000;
 export const MIN_CLEANUP_LEASE_MS = 5_000;
 export const MAX_CLEANUP_LEASE_MS = 300_000;
+/**
+ * Width of the `claim_owner` column (`VARCHAR(64)` in the durable schema). The
+ * owner is both stored by the claim and matched by the completion/release
+ * fence, so an owner longer than the column cannot round-trip: under a
+ * non-strict server the claim would be truncated and every later fence would
+ * compare the full value against the stored prefix and answer "not yours",
+ * leaving the row leased until expiry. The bound is derived from the schema,
+ * not chosen here.
+ */
+export const MAX_CLEANUP_OWNER_LENGTH = 64;
 /**
  * Retry scheduling for a released obligation (deterministic exponential, never
  * random). This is a *retry delay*, not a retention window: it decides when a
@@ -146,6 +159,18 @@ export const ASSIGNMENT_CLEANUP_FAILURES = [
     'binding_mismatch',
     /** The store returned a row that is not `pending` for a claim: a store bug. */
     'record_state_invalid',
+    /**
+     * The record's stored ETag cannot be proven to be the exact version. PAD
+     * SPACE collation affects COMPARISON only (trailing spaces are ignored when
+     * two values are compared; the stored bytes are NOT trimmed), so a raw
+     * mismatch cannot be distinguished from a genuine replacement for a legacy
+     * row — and a NO PAD collation today does not prove a legacy row was written
+     * under that contract. The row is held `pending`; nothing is deleted and
+     * nothing is terminalized. This is an honest, classified hold, never a
+     * fabricated provenance verdict, and it fires for every unproven record (even
+     * on an exact ETag match) via the provenance gate in `inspectAndDelete`.
+     */
+    'legacy_etag_unprovable',
 ] as const;
 export type AssignmentCleanupFailure = (typeof ASSIGNMENT_CLEANUP_FAILURES)[number];
 
@@ -480,6 +505,16 @@ export interface AssignmentCleanupCapability {
     exactVersionDelete: 'supported' | 'unsupported';
     /** `configured` only when a durable store was injected. */
     durableStore: 'configured' | 'unconfigured';
+    /**
+     * The identity state this module exposes. It is ALWAYS `unverified`: no
+     * approved durable per-row provenance contract exists, and no caller
+     * declaration, enum, boolean, timestamp cutoff, or in-memory registry may
+     * confer trust. A future approved contract (a held schema request for the
+     * schema owner) would widen this deliberately; it is not a callable bypass.
+     * While `unverified`, deletion is unavailable and every obligation stays
+     * pending — see the provenance gate in `inspectAndDelete`.
+     */
+    recordVersionIdentity: 'unverified';
 }
 
 export interface AssignmentCleanupRunReport {
@@ -581,7 +616,29 @@ export const createAssignmentCleanupRecovery = (
     const maxPages = clampCleanupMaxPages(options.maxPages);
     const maxItems = clampCleanupMaxItems(options.maxItems);
     const runBudgetMs = clampCleanupRunBudgetMs(options.runBudgetMs);
-    const leaseMs = clampCleanupLeaseMs(options.leaseMs);
+    /**
+     * The lease must cover the whole run budget, not just one page.
+     *
+     * The item loop is bounded by `runBudgetMs`, so a lease shorter than the
+     * budget expires while this run is still inspecting the page it stamped.
+     * A second coordinator then sees `lease_until_ms <= now` and claims the same
+     * rows; both runs act on the same exact version and this run's later
+     * `completeClaim`/`releaseClaim` answer `false`, which is reported as
+     * `claim_lost` — a race this process caused, not one it observed.
+     *
+     * Neither clamp enforces this on its own: `clampCleanupLeaseMs` accepts
+     * 5 s–5 min and `clampCleanupRunBudgetMs` accepts 1 ms–30 s, so
+     * `leaseMs < runBudgetMs` is reachable through the composition root. The
+     * invariant documented on `DEFAULT_CLEANUP_LEASE_MS` ("this only has to
+     * cover it") is therefore enforced here, in the only direction that keeps
+     * work owned: widen the lease, never shorten the budget. The result stays
+     * inside `MAX_CLEANUP_LEASE_MS`, which is what `claimBatch` validates.
+     */
+    // This is an admission-budget bound, not an I/O deadline. An awaited store
+    // or provider call may outlive the lease; expiry/CAS still decides ownership.
+    // Never infer cancellation, exclusive execution or operational fencing from
+    // Math.max alone. Provenance remains unverified before destructive work.
+    const leaseMs = Math.max(clampCleanupLeaseMs(options.leaseMs), runBudgetMs);
     const retryDelayMs = clampRetryDelayMs(options.retryDelayMs);
     const onError = options.onError;
 
@@ -600,6 +657,8 @@ export const createAssignmentCleanupRecovery = (
     const capability = (): AssignmentCleanupCapability => ({
         exactVersionDelete: objectStore && supportsExactVersionRemoval(objectStore) ? 'supported' : 'unsupported',
         durableStore: store ? 'configured' : 'unconfigured',
+        // Always `unverified`: no approved durable provenance contract exists.
+        recordVersionIdentity: 'unverified',
     });
 
     /** Deterministic exponential retry delay; bounded, never random. */
@@ -615,19 +674,29 @@ export const createAssignmentCleanupRecovery = (
         | { kind: 'lost'; failure: AssignmentCleanupFailure };
 
     /**
-     * Re-prove the target, then delete **exactly** the recorded version.
+     * PAD SPACE semantics (MySQL `utf8mb4_bin`, PAD SPACE collation): trailing
+     * 0x20 spaces are IGNORED IN COMPARISON only — the stored bytes are NOT
+     * trimmed. `"e"` and `"e "` compare equal even though they are distinct byte
+     * sequences. This is why a legacy recorded ETag cannot be proven to be the
+     * exact version: a raw mismatch could be a genuine replacement OR merely a
+     * PAD SPACE comparison artifact, and equality in comparison does not tell us
+     * which. We therefore never infer provenance from a collation; an explicit,
+     * attested exact-version contract is required — see the provenance gate in
+     * `inspectAndDelete`.
+     */
+
+    /**
+     * Validate the record, then REFUSE to act on its identity.
      *
-     * The order matters and is the whole safety argument:
-     *  1. re-validate the record (key ↔ identifiers ↔ version) — a drifted or
-     *     hand-edited row is never acted on;
-     *  2. re-stat; nothing at the key ⇒ the named version is gone (complete);
-     *     a different version ⇒ a replacement we must not touch (superseded);
-     *  3. only then ask the store to delete the named version, and trust only
-     *     the store's own answer.
+     * No approved durable per-row provenance contract exists, so every
+     * obligation is unproven. We validate the target binding and the claim state
+     * (a drifted row or a non-pending row is never acted on), then release the
+     * record as `legacy_etag_unprovable` BEFORE any stat, absent-object
+     * inference, superseded verdict, conditional delete, or terminal settlement.
+     * The row stays `pending`; deletion is unavailable.
      */
     const inspectAndDelete = async (
         record: AssignmentCleanupObligationRecord,
-        verifiedObjectStore: AssignmentObjectStore,
     ): Promise<ItemOutcome> => {
         const target = normalizeCleanupTarget(record);
         if (!target) return { kind: 'released', failure: 'binding_mismatch' };
@@ -635,63 +704,34 @@ export const createAssignmentCleanupRecovery = (
         // for a claim has a bug, and guessing would be worse than releasing.
         if (record.state !== 'pending') return { kind: 'released', failure: 'record_state_invalid' };
 
-        let metadata;
-        try {
-            metadata = await verifiedObjectStore.statObject(target.storageKey);
-        } catch (error) {
-            report(error);
-            return { kind: 'released', failure: 'store_error' };
-        }
-        if (metadata === null) {
-            // Trustworthy: the store itself says nothing is at the key, so the
-            // named version cannot be there. This is the replay-after-crash case.
-            return { kind: 'deleted', proof: 'pre_stat_absent' };
-        }
-        const current = boundObjectVersion(metadata);
-        if (!current) {
-            // The adapter cannot express a version, so it cannot prove which
-            // bytes a delete would destroy. Delete nothing.
-            return { kind: 'released', failure: 'capability_absent' };
-        }
-        if (current.etag !== target.etag || current.sizeBytes !== target.sizeBytes) {
-            // A replacement (or a re-upload) owns the key now. It survives.
-            //
-            // BOTH sides are compared RAW. `current` comes from
-            // `boundObjectVersion`, which no longer trims, and `target.etag` is
-            // the recorded obligation's own bytes. A previous revision trimmed
-            // both sides here "so the comparison agreed" — that made `"e"` and
-            // `"e "` agree, which the exact NO PAD storage contract says are
-            // different objects, and an obligation could be closed as
-            // `superseded` while the live bytes were in fact the recorded
-            // version. Different raw ETags are a replacement, full stop: the
-            // recorded version is not deleted and no terminal success is
-            // claimed for it.
-            return { kind: 'superseded', proof: 'pre_stat_version_replaced' };
-        }
-
-        const cleanup: QuarantineCleanup = await removeScannedObjectVersion(
-            verifiedObjectStore,
-            cleanupRemovalInput(target),
-            report,
-        );
-        switch (cleanup) {
-            case 'removed':
-                return { kind: 'deleted', proof: 'store_removed' };
-            case 'already_absent':
-                // Idempotent replay: the store compared the precondition and
-                // found nothing, which is a trustworthy "the target is gone".
-                return { kind: 'deleted', proof: 'store_already_absent' };
-            case 'version_replaced':
-                // The store refused: a different version is at the key. Nothing
-                // was destroyed and the replacement is untouched.
-                return { kind: 'superseded', proof: 'store_version_replaced' };
-            case 'unsupported':
-                return { kind: 'released', failure: 'capability_absent' };
-            default:
-                // `failed`, and any future non-terminal answer: the bytes may
-                // still be there, so this is retryable work, never a success.
-                return { kind: 'released', failure: 'store_error' };
-        }
+        // PROVENANCE GATE (unconditional today). No approved durable, per-row
+        // provenance contract exists, so EVERY obligation is unproven. We
+        // release it here — BEFORE statObject, before any absent-object
+        // inference, before a superseded verdict, before a conditional delete,
+        // and before any terminal settlement — and leave it `pending`.
+        //
+        // Why nothing weaker is sound:
+        //  - Equal raw ETags do NOT authorize a delete. A legacy stored value
+        //    that was PAD SPACE-compared can equal the live replacement once the
+        //    original trailing space "disappears" in comparison, so equality
+        //    cannot prove the live bytes ARE the recorded version.
+        //  - Unequal raw ETags do NOT authorize a `superseded` verdict; the
+        //    difference may be a PAD SPACE comparison artifact of the same
+        //    recorded version.
+        //  - An absent object at the key does NOT prove all historical versions
+        //    are absent on versioned storage, so `pre_stat_absent` is not a
+        //    valid completion either.
+        //  - A NO PAD collation today proves comparison semantics only; it says
+        //    nothing about how a historical row was physically written.
+        //
+        // No caller declaration, enum, boolean, timestamp cutoff, or in-memory
+        // registry may confer trust (all rejected). A durable per-row provenance
+        // contract is a HELD SCHEMA REQUEST for the schema owner (exact
+        // migration + backfill verification; no DDL from this lane). Until it is
+        // approved and implemented, deletion is UNAVAILABLE and every obligation
+        // stays pending. See
+        // docs/streams/server/WORKBUDDY-ASSIGNMENT-RECOVERY-20261023.md.
+        return { kind: 'released', failure: 'legacy_etag_unprovable' };
     };
 
     const runOnce = async (): Promise<AssignmentCleanupRunReport> => {
@@ -709,7 +749,6 @@ export const createAssignmentCleanupRecovery = (
             return emptyReport('capability_absent', caps);
         }
 
-        const verifiedStore = objectStore;
         running = true;
         let claimed = 0;
         let pages = 0;
@@ -756,19 +795,22 @@ export const createAssignmentCleanupRecovery = (
 
                 for (const record of page) {
                     if (stopped) { halted = 'stopped'; break; }
-                    // The budget and the lease are enforced PER ITEM, not only
-                    // per page. A page holds up to `pageSize` external
-                    // stat+delete round-trips, so checking only at the page
-                    // boundary let one page run far past both the run budget and
-                    // the lease it was stamped with — a second coordinator then
-                    // claimed the same rows while this run was still deleting
-                    // them, and its later settlements were reported as lost
-                    // claims. Safety was preserved incidentally by the store's
-                    // precondition; the accounting was not honest.
+                    // The budget is enforced PER ITEM, not only per page. A page
+                    // holds up to `pageSize` external stat+delete round-trips, so
+                    // checking only at the page boundary let one page run far
+                    // past the run budget it was stamped with — a second
+                    // coordinator then claimed the same rows while this run was
+                    // still deleting them, and its later settlements were
+                    // reported as lost claims. The lease side of that is now a
+                    // precondition of this loop rather than an assumption: the
+                    // effective lease is never shorter than the budget (see
+                    // `leaseMs`), so every item that starts here starts under a
+                    // live lease. Safety was preserved incidentally by the
+                    // store's precondition; the accounting was not honest.
                     const itemElapsed = now().getTime() - startedAtMs;
                     if (itemElapsed >= runBudgetMs) { halted = 'budget_exhausted'; break; }
                     items += 1;
-                    const outcome = await inspectAndDelete(record, verifiedStore);
+                    const outcome = await inspectAndDelete(record);
                     if (outcome.kind === 'deleted' || outcome.kind === 'superseded') {
                         let settled = false;
                         try {
@@ -898,7 +940,15 @@ export type AssignmentCleanupRecording =
      */
     | 'store_invalid_row'
     /** A store was injected but declares itself unusable: nothing was written. */
-    | 'store_unavailable';
+    | 'store_unavailable'
+    /**
+     * No target was supplied, so no obligation was written: the identity did
+     * not bind (see `normalizeCleanupTarget`). Distinct from `unconfigured`,
+     * which means *no store was injected* — a caller treats `unconfigured` as
+     * the legacy path that may delete without a write-ahead row, so an unbound
+     * target must never borrow that value. Nothing may be deleted.
+     */
+    | 'invalid_target';
 
 /**
  * The handle the request path keeps between recording an obligation and
@@ -911,7 +961,12 @@ export interface AssignmentCleanupHandle {
     recording: AssignmentCleanupRecording;
 }
 
-/** The handle for "no obligation was recorded" (no store, or no valid target). */
+/**
+ * The handle for "no obligation was recorded **because no durable store was
+ * injected**". Only that case: a store that *was* injected but given no bound
+ * target answers `invalid_target`, so it can never be read as this
+ * delete-permitting legacy path.
+ */
 export const UNRECORDED_CLEANUP_HANDLE: AssignmentCleanupHandle = {
     id: null,
     claimVersion: null,
@@ -938,11 +993,18 @@ export const recordCleanupObligation = async (
     target: AssignmentCleanupTarget | null,
     tx?: AssignmentCleanupTx,
 ): Promise<AssignmentCleanupHandle> => {
-    if (!store || !target) return UNRECORDED_CLEANUP_HANDLE;
-    // A store that declares itself unusable must not be written through, and a
-    // configuration error must not roll back a student's cancellation: report it
-    // and leave the cleanup to the (equally unavailable) recovery path.
+    if (!store) return UNRECORDED_CLEANUP_HANDLE;
+    // A store was injected and no target was: the identity did not bind. Answer
+    // `invalid_target`, never `unconfigured`. `unconfigured` is the one value a
+    // caller reads as "the legacy path may delete without a write-ahead row",
+    // so returning it here would let an unbound version be deleted with no
+    // obligation recorded at all — the exact write-ahead property this function
+    // exists to provide.
+    if (!target) return { id: null, claimVersion: null, recording: 'invalid_target' };
+    // An injected durable store failing availability cannot silently drop the
+    // write-ahead obligation from a cancellation/verdict transaction.
     if (store.availability?.mode === 'unavailable') {
+        if (tx) throw new Error('Assignment cleanup obligation store is unavailable');
         return { id: null, claimVersion: null, recording: 'store_unavailable' };
     }
     const toHandle = (result: AssignmentCleanupRecordResult): AssignmentCleanupHandle => ({

@@ -9,19 +9,36 @@ import { useToast } from "@/hooks/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
+import { ApiRequestError, authenticatedApiFetch, readAuthenticatedApiJson } from "@/lib/api-http";
 
-// Vite injects `import.meta.env` at build time; it is absent when this module
-// is imported outside Vite (isolated Node tests), so guard the read and fall
-// back to the nginx-proxied relative path.
-const readApiBase = (): string => {
+type LocalSessionSnapshot = {
+  token: string | null;
+  userId: string | null;
+  role: string | null;
+};
+
+/** Reads the local session without throwing on a malformed payload. */
+const readLocalSession = (): LocalSessionSnapshot | null => {
+  const token = localStorage.getItem('authToken');
+  const userStr = localStorage.getItem('currentUser');
+  if (!userStr) return null;
   try {
-    return import.meta.env.VITE_API_URL || '/api';
+    const parsed: unknown = JSON.parse(userStr);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const record = parsed as { id?: unknown; role?: unknown };
+    if (typeof record.id !== 'string' || !record.id) return null;
+    return {
+      token,
+      userId: record.id,
+      role: typeof record.role === 'string' ? record.role : null,
+    };
   } catch {
-    return '/api';
+    return null;
   }
 };
 
-const API_BASE_URL = readApiBase();
+const sessionIdentity = (session: LocalSessionSnapshot | null): string =>
+  session ? `${session.token ?? ''}|${session.userId ?? ''}` : '';
 
 export interface ExamResult {
   id: string;
@@ -118,9 +135,18 @@ const StudentExamResults = () => {
   const [studentId, setStudentId] = useState<string>('');
   // Monotonic sequence so a slow in-flight response can never overwrite a newer one
   const loadSeqRef = useRef(0);
+  const isMountedRef = useRef(true);
 
   const navigate = useNavigate();
   const { toast } = useToast();
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      loadSeqRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     fetchExamResults();
@@ -129,13 +155,18 @@ const StudentExamResults = () => {
 
   const fetchExamResults = async () => {
     const requestSeq = ++loadSeqRef.current;
+    const startingSession = readLocalSession();
+    const startingSessionKey = sessionIdentity(startingSession);
+    const isCurrentResponse = () =>
+      isMountedRef.current
+      && requestSeq === loadSeqRef.current
+      && sessionIdentity(readLocalSession()) === startingSessionKey;
+
     setLoading(true);
     setError(null);
     try {
       // Check if user is logged in and is a student
-      const userStr = localStorage.getItem('currentUser');
-
-      if (!userStr) {
+      if (!startingSession) {
         navigate('/auth');
         toast({
           variant: "destructive",
@@ -145,8 +176,7 @@ const StudentExamResults = () => {
         return;
       }
 
-      const user = JSON.parse(userStr);
-      if (user.role !== 'student') {
+      if (startingSession.role !== 'student') {
         navigate('/auth');
         toast({
           variant: "destructive",
@@ -156,26 +186,20 @@ const StudentExamResults = () => {
         return;
       }
 
-      const currentStudentId = user.id;
+      const currentStudentId = startingSession.userId;
+      if (!currentStudentId) {
+        navigate('/auth');
+        return;
+      }
       setStudentId(currentStudentId);
 
-      // Fetch exam results from backend with the canonical session bearer
-      let response: Response;
-      try {
-        response = await authedFetch(`${API_BASE_URL}/exam-results/student/${currentStudentId}`, {
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        });
-      } catch (authErr) {
-        if (authErr instanceof MissingAuthTokenError) {
-          navigate('/auth');
-          return;
-        }
-        throw authErr;
-      }
+      // Canonical protected transport: server URL, bearer auth, and the
+      // post-response session revision are all enforced by the shared fence.
+      const response = await authenticatedApiFetch(
+        `/exam-results/student/${encodeURIComponent(currentStudentId)}`,
+      );
 
-      if (requestSeq !== loadSeqRef.current) return; // stale response — a newer load superseded this one
+      if (!isCurrentResponse()) return; // stale response — route/session superseded it
 
       const outcome = classifyFetchOutcome(response.status);
       if (outcome === 'unauthorized') {
@@ -195,13 +219,43 @@ const StudentExamResults = () => {
         throw new Error(`Failed to fetch exam results (${response.status})`);
       }
 
-      const data = await response.json();
-      if (requestSeq !== loadSeqRef.current) return;
+      const data: unknown = await readAuthenticatedApiJson(response);
+      if (!isCurrentResponse()) return;
+      if (!Array.isArray(data)) throw new Error('Unexpected exam results payload');
 
       // Server-authoritative normalization; newest attempt first.
-      setExamResults(sortResultsByDate((data || []).map(normalizeExamResult)));
+      setExamResults(sortResultsByDate(data.map(normalizeExamResult)));
     } catch (err) {
-      if (requestSeq !== loadSeqRef.current) return;
+      if (!isMountedRef.current || requestSeq !== loadSeqRef.current) return;
+
+      // A logout/account switch invalidates this response entirely; it is
+      // never applied to the next session's result list.
+      if (sessionIdentity(readLocalSession()) !== startingSessionKey) {
+        const currentSession = readLocalSession();
+        if (!currentSession || currentSession.role !== 'student') {
+          navigate('/auth');
+        } else {
+          setError('تغيرت جلسة الدخول. يرجى إعادة تحميل النتائج.');
+        }
+        return;
+      }
+
+      if (err instanceof ApiRequestError) {
+        if (err.status === 401) {
+          navigate('/auth');
+          return;
+        }
+        if (err.status === 403) {
+          setError('ليست لديك صلاحية لعرض هذه النتائج');
+          toast({
+            variant: "destructive",
+            title: "غير مسموح",
+            description: "ليست لديك صلاحية لعرض هذه النتائج",
+          });
+          return;
+        }
+      }
+
       console.error('Error fetching exam results:', err);
       setError('فشل تحميل نتائج الامتحانات');
       toast({
@@ -210,7 +264,7 @@ const StudentExamResults = () => {
         description: "فشل تحميل نتائج الامتحانات",
       });
     } finally {
-      if (requestSeq === loadSeqRef.current) setLoading(false);
+      if (isMountedRef.current && requestSeq === loadSeqRef.current) setLoading(false);
     }
   };
 

@@ -215,7 +215,7 @@ CREATE TABLE assignment_cleanup_obligations (
     lease_until_ms BIGINT NULL,
     attempts INT NOT NULL DEFAULT 0,
     last_failure ENUM('capability_absent','store_error','binding_mismatch',
-                      'record_state_invalid') NULL,
+                      'record_state_invalid','legacy_etag_unprovable') NULL,
     retry_after_ms BIGINT NULL,
     completion_proof ENUM('store_removed','store_already_absent','pre_stat_absent',
                           'store_version_replaced','pre_stat_version_replaced') NULL,
@@ -235,6 +235,11 @@ CREATE TABLE assignment_cleanup_obligations (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
+This block is the **pre-migration proposal**. The adopted, reconciled contract —
+every column with its exact type/nullability, all thirteen `CHECK`s, and the
+statement-to-index mapping — is §G (§4.1 is superseded by it wherever the two
+differ; the one line that already changed is `last_failure` above).
+
 Why `utf8mb4_0900_bin` and not `utf8mb4_bin`: in MySQL 8 `utf8mb4_bin` is
 PAD SPACE, so `'"etag"'` and `'"etag" '` compare equal and the UNIQUE key would
 silently collapse two different versions into one obligation. The collation must
@@ -245,12 +250,23 @@ as `unknown` rather than assumed to support `0900`.
 
 ```sql
 INSERT INTO assignment_cleanup_obligations
-    (id, tenant_id, assignment_id, student_enrollment_id, submission_id,
-     storage_key, object_etag, object_size_bytes, reason, state,
-     claim_version, attempts, created_at_ms, updated_at_ms)
-VALUES (?,?,?,?,?,?,?,?,?,'pending',0,0,?,?)
+    (id, tenant_id, assignment_id, student_enrollment_id, submission_id, storage_key,
+     object_etag, object_size_bytes, reason, state, claim_owner, claim_version,
+     lease_until_ms, attempts, last_failure, retry_after_ms, completion_proof,
+     created_at_ms, updated_at_ms, completed_at_ms)
+VALUES (?,?,?,?,?,?,?,?,?,'pending',NULL,0,NULL,0,NULL,NULL,NULL,?,?,NULL)
 ON DUPLICATE KEY UPDATE id = id;
 ```
+
+Eleven bound parameters, in this order: `id, tenant_id, assignment_id,
+student_enrollment_id, submission_id, storage_key, object_etag,
+object_size_bytes, reason, created_at_ms, updated_at_ms`. Every other column is
+an explicit literal (`'pending'`, `NULL`, `0`) rather than a default, so the
+statement satisfies `chk_assignment_cleanup_10` (owner/lease pair) and
+`chk_assignment_cleanup_12` (a `pending` row carries no proof and no settlement
+instant) by construction, on a table whose defaults are not read.
+`ASSIGNMENT_CLEANUP_STATEMENTS.insert` (`assignment-cleanup-sql.ts:759-765`) is
+the same bytes.
 
 `affectedRows`: `1` = inserted (`recorded`), `0` (or `2` on some drivers) =
 existing. The adapter must then read back `id, claim_version, state` for the
@@ -259,7 +275,9 @@ unique tuple and answer:
 - `existing` when the row is `pending`;
 - `conflict` when the same **submission** already has a `pending` row for a
   different version — the request path must then not delete (the older
-  obligation is still owed), and the coordinator owns it;
+  obligation is still owed), and the coordinator owns it; **this rule is not
+  implemented by the adapter and contradicts §3.1 + `uq_cleanup_target` — see
+  §G.6 item 9**;
 - `conflict` when the row is terminal (nothing left to do for this version).
 
 The adapter must run this insert on the **caller's** transaction when one is
@@ -319,7 +337,8 @@ WHERE id = ? AND state = 'pending' AND claim_owner = ? AND claim_version = ?
 ```sql
 UPDATE assignment_cleanup_obligations
 SET state = ?, completion_proof = ?, completed_at_ms = ?, updated_at_ms = ?
-WHERE id = ? AND state = 'pending' AND claim_owner IS NULL AND claim_version = ?;
+WHERE id = ? AND state = 'pending'
+  AND claim_owner IS NULL AND lease_until_ms IS NULL AND claim_version = ?;
 ```
 
 `completeUnclaimed` is the request path's settlement of a row it recorded and
@@ -585,7 +604,8 @@ carries verbatim.
 > **Status after Task B.** Questions 1–3 were answered by
 > `CODEX-ASSIGNMENT-SQL-FENCING-DECISIONS-20261023.txt` and are now
 > implementation, not questions: the table stays Claude-owned under the migration
-> name `20261023_05_assignment_cleanup_scan_fencing.sql`; the scan store ships
+> name `20261023_05_assignment_cleanup_scan_fencing.sql`, **shipped as
+> `20261024_06_assignment_cleanup_scan_fencing.sql`** (§G.6); the scan store ships
 > **fenced** behind a literal schema declaration and a collation probe, with
 > `unavailable` — never a silent downgrade — when either is absent; and
 > `object_etag` ships in the same migration because it is the only way to bind a
@@ -613,7 +633,10 @@ carries verbatim.
 
 ---
 
-## 10. Task B: the SQL adapter, the verdict binding, and the `20261023_05` contract
+## 10. Task B: the SQL adapter, the verdict binding, and the `20261024_06` contract
+
+*(Filed as `20261023_05`; the authored file is `20261024_06_assignment_cleanup_scan_fencing.sql` —
+§G.6 item 1.)*
 
 This section is the contract Claude's migration must satisfy, stated against the
 code that already exists. Every name below is a real export; every literal is
@@ -630,9 +653,10 @@ copied from the source, not retyped from memory.
 | fenced / reference / unavailable scan stores | `assignment-scan-worker.ts` | A fenced claim the verdict does not enforce is not a claim. |
 | `objectVersionColumn` on the router | `routes/assignments.ts` | The finalize write can now persist the verified version, but only when the column is declared. |
 
-### 10.2 Migration `20261023_05_assignment_cleanup_scan_fencing.sql` (Claude-owned; not authored here)
+### 10.2 Migration `20261024_06_assignment_cleanup_scan_fencing.sql` (Claude-owned; not authored here)
 
-**Table `assignment_cleanup_obligations`** — exactly §4.1, unchanged by Task B.
+**Table `assignment_cleanup_obligations`** — exactly §4.1, unchanged by Task B,
+plus the thirteen `CHECK`s and the `NOT NULL`/collation detail listed in §G.3.
 No column was added in this task.
 
 **Additive columns on `assignment_submissions`** — the seven from §4.5:
@@ -647,7 +671,12 @@ ALTER TABLE assignment_submissions
   ADD COLUMN scan_next_attempt_ms BIGINT       NULL,
   ADD COLUMN object_etag          VARCHAR(256) CHARACTER SET utf8mb4
                                   COLLATE utf8mb4_0900_bin NULL,
-  ADD KEY k_scan_claim (scan_status, scan_next_attempt_ms, submitted_at, id);
+  ADD KEY k_scan_claim (scan_status, scan_next_attempt_ms, submitted_at, id),
+  ADD CONSTRAINT chk_assignment_scan_version CHECK (scan_claim_version >= 0),
+  ADD CONSTRAINT chk_assignment_scan_attempts CHECK (scan_attempts >= 0),
+  ADD CONSTRAINT chk_assignment_scan_lease CHECK (scan_lease_until_ms IS NULL OR scan_lease_until_ms > 0),
+  ADD CONSTRAINT chk_assignment_scan_retry CHECK (scan_next_attempt_ms IS NULL OR scan_next_attempt_ms > 0),
+  ADD CONSTRAINT chk_assignment_scan_owner_pair CHECK ((scan_claim_owner IS NULL) = (scan_lease_until_ms IS NULL));
 ```
 
 Four requirements the source depends on, each with its reason:
@@ -800,7 +829,7 @@ The coordinator halts with `'store_unavailable'`, and the factory reports
   persist a column the migration may not have created.
 
 The default production router passes **neither**. That is the honest state until
-`20261023_05` exists: the code is correct and inert, and no deployment can
+`20261024_06` is applied: the code is correct and inert, and no deployment can
 accidentally write a column that isn't there or record an obligation no table
 can hold.
 
@@ -968,12 +997,13 @@ declaration and the collation probe only.
 
 ### 11.9 One known, deliberate gap
 
-The router's own request-path checks still use `(result.affectedRows ?? 0) === 0`
-(e.g. the cancel `UPDATE ... WHERE status<>'revoked'`). An unreported count there
-fails **closed**: the route treats it as "not updated" and answers
-`cancel_conflict`, so nothing is deleted and no success is claimed. Tightening
-those to throw would change HTTP semantics for a driver contract failure, which is
-outside this task; it is recorded here rather than silently left.
+The router's own request-path checks previously used `(result.affectedRows ?? 0) === 0`
+(e.g. the cancel `UPDATE ... WHERE status<>'revoked'`). In the final source-closure task
+(2026-10-23) the `?? 0` coercion was removed and the transaction seam now throws when the
+driver reports no affected-row count, while a genuine `0` still fails **closed** as
+`cancel_conflict` (nothing deleted, no success is claimed). The undefined-count case now
+surfaces as a driver-contract error instead of being silently treated as a miss. This gap
+was therefore closed, not silently left.
 
 ### 11.10 Unchanged
 
@@ -1270,3 +1300,397 @@ checks; the factory's callable-surface readiness checks; the SQL adapter's NO PA
 No tests, no typecheck, no compiler, no SQL/DB/services/listeners/providers, no Docker, no secrets,
 no Git, no DDL, no new source files, no production activation. Static delimiter-balance and
 arrow-declaration checks were run and are not represented as compilation.
+
+---
+
+# ADDENDUM 3 — 2026-10-23 — source-closure review (assignments / scan / cleanup)
+
+Task: `server-source-closure-agent2-20261023-01` (lane: `routes/assignments.ts`,
+`services/assignments.ts`, `assignment-scan-worker.ts`, `assignment-storage.ts`,
+`assignment-cleanup-recovery.ts`, `assignment-recovery-factory.ts`, `assignment-cleanup-sql.ts`,
+this document). Source review only: no tests, no typecheck, no compiler, no SQL/DB, no provider, no
+Docker, no Git, no migration, no new file.
+
+## F.1 What changed
+
+| path | change | why |
+|---|---|---|
+| `routes/assignments.ts` | local `affectedRowsOf` guard + 7 call sites | an unreported `affectedRows` was read as a successful write |
+| `services/assignment-recovery-factory.ts` | readiness predicates + `halted` on stop | readiness probed names no port declares; two ports unprobed; a stopped scan reported `halted: null` |
+| `services/assignment-cleanup-sql.ts` | `completeClaim` state/proof guard | a claimed completion could record a terminal state its own proof contradicts |
+
+Unchanged, byte-identical to the state reviewed: `services/assignments.ts`,
+`assignment-scan-worker.ts`, `assignment-storage.ts`, `assignment-cleanup-recovery.ts`.
+
+## F.2 Hashes (after this pass)
+
+| path | after sha256 | B |
+|---|---|---|
+| `server/src/routes/assignments.ts` | `12798bd0b277bd93ac91b40b45c32787e984fa279815d567edbebfaa98e9fd6f` | 118146 |
+| `server/src/services/assignments.ts` | `f1f2aacc0bf8fdb012c95c305a015de9d115c8a542788634aded6f473057b14b` | 25294 |
+| `server/src/services/assignment-scan-worker.ts` | `1bf890792aeaa0a50c8ffdc82799164d179e58d1d2cac5bc9d07a1526ff5deec` | 60319 |
+| `server/src/services/assignment-storage.ts` | `2a8823cf22faf408c7ccb749311ac14d386cd3a7dff27d3838b8cd180c4d3865` | 26520 |
+| `server/src/services/assignment-cleanup-recovery.ts` | `be0b751ae543662b62f98d94bfc2146d449339c080dc2793e5879fa300547a99` | 52643 |
+| `server/src/services/assignment-recovery-factory.ts` | `02f4f6ee1ff8af584a099e23fc16ef6c25e497390d01ee99d245ae98f9413ace` | 20384 |
+| `server/src/services/assignment-cleanup-sql.ts` | `54f3044e15a11c9637506ea2fa477939dd9de341988efbee73621a294fa6288c` | 36017 |
+| this document | *changes with every revision; delivered value in the handoff record* | — |
+
+The **before** hash of the three edited files is not recorded: the review read the files and then
+edited them in place, and this lane has no Git snapshot. The four unchanged files match the hashes
+above exactly, which is what pins the reviewed state. `assignment-cleanup-recovery.ts` and
+`assignment-cleanup-sql.ts` are both past the values in §8.2/§11 — the former carries the
+unconditional provenance gate (`legacy_etag_unprovable`, §F.6) and the latter this pass's
+`completeClaim` guard.
+
+## F.3 `undefined` affected-row counts were read as success
+
+`AssignmentsDataAccess.execute` returns `{ affectedRows?: number }`, and every lifecycle guard was
+`if ((updated.affectedRows) === 0)`. `undefined === 0` is **false**, so a seam that reported no count
+fell through the guard as a *successful* write: the cancel would commit without its revocation, the
+finalize verdict would be treated as recorded, a staff revoke as applied. §11.9 asserted the seam
+throws; only `productionTransaction` does, and only on the transaction path — nothing local to the
+guards enforced it, so any other injected seam silently weakened them.
+
+`affectedRowsOf` now returns the reported count or throws, and the single-row CAS sites compare
+`!== 1` (cancel, finalize verdict, staff revoke, assignment update/publish/archive). The grade
+correction keeps `=== 0` for its documented no-op branch, but now goes through the same guard, so an
+unreported count throws instead of being read as "no change". A genuine `0` still fails closed
+exactly as before.
+
+## F.4 Readiness probed method names no port declares
+
+`hasCallable(options.listing, 'list')` and `hasCallable(options.submissionLookup, 'find')` — the ports
+are `AssignmentObjectListing.listTenantObjects` and
+`AssignmentSubmissionLookup.hasSubmissionForVersion`. Neither `list` nor `find` exists anywhere in
+the lane, so `orphanPlanning` was reported `unconfigured` / `orphan-listing-unconfigured` for a
+correctly implemented adapter. Both now probe the real method.
+
+## F.5 Two ports were never probed at all
+
+`durableCleanupStore` came from `describeCapability().durableStore`, which is `store ? … : …` —
+presence only — and `hasObjectStore` was `options.objectStore !== undefined`. So `{}` reported
+`cleanup: 'configured'` / `scanRecovery: 'configured'`, `ready: true`, and `runOnce()` then called a
+missing `claimBatch` (TypeError out of `runOnce`) or ran a scan pass whose every row died on a
+missing `statObject`. The cleanup store is now probed for all five port methods and the object store
+for `statObject`, so a stub cannot satisfy readiness by shape — the rule §D.2 states and applied to
+the other three surfaces.
+
+## F.6 A stopped scan still reported `halted: null`
+
+The post-pass guard was `if (halted === null && stopped && scanReport !== null && scanReport.aborted
+!== 'stopped')`. A stop that the scan pass itself honoured (`aborted: 'stopped'`, §D.3) therefore left
+`halted: null` — the exact "finished cleanly" signal §D.3 set out to remove. The condition is now
+`halted === null && stopped`, so every run cut short by `stop()` reports `halted: 'stopped'` while the
+child report still carries its own `aborted`.
+
+## F.7 `completeClaim` accepted a terminal state its proof contradicts
+
+`completeUnclaimed` derives the terminal state from the proof and refuses a mismatch; `completeClaim`
+did not, so a caller could write `state='deleted'` with `proof='store_version_replaced'` — a fabricated
+deletion for a version that was only replaced. It now applies the same `cleanupStateForProof` check.
+The coordinator derives both from one proof, so no existing caller changes behaviour.
+
+## F.8 Held — contract requests, not implemented here
+
+1. **`last_failure` ENUM is missing a value the code writes.** §4.1 declares
+   `last_failure ENUM('capability_absent','store_error','binding_mismatch','record_state_invalid')`,
+   but `ASSIGNMENT_CLEANUP_FAILURES` (`assignment-cleanup-recovery.ts:138-159`) also contains
+   `legacy_etag_unprovable`, and `releaseClaim` (`assignment-cleanup-sql.ts:653-682`) binds it. Under
+   a strict SQL mode that insert/update fails with `1265 Data truncated`, so the release is lost and
+   the row keeps its lease until expiry. Exact required change to the migration
+   (`20261023_05_assignment_cleanup_scan_fencing.sql`, not authored here):
+   `last_failure ENUM('capability_absent','store_error','binding_mismatch','record_state_invalid','legacy_etag_unprovable') NULL`.
+   §4.1 stands superseded on that one line.
+   **Status 2026-10-24 — satisfied, not applied.** The migration that was actually authored,
+   `20261024_06_assignment_cleanup_scan_fencing.sql:68`, declares all five values in that exact
+   order, and `releaseClaim` in `assignment-cleanup-sql.ts` binds `request.failure` unchanged.
+   The set is closed on both sides (§G.4). §4.1 was corrected. Nothing was executed: a source
+   match is not a deployed enum.
+2. **`cleanupObligations` requires `transaction`.** With a durable store injected and no
+   `deps.transaction`, `runAtomic` is `fn(db)` — no unit of work. A cancel or infected verdict then
+   commits its state change and, if the obligation insert throws, answers `500` with the state
+   already committed and no obligation. The write-ahead *ordering* survives; the atomicity §3.3
+   claims does not. Either the router refuses `cleanupObligations` without `transaction`, or the
+   wiring contract states it. Not decided here.
+3. **Poison-row sideline** (§E.5) is still open: `runOnce()` accepts no cursor, so one unreadable row
+   halts every run at the keyset head.
+4. **Rejection racing a finalize.** A rejection deletes the version it verified; a concurrent finalize
+   of the same version (possible only if the assignment limits changed between the two stats) can have
+   already marked the row `clean`, and the rejection then deletes the bytes that row points at. There
+   is no transition that retracts a recorded obligation, so closing this needs a product decision on
+   which writer wins, not a guard in the route.
+5. **`cleanup: 'configured'` overstates.** With the unconditional provenance gate (§F.9) the cleanup
+   pass can claim and release but never delete, so a deployment reads `configured` / `ready: true`
+   for a pass that cannot finish work. Readiness is defined as configuration, so this was left as is
+   rather than redefined here.
+
+## F.9 Preserved
+
+The unconditional unproven-ETag hold (`capability().recordVersionIdentity` is the literal
+`'unverified'`; `inspectAndDelete` releases `legacy_etag_unprovable` before any stat, absent-object
+inference, superseded verdict, conditional delete or terminal settlement, and no option, enum,
+boolean, registry or timestamp bypasses it); write-ahead ordering at all three points (rejection in
+its own unit, cancel in the revocation unit, infected verdict in the verdict unit); exact-version
+deletes only, no `removeObject(key)`; claim fences on owner + version + unexpired lease in the same
+statement, with a lost CAS halting the cleanup run; `pending_scan` never clean and no scanner never a
+verdict; bounded pages/items/elapsed/lease/retry; `invalid_row` distinct from `claim_store_failed`
+and never completed or quarantined; the SQL adapter's NO PAD gate and strict safe-integer projection;
+MinIO `conditionalDelete: false`; default wiring still unconfigured.
+
+## F.10 Not verified
+
+No tests, no typecheck, no compiler, no SQL/DB/services/listeners/providers, no Docker, no secrets, no
+Git, no migration, no new file, no production activation. Nothing in this addendum is represented as
+compilation or as acceptance of the task.
+
+---
+
+# ADDENDUM 4 — 2026-10-24 — schema/CAS contract reconciled against `20261024_06`
+
+Task: `workbuddy-assignment-recovery-contract-20261024-01`. Source and document only: no tests, no
+typecheck, no compiler, no SQL/DB execution, no services/providers/Docker, no Git, no new source file,
+no migration edit. The migration (`server/migrations/20261024_06_assignment_cleanup_scan_fencing.sql`)
+was **read**, never written.
+
+Everything below is derived from two sources and nothing else: the statements and mappers in
+`assignment-cleanup-sql.ts`, and the migration file. **No deployed enum is claimed.** A source match
+between the code's closed union and the `ENUM(...)` in the DDL is a review fact, not a database fact;
+nothing here was applied, and the migration's own header forbids assuming a prior partial apply.
+
+## G.1 Table contract (`assignment_cleanup_obligations`)
+
+| # | column | type | null | default | notes |
+|---|---|---|---|---|---|
+| 1 | `id` | `CHAR(36)` | NO | — | `crypto.randomUUID()` (`newId`) |
+| 2 | `tenant_id` | `CHAR(36)` | NO | — | from the target |
+| 3 | `assignment_id` | `CHAR(36)` | NO | — | from the target |
+| 4 | `student_enrollment_id` | `CHAR(36)` | NO | — | from the target |
+| 5 | `submission_id` | `CHAR(36)` | NO | — | from the target |
+| 6 | `storage_key` | `VARCHAR(255)` | NO | — | re-parsed/re-bound before any delete |
+| 7 | `object_etag` | `VARCHAR(256)` `utf8mb4_0900_bin` | NO | — | exact bytes, NO PAD; never trimmed |
+| 8 | `object_size_bytes` | `BIGINT` | NO | — | `> 0` (`chk_..._1`) |
+| 9 | `reason` | `ENUM` (6) | NO | — | §G.4 |
+| 10 | `state` | `ENUM('pending','deleted','superseded')` | NO | `'pending'` | §G.4 |
+| 11 | `claim_owner` | `VARCHAR(64)` | YES | `NULL` | paired with `lease_until_ms` |
+| 12 | `claim_version` | `INT` | NO | `0` | fence counter, `>= 0` |
+| 13 | `lease_until_ms` | `BIGINT` | YES | `NULL` | `> 0` when present |
+| 14 | `attempts` | `INT` | NO | `0` | `>= 0`, bumped by `releaseClaim` only |
+| 15 | `last_failure` | `ENUM` (5) | YES | `NULL` | §G.4 |
+| 16 | `retry_after_ms` | `BIGINT` | YES | `NULL` | `>= 0` when present |
+| 17 | `completion_proof` | `ENUM` (5) | YES | `NULL` | §G.4 |
+| 18 | `created_at_ms` | `BIGINT` | NO | — | `>= 0` |
+| 19 | `updated_at_ms` | `BIGINT` | NO | — | `>= created_at_ms` |
+| 20 | `completed_at_ms` | `BIGINT` | YES | `NULL` | `> 0` when present |
+
+Table: `ENGINE=InnoDB`, `CHARSET=utf8mb4`, `COLLATE=utf8mb4_unicode_ci` (so `id`, `storage_key` and
+the identifier columns are `unicode_ci`; only `object_etag` overrides to `0900_bin`).
+
+## G.2 Keys and indexes, exact order
+
+| object | kind | exact column order | the statement it serves |
+|---|---|---|---|
+| `PRIMARY` | PK | `(id)` | `stampClaim`, `completeClaim`, `releaseClaim`, `completeUnclaimed` — all reach one row by `id` |
+| `uq_cleanup_target` | UNIQUE | `(submission_id, object_etag, object_size_bytes)` | the `INSERT … ON DUPLICATE KEY UPDATE` and `readByIdentity` — the read-back predicate is the same triple in the same order |
+| `k_cleanup_claim` | KEY | `(state, created_at_ms, id)` | the claim page: `state = 'pending'` (prefix), `ORDER BY created_at_ms ASC, id ASC`, and the keyset `created_at_ms > ? OR (created_at_ms = ? AND id > ?)` — predicate and sort both follow this order, so the page is an index range, not a filesort |
+| `k_cleanup_lease` | KEY | `(state, lease_until_ms)` | **unused by this adapter** (see §G.6 item 8) |
+| `k_cleanup_tenant` | KEY | `(tenant_id, state, created_at_ms)` | **unused by this adapter** — the claim path is deliberately not tenant-scoped |
+
+There is no index on `claim_owner`; no statement looks a row up by owner (owner is always a
+same-row predicate beside `id`).
+
+## G.3 CHECK constraints (13) and the path that keeps each satisfied
+
+| # | constraint | kept by |
+|---|---|---|
+| 1 | `object_size_bytes > 0` | `normalizeCleanupTarget` refuses `<= 0`, so no target can carry one |
+| 2 | `CHAR_LENGTH(object_etag) > 0` | same, plus `toRecord` refusing an empty etag |
+| 3 | `claim_version >= 0` | insert literal `0`; every write is `+ 1` on a projected `>= 0` value |
+| 4 | `attempts >= 0` | insert literal `0`; `releaseClaim` only increments |
+| 5 | `created_at_ms >= 0` | `Date.getTime()` from the injected clock |
+| 6 | `updated_at_ms >= created_at_ms` | both bound to the same `nowMs` on insert; later writes move `updated_at_ms` forward (see §G.6 item 7) |
+| 7 | `lease_until_ms IS NULL OR > 0` | `claimBatch` refuses an already-expired lease before locking |
+| 8 | `retry_after_ms IS NULL OR >= 0` | `releaseClaim` clamps `retryAfterMs` to a whole `>= 0` and checks the sum is a safe integer |
+| 9 | `completed_at_ms IS NULL OR > 0` | only written from `nowMs` |
+| 10 | `(claim_owner IS NULL) = (lease_until_ms IS NULL)` | the pair is written together (stamp) and cleared together (complete/release); `toRecord` refuses a half-pair |
+| 11 | `state = 'pending' OR (completion_proof IS NOT NULL AND completed_at_ms IS NOT NULL)` | `completeClaim`/`completeUnclaimed` write state + proof + instant in one statement |
+| 12 | `state <> 'pending' OR (completion_proof IS NULL AND completed_at_ms IS NULL)` | insert writes `NULL`/`NULL` literals; release never touches either column |
+| 13 | `state = 'pending' OR (claim_owner IS NULL AND lease_until_ms IS NULL)` | both completion statements null the pair in the same statement as the state write |
+
+`assignment_submissions` gains five more: `chk_assignment_scan_version`, `…_attempts`, `…_lease`,
+`…_retry`, `…_owner_pair` (§10.2). Those belong to the scan lane's statements; they are recorded here
+only so the additive contract is complete.
+
+## G.4 Closed value sets, and what the code can actually bind
+
+| set | values | code | migration |
+|---|---|---|---|
+| `state` | `pending`, `deleted`, `superseded` | `ASSIGNMENT_CLEANUP_STATES` | line 63, same order |
+| `reason` | `admission_oversize`, `admission_size_out_of_bounds`, `admission_content_type_mismatch`, `admission_signature_mismatch`, `scan_infected`, `cancelled_upload` | `CLEANUP_OBLIGATION_REASONS` (`assignments.ts`) | line 62, same order |
+| `last_failure` | `capability_absent`, `store_error`, `binding_mismatch`, `record_state_invalid`, `legacy_etag_unprovable` | `ASSIGNMENT_CLEANUP_FAILURES` | line 68, same order |
+| `completion_proof` | `store_removed`, `store_already_absent`, `pre_stat_absent`, `store_version_replaced`, `pre_stat_version_replaced` | `ASSIGNMENT_CLEANUP_PROOFS` | line 70, same order |
+
+**`releaseClaim` is the only writer of `last_failure`** (`last_failure = ?`, bound to
+`request.failure`, typed as the full five-value union). `recordPending` binds the literal `NULL`;
+`claimBatch`, `completeClaim` and `completeUnclaimed` never name the column. So the bindable set is
+exactly the five values above — including `legacy_etag_unprovable`, which is the one the earlier
+§4.1 DDL omitted.
+
+Reachable *today* is a smaller set, and the difference is the provenance hold: with the gate
+unconditional, `inspectAndDelete` returns before any `statObject` or conditional delete, so
+`capability_absent` and `store_error` are declared but unreachable, and the only values that can reach
+`releaseClaim` are `binding_mismatch` (key does not re-bind), `record_state_invalid` (non-`pending` row
+handed to a claim) and `legacy_etag_unprovable` (the gate itself). `runOnce`'s halt reason
+`capability_absent` is a *run* outcome, not a `last_failure` write.
+
+## G.5 Exact CAS semantics
+
+`claimBatch` — one transaction, one connection:
+
+```sql
+SELECT <17 columns> FROM assignment_cleanup_obligations
+WHERE state = 'pending'
+  AND (claim_owner IS NULL OR lease_until_ms <= ?)        -- nowMs
+  AND (retry_after_ms IS NULL OR retry_after_ms <= ?)     -- nowMs
+  [AND (created_at_ms > ? OR (created_at_ms = ? AND id > ?))]  -- only when after != null
+ORDER BY created_at_ms ASC, id ASC
+LIMIT ?
+FOR UPDATE SKIP LOCKED
+```
+
+then one stamp per returned row, and only `affectedRows === 1` is kept:
+
+```sql
+UPDATE assignment_cleanup_obligations
+SET claim_owner = ?, claim_version = ?, lease_until_ms = ?, updated_at_ms = ?
+WHERE id = ? AND state = 'pending'
+  AND (claim_owner IS NULL OR lease_until_ms <= ?)
+```
+
+The stamped version is `current + 1` computed in the adapter, not `claim_version + 1` in SQL, and it
+is refused if the increment leaves the safe-integer range. Access path: `k_cleanup_claim` for the
+page, `PRIMARY` for each stamp. `SKIP LOCKED` skips rows another transaction holds — it does **not**
+skip a claimable-but-unreadable row (§E.5).
+
+`completeClaim` (fenced, one statement, no transaction needed):
+
+```sql
+UPDATE … SET state = ?, completion_proof = ?, claim_owner = NULL,
+    claim_version = claim_version + 1, lease_until_ms = NULL,
+    completed_at_ms = ?, updated_at_ms = ?
+WHERE id = ? AND state = 'pending' AND claim_owner = ? AND claim_version = ?
+  AND lease_until_ms > ?          -- the lease must still be LIVE
+```
+
+The adapter derives `state` from `proof` via `cleanupStateForProof` and answers `false` **without
+issuing SQL** when the caller's pair disagrees, so a terminal state its own proof contradicts can
+never be written.
+
+`releaseClaim` — same fence, plus `last_failure` and the retry clock; `attempts` is bumped here and
+only here:
+
+```sql
+UPDATE … SET claim_owner = NULL, claim_version = claim_version + 1, lease_until_ms = NULL,
+    attempts = attempts + 1, last_failure = ?, retry_after_ms = ?, updated_at_ms = ?
+WHERE id = ? AND state = 'pending' AND claim_owner = ? AND claim_version = ?
+  AND lease_until_ms > ?
+```
+
+`completeUnclaimed` (request path settling a row it recorded itself):
+
+```sql
+UPDATE … SET state = ?, completion_proof = ?, completed_at_ms = ?, updated_at_ms = ?
+WHERE id = ? AND state = 'pending'
+  AND claim_owner IS NULL AND lease_until_ms IS NULL AND claim_version = ?
+```
+
+Three conditions, three thefts: `state` (a coordinator already settled it), the null owner **and**
+null lease (a live claim, or an expired-but-unreleased one, still carries an owner), and
+`claim_version` (a claim+release moved the counter past the handle's value). It does not increment
+the version — the row is terminal, and `state = 'pending'` is what makes a second replay a no-op.
+Access path for all three: `PRIMARY` (`id` first), with the remaining columns as same-row filters.
+
+Every single-row CAS is compared with `=== 1`; an unreported `affectedRows` throws rather than being
+read as either answer.
+
+## G.6 Reconciliation against `20261024_06` — matches, and discrepancies
+
+Matches (no code change needed): the 20 columns and their order in the `INSERT`; the unique triple;
+`k_cleanup_claim`'s column order against `ORDER BY created_at_ms, id`; all four closed value sets;
+`utf8mb4_0900_bin` on `object_etag`, which is exactly what `probeAssignmentEtagCollation` must verify
+(`PAD_ATTRIBUTE = 'NO PAD'`) before `availability` can be `durable`.
+
+Discrepancies, documented and **not** fixed (the migration is read-only to this lane):
+
+1. **Filename.** §9, §10, §10.2 and §10.7 referred to `20261023_05_assignment_cleanup_scan_fencing.sql`;
+   the authored file is `20261024_06_…`. Corrected in this document and in the
+   `AssignmentCleanupSchemaDeclaration` comment; nothing reads the name.
+2. **`last_failure` had four values in §4.1** (doc line 217) against five in the migration (line 68).
+   The code already had five. §4.1 corrected; §F.8 item 1 marked satisfied.
+3. **§4.4's `completeUnclaimed` omitted `AND lease_until_ms IS NULL`** (doc line 322) while the
+   adapter has always sent it (`assignment-cleanup-sql.ts`, `completeUnclaimed`). §4.4 corrected;
+   `chk_..._10` makes the clause redundant *given* the CHECK, but the code does not rely on that.
+4. **§4.2's `INSERT` listed 14 columns** and leaned on column defaults; the executed statement names
+   all 20 with explicit literals. Behaviourally identical, textually not. §4.2 corrected.
+5. **§4.1 declared no `CHECK`s at all**; the migration declares thirteen. §G.3 is now the list.
+6. **§10.2's `ALTER` listed no `CHECK`s**; the migration adds five. §10.2 corrected.
+7. **`updated_at_ms >= created_at_ms` couples completion to clock monotonicity.** `completeClaim` and
+   `releaseClaim` bind `updated_at_ms = nowMs` from the coordinator's clock. A coordinator whose clock
+   is behind the writer that inserted the row makes the statement violate `chk_..._6`; the driver
+   raises, `affectedRowsOf` never runs, and the run halts `claim_store_failed` — a failure, never a
+   silent success. Recorded, not "fixed": the correct response to skew is an operational one.
+8. **Two indexes are declared that no statement uses** (`k_cleanup_lease`, `k_cleanup_tenant`). Not a
+   defect, but the claim path is not tenant-scoped and expiry is filtered inside `k_cleanup_claim`'s
+   range scan, so nobody should read those keys as evidence of tenant isolation in `claimBatch`.
+9. **§4.2's "conflict when the same submission already has a *different* version pending" is not
+   implemented and cannot be**, without a second query: `recordPending` reads back only the exact
+   `(submission_id, object_etag, object_size_bytes)` tuple, and `uq_cleanup_target` deliberately
+   permits several versions per submission (§3.1 calls them legitimate). The adapter's `conflict`
+   means identity drift on that tuple, or a terminal row. Left unresolved because choosing is a
+   product decision, not a mapping fix.
+10. **The migration's guard is stricter than this document.** It refuses to run unless
+    `assignment_submissions` is InnoDB, `utf8mb4_unicode_ci`, has `PK(id)` with no prefix, and matches
+    nine exact column types (`submitted_at TIMESTAMP`, `file_size_bytes BIGINT`, `scan_status` and
+    `status` enums as written), and it refuses if any of the seven new columns or `k_scan_claim`
+    already exists. A deployed base that differs in any of those (e.g. `DATETIME`) is rejected before
+    any DDL. That is a base-schema fact this lane cannot verify without a database, and it is not a
+    code mismatch.
+11. **Projection tolerances looser than the `CHECK`s.** `toRecord` rejects `object_size_bytes < 0`
+    (not `<= 0`) and accepts a `lease_until_ms` of `0` or below, while `chk_..._1`/`chk_..._7` forbid
+    both. No write path can produce such a row (`normalizeCleanupTarget` requires `> 0`, and the
+    stamp requires a lease strictly after `nowMs`), and the looser projection fails closed anyway
+    (a zero-size row is released `binding_mismatch`). Left as is rather than turning a per-row
+    release into a page-level `invalid_row` halt.
+12. **`id` comparisons use `utf8mb4_unicode_ci`** (PAD SPACE, case-insensitive) for the keyset
+    tiebreak, while `object_etag` is `utf8mb4_0900_bin`. The keyset is self-consistent — the
+    predicate and `ORDER BY` use the same column and collation — but ids differing only in case would
+    tie. UUIDs are lowercase hex, so this is an observation, not a change.
+
+## G.7 Invariants re-confirmed against this contract
+
+- **Provenance hold.** `capability().recordVersionIdentity` is the literal `'unverified'`;
+  `inspectAndDelete` validates the binding and the state, then releases `legacy_etag_unprovable`
+  **before** `statObject`, before any absent-object inference, before a `superseded` verdict, before a
+  conditional delete and before any terminal settlement. No option, enum, boolean, registry or
+  timestamp cutoff is read on that path. In this contract that means: a row can be claimed, released
+  and re-claimed, and never reaches `deleted`/`superseded`, because `completeClaim` is only called
+  with a proof `inspectAndDelete` returned, and it returns none.
+- **No terminal success without evidence.** `state` is always `cleanupStateForProof(proof)`; a proof
+  exists only from a store answer (`removed`, `already_absent`, `version_replaced`) or a trusted
+  re-stat. Neither is reachable today, which is why nothing terminalizes.
+- **Missing scanner / missing conditional delete stay `unavailable`.** `capability_absent` is a halt
+  *before* claiming, so no lease is burned; the factory reports `exact-delete-unsupported` /
+  `scanner-unconfigured` and `verified: false`; no store, no schema declaration, no `transaction`, or
+  a non-`NO PAD` verdict yields `{ mode: 'unavailable' }` and every method refuses.
+- **Stop/drain and lost ownership.** `stop()` halts between pages and between items; a completion or
+  release that answers `false` (or a fence the row no longer matches) increments `lostClaims` and
+  halts `claim_lost` — a stale run does not keep writing. The factory propagates the stop to the scan
+  pass and reports `halted` rather than `null`.
+- **Write-ahead.** `recordPending` runs insert **and** read-back on the caller's transaction; a
+  caller-owned `tx` propagates a failure, a store-owned insert reports `record_failed` and the caller
+  deletes nothing.
+
+## G.8 Not verified
+
+No tests, no typecheck, no compiler, no SQL/DB execution, no migration applied, no services,
+providers or Docker, no Git, no new source file. Nothing in this addendum asserts that the table
+exists, that the enum is deployed, or that any statement has ever run against a database.

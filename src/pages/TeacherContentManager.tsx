@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,32 +21,51 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import {
-  Upload,
   Video,
   FileText,
-  Image,
   File,
+  Link as LinkIcon,
+  Presentation,
   Plus,
   Trash2,
   Edit,
   Eye,
-  Download,
   BookOpen,
   Sparkles,
   Calendar,
-  Clock
+  Clock,
+  AlertCircle,
+  RefreshCw
 } from "lucide-react";
 import Header from "@/components/Header";
 import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
 import { FloatingParticles } from "@/components/FloatingParticles";
+import {
+  getCourses,
+  getGroups,
+  getLectures,
+  getMaterials,
+  getExams,
+  createLecture,
+  createMaterial,
+  createExam,
+  deleteLecture,
+  deleteMaterial,
+  deleteExam,
+  Course,
+  Group,
+  CourseMaterial,
+  Exam,
+  AUTH_SESSION_CHANGED_EVENT,
+} from "@/lib/api-http";
 
 interface ContentItem {
   id: string;
   title: string;
   description: string;
   type: 'lecture' | 'material' | 'exam';
-  subType?: 'pdf' | 'image' | 'video' | 'document';
+  subType?: CourseMaterial['material_type'];
   course: string;
   uploadDate: string;
   youtubeUrl?: string;
@@ -57,61 +77,191 @@ interface ContentItem {
   totalMarks?: number;
 }
 
+type ContentTab = 'lectures' | 'materials' | 'exams';
+type TabStatus = { loading: boolean; error: boolean; loaded: boolean };
+
+const createEmptyTabState = (): Record<ContentTab, TabStatus> => ({
+  lectures: { loading: true, error: false, loaded: false },
+  materials: { loading: true, error: false, loaded: false },
+  exams: { loading: true, error: false, loaded: false },
+});
+
+const createEmptyForm = () => ({
+  title: '',
+  description: '',
+  course: '',
+  type: 'pdf' as CourseMaterial['material_type'],
+  youtubeUrl: '',
+  durationMinutes: '',
+  price: '',
+  totalMarks: '',
+  fileUrl: '',
+  groupIds: [] as string[],
+});
+
+const formatContentDate = (value?: string | Date | null) => {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString('ar-EG');
+};
+
 const TeacherContentManager = () => {
   const { toast } = useToast();
-  const [selectedTab, setSelectedTab] = useState<'lectures' | 'materials' | 'exams'>('lectures');
+  const navigate = useNavigate();
+  const [selectedTab, setSelectedTab] = useState<ContentTab>('lectures');
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [formData, setFormData] = useState({
-    title: '',
-    description: '',
-    course: '',
-    type: '',
-    youtubeUrl: '',
-    duration: '',
-    instructor: 'فريق Tabweb Academy',
-    questionsCount: '',
-    totalMarks: '',
-    fileUrl: ''
-  });
+  const [formData, setFormData] = useState(createEmptyForm);
+  const [contentItems, setContentItems] = useState<ContentItem[]>([]);
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [tabState, setTabState] = useState<Record<ContentTab, TabStatus>>(createEmptyTabState);
+  const [saving, setSaving] = useState(false);
+  const [deletingIds, setDeletingIds] = useState<string[]>([]);
+  const [coursesError, setCoursesError] = useState(false);
+  const [groupsError, setGroupsError] = useState(false);
+  const [referencesReady, setReferencesReady] = useState(false);
+  const requestRef = useRef(0);
+  const sessionRef = useRef(0);
+  const saveGuardRef = useRef(false);
+  const deleteGuardRef = useRef<Set<string>>(new Set());
 
-  // Sample content data
-  const [contentItems, setContentItems] = useState<ContentItem[]>([
-    {
-      id: '1',
-      title: 'مقدمة في التاريخ الإسلامي',
-      description: 'محاضرة شاملة عن بداية الدولة الإسلامية',
-      type: 'lecture',
-      course: 'التاريخ الإسلامي',
-      uploadDate: '2025-10-28',
-      youtubeUrl: 'https://youtube.com/watch?v=xyz',
-      duration: '45 دقيقة',
-      instructor: 'فريق Tabweb Academy',
-      thumbnail: 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=400'
-    },
-    {
-      id: '2',
-      title: 'ملخص الحرب العالمية الأولى',
-      description: 'ملخص شامل PDF للحرب العالمية الأولى',
-      type: 'material',
-      subType: 'pdf',
-      course: 'التاريخ الحديث',
-      uploadDate: '2025-10-27',
-      fileUrl: '#'
-    },
-    {
-      id: '3',
-      title: 'امتحان العصر العباسي',
-      description: 'امتحان تفصيلي عن الفترة العباسية',
-      type: 'exam',
-      course: 'التاريخ الإسلامي',
-      uploadDate: '2025-10-26',
-      questionsCount: 30,
-      totalMarks: 100
+  const resetForm = useCallback(() => setFormData(createEmptyForm()), []);
+
+  const loadContent = useCallback(async () => {
+    const requestId = ++requestRef.current;
+    setReferencesReady(false);
+    const session = sessionRef.current;
+    if (!localStorage.getItem('authToken')) {
+      navigate('/auth', { replace: true });
+      return;
     }
-  ]);
 
-  const handleAddContent = () => {
-    if (!formData.title || !formData.description || !formData.course) {
+    setTabState((previous) => ({
+      lectures: { ...previous.lectures, loading: true, error: false },
+      materials: { ...previous.materials, loading: true, error: false },
+      exams: { ...previous.exams, loading: true, error: false },
+    }));
+    setCoursesError(false);
+    setGroupsError(false);
+
+    const [coursesResult, groupsResult, lecturesResult, materialsResult, examsResult] =
+      await Promise.allSettled([getCourses(), getGroups(), getLectures(), getMaterials(), getExams()]);
+    if (requestId !== requestRef.current || session !== sessionRef.current) return;
+    setReferencesReady(coursesResult.status === 'fulfilled' && groupsResult.status === 'fulfilled');
+
+    const courseData = coursesResult.status === 'fulfilled' ? (coursesResult.value || []) : [];
+    const groupData = groupsResult.status === 'fulfilled' ? (groupsResult.value || []) : [];
+    if (coursesResult.status === 'fulfilled') setCourses(courseData);
+    if (groupsResult.status === 'fulfilled') setGroups(groupData);
+    setCoursesError(coursesResult.status !== 'fulfilled');
+    setGroupsError(groupsResult.status !== 'fulfilled');
+
+    const courseNames = new Map(courseData.map((course) => [course.id, course.name]));
+    const nextItems: ContentItem[] = [];
+
+    if (lecturesResult.status === 'fulfilled') {
+      nextItems.push(...(lecturesResult.value || []).map((lecture) => ({
+        id: lecture.id,
+        title: lecture.title,
+        description: lecture.description || '',
+        type: 'lecture' as const,
+        course: lecture.course_name || courseNames.get(lecture.course_id) || lecture.course_id,
+        uploadDate: formatContentDate(lecture.created_at),
+        youtubeUrl: lecture.video_url,
+        fileUrl: lecture.video_url,
+        duration: lecture.duration_minutes ? `${lecture.duration_minutes} دقيقة` : undefined,
+      })));
+    }
+
+    if (materialsResult.status === 'fulfilled') {
+      nextItems.push(...(materialsResult.value || []).map((material) => ({
+        id: material.id,
+        title: material.title,
+        description: material.description || '',
+        type: 'material' as const,
+        subType: material.material_type,
+        course: material.course_name || courseNames.get(material.course_id) || material.course_id,
+        uploadDate: formatContentDate(material.created_at),
+        fileUrl: material.file_url,
+      })));
+    }
+
+    if (examsResult.status === 'fulfilled') {
+      nextItems.push(...(examsResult.value || []).map((exam) => {
+        const examRow = exam as Exam & { created_at?: string };
+        return {
+          id: exam.id,
+          title: exam.title,
+          description: '',
+          type: 'exam' as const,
+          course: courseNames.get(exam.course_id) || exam.course_id,
+          uploadDate: formatContentDate(examRow.created_at),
+          duration: exam.duration_minutes ? `${exam.duration_minutes} دقيقة` : undefined,
+          totalMarks: exam.total_marks,
+        };
+      }));
+    }
+
+    setContentItems((previous) => {
+      const retained = previous.filter((item) => {
+        if (item.type === 'lecture') return lecturesResult.status !== 'fulfilled';
+        if (item.type === 'material') return materialsResult.status !== 'fulfilled';
+        return examsResult.status !== 'fulfilled';
+      });
+      return [...nextItems, ...retained];
+    });
+
+    setTabState((previous) => ({
+      lectures: lecturesResult.status === 'fulfilled'
+        ? { loading: false, error: false, loaded: true }
+        : { loading: false, error: true, loaded: previous.lectures.loaded },
+      materials: materialsResult.status === 'fulfilled'
+        ? { loading: false, error: false, loaded: true }
+        : { loading: false, error: true, loaded: previous.materials.loaded },
+      exams: examsResult.status === 'fulfilled'
+        ? { loading: false, error: false, loaded: true }
+        : { loading: false, error: true, loaded: previous.exams.loaded },
+    }));
+  }, [navigate]);
+
+  useEffect(() => {
+    void loadContent();
+
+    const refresh = () => {
+      sessionRef.current += 1;
+      requestRef.current += 1;
+      setContentItems([]);
+      setCourses([]);
+      setGroups([]);
+      setTabState(createEmptyTabState());
+      setCoursesError(false);
+      setGroupsError(false);
+      setIsDialogOpen(false);
+      resetForm();
+      setSaving(false);
+      setDeletingIds([]);
+      saveGuardRef.current = false;
+      deleteGuardRef.current.clear();
+      void loadContent();
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'authToken' || event.key === 'currentUser' || event.key === null) refresh();
+    };
+
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      sessionRef.current += 1;
+      requestRef.current += 1;
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [loadContent, resetForm]);
+
+  const handleAddContent = async () => {
+    if (saveGuardRef.current || !referencesReady || coursesError || groupsError) return;
+    if (!formData.title || !formData.description || !courses.some(course => course.id === formData.course)
+        || formData.groupIds.some(id => !groups.some(group => group.id === id && group.course_id === formData.course))) {
       toast({
         title: "خطأ",
         description: "يرجى ملء جميع الحقول المطلوبة",
@@ -119,57 +269,162 @@ const TeacherContentManager = () => {
       });
       return;
     }
+    if (formData.groupIds.length === 0) {
+      toast({
+        title: "خطأ",
+        description: "اختر مجموعة واحدة على الأقل",
+        variant: "destructive"
+      });
+      return;
+    }
+    if (selectedTab === 'lectures' && !formData.youtubeUrl.trim()) {
+      toast({ title: "خطأ", description: "رابط الفيديو مطلوب", variant: "destructive" });
+      return;
+    }
+    if (selectedTab === 'materials' && !formData.fileUrl.trim()) {
+      toast({ title: "خطأ", description: "رابط الملف مطلوب", variant: "destructive" });
+      return;
+    }
+    if (selectedTab === 'exams' && (!formData.durationMinutes || !formData.totalMarks)) {
+      toast({ title: "خطأ", description: "المدة والدرجة الكلية مطلوبتان", variant: "destructive" });
+      return;
+    }
+    if (!localStorage.getItem('authToken')) {
+      toast({ title: "انتهت الجلسة", description: "يرجى تسجيل الدخول مرة أخرى", variant: "destructive" });
+      navigate('/auth', { replace: true });
+      return;
+    }
 
-    const newItem: ContentItem = {
-      id: Date.now().toString(),
-      title: formData.title,
-      description: formData.description,
-      course: formData.course,
-      type: selectedTab === 'lectures' ? 'lecture' : selectedTab === 'materials' ? 'material' : 'exam',
-      uploadDate: new Date().toISOString().split('T')[0],
-      ...(selectedTab === 'lectures' && {
-        youtubeUrl: formData.youtubeUrl,
-        duration: formData.duration,
-        instructor: formData.instructor,
-        thumbnail: 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=400'
-      }),
-      ...(selectedTab === 'materials' && {
-        subType: formData.type as 'pdf' | 'image' | 'document',
-        fileUrl: formData.fileUrl || '#'
-      }),
-      ...(selectedTab === 'exams' && {
-        questionsCount: parseInt(formData.questionsCount) || 0,
-        totalMarks: parseInt(formData.totalMarks) || 0
-      })
-    };
+    saveGuardRef.current = true;
+    setSaving(true);
+    const session = sessionRef.current;
+    try {
+      if (selectedTab === 'lectures') {
+        await createLecture({
+          course_id: formData.course,
+          group_id: formData.groupIds[0],
+          title: formData.title,
+          description: formData.description || undefined,
+          video_url: formData.youtubeUrl.trim(),
+          duration_minutes: formData.durationMinutes ? Number(formData.durationMinutes) : undefined,
+          price: formData.price ? Number(formData.price) : 0,
+          is_free: false,
+          is_published: true,
+        });
+      } else if (selectedTab === 'materials') {
+        await createMaterial({
+          course_id: formData.course,
+          title: formData.title,
+          description: formData.description || undefined,
+          material_type: formData.type,
+          file_url: formData.fileUrl.trim(),
+          is_free: false,
+          is_published: true,
+          group_ids: formData.groupIds,
+        });
+      } else {
+        const examPayload: Partial<Exam> & { description?: string; group_ids: string[] } = {
+          course_id: formData.course,
+          title: formData.title,
+          description: formData.description || undefined,
+          duration_minutes: Number(formData.durationMinutes),
+          total_marks: Number(formData.totalMarks),
+          group_ids: formData.groupIds,
+          is_active: true,
+        };
+        await createExam(examPayload);
+      }
 
-    setContentItems([newItem, ...contentItems]);
-    
-    toast({
-      title: "تم الإضافة بنجاح",
-      description: `تم إضافة ${selectedTab === 'lectures' ? 'محاضرة' : selectedTab === 'materials' ? 'مادة تعليمية' : 'امتحان'} جديد`,
-    });
+      if (session !== sessionRef.current) return;
 
-    setFormData({
-      title: '',
-      description: '',
-      course: '',
-      type: '',
-      youtubeUrl: '',
-      duration: '',
-      instructor: 'فريق Tabweb Academy',
-      questionsCount: '',
-      totalMarks: '',
-      fileUrl: ''
-    });
-    setIsDialogOpen(false);
+      toast({
+        title: "تم الحفظ بنجاح",
+        description: `تم إضافة ${selectedTab === 'lectures' ? 'محاضرة' : selectedTab === 'materials' ? 'مادة تعليمية' : 'امتحان'} جديد`,
+      });
+      resetForm();
+      setIsDialogOpen(false);
+      void loadContent();
+    } catch (error) {
+      if (session !== sessionRef.current) return;
+      console.error('Error saving content:', error);
+      toast({
+        title: "خطأ",
+        description: error instanceof Error && error.message
+          ? error.message
+          : 'تعذّر حفظ المحتوى',
+        variant: "destructive"
+      });
+    } finally {
+      if (session === sessionRef.current) {
+        saveGuardRef.current = false;
+        setSaving(false);
+      }
+    }
   };
 
-  const handleDelete = (id: string) => {
-    setContentItems(contentItems.filter(item => item.id !== id));
-    toast({
-      title: "تم الحذف",
-      description: "تم حذف العنصر بنجاح",
+  const handleDelete = async (item: ContentItem) => {
+    if (deleteGuardRef.current.has(item.id)) return;
+    if (!confirm('هل أنت متأكد من حذف هذا العنصر؟')) return;
+    if (!localStorage.getItem('authToken')) {
+      toast({ title: "انتهت الجلسة", description: "يرجى تسجيل الدخول مرة أخرى", variant: "destructive" });
+      navigate('/auth', { replace: true });
+      return;
+    }
+
+    deleteGuardRef.current.add(item.id);
+    setDeletingIds((previous) => [...previous, item.id]);
+    const session = sessionRef.current;
+    try {
+      if (item.type === 'lecture') {
+        await deleteLecture(item.id);
+      } else if (item.type === 'material') {
+        await deleteMaterial(item.id);
+      } else {
+        const deleted = await deleteExam(item.id);
+        if (!deleted) throw new Error('تعذّر حذف الامتحان');
+      }
+      if (session !== sessionRef.current) return;
+
+      requestRef.current += 1;
+      void loadContent();
+      toast({
+        title: "تم الحذف",
+        description: "تم حذف العنصر بنجاح",
+      });
+    } catch (error) {
+      if (session !== sessionRef.current) return;
+      console.error('Error deleting content:', error);
+      toast({
+        title: "خطأ",
+        description: error instanceof Error && error.message
+          ? error.message
+          : 'تعذّر حذف العنصر',
+        variant: "destructive"
+      });
+    } finally {
+      if (session === sessionRef.current) {
+        deleteGuardRef.current.delete(item.id);
+        setDeletingIds((previous) => previous.filter((deletingId) => deletingId !== item.id));
+      }
+    }
+  };
+
+  const availableGroups = groups.filter((group) => !formData.course || group.course_id === formData.course);
+
+  const toggleGroup = (groupId: string) => {
+    setFormData((previous) => {
+      if (selectedTab !== 'materials') {
+        return {
+          ...previous,
+          groupIds: previous.groupIds.includes(groupId) ? [] : [groupId],
+        };
+      }
+      return {
+        ...previous,
+        groupIds: previous.groupIds.includes(groupId)
+          ? previous.groupIds.filter((id) => id !== groupId)
+          : [...previous.groupIds, groupId],
+      };
     });
   };
 
@@ -184,7 +439,9 @@ const TeacherContentManager = () => {
     if (item.type === 'lecture') return <Video className="w-5 h-5" />;
     if (item.type === 'exam') return <FileText className="w-5 h-5" />;
     if (item.subType === 'pdf') return <FileText className="w-5 h-5" />;
-    if (item.subType === 'image') return <Image className="w-5 h-5" />;
+    if (item.subType === 'video') return <Video className="w-5 h-5" />;
+    if (item.subType === 'presentation') return <Presentation className="w-5 h-5" />;
+    if (item.subType === 'link') return <LinkIcon className="w-5 h-5" />;
     return <File className="w-5 h-5" />;
   };
 
@@ -221,6 +478,14 @@ const TeacherContentManager = () => {
                   </DialogTitle>
                 </DialogHeader>
                 <div className="grid gap-4 py-4">
+                  {(coursesError || groupsError) && (
+                    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                      تعذّر تحميل {coursesError && groupsError ? 'الكورسات والمجموعات' : coursesError ? 'الكورسات' : 'المجموعات'}. لن تتمكن من النشر حتى تنجح إعادة المحاولة.
+                      <Button type="button" variant="outline" size="sm" className="mt-2 w-full" onClick={() => void loadContent()}>
+                        إعادة المحاولة
+                      </Button>
+                    </div>
+                  )}
                   <div className="grid gap-2">
                     <Label htmlFor="title">العنوان *</Label>
                     <Input
@@ -242,46 +507,81 @@ const TeacherContentManager = () => {
                   </div>
                   <div className="grid gap-2">
                     <Label htmlFor="course">الكورس *</Label>
-                    <Select value={formData.course} onValueChange={(value) => setFormData({ ...formData, course: value })}>
+                    <Select
+                      value={formData.course}
+                      onValueChange={(value) => setFormData((previous) => ({ ...previous, course: value, groupIds: [] }))}
+                    >
                       <SelectTrigger>
                         <SelectValue placeholder="اختر الكورس" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="التاريخ الإسلامي">التاريخ الإسلامي</SelectItem>
-                        <SelectItem value="التاريخ الحديث">التاريخ الحديث</SelectItem>
-                        <SelectItem value="الجغرافيا">الجغرافيا</SelectItem>
-                        <SelectItem value="الحضارات القديمة">الحضارات القديمة</SelectItem>
+                        {courses.map((course) => (
+                          <SelectItem key={course.id} value={course.id}>
+                            {course.name}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label>المجموعات *</Label>
+                    {!formData.course ? (
+                      <p className="text-xs text-muted-foreground">اختر الكورس أولاً لعرض مجموعاته.</p>
+                    ) : availableGroups.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">لا توجد مجموعات مرتبطة بهذا الكورس.</p>
+                    ) : (
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {availableGroups.map((group) => (
+                          <label key={group.id} className="flex items-center gap-2 rounded-md border p-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={formData.groupIds.includes(group.id)}
+                              onChange={() => toggleGroup(group.id)}
+                              className="w-4 h-4"
+                            />
+                            <span className="text-sm">{group.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   {selectedTab === 'lectures' && (
                     <>
                       <div className="grid gap-2">
-                        <Label htmlFor="youtubeUrl">رابط YouTube</Label>
+                        <Label htmlFor="youtubeUrl">رابط الفيديو الداخلي *</Label>
                         <Input
                           id="youtubeUrl"
-                          placeholder="https://youtube.com/watch?v=..."
+                          placeholder="video://..."
                           value={formData.youtubeUrl}
                           onChange={(e) => setFormData({ ...formData, youtubeUrl: e.target.value })}
                         />
+                        <p className="text-xs text-muted-foreground">
+                          الروابط الخارجية غير مسموحة. استخدم مرجع فيديو داخلي بصيغة video://.
+                        </p>
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                         <div className="grid gap-2">
-                          <Label htmlFor="duration">المدة</Label>
+                          <Label htmlFor="durationMinutes">المدة بالدقائق</Label>
                           <Input
-                            id="duration"
-                            placeholder="45 دقيقة"
-                            value={formData.duration}
-                            onChange={(e) => setFormData({ ...formData, duration: e.target.value })}
+                            id="durationMinutes"
+                            type="number"
+                            min="0"
+                            placeholder="45"
+                            value={formData.durationMinutes}
+                            onChange={(e) => setFormData({ ...formData, durationMinutes: e.target.value })}
                           />
                         </div>
                         <div className="grid gap-2">
-                          <Label htmlFor="instructor">المحاضر</Label>
+                          <Label htmlFor="price">السعر</Label>
                           <Input
-                            id="instructor"
-                            value={formData.instructor}
-                            onChange={(e) => setFormData({ ...formData, instructor: e.target.value })}
+                            id="price"
+                            type="number"
+                            min="0"
+                            placeholder="0"
+                            value={formData.price}
+                            onChange={(e) => setFormData({ ...formData, price: e.target.value })}
                           />
                         </div>
                       </div>
@@ -289,38 +589,55 @@ const TeacherContentManager = () => {
                   )}
 
                   {selectedTab === 'materials' && (
-                    <div className="grid gap-2">
-                      <Label htmlFor="type">نوع المادة</Label>
-                      <Select value={formData.type} onValueChange={(value) => setFormData({ ...formData, type: value })}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="اختر نوع المادة" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="pdf">PDF</SelectItem>
-                          <SelectItem value="image">صورة</SelectItem>
-                          <SelectItem value="document">مستند</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
+                    <>
+                      <div className="grid gap-2">
+                        <Label htmlFor="type">نوع المادة</Label>
+                        <Select
+                          value={formData.type}
+                          onValueChange={(value) => setFormData({ ...formData, type: value as CourseMaterial['material_type'] })}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="اختر نوع المادة" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="pdf">PDF</SelectItem>
+                            <SelectItem value="presentation">عرض تقديمي</SelectItem>
+                            <SelectItem value="link">رابط</SelectItem>
+                            <SelectItem value="other">ملف آخر</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="grid gap-2">
+                        <Label htmlFor="fileUrl">رابط الملف *</Label>
+                        <Input
+                          id="fileUrl"
+                          placeholder="https://drive.google.com/..."
+                          value={formData.fileUrl}
+                          onChange={(e) => setFormData({ ...formData, fileUrl: e.target.value })}
+                        />
+                      </div>
+                    </>
                   )}
 
                   {selectedTab === 'exams' && (
                     <div className="grid grid-cols-2 gap-4">
                       <div className="grid gap-2">
-                        <Label htmlFor="questionsCount">عدد الأسئلة</Label>
+                        <Label htmlFor="durationMinutes">المدة بالدقائق *</Label>
                         <Input
-                          id="questionsCount"
+                          id="durationMinutes"
                           type="number"
-                          placeholder="30"
-                          value={formData.questionsCount}
-                          onChange={(e) => setFormData({ ...formData, questionsCount: e.target.value })}
+                          min="1"
+                          placeholder="60"
+                          value={formData.durationMinutes}
+                          onChange={(e) => setFormData({ ...formData, durationMinutes: e.target.value })}
                         />
                       </div>
                       <div className="grid gap-2">
-                        <Label htmlFor="totalMarks">الدرجة الكلية</Label>
+                        <Label htmlFor="totalMarks">الدرجة الكلية *</Label>
                         <Input
                           id="totalMarks"
                           type="number"
+                          min="1"
                           placeholder="100"
                           value={formData.totalMarks}
                           onChange={(e) => setFormData({ ...formData, totalMarks: e.target.value })}
@@ -330,14 +647,15 @@ const TeacherContentManager = () => {
                   )}
                 </div>
                 <div className="flex justify-end gap-2">
-                  <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
+                  <Button variant="outline" onClick={() => setIsDialogOpen(false)} disabled={saving}>
                     إلغاء
                   </Button>
                   <Button 
                     className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-700 hover:to-teal-700"
                     onClick={handleAddContent}
+                    disabled={saving || !referencesReady || coursesError || groupsError}
                   >
-                    إضافة
+                    {saving ? 'جاري الحفظ...' : 'إضافة'}
                   </Button>
                 </div>
               </DialogContent>
@@ -373,6 +691,30 @@ const TeacherContentManager = () => {
           </div>
         </motion.div>
 
+        {tabState[selectedTab].error && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="mb-6 rounded-xl border border-red-200 bg-red-50 p-6 text-center"
+          >
+            <AlertCircle className="w-10 h-10 text-red-600 mx-auto mb-3" />
+            <h3 className="text-lg font-bold text-slate-800 mb-1">تعذّر تحميل هذا القسم</h3>
+            <p className="text-sm text-slate-600 mb-4">
+              لا نعرض قائمة فارغة كأن القسم نظيف. قد تكون الجلسة أو الصلاحية غير كافية.
+            </p>
+            <Button variant="outline" onClick={() => void loadContent()} className="gap-2">
+              <RefreshCw className="w-4 h-4" />
+              إعادة المحاولة
+            </Button>
+          </motion.div>
+        )}
+
+        {tabState[selectedTab].loading && filteredItems.length === 0 && !tabState[selectedTab].error && (
+          <div className="text-center py-16 text-slate-500" aria-live="polite">
+            جارٍ تحميل المحتوى...
+          </div>
+        )}
+
         {/* Content Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           <AnimatePresence mode="popLayout">
@@ -407,9 +749,11 @@ const TeacherContentManager = () => {
                     </div>
                   </CardHeader>
                   <CardContent>
-                    <p className="text-sm text-slate-600 dark:text-slate-400 mb-4 line-clamp-2">
-                      {item.description}
-                    </p>
+                    {item.description && (
+                      <p className="text-sm text-slate-600 dark:text-slate-400 mb-4 line-clamp-2">
+                        {item.description}
+                      </p>
+                    )}
                     <div className="space-y-2 mb-4">
                       <div className="flex items-center gap-2 text-sm text-slate-500">
                         <BookOpen className="w-4 h-4" />
@@ -425,10 +769,10 @@ const TeacherContentManager = () => {
                           <span>{item.duration}</span>
                         </div>
                       )}
-                      {item.questionsCount && (
+                      {typeof item.totalMarks === 'number' && (
                         <div className="flex items-center gap-2 text-sm text-slate-500">
                           <FileText className="w-4 h-4" />
-                          <span>{item.questionsCount} سؤال - {item.totalMarks} درجة</span>
+                          <span>{item.totalMarks} درجة</span>
                         </div>
                       )}
                     </div>
@@ -452,7 +796,8 @@ const TeacherContentManager = () => {
                         size="sm"
                         variant="outline"
                         className="border-red-600 text-red-600 hover:bg-red-50"
-                        onClick={() => handleDelete(item.id)}
+                        onClick={() => handleDelete(item)}
+                        disabled={deletingIds.includes(item.id)}
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>
@@ -464,7 +809,10 @@ const TeacherContentManager = () => {
           </AnimatePresence>
         </div>
 
-        {filteredItems.length === 0 && (
+        {!tabState[selectedTab].loading
+          && !tabState[selectedTab].error
+          && tabState[selectedTab].loaded
+          && filteredItems.length === 0 && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}

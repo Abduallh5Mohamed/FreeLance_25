@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -8,8 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { BookOpen, FileText, Clock, Calendar, Download, Play, Eye, MessageSquare, Award, Users, Calendar as CalendarIcon, Sparkles, TrendingUp, Trophy, Target, ClipboardCheck, Search, Video } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
 import { useNavigate } from "react-router-dom";
-import { getStudents, getCourses, getGroups, getMaterials, getStudentMaterials, getStudentExams, getStudentExamResults, getRecentMessages, Student, User, Course } from "@/lib/api";
-import { useToast } from "@/hooks/use-toast";
+import { getCourses, getGroups, getStudentMaterials, getStudentExams, getStudentExamResults, authenticatedApiFetch, readAuthenticatedApiJson, getCurrentStudentEnrollment, verifyCurrentSession, AUTH_SESSION_CHANGED_EVENT, Student, User, Course } from "@/lib/api";
+import BarcodeReact from "react-barcode";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 import { motion, AnimatePresence } from "framer-motion";
 import { AnimatedSection } from "@/components/AnimatedSection";
@@ -29,134 +29,86 @@ const StudentDashboard = () => {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  const mountedRef = useRef(true);
+  const loadSequenceRef = useRef(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   // Filter states
   const [selectedExam, setSelectedExam] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
 
   const navigate = useNavigate();
-  const { toast } = useToast();
 
   useEffect(() => {
-    fetchStudentData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    mountedRef.current = true;
+    const refresh = () => { void fetchStudentData(); };
+    const onStorage = (event: StorageEvent) => {
+      if (!event.key || ['authToken', 'currentUser', 'currentStudent'].includes(event.key)) refresh();
+    };
+    refresh();
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      mountedRef.current = false;
+      loadSequenceRef.current += 1;
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
+      window.removeEventListener('storage', onStorage);
+    };
   }, []);
 
   const fetchStudentData = async () => {
+    const sequence = ++loadSequenceRef.current;
+    const token = localStorage.getItem('authToken');
+    const isCurrent = () => mountedRef.current && sequence === loadSequenceRef.current
+      && token === localStorage.getItem('authToken');
+    setLoading(true);
+    setLoadError(null);
+    setStudentData(null);
+    setCurrentUser(null);
+    setCourses([]); setMaterials([]); setExams([]); setExamResults([]);
+    setGroupInfo(null); setMessages([]);
     try {
-      // Check if user is logged in and is a student
-      const userStr = localStorage.getItem('currentUser');
-      const studentStr = localStorage.getItem('currentStudent');
-
-      if (!userStr) {
-        navigate('/auth');
-        toast({
-          variant: "destructive",
-          title: "غير مسموح",
-          description: "يرجى تسجيل الدخول أولاً",
-        });
-        setLoading(false);
-        return;
-      }
-
-      const user = JSON.parse(userStr) as User;
-      if (user.role !== 'student') {
-        navigate('/auth');
-        toast({
-          variant: "destructive",
-          title: "غير مسموح",
-          description: "هذه الصفحة للطلاب فقط",
-        });
-        setLoading(false);
-        return;
-      }
-
+      if (!token) { navigate('/auth'); return; }
+      const session = await verifyCurrentSession();
+      if (!isCurrent()) return;
+      if (session.state === 'anonymous') { navigate('/auth'); return; }
+      if (session.state !== 'authenticated') throw new Error('تعذر التحقق من الجلسة؛ أعد المحاولة.');
+      if (session.user.role !== 'student') { navigate('/auth'); return; }
+      const student = await getCurrentStudentEnrollment();
+      if (!isCurrent()) return;
+      if (!student || typeof student.id !== 'string') throw new Error('تعذر إثبات ملف الطالب الحالي.');
+      const user = session.user;
+      const results = await Promise.allSettled([
+        getCourses(),
+        student.group_id ? getGroups() : Promise.resolve([]),
+        getStudentMaterials(user.id), getStudentExams(user.id),
+        getStudentExamResults(user.id), (async () => {
+          const response = await authenticatedApiFetch('/messages/conversations');
+          if (!response.ok) throw new Error('تعذر تحميل الرسائل');
+          return readAuthenticatedApiJson(response);
+        })(),
+      ]);
+      if (!isCurrent()) return;
+      const failed = results.some(result => result.status !== 'fulfilled' || !Array.isArray(result.value));
+      // No partial dashboard is labelled as a complete authoritative snapshot.
+      if (failed) throw new Error('تعذر تحميل بعض بيانات اللوحة. أعد المحاولة؛ القوائم الفارغة ليست نتيجة مؤكدة.');
+      const values = results.map(result => result.status === 'fulfilled' ? result.value : []);
       setCurrentUser(user);
-
-      // Get student data
-      let student: Student | null = null;
-
-      if (studentStr) {
-        student = JSON.parse(studentStr) as Student;
-      } else {
-        // Fetch from API if not in localStorage
-        const students = await getStudents();
-        student = students?.find(s => s.id === user.id) || null;
-      }
-
-      if (!student) {
-        throw new Error("لم يتم العثور على بيانات الطالب");
-      }
-
       setStudentData(student);
-
-      // Set demo session in localStorage for Messages page
-      localStorage.setItem('student_session', JSON.stringify({
-        email: student.email || user.email || 'student@school.com',
-        loginTime: Date.now()
-      }));
-
-      // Fetch real courses from MySQL API
-      const allCourses = await getCourses();
-      setCourses(allCourses || []);
-
-      // Fetch group info if student has a group
-      if (student.group_id) {
-        const allGroups = await getGroups();
-        const studentGroup = allGroups?.find(g => g.id === student.group_id);
-        if (studentGroup) {
-          setGroupInfo(studentGroup);
-        }
-      }
-
-      // Fetch materials for this specific student based on their group
-      const studentMaterials = await getStudentMaterials(user.id);
-      setMaterials(studentMaterials || []);
-
-      // ✅ Fetch exams for this student based on their group
-      try {
-        const studentExams = await getStudentExams(user.id);
-        setExams(studentExams || []);
-      } catch (err) {
-        console.error('Error fetching exams:', err);
-        setExams([]);
-      }
-
-      // Fetch exam results for this student
-      try {
-        const results = await getStudentExamResults(user.id);
-        setExamResults(results || []);
-      } catch (err) {
-        console.error('Error fetching exam results:', err);
-        setExamResults([]);
-      }
-
-      // Fetch recent messages/conversations for this student
-      try {
-        const recentMessages = await getRecentMessages();
-        // Transform conversations to message format for display
-        const messagesData = Array.isArray(recentMessages) ? recentMessages.slice(0, 5).map((conv: any) => ({
-          id: conv.id,
-          sender: conv.other_user_name || 'مجهول',
-          content: conv.last_message_content || 'لا توجد رسائل',
-          time: conv.last_message_time ? new Date(conv.last_message_time).toLocaleDateString('ar') : '',
-          unread: conv.unread_count > 0
-        })) : [];
-        setMessages(messagesData);
-      } catch (err) {
-        console.error('Error fetching messages:', err);
-        setMessages([]);
-      }
-
-      setLoading(false);
+      setCourses(values[0]);
+      setGroupInfo(values[1].find(group => group.id === student.group_id) ?? null);
+      setMaterials(values[2]); setExams(values[3]); setExamResults(values[4]);
+      setMessages(values[5].slice(0, 5).map((conv: any) => ({
+        id: conv.id, sender: conv.other_user_name || 'مستخدم',
+        content: conv.last_message_content || '',
+        time: conv.last_message_time ? new Date(conv.last_message_time).toLocaleDateString('ar') : '',
+        unread: conv.unread_count > 0,
+      })));
     } catch (error) {
-      console.error('Error fetching student data:', error);
-      const errorMessage = error instanceof Error ? error.message : "حدث خطأ في تحميل البيانات";
-      toast({
-        title: "خطأ",
-        description: errorMessage,
-        variant: "destructive",
-      });
-      setLoading(false);
+      if (!isCurrent()) return;
+      setLoadError(error instanceof Error ? error.message : 'تعذر تحميل البيانات.');
+    } finally {
+      if (isCurrent()) setLoading(false);
     }
   };
 
@@ -238,6 +190,10 @@ const StudentDashboard = () => {
     );
   }
 
+  if (loadError) {
+    return <div className="min-h-screen" dir="rtl"><StudentHeader /><main className="container mx-auto p-6"><p role="alert">{loadError}</p><Button onClick={() => void fetchStudentData()}>إعادة المحاولة</Button></main></div>;
+  }
+
   if (!studentData) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 flex items-center justify-center relative overflow-hidden">
@@ -298,11 +254,9 @@ const StudentDashboard = () => {
                   {/* Barcode Image */}
                   {studentData.barcode && (
                     <div className="flex flex-col items-center gap-2 my-3">
-                      <img
-                        src={`https://barcode.tec-it.com/barcode.ashx?data=${studentData.barcode}&code=Code128&translate-esc=on`}
-                        alt="Student Barcode"
-                        className="h-16 sm:h-20 border-2 border-primary/20 rounded-lg p-2 bg-white"
-                      />
+                      <div role="img" aria-label="باركود الطالب" className="max-w-full overflow-x-auto rounded-lg bg-white p-2">
+                        <BarcodeReact value={studentData.barcode} format="CODE128" height={48} width={1.5} displayValue={false} />
+                      </div>
                       <Badge className="bg-gradient-to-r from-blue-500 to-cyan-500 text-white border-0 text-xs sm:text-sm px-3 py-1">
                         {studentData.barcode}
                       </Badge>
@@ -516,7 +470,7 @@ const StudentDashboard = () => {
                           <div className="flex-1 min-w-0">
                             <h4 className="font-medium text-sm md:text-base truncate">{exam.title}</h4>
                             <p className="text-xs md:text-sm text-muted-foreground truncate">
-                              {exam.courses?.name} - {exam.courses?.subject}
+                              {courses.find(course => course.id === exam.course_id)?.name ?? 'الكورس غير محدد'}
                             </p>
                             <div className="flex flex-wrap items-center gap-2 md:gap-4 mt-2 text-[10px] md:text-xs text-muted-foreground">
                               {exam.exam_date && (
@@ -564,10 +518,10 @@ const StudentDashboard = () => {
                   {messages.length > 0 ? (
                     messages.map((message) => (
                       <Card key={message.id} className="p-3">
-                        <p className="text-sm">{message.message_text}</p>
+                        <p className="text-sm">{message.content}</p>
                         <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
-                          <span>{new Date(message.sent_at).toLocaleDateString('ar-SA')}</span>
-                          <Badge variant={message.is_read ? "secondary" : "default"}>
+                          <span>{message.time}</span>
+                          <Badge variant={!message.unread ? "secondary" : "default"}>
                             {message.is_read ? "مقروءة" : "جديدة"}
                           </Badge>
                         </div>

@@ -15,7 +15,12 @@
  *    programming error and throws, so a stray user value can never create an
  *    unbounded series.
  *  - A metric may be defined once with a fixed type/label set; a conflicting
- *    redefinition throws.
+ *    redefinition throws. Rendered series names (including a histogram's
+ *    derived *_bucket/*_sum/*_count families) must stay unique across ALL
+ *    definitions and registered gauge sources; a cross-family collision
+ *    throws at definition time either declaration order.
+ *  - Histograms reject duplicate bounds and the reserved `le` label; distinct
+ *    label-value tuples can never share a series key (JSON tuple encoding).
  *  - Observations of non-finite numbers are ignored; counters only move up.
  */
 
@@ -93,16 +98,22 @@ const assertLabelNames = (labelNames: readonly string[]): void => {
     }
 };
 
+/**
+ * Deterministic series key. JSON-encoding the ordered (name, value) tuple is
+ * injective on label-value tuples (control characters such as \u0001 and
+ * \u001f are escaped), so raw concatenation with delimiter characters can no
+ * longer merge two distinct tuples into one series.
+ */
 const labelKey = (labelNames: readonly string[], labels: Labels): string => {
     for (const provided of Object.keys(labels)) {
         if (!labelNames.includes(provided)) throw new Error(`Unexpected label "${provided}"`);
     }
-    return labelNames.map((name) => {
+    return JSON.stringify(labelNames.map((name) => {
         const value = labels[name];
         if (value === undefined) throw new Error(`Missing label "${name}"`);
         if (typeof value !== 'string') throw new Error(`Label "${name}" must be a string`);
-        return `${name}\u001f${value}`;
-    }).join('\u0001');
+        return [name, value];
+    }));
 };
 
 const escapeLabelValue = (value: string): string =>
@@ -123,13 +134,59 @@ const formatValue = (value: number): string => {
 const isDescriptorType = (descriptor: Descriptor | undefined, type: MetricType): boolean =>
     descriptor !== undefined && descriptor.type === type;
 
+const renderedSeriesNames = (definition: {
+    name: string;
+    type: MetricType;
+}): readonly string[] => {
+    if (definition.type === 'histogram') {
+        return [definition.name, `${definition.name}_bucket`, `${definition.name}_sum`, `${definition.name}_count`];
+    }
+    return [definition.name];
+};
+
+const renderedNamesCollide = (
+    a: { name: string; type: MetricType },
+    b: { name: string; type: MetricType },
+): boolean =>
+    renderedSeriesNames(a).some((name) => renderedSeriesNames(b).includes(name));
+
+const GAUGE_SOURCE_TYPE: MetricType = 'gauge';
+
+export const MAX_GAUGE_SOURCE_SAMPLES = 10_000;
+
+const isValidGaugeSample = (source: GaugeSource, sample: unknown): sample is GaugeSample => {
+    if (typeof sample !== 'object' || sample === null) return false;
+    const candidate = sample as { labels?: unknown; value?: unknown };
+    if (typeof candidate.value !== 'number' || !Number.isFinite(candidate.value)) return false;
+    const declared = source.labelNames ?? null;
+    const labels = candidate.labels ?? {};
+    if (typeof labels !== 'object' || labels === null) return false;
+    const provided = labels as Record<string, unknown>;
+    for (const [name, value] of Object.entries(provided)) {
+        if (typeof value !== 'string') return false;
+        if (!LABEL_NAME_PATTERN.test(name)) return false;
+        if (declared !== null && !declared.includes(name)) return false;
+    }
+    if (declared !== null) {
+        for (const name of declared) {
+            if (!(name in provided)) return false;
+        }
+    }
+    return true;
+};
+
 export function createMetricsRegistry(options: { defaultBuckets?: readonly number[] } = {}): MetricsRegistry {
     const definitions = new Map<string, Descriptor>();
     const gaugeSources: GaugeSource[] = [];
     const normalizedBuckets = (buckets: readonly number[] | undefined): readonly number[] => {
         const chosen = (buckets ?? options.defaultBuckets ?? DEFAULT_DURATION_BUCKETS)
             .filter((bound) => Number.isFinite(bound) && bound > 0);
-        return chosen.length > 0 ? [...chosen].sort((a, b) => a - b) : [...DEFAULT_DURATION_BUCKETS];
+        const sorted = [...chosen].sort((a, b) => a - b);
+        if (sorted.length === 0) return [...DEFAULT_DURATION_BUCKETS];
+        // Duplicate bounds would render two identical `le=` samples for the
+        // same series (the second per-equal-bound counter is never
+        // incremented), so equal neighbours collapse to one bound.
+        return sorted.filter((bound, index) => index === 0 || sorted[index - 1] !== bound);
     };
 
     const define = (
@@ -141,6 +198,12 @@ export function createMetricsRegistry(options: { defaultBuckets?: readonly numbe
     ): Descriptor => {
         assertMetricName(name);
         assertLabelNames(labelNames);
+        if (type === 'histogram' && labelNames.includes('le')) {
+            // Rendering injects the bucket cut as `le`, overwriting any
+            // user-provided `le` and collapsing distinct series into one
+            // sample identity, so the reserved label is rejected up front.
+            throw new Error(`Histogram ${name} must not use the reserved label "le"`);
+        }
         const existing = definitions.get(name);
         if (existing) {
             if (existing.type !== type) throw new Error(`Metric ${name} already defined as ${existing.type}`);
@@ -148,6 +211,16 @@ export function createMetricsRegistry(options: { defaultBuckets?: readonly numbe
                 throw new Error(`Metric ${name} already defined with different labels`);
             }
             return existing;
+        }
+        for (const descriptor of definitions.values()) {
+            if (renderedNamesCollide({ name, type }, descriptor)) {
+                throw new Error(`Metric ${name} collides with defined metric ${descriptor.name}`);
+            }
+        }
+        for (const source of gaugeSources) {
+            if (renderedNamesCollide({ name, type }, { name: source.name, type: GAUGE_SOURCE_TYPE })) {
+                throw new Error(`Metric ${name} collides with registered gauge source ${source.name}`);
+            }
         }
         const descriptor: Descriptor = {
             name, type, help, labelNames, buckets,
@@ -224,7 +297,20 @@ export function createMetricsRegistry(options: { defaultBuckets?: readonly numbe
         registerGaugeSource(source) {
             assertMetricName(source.name);
             if (source.labelNames) assertLabelNames(source.labelNames);
-            if (gaugeSources.some((existing) => existing.name === source.name)) return;
+            const duplicate = gaugeSources.find((existing) => existing.name === source.name);
+            if (duplicate) {
+                const duplicateLabels = (duplicate.labelNames ?? []).join(',');
+                const sourceLabels = (source.labelNames ?? []).join(',');
+                if (duplicate.help !== source.help || duplicateLabels !== sourceLabels) {
+                    throw new Error(`Gauge source ${source.name} already registered with a different definition`);
+                }
+                return;
+            }
+            for (const descriptor of definitions.values()) {
+                if (renderedNamesCollide(descriptor, { name: source.name, type: GAUGE_SOURCE_TYPE })) {
+                    throw new Error(`Gauge source ${source.name} collides with metric ${descriptor.name}`);
+                }
+            }
             gaugeSources.push(source);
         },
         render() {
@@ -261,12 +347,14 @@ export function createMetricsRegistry(options: { defaultBuckets?: readonly numbe
                 } catch {
                     samples = [];
                 }
-                lines.push(`# HELP ${source.name} ${source.help}`);
-                lines.push(`# TYPE ${source.name} gauge`);
+                if (!Array.isArray(samples)) samples = [];
                 const rendered = samples
-                    .filter((sample) => Number.isFinite(sample.value))
+                    .slice(0, MAX_GAUGE_SOURCE_SAMPLES)
+                    .filter((sample) => isValidGaugeSample(source, sample))
                     .map((sample) => `${source.name}${formatLabels(sample.labels ?? {})} ${formatValue(sample.value)}`)
                     .sort();
+                lines.push(`# HELP ${source.name} ${source.help}`);
+                lines.push(`# TYPE ${source.name} gauge`);
                 lines.push(...rendered);
             }
             return lines.length > 0 ? `${lines.join('\n')}\n` : '';

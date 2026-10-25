@@ -129,7 +129,8 @@ export interface LiveSessionSqlConnection {
     /**
      * `affectedRows` MUST be a number (mysql2 OkPacket). A driver that returns
      * a string is adapted by the caller, not guessed here: an unreadable count
-     * is reported as 0, never as success.
+     * throws `unreadable_affected_rows`, because 0 is reserved for a genuine
+     * miss and would otherwise be indistinguishable from a lost CAS.
      */
     execute(sql: string, params?: readonly unknown[]): Promise<{ affectedRows?: number; insertId?: number }>;
 }
@@ -186,6 +187,13 @@ export type LiveSessionSqlErrorCode =
     | 'tenant_required'
     | 'invalid_outcome'
     | 'write_conflict'
+    /**
+     * A CAS statement returned without a usable `affectedRows`. It is NOT a
+     * lost race: the write may have landed, so it must not be reported as
+     * `conflict` / `claim-held` / `claim-lost` with no audit. Thrown inside the
+     * unit, so the caller sees a failure instead of a fabricated 0.
+     */
+    | 'unreadable_affected_rows'
     /**
      * The database does not carry the R22 columns or the R23 CHECK. Raised only
      * from a driver error code (1054/42S22, 3819) and only so the caller sees an
@@ -332,10 +340,27 @@ const readChar36Id = (value: unknown): string | null => {
     return trimmed.length > 0 && trimmed.length <= MAX_CHAR36_ID_LENGTH ? trimmed : null;
 };
 
-const affectedOf = (result: { affectedRows?: number }): number =>
-    typeof result.affectedRows === 'number' && Number.isSafeInteger(result.affectedRows) && result.affectedRows >= 0
-        ? result.affectedRows
-        : 0;
+/**
+ * The affected-row count of a CAS, or a throw.
+ *
+ * `undefined` is neither zero (which would drop a change that happened) nor one
+ * (which would fabricate a change that did not), so an unreadable count is a
+ * fault and is thrown — never coerced with `?? 0`. Coercing it reported a
+ * COMMITTED state transition as `conflict` and suppressed its audit, reported a
+ * won presence-cursor CAS as `ignored:stale-event`, and reported a landed
+ * callback finalisation as a conflict. `0` stays a genuine miss; the caller
+ * decides what a legitimate zero means.
+ */
+const affectedOf = (result: { affectedRows?: number }): number => {
+    const affected = result?.affectedRows;
+    if (typeof affected !== 'number' || !Number.isSafeInteger(affected) || affected < 0) {
+        throw new LiveSessionSqlError(
+            'unreadable_affected_rows',
+            'the CAS statement did not report a usable affected-row count',
+        );
+    }
+    return affected;
+};
 
 const isDuplicateEntry = (error: unknown): boolean => {
     if (!error || typeof error !== 'object') return false;
@@ -1310,12 +1335,59 @@ export function classifyPresenceEventIdIdentity(input: {
  * `verifyLiveSchema` reads `information_schema` on the injected connection and
  * reports, per area, what was found and what could not be established.
  *
+ * WHAT `verified` NOW MEANS — SHAPE, NOT NAMES.
+ *
+ * An earlier revision granted `verified` from column NAMES alone (plus the
+ * presence-event collation). A `VARCHAR(64)` where the contract says
+ * `VARCHAR(128)`, a nullable column that must be NOT NULL, a UNIQUE key that
+ * was recreated without its second column, a CHECK that exists but is
+ * `NOT ENFORCED`, or a composite FK whose tenant column was dropped all passed
+ * that test. They no longer do. `verified` for an area now requires, from the
+ * injected catalog:
+ *
+ *   - COLUMNS: every required column present, with the declared DATA_TYPE,
+ *     length, charset/collation for text, signedness for integers, the declared
+ *     enum vocabulary, the declared NULLability, no `EXTRA` (generated /
+ *     auto-increment / on-update), and — for the R22 cursor pair — no DEFAULT;
+ *   - STATISTICS: every required index present, `NON_UNIQUE` matching the
+ *     declared uniqueness, no `SUB_PART` prefix, and the columns in the
+ *     DECLARED ORDER (`SEQ_IN_INDEX`), because `(tenant_id, id)` and `(id,
+ *     tenant_id)` are different keys for a composite tenant FK;
+ *   - TABLE_CONSTRAINTS + CHECK_CONSTRAINTS: every required CHECK present, of
+ *     type CHECK, `ENFORCED = 'YES'`, and still expressing the required
+ *     PREDICATE — recognised structurally from `CHECK_CLAUSE` (see
+ *     `checkShapeMatches`), never inferred from the constraint's name; and
+ *     every CHECK the migrations DROP is still absent, because a surviving
+ *     older constraint re-imposes the narrower vocabulary the replacement was
+ *     introduced to widen (R23: `chk_live_callback_outcome` must be gone);
+ *   - KEY_COLUMN_USAGE: every required foreign key present, with the declared
+ *     referencing columns in order, the declared referenced table and columns
+ *     in order, and `REFERENCED_TABLE_SCHEMA` equal to the schema this
+ *     connection is actually using — that is the TENANT BOUNDARY: a child row
+ *     cannot name another tenant's parent row.
+ *
+ * Anything the catalog cannot answer — a denied privilege, a missing
+ * information_schema table, a server without `TABLE_CONSTRAINTS.ENFORCED`, an
+ * unreadable `CHECK_CLAUSE`, a MariaDB that has no `utf8mb4_0900_bin` — makes
+ * the affected area `unknown`. It NEVER makes it `verified`: an unmeasured fact
+ * is held, not assumed.
+ *
  * It is never awaited at module scope and never called from a constructor:
  * construction stays I/O-free and the caller decides when, and whether, to
  * measure. There is no `transaction` here either — verification reads the
  * catalog and is not a write unit.
+ *
+ * CONTRACT VERSION. Bumped from `live-schema-20261023-1` because a report now
+ * means something strictly stronger than it did. Bumped again to
+ * `live-schema-20261024-3` because a report now also asserts the ABSENCE of the
+ * constraints the migrations replace, and because `CHECK_CLAUSE` recognition no
+ * longer depends on whether MySQL happened to render the predicate with a
+ * redundant outer pair of parentheses. A report produced under an older label is
+ * not evidence for this claim, and an operational grant issued against the old
+ * string is refused (`not-verified`) rather than re-read as if the tighter check
+ * had run.
  */
-export const LIVE_SCHEMA_CONTRACT_VERSION = 'live-schema-20261023-1';
+export const LIVE_SCHEMA_CONTRACT_VERSION = 'live-schema-20261024-4';
 
 /**
  * The five independent claims a live-session deployment makes about its schema.
@@ -1375,97 +1447,632 @@ const issuedReports = new WeakSet<object>();
  */
 const reportsByExecutor = new WeakMap<object, Set<LiveSchemaReport>>();
 
-interface TableColumnRequirement {
+/**
+ * The expected SHAPE of one column, as the migrations declare it.
+ *
+ * A name proves nothing: `presence_event_id VARCHAR(64) utf8mb4_unicode_ci` has
+ * the right name and the wrong identity, and `tenant_id CHAR(36) NULL` has the
+ * right name and cannot carry a tenant boundary. Every requirement therefore
+ * carries the type, the length, the charset/collation where the column is text,
+ * the signedness where the column is numeric, and the nullability.
+ */
+type ExpectedColumnType =
+    | { readonly kind: 'char'; readonly length: number; readonly charset: string; readonly collation: string }
+    | { readonly kind: 'varchar'; readonly length: number; readonly charset: string; readonly collation: string }
+    | { readonly kind: 'bigint'; readonly unsigned: boolean }
+    | { readonly kind: 'int'; readonly unsigned: boolean }
+    | { readonly kind: 'enum'; readonly values: readonly string[] };
+
+interface ColumnRequirement {
+    readonly column: string;
+    readonly nullable: boolean;
+    readonly type: ExpectedColumnType;
+    /**
+     * `true` ⇒ the column must declare no DEFAULT at all
+     * (`information_schema.COLUMNS.COLUMN_DEFAULT IS NULL`). Used for the R22
+     * cursor pair, whose migration refuses a defaulted column as drift.
+     */
+    readonly noDefault?: boolean;
+}
+
+interface TableColumnsRequirement {
     readonly table: string;
+    readonly columns: readonly ColumnRequirement[];
+}
+
+/** One index as the migrations declare it: name, uniqueness and COLUMN ORDER. */
+interface IndexRequirement {
+    readonly table: string;
+    readonly name: string;
+    readonly unique: boolean;
     readonly columns: readonly string[];
 }
 
-interface CatalogColumnInfo {
-    readonly charset: string | null;
-    readonly collation: string | null;
+/**
+ * The predicate a CHECK must still express, independent of how MySQL renders
+ * `CHECK_CLAUSE` back. Recognition is structural (`checkShapeMatches`), so a
+ * constraint that keeps the right NAME but loses half its predicate is
+ * reported, never accepted.
+ */
+type CheckShape =
+    | { readonly kind: 'pair'; readonly left: string; readonly right: string }
+    | { readonly kind: 'equivalence'; readonly column: string; readonly value: string; readonly nonNullColumn: string }
+    | { readonly kind: 'between'; readonly column: string; readonly min: string; readonly max: string }
+    | { readonly kind: 'atMost'; readonly column: string; readonly max: string }
+    | { readonly kind: 'nullOrAtMost'; readonly column: string; readonly max: string }
+    | { readonly kind: 'membership'; readonly column: string; readonly values: readonly string[] }
+    | {
+        readonly kind: 'release';
+        readonly column: string;
+        readonly pendingValue: string;
+        readonly columns: readonly string[];
+    };
+
+/** One CHECK as the migrations declare it: name plus the predicate it must hold. */
+interface CheckRequirement {
+    readonly table: string;
+    readonly name: string;
+    readonly shape: CheckShape;
 }
 
-const splitColumnList = (list: string): readonly string[] =>
-    list.split(',').map((name) => name.trim()).filter((name) => name.length > 0);
+/**
+ * One foreign key, including the TENANT BOUNDARY it enforces.
+ *
+ * `columns` starts with `tenant_id` for every child table in this lane, and the
+ * referenced columns are the parent's `(tenant_id, id)` pair — that is what
+ * makes "a participant of tenant A can never point at tenant B's session" a
+ * database fact instead of a convention.
+ */
+interface ForeignKeyRequirement {
+    readonly table: string;
+    readonly name: string;
+    readonly columns: readonly string[];
+    readonly referencedTable: string;
+    readonly referencedColumns: readonly string[];
+}
+
+/** One area's full expected shape. */
+interface AreaSpec {
+    readonly tables: readonly string[];
+    readonly columns: readonly TableColumnsRequirement[];
+    readonly indexes: readonly IndexRequirement[];
+    readonly checks: readonly CheckRequirement[];
+    /**
+     * Constraints a LATER migration removes. Their presence is a proven
+     * mismatch, not a tolerated extra: a surviving older CHECK is still
+     * enforced, and a narrower vocabulary that the replacement widened would
+     * reject the values this lane writes. Asserted by ABSENCE so a half-applied
+     * migration cannot report `verified`.
+     */
+    readonly forbiddenChecks: readonly { readonly table: string; readonly name: string }[];
+    readonly foreignKeys: readonly ForeignKeyRequirement[];
+    /** Facts this area asserts by ABSENCE, recorded so nothing stays silent. */
+    readonly notes: readonly string[];
+}
 
 const LIVE_SCHEMA_TABLES = [
     'live_sessions',
+    'live_session_presence_intervals',
     'live_session_participants',
     'live_session_callbacks',
     'live_recording_ingests',
     'live_recovery_checkpoints',
 ] as const;
 
+/* ---------- expected shape, transcribed from the migrations ---------- */
+
 /**
- * The session-side columns this lane actually writes or reads, taken from the
- * statement text above (`SESSION_COLUMNS`, `PARTICIPANT_COLUMNS`, and the
- * callback INSERT). A wider list recalled from memory would report a gap that
- * does not exist; a narrower one would report `verified` for a table this lane
- * cannot write.
+ * The live tables are `utf8mb4 / utf8mb4_unicode_ci` (20261022_06). The two
+ * byte-exact identities — the R22 cursor and the R24 checkpoint keys — are
+ * `utf8mb4_0900_bin`, and that difference is the whole point of F2: under a PAD
+ * collation `'evt-1'` and `'evt-1 '` are one identity.
  */
-const SESSION_LIFECYCLE_REQUIREMENTS: readonly TableColumnRequirement[] = [
-    { table: 'live_sessions', columns: splitColumnList(SESSION_COLUMNS) },
-    { table: 'live_session_participants', columns: splitColumnList(PARTICIPANT_COLUMNS) },
-    {
-        table: 'live_session_callbacks',
-        columns: ['id', 'tenant_id', 'session_id', 'provider', 'event_id', 'kind', 'occurred_at_ms', 'outcome'],
+const TABLE_CHARSET = 'utf8mb4' as const;
+const TABLE_COLLATION = 'utf8mb4_unicode_ci' as const;
+
+const charColumn = (column: string, length: number, nullable = false): ColumnRequirement => ({
+    column,
+    nullable,
+    type: { kind: 'char', length, charset: TABLE_CHARSET, collation: TABLE_COLLATION },
+});
+
+const varcharColumn = (
+    column: string,
+    length: number,
+    options?: { readonly nullable?: boolean; readonly collation?: string; readonly noDefault?: boolean },
+): ColumnRequirement => ({
+    column,
+    nullable: options?.nullable === true,
+    type: {
+        kind: 'varchar',
+        length,
+        charset: TABLE_CHARSET,
+        collation: options?.collation ?? TABLE_COLLATION,
     },
-];
+    ...(options?.noDefault === true ? { noDefault: true } : {}),
+});
 
-/** The R22 cursor pair, from the header comment and `readPresenceCursorRow`. */
-const PRESENCE_ORDERING_COLUMNS: readonly string[] = ['presence_event_at_ms', 'presence_event_id'];
+const bigintColumn = (
+    column: string,
+    options?: { readonly nullable?: boolean; readonly unsigned?: boolean; readonly noDefault?: boolean },
+): ColumnRequirement => ({
+    column,
+    nullable: options?.nullable === true,
+    type: { kind: 'bigint', unsigned: options?.unsigned === true },
+    ...(options?.noDefault === true ? { noDefault: true } : {}),
+});
+
+const intColumn = (
+    column: string,
+    options?: { readonly nullable?: boolean; readonly unsigned?: boolean },
+): ColumnRequirement => ({
+    column,
+    nullable: options?.nullable === true,
+    type: { kind: 'int', unsigned: options?.unsigned === true },
+});
+
+const enumColumn = (column: string, values: readonly string[], nullable = false): ColumnRequirement => ({
+    column,
+    nullable,
+    type: { kind: 'enum', values },
+});
+
+/** The R23 vocabulary, exactly as `20261023_02` installs it. */
+const LIVE_CALLBACK_OUTCOMES: readonly string[] = [
+    'pending',
+    'applied',
+    'rejected:illegal-transition',
+    'ignored:unknown-participant',
+    'ignored:malformed',
+    'ignored:mapping-unavailable',
+    'ignored:ordering-unavailable',
+    'ignored:stale-event',
+    'ignored:ambiguous-event',
+];
 
 /**
- * Mirrors `INGEST_COLUMNS` in `live-recording-ingest-sql.ts`; that module does
- * not export it and this file takes no new import. The ledger is read here, not
- * written: the area only asserts that the table can carry what the ingest lane
- * persists.
+ * `live_sessions` + `live_session_participants` + `live_session_callbacks`,
+ * with the columns, keys, CHECKs and tenant FKs of 20261022_06 (plus the R23
+ * outcome CHECK of 20261023_02).
+ *
+ * The R22 cursor columns are deliberately NOT required here: this area must be
+ * verifiable on a database where 20261023_02 has not been applied, and a
+ * session can be created, found and transitioned without an ordering cursor.
  */
-const INGEST_LEDGER_COLUMNS: readonly string[] = [
-    'id',
-    'tenant_id',
-    'session_id',
-    'provider',
-    'event_id',
-    'provider_recording_id',
-    'duration_seconds',
-    'storage_bytes',
-    'occurred_at_ms',
-    'outcome',
-    'claim_owner',
-    'claim_expires_at_ms',
-];
+const SESSION_LIFECYCLE_SPEC: AreaSpec = {
+    tables: ['live_sessions', 'live_session_participants', 'live_session_callbacks'],
+    columns: [
+        {
+            table: 'live_sessions',
+            columns: [
+                charColumn('id', 36),
+                charColumn('tenant_id', 36),
+                charColumn('host_user_id', 36),
+                varcharColumn('title', 200),
+                enumColumn('state', ['scheduled', 'live', 'ended', 'cancelled']),
+                varcharColumn('provider', 128, { nullable: true }),
+                varcharColumn('provider_room_id', 128, { nullable: true }),
+                bigintColumn('starts_at_ms'),
+                bigintColumn('ended_at_ms', { nullable: true }),
+                intColumn('max_participants', { unsigned: true }),
+                bigintColumn('created_at_ms'),
+            ],
+        },
+        {
+            table: 'live_session_participants',
+            columns: [
+                charColumn('id', 36),
+                charColumn('tenant_id', 36),
+                charColumn('session_id', 36),
+                charColumn('user_id', 36),
+                enumColumn('role', ['host', 'cohost', 'participant']),
+                charColumn('ticket_fingerprint', 64),
+                bigintColumn('joined_at_ms'),
+                bigintColumn('last_seen_at_ms'),
+                bigintColumn('left_at_ms', { nullable: true }),
+            ],
+        },
+        {
+            table: 'live_session_callbacks',
+            columns: [
+                charColumn('id', 36),
+                charColumn('tenant_id', 36),
+                charColumn('session_id', 36),
+                varcharColumn('provider', 128),
+                varcharColumn('event_id', 128),
+                varcharColumn('kind', 32),
+                bigintColumn('occurred_at_ms'),
+                varcharColumn('outcome', 48),
+            ],
+        },
+    ],
+    indexes: [
+        { table: 'live_sessions', name: 'PRIMARY', unique: true, columns: ['id'] },
+        {
+            table: 'live_sessions',
+            name: 'uq_live_session_id_tenant',
+            unique: true,
+            columns: ['tenant_id', 'id'],
+        },
+        {
+            table: 'live_sessions',
+            name: 'uq_live_session_room',
+            unique: true,
+            columns: ['provider', 'provider_room_id'],
+        },
+        {
+            table: 'live_sessions',
+            name: 'idx_live_sessions_tenant',
+            unique: false,
+            columns: ['tenant_id', 'state', 'starts_at_ms'],
+        },
+        { table: 'live_session_participants', name: 'PRIMARY', unique: true, columns: ['id'] },
+        {
+            table: 'live_session_participants',
+            name: 'uq_live_participant',
+            unique: true,
+            columns: ['session_id', 'user_id'],
+        },
+        {
+            table: 'live_session_participants',
+            name: 'uq_live_participant_tenant',
+            unique: true,
+            columns: ['tenant_id', 'session_id', 'id'],
+        },
+        {
+            table: 'live_session_participants',
+            name: 'idx_live_participant_active',
+            unique: false,
+            columns: ['session_id', 'left_at_ms'],
+        },
+        { table: 'live_session_callbacks', name: 'PRIMARY', unique: true, columns: ['id'] },
+        {
+            table: 'live_session_callbacks',
+            name: 'uq_live_callback',
+            unique: true,
+            columns: ['tenant_id', 'provider', 'event_id'],
+        },
+        {
+            table: 'live_session_callbacks',
+            name: 'idx_live_callback_session',
+            unique: false,
+            columns: ['tenant_id', 'session_id'],
+        },
+    ],
+    checks: [
+        {
+            table: 'live_sessions',
+            name: 'chk_live_session_ended',
+            shape: { kind: 'equivalence', column: 'state', value: 'ended', nonNullColumn: 'ended_at_ms' },
+        },
+        {
+            table: 'live_sessions',
+            name: 'chk_live_session_max_participants',
+            shape: { kind: 'between', column: 'max_participants', min: '1', max: '5000' },
+        },
+        {
+            table: 'live_session_callbacks',
+            name: 'chk_live_callback_outcome_v2',
+            shape: { kind: 'membership', column: 'outcome', values: LIVE_CALLBACK_OUTCOMES },
+        },
+    ],
+    /**
+     * R23 REPLACES this CHECK (`20261023_02`, line 328 / 387: `DROP CHECK
+     * chk_live_callback_outcome`), and the migration's own final guard treats
+     * `@c6_oc_old_end = 1` as drift (line 421). It must therefore be GONE: while
+     * it exists it is still enforced and still admits only the five original
+     * values, so the four `ignored:*` outcomes this adapter writes would raise
+     * 3819 at runtime. Its absence is a required fact, not a nicety.
+     */
+    forbiddenChecks: [
+        { table: 'live_session_callbacks', name: 'chk_live_callback_outcome' },
+    ],
+    foreignKeys: [
+        {
+            table: 'live_sessions',
+            name: 'fk_live_session_tenant',
+            columns: ['tenant_id'],
+            referencedTable: 'tenants',
+            referencedColumns: ['id'],
+        },
+        {
+            table: 'live_session_participants',
+            name: 'fk_live_participant_tenant',
+            columns: ['tenant_id'],
+            referencedTable: 'tenants',
+            referencedColumns: ['id'],
+        },
+        {
+            table: 'live_session_participants',
+            name: 'fk_live_participant_session',
+            columns: ['tenant_id', 'session_id'],
+            referencedTable: 'live_sessions',
+            referencedColumns: ['tenant_id', 'id'],
+        },
+        {
+            table: 'live_session_callbacks',
+            name: 'fk_live_callback_tenant',
+            columns: ['tenant_id'],
+            referencedTable: 'tenants',
+            referencedColumns: ['id'],
+        },
+        {
+            table: 'live_session_callbacks',
+            name: 'fk_live_callback_session',
+            columns: ['tenant_id', 'session_id'],
+            referencedTable: 'live_sessions',
+            referencedColumns: ['tenant_id', 'id'],
+        },
+    ],
+    notes: [],
+};
 
 /**
- * R24, the agreed checkpoint contract. The migration does not exist yet, so an
- * absent table is the expected result and is reported as `absent` rather than
- * as a failure of this verifier.
+ * The R22 cursor pair and its paired-NULL CHECK, from `20261023_02`.
+ *
+ * Both columns are nullable BY CONTRACT (existing rows stay NULL/NULL — no
+ * backfill), and the migration refuses a DEFAULT on either, so a defaulted
+ * column is reported as drift rather than accepted as "equivalent".
  */
-const RECOVERY_CHECKPOINT_COLUMNS: readonly string[] = [
-    'purpose',
-    'cursor_occurred_at_ms',
-    'cursor_id',
-    'owner',
-    'lease_expires_at_ms',
-    'row_version',
-    'sweep_generation',
-    'updated_at_ms',
-];
+const PRESENCE_ORDERING_SPEC: AreaSpec = {
+    tables: ['live_session_participants', 'live_session_presence_intervals'],
+    columns: [
+        { table: 'live_session_presence_intervals', columns: [
+            charColumn('id', 36), charColumn('tenant_id', 36),
+            charColumn('session_id', 36), charColumn('participant_id', 36),
+            charColumn('user_id', 36), bigintColumn('joined_at_ms'),
+            bigintColumn('left_at_ms', { nullable: true }),
+            enumColumn('close_reason', ['leave', 'callback', 'session-ended'], true),
+        ] },
+        {
+            table: 'live_session_participants',
+            columns: [
+                bigintColumn('presence_event_at_ms', { nullable: true, noDefault: true }),
+                varcharColumn('presence_event_id', 128, {
+                    nullable: true,
+                    collation: PRESENCE_EVENT_ID_COLLATION,
+                    noDefault: true,
+                }),
+            ],
+        },
+    ],
+    indexes: [
+        { table: 'live_session_presence_intervals', name: 'PRIMARY', unique: true, columns: ['id'] },
+        { table: 'live_session_presence_intervals', name: 'uq_presence_interval', unique: true, columns: ['session_id', 'user_id', 'joined_at_ms'] },
+        { table: 'live_session_presence_intervals', name: 'idx_presence_open', unique: false, columns: ['session_id', 'user_id', 'left_at_ms'] },
+        { table: 'live_session_presence_intervals', name: 'idx_presence_participant', unique: false, columns: ['tenant_id', 'session_id', 'participant_id'] },
+    ],
+    checks: [
+        { table: 'live_session_presence_intervals', name: 'chk_presence_left_reason', shape: { kind: 'pair', left: 'left_at_ms', right: 'close_reason' } },
+        {
+            table: 'live_session_participants',
+            name: 'chk_live_participant_cursor_pair',
+            shape: { kind: 'pair', left: 'presence_event_at_ms', right: 'presence_event_id' },
+        },
+    ],
+    forbiddenChecks: [],
+    foreignKeys: [
+        { table: 'live_session_presence_intervals', name: 'fk_presence_tenant', columns: ['tenant_id'], referencedTable: 'tenants', referencedColumns: ['id'] },
+        { table: 'live_session_presence_intervals', name: 'fk_presence_participant', columns: ['tenant_id', 'session_id', 'participant_id'], referencedTable: 'live_session_participants', referencedColumns: ['tenant_id', 'session_id', 'id'] },
+    ],
+    notes: [],
+};
 
-const RECOVERY_CHECKPOINT_TABLE = 'live_recovery_checkpoints';
+/**
+ * The identity contract of `presence_event_id`: VARCHAR(128), utf8mb4, and a
+ * collation that is both BINARY and NO PAD.
+ *
+ * The column shape is proven from COLUMNS; the pad attribute is a server-level
+ * fact read from COLLATIONS. Neither is inferred from the collation's NAME.
+ */
+const PRESENCE_EVENT_IDENTITY_SPEC: AreaSpec = {
+    tables: ['live_session_participants'],
+    columns: [
+        {
+            table: 'live_session_participants',
+            columns: [
+                varcharColumn('presence_event_id', 128, {
+                    nullable: true,
+                    collation: PRESENCE_EVENT_ID_COLLATION,
+                    noDefault: true,
+                }),
+            ],
+        },
+    ],
+    indexes: [],
+    checks: [],
+    forbiddenChecks: [],
+    foreignKeys: [],
+    notes: [],
+};
+
+/**
+ * `live_recording_ingests`, from 20261022_06: the R12 fencing lease, the R14
+ * pending index, both dedupe keys and both tenant-bound foreign keys.
+ */
+const INGEST_LEDGER_SPEC: AreaSpec = {
+    tables: ['live_recording_ingests'],
+    columns: [
+        {
+            table: 'live_recording_ingests',
+            columns: [
+                charColumn('id', 36),
+                charColumn('tenant_id', 36),
+                charColumn('session_id', 36),
+                varcharColumn('provider', 128),
+                varcharColumn('event_id', 128),
+                varcharColumn('provider_recording_id', 128),
+                intColumn('duration_seconds', { unsigned: true }),
+                bigintColumn('storage_bytes', { unsigned: true }),
+                bigintColumn('occurred_at_ms'),
+                varcharColumn('outcome', 32),
+                varcharColumn('claim_owner', 64, { nullable: true }),
+                bigintColumn('claim_expires_at_ms', { nullable: true }),
+            ],
+        },
+    ],
+    indexes: [
+        { table: 'live_recording_ingests', name: 'PRIMARY', unique: true, columns: ['id'] },
+        {
+            table: 'live_recording_ingests',
+            name: 'uq_ingest_event',
+            unique: true,
+            columns: ['tenant_id', 'provider', 'event_id'],
+        },
+        {
+            table: 'live_recording_ingests',
+            name: 'uq_ingest_recording',
+            unique: true,
+            columns: ['tenant_id', 'provider', 'provider_recording_id'],
+        },
+        {
+            table: 'live_recording_ingests',
+            name: 'idx_live_ingest_pending',
+            unique: false,
+            columns: ['outcome', 'claim_expires_at_ms'],
+        },
+        {
+            table: 'live_recording_ingests',
+            name: 'idx_live_ingest_session',
+            unique: false,
+            columns: ['tenant_id', 'session_id'],
+        },
+    ],
+    checks: [
+        {
+            table: 'live_recording_ingests',
+            name: 'chk_live_ingest_lease_pair',
+            shape: { kind: 'pair', left: 'claim_owner', right: 'claim_expires_at_ms' },
+        },
+        {
+            table: 'live_recording_ingests',
+            name: 'chk_live_ingest_terminal_release',
+            shape: {
+                kind: 'release',
+                column: 'outcome',
+                pendingValue: 'pending',
+                columns: ['claim_owner', 'claim_expires_at_ms'],
+            },
+        },
+    ],
+    forbiddenChecks: [],
+    foreignKeys: [
+        {
+            table: 'live_recording_ingests',
+            name: 'fk_live_ingest_tenant',
+            columns: ['tenant_id'],
+            referencedTable: 'tenants',
+            referencedColumns: ['id'],
+        },
+        {
+            table: 'live_recording_ingests',
+            name: 'fk_live_ingest_session',
+            columns: ['tenant_id', 'session_id'],
+            referencedTable: 'live_sessions',
+            referencedColumns: ['tenant_id', 'id'],
+        },
+    ],
+    notes: [],
+};
+
+/**
+ * R24 — `live_recovery_checkpoints`, from `20261024_04`.
+ *
+ * `purpose` is the ONLY key and the row is addressed by it alone, so the table
+ * carries no `tenant_id` and no foreign key BY DESIGN. That absence is asserted
+ * in `notes` rather than left implicit: a reviewer looking for a tenant boundary
+ * here must find a statement that there is none, not silence.
+ */
+const RECOVERY_CHECKPOINT_SPEC: AreaSpec = {
+    tables: ['live_recovery_checkpoints'],
+    columns: [
+        {
+            table: 'live_recovery_checkpoints',
+            columns: [
+                varcharColumn('purpose', 64, { collation: PRESENCE_EVENT_ID_COLLATION }),
+                bigintColumn('cursor_occurred_at_ms', { nullable: true }),
+                varcharColumn('cursor_id', 64, { nullable: true, collation: PRESENCE_EVENT_ID_COLLATION }),
+                varcharColumn('owner', 128, { nullable: true, collation: PRESENCE_EVENT_ID_COLLATION }),
+                bigintColumn('lease_expires_at_ms', { nullable: true }),
+                bigintColumn('row_version', { unsigned: true }),
+                bigintColumn('sweep_generation', { unsigned: true }),
+                bigintColumn('updated_at_ms'),
+            ],
+        },
+    ],
+    indexes: [
+        { table: 'live_recovery_checkpoints', name: 'PRIMARY', unique: true, columns: ['purpose'] },
+    ],
+    checks: [
+        {
+            table: 'live_recovery_checkpoints',
+            name: 'chk_live_recovery_cursor_pair',
+            shape: { kind: 'pair', left: 'cursor_occurred_at_ms', right: 'cursor_id' },
+        },
+        {
+            table: 'live_recovery_checkpoints',
+            name: 'chk_live_recovery_lease_pair',
+            shape: { kind: 'pair', left: 'owner', right: 'lease_expires_at_ms' },
+        },
+        {
+            table: 'live_recovery_checkpoints',
+            name: 'chk_live_recovery_cursor_ms',
+            shape: { kind: 'nullOrAtMost', column: 'cursor_occurred_at_ms', max: '9007199254740991' },
+        },
+        {
+            table: 'live_recovery_checkpoints',
+            name: 'chk_live_recovery_lease_ms',
+            shape: { kind: 'nullOrAtMost', column: 'lease_expires_at_ms', max: '9007199254740991' },
+        },
+        {
+            table: 'live_recovery_checkpoints',
+            name: 'chk_live_recovery_version',
+            shape: { kind: 'between', column: 'row_version', min: '1', max: '9007199254740991' },
+        },
+        {
+            table: 'live_recovery_checkpoints',
+            name: 'chk_live_recovery_generation',
+            shape: { kind: 'between', column: 'sweep_generation', min: '0', max: '9007199254740991' },
+        },
+        {
+            table: 'live_recovery_checkpoints',
+            name: 'chk_live_recovery_changed_ms',
+            shape: { kind: 'atMost', column: 'updated_at_ms', max: '9007199254740991' },
+        },
+    ],
+    forbiddenChecks: [],
+    foreignKeys: [],
+    notes: [
+        'live_recovery_checkpoints has no tenant_id and no foreign key BY DESIGN: '
+            + 'one row is the one global sweep and every statement addresses it by purpose alone',
+    ],
+};
 
 /** Cap on names quoted in one reason, so a reason stays a fact and not a dump. */
 const MAX_MISSING_NAMES = 8;
 
 const LIVE_SCHEMA_LIMITS: readonly string[] = [
-    'A CHECK constraint admitted-value list is not readable portably from information_schema, '
-        + 'so R23 is proven only by a rejected write mapped to schema_unavailable, not by this report.',
+    'A CHECK is recognised from CHECK_CLAUSE after a fixed normalisation (lower-case, backticks and '
+        + 'space/tab/CR/LF removed, charset introducers removed, one REDUNDANT outer parenthesis pair removed, '
+        + 'inner grouping PRESERVED). A rendering MySQL changes beyond that set is reported as absent WITH the '
+        + 'normalised clause quoted, never accepted: fail closed, and diagnosable. It is not a check that the '
+        + 'row data satisfies the predicate.',
+    'CHECK recognition accepts the predicate the migration declares, not an equivalent rewrite: `BETWEEN 1 AND 5000` '
+        + 'is not matched against `>= 1 AND <= 5000`, and a renamed constraint is reported absent. The operator '
+        + 'reconciles the object rather than the verifier guessing equivalence.',
+    'Foreign keys are matched by the NAME the migrations declare. An equivalent FK under a different name is '
+        + 'reported absent; the operator reconciles the name rather than the verifier guessing equivalence.',
+    'ENFORCED requires MySQL 8.0.16+ and CHECK_CLAUSE requires CHECK_CONSTRAINTS; on a server that lacks '
+        + 'either, the affected areas are unknown and no CHECK is claimed.',
     'Byte preservation of presence_event_id follows from the binary, NO PAD collation contract; '
         + 'this verifier reads that contract from metadata but does not measure stored bytes.',
     'This is a snapshot at checkedAtMs: nothing prevents DDL from running after it, '
         + 'so freshness is the responsibility of the caller or the factory, not a claim of this report.',
-    'A catalog read that fails (privilege, connection, or a server without PAD_ATTRIBUTE) yields '
-        + 'unknown rather than absent; the area reason names the failure.',
+    'A catalog read that fails (privilege, connection, missing information_schema table) yields '
+        + 'unknown rather than absent; the area reason names the failure. The same holds when DATABASE() is '
+        + 'unreadable: every schema-scoped read then returns no rows, which is not evidence of absence.',
+    'The verifier reads metadata only: it writes no probe row and therefore cannot prove that the driver '
+        + 'maps BIGINT exactly (supportBigNumbers/bigNumberStrings is a caller obligation).',
 ];
 
 const readCatalogText = (value: unknown): string | null =>
@@ -1488,39 +2095,690 @@ const summarizeNames = (names: readonly string[]): string =>
         ? names.join(', ')
         : `${names.slice(0, MAX_MISSING_NAMES).join(', ')} … (+${names.length - MAX_MISSING_NAMES} more)`;
 
+/* ---------- catalog reads ---------- */
+
+/**
+ * The result of ONE catalog read.
+ *
+ * `ok: false` is not an empty result: it means the fact was NOT MEASURED, and
+ * every area that needs it becomes `unknown`. Collapsing a failed read into
+ * "nothing found" would turn a denied privilege into `absent`, and collapsing it
+ * into an empty map would turn it into `verified` — both are the defect this
+ * correction removes.
+ */
+type CatalogRead<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: string };
+
+interface CatalogColumn {
+    readonly dataType: string;
+    readonly columnType: string;
+    readonly unsigned: boolean;
+    readonly nullable: boolean;
+    readonly charLength: number | null;
+    readonly charset: string | null;
+    readonly collation: string | null;
+    readonly hasDefault: boolean;
+    readonly extra: string;
+}
+
+interface CatalogIndex {
+    /**
+     * `true` UNIQUE, `false` not unique, `null` when `NON_UNIQUE` could not be
+     * read. Tri-state on purpose: an unreadable flag is not proof that a
+     * required UNIQUE key lost its uniqueness, and coercing it to `false`
+     * reported a valid deployment as `absent`.
+     */
+    readonly unique: boolean | null;
+    readonly prefixed: boolean;
+    readonly columns: readonly string[];
+}
+
+interface CatalogConstraint {
+    readonly type: string;
+    /** `null` when ENFORCED could not be read — held, not assumed either way. */
+    readonly enforced: boolean | null;
+}
+
+interface CatalogForeignKey {
+    readonly columns: readonly string[];
+    readonly referencedSchema: string | null;
+    readonly referencedTable: string | null;
+    readonly referencedColumns: readonly (string | null)[];
+}
+
+interface CatalogSnapshot {
+    readonly database: CatalogRead<string>;
+    readonly serverVersion: string | null;
+    readonly tables: CatalogRead<ReadonlySet<string>>;
+    readonly columns: CatalogRead<ReadonlyMap<string, ReadonlyMap<string, CatalogColumn>>>;
+    readonly indexes: CatalogRead<ReadonlyMap<string, CatalogIndex>>;
+    readonly constraints: CatalogRead<ReadonlyMap<string, CatalogConstraint>>;
+    readonly checkClauses: CatalogRead<ReadonlyMap<string, string | null>>;
+    readonly foreignKeys: CatalogRead<ReadonlyMap<string, CatalogForeignKey>>;
+    readonly padAttribute: CatalogRead<string>;
+}
+
+const readCatalog = async <T>(work: () => Promise<T>): Promise<CatalogRead<T>> => {
+    try {
+        return { ok: true, value: await work() };
+    } catch (error) {
+        return { ok: false, reason: describeCatalogError(error) };
+    }
+};
+
+const readCatalogInt = (value: unknown): number | null => {
+    if (typeof value === 'number' && Number.isSafeInteger(value)) return value;
+    if (typeof value === 'string' && /^\d+$/.test(value)) {
+        const parsed = Number.parseInt(value, 10);
+        return Number.isSafeInteger(parsed) ? parsed : null;
+    }
+    return null;
+};
+
+const catalogKey = (table: string, name: string): string => `${table}\u0000${name}`;
+
+/** `enum('a','b')` → `['a', 'b']`; anything else → `[]`. */
+const parseEnumValues = (columnType: string): readonly string[] => {
+    const match = /^enum\((.*)\)$/i.exec(columnType.trim());
+    if (match === null) return [];
+    return match[1]
+        .split(',')
+        .map((part) => part.trim().replace(/^'/, '').replace(/'$/, '').replace(/''/g, "'"));
+};
+
 const buildColumnIndex = (
     rows: readonly Record<string, unknown>[],
-): Map<string, Map<string, CatalogColumnInfo>> => {
-    const index = new Map<string, Map<string, CatalogColumnInfo>>();
+): Map<string, Map<string, CatalogColumn>> => {
+    const index = new Map<string, Map<string, CatalogColumn>>();
     for (const row of rows) {
         const table = readCatalogText(row.TABLE_NAME);
         const column = readCatalogText(row.COLUMN_NAME);
-        if (table === null || column === null) continue;
+        const dataType = readCatalogText(row.DATA_TYPE);
+        if (table === null || column === null || dataType === null) continue;
         let tableColumns = index.get(table);
         if (!tableColumns) {
-            tableColumns = new Map<string, CatalogColumnInfo>();
+            tableColumns = new Map<string, CatalogColumn>();
             index.set(table, tableColumns);
         }
+        const columnType = readCatalogText(row.COLUMN_TYPE) ?? '';
         tableColumns.set(column, {
+            dataType: dataType.toLowerCase(),
+            columnType,
+            unsigned: /\bunsigned\b/i.test(columnType),
+            nullable: readCatalogText(row.IS_NULLABLE) === 'YES',
+            charLength: readCatalogInt(row.CHARACTER_MAXIMUM_LENGTH),
             charset: readCatalogText(row.CHARACTER_SET_NAME),
             collation: readCatalogText(row.COLLATION_NAME),
+            hasDefault: row.COLUMN_DEFAULT !== null && row.COLUMN_DEFAULT !== undefined,
+            extra: (readCatalogText(row.EXTRA) ?? '').toLowerCase(),
         });
     }
     return index;
 };
 
-const missingForRequirements = (
-    index: ReadonlyMap<string, ReadonlyMap<string, CatalogColumnInfo>>,
-    requirements: readonly TableColumnRequirement[],
-): string[] => {
-    const missing: string[] = [];
-    for (const requirement of requirements) {
-        const present = index.get(requirement.table);
-        for (const column of requirement.columns) {
-            if (!present || !present.has(column)) missing.push(`${requirement.table}.${column}`);
+/**
+ * One row per INDEX COLUMN, so the columns are ordered by `SEQ_IN_INDEX` and
+ * the index is unique only when EVERY row says `NON_UNIQUE = 0`.
+ */
+const buildIndexIndex = (
+    rows: readonly Record<string, unknown>[],
+): Map<string, CatalogIndex> => {
+    const collected = new Map<
+        string,
+        { unique: boolean | null; prefixed: boolean; parts: { position: number; column: string }[] }
+    >();
+    for (const row of rows) {
+        const table = readCatalogText(row.TABLE_NAME);
+        const name = readCatalogText(row.INDEX_NAME);
+        const column = readCatalogText(row.COLUMN_NAME);
+        const position = readCatalogInt(row.SEQ_IN_INDEX);
+        if (table === null || name === null || column === null || position === null) continue;
+        const key = catalogKey(table, name);
+        let entry = collected.get(key);
+        if (!entry) {
+            entry = { unique: true, prefixed: false, parts: [] };
+            collected.set(key, entry);
+        }
+        const nonUnique = readCatalogInt(row.NON_UNIQUE);
+        if (nonUnique === null) entry.unique = null;
+        else if (nonUnique !== 0) entry.unique = false;
+        // A prefix index (`provider(20)`) does not carry the full value, so it
+        // cannot back an equality/join key even when its name is right.
+        if (row.SUB_PART !== null && row.SUB_PART !== undefined) entry.prefixed = true;
+        entry.parts.push({ position, column });
+    }
+    const index = new Map<string, CatalogIndex>();
+    for (const [key, entry] of collected) {
+        index.set(key, {
+            unique: entry.unique,
+            prefixed: entry.prefixed,
+            columns: entry.parts.slice().sort((a, b) => a.position - b.position).map((part) => part.column),
+        });
+    }
+    return index;
+};
+
+const buildConstraintIndex = (
+    rows: readonly Record<string, unknown>[],
+): Map<string, CatalogConstraint> => {
+    const index = new Map<string, CatalogConstraint>();
+    for (const row of rows) {
+        const table = readCatalogText(row.TABLE_NAME);
+        const name = readCatalogText(row.CONSTRAINT_NAME);
+        const type = readCatalogText(row.CONSTRAINT_TYPE);
+        if (table === null || name === null || type === null) continue;
+        const enforcedText = readCatalogText(row.ENFORCED);
+        index.set(catalogKey(table, name), {
+            type: type.toUpperCase(),
+            enforced: enforcedText === null ? null : enforcedText === 'YES',
+        });
+    }
+    return index;
+};
+
+const buildForeignKeyIndex = (
+    rows: readonly Record<string, unknown>[],
+): Map<string, CatalogForeignKey> => {
+    const collected = new Map<string, {
+        parts: { position: number; column: string; referencedColumn: string | null }[];
+        referencedSchema: string | null;
+        referencedTable: string | null;
+    }>();
+    for (const row of rows) {
+        const table = readCatalogText(row.TABLE_NAME);
+        const name = readCatalogText(row.CONSTRAINT_NAME);
+        const column = readCatalogText(row.COLUMN_NAME);
+        const position = readCatalogInt(row.ORDINAL_POSITION);
+        if (table === null || name === null || column === null || position === null) continue;
+        const key = catalogKey(table, name);
+        let entry = collected.get(key);
+        if (!entry) {
+            entry = { parts: [], referencedSchema: null, referencedTable: null };
+            collected.set(key, entry);
+        }
+        entry.referencedSchema = readCatalogText(row.REFERENCED_TABLE_SCHEMA);
+        entry.referencedTable = readCatalogText(row.REFERENCED_TABLE_NAME);
+        entry.parts.push({
+            position,
+            column,
+            referencedColumn: readCatalogText(row.REFERENCED_COLUMN_NAME),
+        });
+    }
+    const index = new Map<string, CatalogForeignKey>();
+    for (const [key, entry] of collected) {
+        const ordered = entry.parts.slice().sort((a, b) => a.position - b.position);
+        index.set(key, {
+            columns: ordered.map((part) => part.column),
+            referencedSchema: entry.referencedSchema,
+            referencedTable: entry.referencedTable,
+            referencedColumns: ordered.map((part) => part.referencedColumn),
+        });
+    }
+    return index;
+};
+
+/* ---------- CHECK_CLAUSE recognition ---------- */
+
+/**
+ * The normalisation the migrations themselves use: lower-case, drop backticks
+ * and space/tab/CR/LF, and drop charset introducers. Parentheses are PRESERVED —
+ * stripping them would make `(a OR b) AND c` indistinguishable from
+ * `a OR (b AND c)`, and those are different constraints.
+ */
+const normalizeCheckClause = (value: string): string =>
+    value
+        .toLowerCase()
+        .split('`').join('')
+        .split(' ').join('')
+        .split('\t').join('')
+        .split('\n').join('')
+        .split('\r').join('')
+        .replace(/_utf8mb4|_utf8mb3|_utf8|_binary/g, '');
+
+/** Remove redundant OUTER parentheses only (a balanced pair spanning the text). */
+const stripOuterParens = (value: string): string => {
+    let text = value;
+    for (;;) {
+        if (text.length < 2 || !text.startsWith('(') || !text.endsWith(')')) return text;
+        let depth = 0;
+        let spans = true;
+        for (let position = 0; position < text.length; position += 1) {
+            if (text[position] === '(') depth += 1;
+            else if (text[position] === ')') {
+                depth -= 1;
+                if (depth === 0 && position < text.length - 1) {
+                    spans = false;
+                    break;
+                }
+            }
+        }
+        if (!spans || depth !== 0) return text;
+        text = text.slice(1, -1);
+    }
+};
+
+/**
+ * Split on the SINGLE top-level `=`. Returns `null` when the clause has no such
+ * operator or more than one, so an `=` nested inside a sub-expression cannot be
+ * mistaken for the top-level equivalence.
+ */
+const splitTopLevelEquals = (value: string): readonly [string, string] | null => {
+    let depth = 0;
+    let found = -1;
+    for (let position = 0; position < value.length; position += 1) {
+        const character = value[position];
+        if (character === '(') depth += 1;
+        else if (character === ')') depth -= 1;
+        else if (character === '=' && depth === 0) {
+            const before = value[position - 1];
+            const after = value[position + 1];
+            if (before === '<' || before === '>' || before === '!' || before === '=' || after === '=') continue;
+            if (found !== -1) return null;
+            found = position;
         }
     }
-    return missing;
+    if (found === -1) return null;
+    return [value.slice(0, found), value.slice(found + 1)];
+};
+
+const andVariants = (left: string, right: string): readonly string[] => {
+    const variants = new Set<string>();
+    for (const l of [left, `(${left})`]) {
+        for (const r of [right, `(${right})`]) {
+            variants.add(`${l}and${r}`);
+            variants.add(`(${l}and${r})`);
+        }
+    }
+    return [...variants];
+};
+
+const orVariants = (left: string, right: string): readonly string[] => {
+    const variants = new Set<string>();
+    for (const l of [left, `(${left})`]) {
+        for (const r of [right, `(${right})`]) {
+            variants.add(`${l}or${r}`);
+            variants.add(`(${l}or${r})`);
+        }
+    }
+    return [...variants];
+};
+
+/**
+ * Does this (normalised) clause still express the required predicate?
+ *
+ * Recognition is STRUCTURAL: the atoms must be the declared columns and
+ * literals, in the declared grouping. A constraint that keeps its name and
+ * loses a conjunct does not match, and a clause whose rendering falls outside
+ * the accepted set is reported (with the clause quoted) rather than accepted.
+ *
+ * OUTER PARENTHESES ARE REMOVED FIRST, ONCE, FOR EVERY SHAPE. MySQL stores the
+ * CHECK expression as written, so `CHECK (a BETWEEN 1 AND 5)` comes back as
+ * `(a between 1 and 5)` while `CHECK ((a IS NULL) = (b IS NULL))` comes back as
+ * `((a is null) = (b is null))`. Without this step the two flat shapes
+ * (`between`, `atMost`, `nullOrAtMost`, `membership`) never matched the
+ * parenthesised rendering and a perfectly valid deployment was reported
+ * `absent` — a false negative, which is the same class of defect as a false
+ * `verified`. Only a REDUNDANT outer pair is stripped (`stripOuterParens`
+ * requires the pair to span the whole text), so `(a OR b) AND c` keeps its
+ * grouping and no predicate is weakened.
+ */
+const checkShapeMatches = (rawClause: string, shape: CheckShape): boolean => {
+    const clause = stripOuterParens(rawClause);
+    switch (shape.kind) {
+        case 'pair': {
+            const sides = splitTopLevelEquals(clause);
+            if (sides === null) return false;
+            const left = `${shape.left}isnull`;
+            const right = `${shape.right}isnull`;
+            const first = stripOuterParens(sides[0]);
+            const second = stripOuterParens(sides[1]);
+            return (first === left && second === right) || (first === right && second === left);
+        }
+        case 'equivalence': {
+            const sides = splitTopLevelEquals(clause);
+            if (sides === null) return false;
+            const value = `${shape.column}='${shape.value}'`;
+            const nonNull = `${shape.nonNullColumn}isnotnull`;
+            const first = stripOuterParens(sides[0]);
+            const second = stripOuterParens(sides[1]);
+            return (first === value && second === nonNull) || (first === nonNull && second === value);
+        }
+        case 'between': {
+            const match = /^([a-z0-9_]+)between(-?\d+)and(-?\d+)$/.exec(clause);
+            return match !== null
+                && match[1] === shape.column
+                && match[2] === shape.min
+                && match[3] === shape.max;
+        }
+        case 'atMost': {
+            const match = /^([a-z0-9_]+)<=(\d+)$/.exec(clause);
+            return match !== null && match[1] === shape.column && match[2] === shape.max;
+        }
+        case 'nullOrAtMost': {
+            const variants = orVariants(`${shape.column}isnull`, `${shape.column}<=${shape.max}`);
+            return variants.includes(clause);
+        }
+        case 'membership': {
+            const match = /^([a-z0-9_]+)in\((.*)\)$/.exec(clause);
+            if (match === null || match[1] !== shape.column) return false;
+            const values = match[2]
+                .split(',')
+                .map((part) => part.trim().replace(/^'/, '').replace(/'$/, ''));
+            if (values.length !== shape.values.length) return false;
+            return shape.values.every((value) => values.includes(value));
+        }
+        case 'release': {
+            const [first, second] = shape.columns;
+            if (first === undefined || second === undefined) return false;
+            const accepted = new Set<string>();
+            for (const group of andVariants(`${first}isnull`, `${second}isnull`)) {
+                for (const combined of orVariants(`${shape.column}='${shape.pendingValue}'`, group)) {
+                    accepted.add(combined);
+                }
+            }
+            return accepted.has(clause);
+        }
+        default:
+            return false;
+    }
+};
+
+/* ---------- shape comparison ---------- */
+
+const describeExpectedType = (type: ExpectedColumnType): string => {
+    switch (type.kind) {
+        case 'char':
+            return `char(${type.length}) ${type.charset}/${type.collation}`;
+        case 'varchar':
+            return `varchar(${type.length}) ${type.charset}/${type.collation}`;
+        case 'bigint':
+            return type.unsigned ? 'bigint unsigned' : 'bigint';
+        case 'int':
+            return type.unsigned ? 'int unsigned' : 'int';
+        case 'enum':
+            return `enum(${type.values.join('|')})`;
+        default:
+            return 'unknown';
+    }
+};
+
+const describeActualColumn = (column: CatalogColumn): string =>
+    `${column.dataType}${column.charLength === null ? '' : `(${column.charLength})`}`
+    + `${column.charset === null ? '' : ` ${column.charset}`}`
+    + `${column.collation === null ? '' : `/${column.collation}`}`
+    + `${column.unsigned ? ' unsigned' : ''}`
+    + `${column.nullable ? ' NULL' : ' NOT NULL'}`;
+
+/** `null` when the column is the declared shape, else a short fact saying why not. */
+const columnMismatch = (expected: ColumnRequirement, actual: CatalogColumn): string | null => {
+    const type = expected.type;
+    let typeOk = false;
+    switch (type.kind) {
+        case 'char':
+        case 'varchar':
+            typeOk = actual.dataType === type.kind
+                && actual.charLength === type.length
+                && actual.charset === type.charset
+                && actual.collation === type.collation;
+            break;
+        case 'bigint':
+        case 'int':
+            typeOk = actual.dataType === type.kind && actual.unsigned === type.unsigned;
+            break;
+        case 'enum': {
+            const values = parseEnumValues(actual.columnType);
+            typeOk = actual.dataType === 'enum'
+                && values.length === type.values.length
+                && type.values.every((value) => values.includes(value));
+            break;
+        }
+        default:
+            typeOk = false;
+    }
+    if (!typeOk) {
+        return `expected ${describeExpectedType(type)}, found ${describeActualColumn(actual)}`;
+    }
+    if (actual.nullable !== expected.nullable) {
+        return `expected ${expected.nullable ? 'NULL' : 'NOT NULL'}, found ${actual.nullable ? 'NULL' : 'NOT NULL'}`;
+    }
+    if (actual.extra.length > 0) {
+        return `expected a plain stored column, found EXTRA "${actual.extra}"`;
+    }
+    if (expected.noDefault === true && actual.hasDefault) {
+        return 'expected no DEFAULT, found one';
+    }
+    return null;
+};
+
+/* ---------- per-area evaluation ---------- */
+
+interface AreaEvaluationSink {
+    checked(entry: string): void;
+    fail(detail: string): void;
+    unproven(detail: string): void;
+}
+
+const boundedReason = (value: string, limit = 320): string =>
+    value.length <= limit ? value : `${value.slice(0, limit)}…`;
+
+/**
+ * Evaluate one area against a measured snapshot.
+ *
+ * The ORDER of the three buckets is the whole safety property:
+ *
+ *   1. a PROVEN mismatch (a successful read showed a wrong or missing fact) ⇒
+ *      `absent`, even if some other read failed;
+ *   2. otherwise, any fact that could not be measured ⇒ `unknown` — never
+ *      `verified`;
+ *   3. only when every required fact was read and matched ⇒ `verified`.
+ *
+ * "PROVEN" is load-bearing. `absent` is reserved for a fact that was READ and
+ * found different: a row that came back with the wrong type, a missing row in a
+ * result set that was scoped to a KNOWN schema. A read that failed, an empty
+ * result set from an unscoped query (`DATABASE()` unreadable), a denied
+ * privilege, a missing `information_schema` table or an unsupported flavour are
+ * all `unknown` — see `failAbsent` below. Reporting `absent` there would be a
+ * false negative on a valid deployment, which is exactly as damaging as a false
+ * `verified`.
+ */
+const evaluateArea = (
+    snapshot: CatalogSnapshot,
+    spec: AreaSpec,
+    extra?: (sink: AreaEvaluationSink) => void,
+): LiveSchemaAreaResult => {
+    const checked: string[] = [];
+    const failures: string[] = [];
+    const unproven: string[] = [];
+    const sink: AreaEvaluationSink = {
+        checked: (entry) => { checked.push(entry); },
+        fail: (detail) => { failures.push(detail); },
+        unproven: (detail) => { unproven.push(detail); },
+    };
+    const absentTables = new Set<string>();
+
+    /**
+     * EVERY schema-scoped read in `verifyLiveSchema` filters on
+     * `TABLE_SCHEMA = DATABASE()`. When that name is unreadable (no schema
+     * selected, `DATABASE()` NULL, or the read denied) those queries do not
+     * fail — they return NO ROWS, and "no rows" is indistinguishable from
+     * "the object does not exist". Concluding `absent` there would report a
+     * perfectly valid deployment as broken because of a connection setting, so
+     * an absence may only be declared when the schema name WAS read. Everything
+     * else stays `unknown`, which is the honest answer: nothing was measured.
+     */
+    const schemaKnown = snapshot.database.ok;
+    if (!schemaKnown) {
+        sink.unproven(`current schema name (${snapshot.database.reason}); every catalog read is scoped to `
+            + 'DATABASE(), so absence cannot be proven');
+    }
+    const failAbsent = (detail: string): void => {
+        if (schemaKnown) sink.fail(detail);
+        else sink.unproven(detail);
+    };
+
+    for (const table of spec.tables) sink.checked(table);
+    if (snapshot.tables.ok) {
+        for (const table of spec.tables) {
+            if (!snapshot.tables.value.has(table)) {
+                absentTables.add(table);
+                failAbsent(`${table} is absent`);
+            }
+        }
+    } else {
+        sink.unproven(`table presence (${snapshot.tables.reason})`);
+    }
+
+    if (!snapshot.columns.ok) sink.unproven(`column shape (${snapshot.columns.reason})`);
+    for (const requirement of spec.columns) {
+        if (absentTables.has(requirement.table)) continue;
+        for (const expected of requirement.columns) {
+            sink.checked(`${requirement.table}.${expected.column} `
+                + `${describeExpectedType(expected.type)} ${expected.nullable ? 'NULL' : 'NOT NULL'}`);
+            if (!snapshot.columns.ok) continue;
+            const actual = snapshot.columns.value.get(requirement.table)?.get(expected.column);
+            if (actual === undefined) {
+                failAbsent(`${requirement.table}.${expected.column} is absent`);
+                continue;
+            }
+            const mismatch = columnMismatch(expected, actual);
+            if (mismatch !== null) sink.fail(`${requirement.table}.${expected.column} ${mismatch}`);
+        }
+    }
+
+    if (!snapshot.indexes.ok) sink.unproven(`index shape (${snapshot.indexes.reason})`);
+    for (const requirement of spec.indexes) {
+        if (absentTables.has(requirement.table)) continue;
+        sink.checked(`${requirement.table}.${requirement.name} `
+            + `${requirement.unique ? 'UNIQUE' : 'KEY'}(${requirement.columns.join(',')})`);
+        if (!snapshot.indexes.ok) continue;
+        const actual = snapshot.indexes.value.get(catalogKey(requirement.table, requirement.name));
+        if (actual === undefined) {
+            failAbsent(`index ${requirement.table}.${requirement.name} is absent`);
+            continue;
+        }
+        if (actual.unique === null) {
+            sink.unproven(`index ${requirement.table}.${requirement.name} uniqueness (NON_UNIQUE is unreadable)`);
+        } else if (actual.unique !== requirement.unique) {
+            sink.fail(`index ${requirement.table}.${requirement.name} is `
+                + `${actual.unique ? 'UNIQUE' : 'NOT UNIQUE'}, expected ${requirement.unique ? 'UNIQUE' : 'NOT UNIQUE'}`);
+        }
+        if (actual.prefixed) {
+            sink.fail(`index ${requirement.table}.${requirement.name} indexes a column PREFIX (SUB_PART), `
+                + 'so the full value is not what the key holds');
+        }
+        if (actual.columns.length !== requirement.columns.length
+            || requirement.columns.some((column, position) => actual.columns[position] !== column)) {
+            sink.fail(`index ${requirement.table}.${requirement.name} covers (${actual.columns.join(',')}), `
+                + `expected (${requirement.columns.join(',')}) in that order`);
+        }
+    }
+
+    if (!snapshot.constraints.ok) sink.unproven(`constraint presence (${snapshot.constraints.reason})`);
+    if (!snapshot.checkClauses.ok) sink.unproven(`CHECK_CLAUSE text (${snapshot.checkClauses.reason})`);
+    for (const requirement of spec.checks) {
+        if (absentTables.has(requirement.table)) continue;
+        sink.checked(`${requirement.table}.${requirement.name} CHECK ENFORCED`);
+        if (!snapshot.constraints.ok) continue;
+        const constraint = snapshot.constraints.value.get(catalogKey(requirement.table, requirement.name));
+        if (constraint === undefined || constraint.type !== 'CHECK') {
+            failAbsent(`CHECK ${requirement.table}.${requirement.name} is absent`);
+            continue;
+        }
+        if (constraint.enforced === null) {
+            sink.unproven(`ENFORCED for ${requirement.table}.${requirement.name} is unreadable`);
+            continue;
+        }
+        if (!constraint.enforced) {
+            sink.fail(`CHECK ${requirement.table}.${requirement.name} exists but is NOT ENFORCED`);
+            continue;
+        }
+        if (!snapshot.checkClauses.ok) continue;
+        const clause = snapshot.checkClauses.value.get(catalogKey(requirement.table, requirement.name));
+        if (clause === null || clause === undefined) {
+            sink.unproven(`CHECK_CLAUSE for ${requirement.table}.${requirement.name} is unreadable`);
+            continue;
+        }
+        if (!checkShapeMatches(clause, requirement.shape)) {
+            sink.fail(`CHECK ${requirement.table}.${requirement.name} no longer expresses the required `
+                + `predicate (normalised clause "${boundedText(clause, 140)}")`);
+        }
+    }
+
+    /**
+     * Constraints a later migration DROPS. Presence is a proven mismatch: the
+     * older CHECK is still enforced and still narrower than the vocabulary the
+     * replacement admits, so a write this lane makes would be rejected at
+     * runtime while the report said `verified`.
+     */
+    for (const forbidden of spec.forbiddenChecks) {
+        if (absentTables.has(forbidden.table)) continue;
+        sink.checked(`${forbidden.table}.${forbidden.name} CHECK ABSENT`);
+        if (!snapshot.constraints.ok) continue;
+        const constraint = snapshot.constraints.value.get(catalogKey(forbidden.table, forbidden.name));
+        if (constraint === undefined) continue;
+        if (constraint.type !== 'CHECK') {
+            sink.fail(`${forbidden.table}.${forbidden.name} exists as a ${constraint.type}, expected no such `
+                + 'constraint at all');
+            continue;
+        }
+        sink.fail(`CHECK ${forbidden.table}.${forbidden.name} is still present; the migration that replaces it `
+            + 'drops it, and while it exists it still rejects the wider vocabulary');
+    }
+
+    if (!snapshot.foreignKeys.ok) sink.unproven(`foreign keys (${snapshot.foreignKeys.reason})`);
+    for (const requirement of spec.foreignKeys) {
+        if (absentTables.has(requirement.table)) continue;
+        sink.checked(`${requirement.table}.${requirement.name} `
+            + `FK(${requirement.columns.join(',')})->${requirement.referencedTable}`
+            + `(${requirement.referencedColumns.join(',')})`);
+        if (!snapshot.foreignKeys.ok) continue;
+        const actual = snapshot.foreignKeys.value.get(catalogKey(requirement.table, requirement.name));
+        if (actual === undefined) {
+            failAbsent(`FOREIGN KEY ${requirement.table}.${requirement.name} is absent`);
+            continue;
+        }
+        // The tenant boundary is `referencedSchema === DATABASE()`. Without a
+        // schema name that comparison is not evaluable, so it is skipped and the
+        // area is already `unknown` — never silently treated as a match.
+        if (snapshot.database.ok && actual.referencedSchema !== snapshot.database.value) {
+            sink.fail(`FOREIGN KEY ${requirement.table}.${requirement.name} references schema `
+                + `${describeCatalogValue(actual.referencedSchema)}, not this schema — the tenant boundary `
+                + 'would point at another database');
+        }
+        if (actual.referencedTable !== requirement.referencedTable) {
+            sink.fail(`FOREIGN KEY ${requirement.table}.${requirement.name} references `
+                + `${describeCatalogValue(actual.referencedTable)}, expected "${requirement.referencedTable}"`);
+        }
+        if (actual.columns.length !== requirement.columns.length
+            || requirement.columns.some((column, position) => actual.columns[position] !== column)) {
+            sink.fail(`FOREIGN KEY ${requirement.table}.${requirement.name} covers (${actual.columns.join(',')}), `
+                + `expected (${requirement.columns.join(',')}) in that order`);
+        }
+        if (actual.referencedColumns.length !== requirement.referencedColumns.length
+            || requirement.referencedColumns.some(
+                (column, position) => actual.referencedColumns[position] !== column,
+            )) {
+            sink.fail(`FOREIGN KEY ${requirement.table}.${requirement.name} references (`
+                + `${actual.referencedColumns.map((column) => column ?? 'unreadable').join(',')}), `
+                + `expected (${requirement.referencedColumns.join(',')}) in that order`);
+        }
+    }
+
+    for (const note of spec.notes) sink.checked(note);
+    if (extra) extra(sink);
+
+    if (failures.length > 0) {
+        return absentArea(
+            boundedReason(`${failures.length} declared shape fact(s) not met: ${summarizeNames(failures)}`),
+            checked,
+        );
+    }
+    if (unproven.length > 0) {
+        return unknownArea(
+            boundedReason(`not proven from the catalog: ${summarizeNames(unproven)}`),
+            checked,
+        );
+    }
+    return verifiedArea(checked);
 };
 
 const verifiedArea = (checked: readonly string[]): LiveSchemaAreaResult => ({
@@ -1572,55 +2830,114 @@ export async function verifyLiveSchema(
         ? measuredAt
         : Date.now();
 
-    let serverVersion = '';
-    let versionFailure: string | null = null;
-    try {
+    const placeholders = LIVE_SCHEMA_TABLES.map(() => '?').join(', ');
+    const boundTables = [...LIVE_SCHEMA_TABLES];
+
+    // One SELECT each, against information_schema on the injected connection.
+    // Sequential on purpose: the executor is ONE connection, and a caller-
+    // supplied runner is not required to queue concurrent statements.
+    const serverVersionRead = await readCatalog(async () => {
         const row = await executor.queryOne<Record<string, unknown>>('SELECT VERSION() AS version');
         const text = row === null ? null : readCatalogText(row.version);
-        if (text === null) versionFailure = 'SELECT VERSION() returned no readable text';
-        else serverVersion = text;
-    } catch (error) {
-        versionFailure = describeCatalogError(error);
-    }
+        if (text === null) throw new Error('SELECT VERSION() returned no readable text');
+        return text;
+    });
 
-    const placeholders = LIVE_SCHEMA_TABLES.map(() => '?').join(', ');
+    const database = await readCatalog(async () => {
+        const row = await executor.queryOne<Record<string, unknown>>('SELECT DATABASE() AS db');
+        const name = row === null ? null : readCatalogText(row.db);
+        if (name === null) throw new Error('SELECT DATABASE() returned no schema name');
+        return name;
+    });
 
-    let columnIndex: Map<string, Map<string, CatalogColumnInfo>> | null = null;
-    let columnsFailure: string | null = null;
-    try {
-        const rows = await executor.query<Record<string, unknown>>(
-            `SELECT TABLE_NAME, COLUMN_NAME, CHARACTER_SET_NAME, COLLATION_NAME
-               FROM information_schema.COLUMNS
-              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (${placeholders})`,
-            [...LIVE_SCHEMA_TABLES],
-        );
-        columnIndex = buildColumnIndex(rows);
-    } catch (error) {
-        columnsFailure = describeCatalogError(error);
-    }
-
-    let presentTables: Set<string> | null = null;
-    let tablesFailure: string | null = null;
-    try {
+    const tables = await readCatalog(async () => {
         const rows = await executor.query<Record<string, unknown>>(
             `SELECT TABLE_NAME
                FROM information_schema.TABLES
               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (${placeholders})`,
-            [...LIVE_SCHEMA_TABLES],
+            boundTables,
         );
         const found = new Set<string>();
         for (const row of rows) {
             const name = readCatalogText(row.TABLE_NAME);
             if (name !== null) found.add(name);
         }
-        presentTables = found;
-    } catch (error) {
-        tablesFailure = describeCatalogError(error);
-    }
+        return found;
+    });
 
-    let padAttribute: string | null = null;
-    let collationFailure: string | null = null;
-    try {
+    const columns = await readCatalog(async () => {
+        const rows = await executor.query<Record<string, unknown>>(
+            `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE,
+                    CHARACTER_MAXIMUM_LENGTH, CHARACTER_SET_NAME, COLLATION_NAME,
+                    COLUMN_DEFAULT, EXTRA
+               FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (${placeholders})`,
+            boundTables,
+        );
+        return buildColumnIndex(rows);
+    });
+
+    const indexes = await readCatalog(async () => {
+        const rows = await executor.query<Record<string, unknown>>(
+            `SELECT TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART
+               FROM information_schema.STATISTICS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (${placeholders})`,
+            boundTables,
+        );
+        return buildIndexIndex(rows);
+    });
+
+    const constraints = await readCatalog(async () => {
+        const rows = await executor.query<Record<string, unknown>>(
+            `SELECT TABLE_NAME, CONSTRAINT_NAME, CONSTRAINT_TYPE, ENFORCED
+               FROM information_schema.TABLE_CONSTRAINTS
+              WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME IN (${placeholders})`,
+            boundTables,
+        );
+        return buildConstraintIndex(rows);
+    });
+
+    // CHECK_CLAUSE lives in CHECK_CONSTRAINTS, which has no TABLE_NAME: it is
+    // joined to TABLE_CONSTRAINTS so a clause can never be attributed to the
+    // wrong table.
+    const checkClauses = await readCatalog(async () => {
+        const rows = await executor.query<Record<string, unknown>>(
+            `SELECT tc.TABLE_NAME AS TABLE_NAME, tc.CONSTRAINT_NAME AS CONSTRAINT_NAME,
+                    cc.CHECK_CLAUSE AS CHECK_CLAUSE
+               FROM information_schema.TABLE_CONSTRAINTS tc
+               JOIN information_schema.CHECK_CONSTRAINTS cc
+                 ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
+                AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+              WHERE tc.CONSTRAINT_SCHEMA = DATABASE()
+                AND tc.TABLE_NAME IN (${placeholders})
+                AND tc.CONSTRAINT_TYPE = 'CHECK'`,
+            boundTables,
+        );
+        const clauses = new Map<string, string | null>();
+        for (const row of rows) {
+            const table = readCatalogText(row.TABLE_NAME);
+            const name = readCatalogText(row.CONSTRAINT_NAME);
+            if (table === null || name === null) continue;
+            const clause = readCatalogText(row.CHECK_CLAUSE);
+            clauses.set(catalogKey(table, name), clause === null ? null : normalizeCheckClause(clause));
+        }
+        return clauses;
+    });
+
+    const foreignKeys = await readCatalog(async () => {
+        const rows = await executor.query<Record<string, unknown>>(
+            `SELECT TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, ORDINAL_POSITION,
+                    REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+               FROM information_schema.KEY_COLUMN_USAGE
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME IN (${placeholders})
+                AND REFERENCED_TABLE_NAME IS NOT NULL`,
+            boundTables,
+        );
+        return buildForeignKeyIndex(rows);
+    });
+
+    const padAttribute = await readCatalog(async () => {
         const row = await executor.queryOne<Record<string, unknown>>(
             `SELECT COLLATION_NAME, CHARACTER_SET_NAME, PAD_ATTRIBUTE
                FROM information_schema.COLLATIONS
@@ -1628,146 +2945,61 @@ export async function verifyLiveSchema(
             [PRESENCE_EVENT_ID_COLLATION],
         );
         if (row === null) {
-            collationFailure = `${PRESENCE_EVENT_ID_COLLATION} is not in information_schema.COLLATIONS`;
-        } else {
-            padAttribute = readCatalogText(row.PAD_ATTRIBUTE);
-            if (padAttribute === null) {
-                collationFailure = `${PRESENCE_EVENT_ID_COLLATION} has no readable PAD_ATTRIBUTE`;
-            }
+            throw new Error(`${PRESENCE_EVENT_ID_COLLATION} is not in information_schema.COLLATIONS`);
         }
-    } catch (error) {
-        collationFailure = describeCatalogError(error);
-    }
+        const pad = readCatalogText(row.PAD_ATTRIBUTE);
+        if (pad === null) throw new Error(`${PRESENCE_EVENT_ID_COLLATION} has no readable PAD_ATTRIBUTE`);
+        return pad;
+    });
 
-    const lifecycleChecked = SESSION_LIFECYCLE_REQUIREMENTS.flatMap((requirement) =>
-        requirement.columns.map((column) => `${requirement.table}.${column}`));
+    const serverVersion = serverVersionRead.ok ? serverVersionRead.value : '';
+    const snapshot: CatalogSnapshot = {
+        database,
+        serverVersion: serverVersionRead.ok ? serverVersionRead.value : null,
+        tables,
+        columns,
+        indexes,
+        constraints,
+        checkClauses,
+        foreignKeys,
+        padAttribute,
+    };
 
-    let sessionLifecycle: LiveSchemaAreaResult;
-    if (columnIndex === null) {
-        sessionLifecycle = unknownArea(
-            `catalog read failed (${columnsFailure ?? 'unknown'})`,
-            lifecycleChecked,
-        );
-    } else {
-        const missing = missingForRequirements(columnIndex, SESSION_LIFECYCLE_REQUIREMENTS);
-        sessionLifecycle = missing.length === 0
-            ? verifiedArea(lifecycleChecked)
-            : absentArea(
-                `${missing.length} required column(s) absent: ${summarizeNames(missing)}`,
-                lifecycleChecked,
-            );
-    }
+    const sessionLifecycle = evaluateArea(snapshot, SESSION_LIFECYCLE_SPEC);
+    const presenceOrdering = evaluateArea(snapshot, PRESENCE_ORDERING_SPEC);
 
-    const orderingChecked = PRESENCE_ORDERING_COLUMNS.map(
-        (column) => `live_session_participants.${column}`,
-    );
-
-    let presenceOrdering: LiveSchemaAreaResult;
-    if (columnIndex === null) {
-        presenceOrdering = unknownArea(
-            `catalog read failed (${columnsFailure ?? 'unknown'})`,
-            orderingChecked,
-        );
-    } else {
-        const missing = missingForRequirements(columnIndex, [{
-            table: 'live_session_participants',
-            columns: PRESENCE_ORDERING_COLUMNS,
-        }]);
-        presenceOrdering = missing.length === 0
-            ? verifiedArea(orderingChecked)
-            : absentArea(
-                `${summarizeNames(missing)} absent; apply 20261023_02_live_callback_presence_contract.sql`,
-                orderingChecked,
-            );
-    }
-
-    const identityChecked = [
-        'live_session_participants.presence_event_id',
-        `information_schema.COLLATIONS.${PRESENCE_EVENT_ID_COLLATION}`,
-    ];
-
-    let presenceEventIdentity: LiveSchemaAreaResult;
-    if (columnIndex === null) {
-        presenceEventIdentity = unknownArea(
-            `catalog read failed (${columnsFailure ?? 'unknown'})`,
-            identityChecked,
-        );
-    } else if (collationFailure !== null) {
-        presenceEventIdentity = unknownArea(
-            `collation metadata unreadable (${collationFailure})`,
-            identityChecked,
-        );
-    } else {
-        const column = columnIndex.get('live_session_participants')?.get('presence_event_id') ?? null;
+    /**
+     * Identity is TWO facts, and both must hold: the column's own shape
+     * (type, length, charset/collation, nullability — proven from COLUMNS by the
+     * spec) and the server's PAD attribute for that collation (proven from
+     * COLLATIONS). The classifier needs both; neither is inferred from the
+     * collation's name, and an unreadable server version is `unknown`.
+     */
+    const presenceEventIdentity = evaluateArea(snapshot, PRESENCE_EVENT_IDENTITY_SPEC, (sink) => {
+        sink.checked(`information_schema.COLLATIONS.${PRESENCE_EVENT_ID_COLLATION} PAD_ATTRIBUTE`);
+        if (!snapshot.padAttribute.ok) {
+            sink.unproven(`collation pad attribute (${snapshot.padAttribute.reason})`);
+            return;
+        }
+        if (!snapshot.columns.ok) return; // already recorded against column shape
+        const column = snapshot.columns.value.get('live_session_participants')?.get('presence_event_id');
+        if (column === undefined) return; // already recorded as absent
         const verdict = classifyPresenceEventIdIdentity({
-            serverVersion: versionFailure === null ? serverVersion : null,
-            columnCharset: column === null ? null : column.charset,
-            columnCollation: column === null ? null : column.collation,
-            collationPadAttribute: padAttribute,
+            serverVersion: snapshot.serverVersion,
+            columnCharset: column.charset,
+            columnCollation: column.collation,
+            collationPadAttribute: snapshot.padAttribute.value,
         });
-        const reason = verdict.reason ?? 'presence_event_id identity is not compatible';
-        if (verdict.verdict === 'compatible') {
-            presenceEventIdentity = verifiedArea(identityChecked);
-        } else if (verdict.verdict === 'incompatible') {
-            presenceEventIdentity = absentArea(reason, identityChecked);
-        } else {
-            presenceEventIdentity = unknownArea(reason, identityChecked);
+        if (verdict.verdict === 'compatible') return;
+        if (verdict.verdict === 'incompatible') {
+            sink.fail(verdict.reason ?? 'presence_event_id identity is incompatible');
+            return;
         }
-    }
+        sink.unproven(verdict.reason ?? 'presence_event_id identity could not be classified');
+    });
 
-    const ingestChecked = INGEST_LEDGER_COLUMNS.map(
-        (column) => `live_recording_ingests.${column}`,
-    );
-
-    let ingestLedger: LiveSchemaAreaResult;
-    if (columnIndex === null) {
-        ingestLedger = unknownArea(
-            `catalog read failed (${columnsFailure ?? 'unknown'})`,
-            ingestChecked,
-        );
-    } else {
-        const missing = missingForRequirements(columnIndex, [{
-            table: 'live_recording_ingests',
-            columns: INGEST_LEDGER_COLUMNS,
-        }]);
-        ingestLedger = missing.length === 0
-            ? verifiedArea(ingestChecked)
-            : absentArea(
-                `${missing.length} ledger column(s) absent: ${summarizeNames(missing)}`,
-                ingestChecked,
-            );
-    }
-
-    const recoveryChecked = [
-        RECOVERY_CHECKPOINT_TABLE,
-        ...RECOVERY_CHECKPOINT_COLUMNS.map((column) => `${RECOVERY_CHECKPOINT_TABLE}.${column}`),
-    ];
-
-    let recoveryCheckpoint: LiveSchemaAreaResult;
-    if (presentTables === null || columnIndex === null) {
-        const failure = presentTables === null ? tablesFailure : columnsFailure;
-        recoveryCheckpoint = unknownArea(
-            `catalog read failed (${failure ?? 'unknown'})`,
-            recoveryChecked,
-        );
-    } else if (!presentTables.has(RECOVERY_CHECKPOINT_TABLE)) {
-        recoveryCheckpoint = absentArea(
-            `${RECOVERY_CHECKPOINT_TABLE} is absent; apply 20261023_04_live_recovery_checkpoint.sql`,
-            recoveryChecked,
-        );
-    } else {
-        const missing = missingForRequirements(columnIndex, [{
-            table: RECOVERY_CHECKPOINT_TABLE,
-            columns: RECOVERY_CHECKPOINT_COLUMNS,
-        }]);
-        recoveryCheckpoint = missing.length === 0
-            ? verifiedArea(recoveryChecked)
-            : absentArea(
-                `${RECOVERY_CHECKPOINT_TABLE} is present but ${missing.length} column(s) are absent: `
-                + summarizeNames(missing),
-                recoveryChecked,
-            );
-    }
+    const ingestLedger = evaluateArea(snapshot, INGEST_LEDGER_SPEC);
+    const recoveryCheckpoint = evaluateArea(snapshot, RECOVERY_CHECKPOINT_SPEC);
 
     const areas: Record<LiveSchemaArea, LiveSchemaAreaResult> = {
         sessionLifecycle,

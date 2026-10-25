@@ -55,6 +55,7 @@ import {
     ASSIGNMENT_CLEANUP_STATES,
     AssignmentCleanupRowInvalidError,
     MAX_CLEANUP_LEASE_MS,
+    MAX_CLEANUP_OWNER_LENGTH,
     cleanupStateForProof,
 } from './assignment-cleanup-recovery';
 import { CLEANUP_OBLIGATION_REASONS } from './assignments';
@@ -216,7 +217,10 @@ export const probeAssignmentEtagCollation = async (
 
 /**
  * The migration owner's declaration that the additive schema exists
- * (`server/migrations/20261023_05_assignment_cleanup_scan_fencing.sql`).
+ * (`server/migrations/20261024_06_assignment_cleanup_scan_fencing.sql`). The
+ * filename is a reference, not a gate: nothing here reads the filesystem, and
+ * the declaration plus the collation verdict are the only inputs to
+ * `availability`.
  *
  * `'declared'` is a literal, not a boolean: a caller has to write the word, so
  * nobody enables the durable path by passing `true` reflexively.
@@ -559,6 +563,13 @@ export const createSqlAssignmentCleanupStore = (
         if (typeof request.owner !== 'string' || request.owner.length === 0) {
             throw new Error('assignment cleanup claim request has no owner');
         }
+        // `claim_owner` is VARCHAR(64). A longer owner is not a claim this store
+        // can honour: the stamp would truncate it (non-strict) or fail the write
+        // (strict), and every completion/release fence compares the full value
+        // against what was stored. Refuse before a row is locked.
+        if (request.owner.length > MAX_CLEANUP_OWNER_LENGTH) {
+            throw new Error('assignment cleanup claim request owner exceeds the claim_owner column width');
+        }
         if (!Number.isSafeInteger(request.nowMs) || request.nowMs < 0) {
             throw new Error('assignment cleanup claim request has an invalid nowMs');
         }
@@ -629,6 +640,14 @@ export const createSqlAssignmentCleanupStore = (
 
     const completeClaim = async (request: AssignmentCleanupCompletionRequest): Promise<boolean> => {
         if (availability.mode === 'unavailable') return refuse();
+        // The terminal state is a function of the proof, so a caller-supplied
+        // pair that disagrees with it would write a row claiming a deletion its
+        // own proof does not establish (or the reverse). `completeUnclaimed`
+        // already refuses this; a claimed completion must not be the weaker
+        // path. The coordinator derives both from one proof, so this only
+        // rejects a caller that invented one of them.
+        const state: AssignmentCleanupTerminalState = cleanupStateForProof(request.proof);
+        if (state !== request.state) return false;
         const result = await client.execute(
             `UPDATE ${ASSIGNMENT_CLEANUP_TABLE}
              SET state = ?, completion_proof = ?, claim_owner = NULL,

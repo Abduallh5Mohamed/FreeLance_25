@@ -42,7 +42,9 @@ export type LivePresenceSqlErrorCode =
     | 'invalid_input'
     | 'invalid_row'
     | 'unsafe_bigint'
-    | 'invalid_close_reason';
+    | 'invalid_close_reason'
+    /** The close CAS returned without a usable `affectedRows`. Never a 0. */
+    | 'unreadable_affected_rows';
 
 export class LivePresenceSqlError extends Error {
     constructor(public readonly code: LivePresenceSqlErrorCode, message: string) {
@@ -130,10 +132,21 @@ const isDuplicateEntry = (error: unknown): boolean => {
     return code === 'ER_DUP_ENTRY' || errno === 1062;
 };
 
-const affectedOf = (result: { affectedRows?: number }): number =>
-    typeof result.affectedRows === 'number' && Number.isSafeInteger(result.affectedRows) && result.affectedRows >= 0
-        ? result.affectedRows
-        : 0;
+/**
+ * The close CAS's affected-row count, or a throw. `undefined` is not "nothing
+ * was closed": the interval may have been closed by this very statement, so it
+ * is refused instead of being coerced to 0 and reported as `closed: false`.
+ */
+const affectedOf = (result: { affectedRows?: number }): number => {
+    const affected = result?.affectedRows;
+    if (typeof affected !== 'number' || !Number.isSafeInteger(affected) || affected < 0) {
+        throw new LivePresenceSqlError(
+            'unreadable_affected_rows',
+            'the presence close did not report a usable affected-row count',
+        );
+    }
+    return affected;
+};
 
 const mapInterval = (row: PresenceIntervalRow): PresenceIntervalRecord => {
     const reason = row.close_reason === null ? null : normalizeCloseReason(row.close_reason);

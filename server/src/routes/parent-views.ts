@@ -183,6 +183,28 @@ export function createSqlParentViewsStore(db: ParentViewsDataAccess): ParentView
     };
     const toNumber = (value: unknown): number => (value === null || value === undefined ? 0 : Number(value) || 0);
 
+    /**
+     * The liveness contract `isStudentEnrollmentActive` applies when a parent
+     * link is created, re-applied at READ time.
+     *
+     * A parent token is bound to a LINK, and `createParentViewVerifier`
+     * re-checks that link and the token on every request — but nothing
+     * re-checked the STUDENT. A link minted while the child was active kept
+     * disclosing grades, attendance and progress after the enrollment was
+     * deactivated, rejected, or past its end date, until the token expired.
+     * Every other read path in this lane re-checks current eligibility on the
+     * request (attendance-records, video access), so this is that same rule,
+     * not a new one. The predicates mirror `isStudentEnrollmentActive` in
+     * `services/parent-links.ts` exactly; the alias is a code literal, never
+     * input.
+     */
+    const liveEnrollmentSql = (alias: string): string => `
+              ${alias}.is_active = TRUE
+          AND (${alias}.approval_status IS NULL OR ${alias}.approval_status = 'approved')
+          AND (${alias}.enrollment_status IS NULL OR ${alias}.enrollment_status = 'active')
+          AND (${alias}.enrollment_start_date IS NULL OR ${alias}.enrollment_start_date <= UTC_TIMESTAMP())
+          AND (${alias}.enrollment_end_date IS NULL OR ${alias}.enrollment_end_date > UTC_TIMESTAMP())`;
+
     return {
         findChildSummary: async (tenantId, enrollmentId) => db.queryOne<ChildSummary>(
             `SELECT s.id AS enrollment_id, s.name, g.name AS grade, grp.name AS \`group\`,
@@ -190,7 +212,8 @@ export function createSqlParentViewsStore(db: ParentViewsDataAccess): ParentView
              FROM students s
              LEFT JOIN grades g ON g.id = s.grade_id
              LEFT JOIN \`groups\` grp ON grp.id = s.group_id
-             WHERE s.id = ? AND s.tenant_id = ? LIMIT 1`,
+             WHERE s.id = ? AND s.tenant_id = ?
+               AND ${liveEnrollmentSql('s')} LIMIT 1`,
             [enrollmentId, tenantId],
         ),
 
@@ -206,8 +229,10 @@ export function createSqlParentViewsStore(db: ParentViewsDataAccess): ParentView
                  FROM courses c
                  WHERE c.tenant_id = ? AND c.is_active = 1
                    AND EXISTS (SELECT 1 FROM student_courses sc WHERE sc.student_id = ? AND sc.course_id = c.id)
+                   AND EXISTS (SELECT 1 FROM students ls WHERE ls.id = ? AND ls.tenant_id = ?
+                               AND ${liveEnrollmentSql('ls')})
                  ORDER BY c.name`,
-                [enrollmentId, tenantId, enrollmentId],
+                [enrollmentId, tenantId, enrollmentId, enrollmentId, tenantId],
             );
             const courses = rows.map((row) => ({
                 course_id: String(row.course_id),
@@ -224,14 +249,26 @@ export function createSqlParentViewsStore(db: ParentViewsDataAccess): ParentView
             };
         },
 
-        attendanceRecords: async (tenantId, enrollmentId, limit) => db.query<AttendanceRecordView>(
-            `SELECT a.session_id, ss.title, ss.starts_at, a.state, a.marked_at
-             FROM attendance_records a
-             JOIN schedule_sessions ss ON ss.id = a.session_id
-             WHERE a.tenant_id = ? AND a.student_id = ?
-             ORDER BY ss.starts_at DESC LIMIT ${limit}`,
-            [tenantId, enrollmentId],
-        ),
+        attendanceRecords: async (tenantId, enrollmentId, limit) => {
+            // Keep the interpolated LIMIT bounded at this exported store boundary; it is a
+            // number in the SQL text. The router sanitises it, but this adapter
+            // is exported: a second caller must not be able to inject through it,
+            // so the clamp lives here too and a non-integer falls back instead of
+            // reaching the statement.
+            const boundedLimit = Number.isInteger(limit)
+                ? Math.min(Math.max(limit, 1), MAX_ATTENDANCE_LIMIT)
+                : DEFAULT_ATTENDANCE_LIMIT;
+            return db.query<AttendanceRecordView>(
+                `SELECT a.session_id, ss.title, ss.starts_at, a.state, a.marked_at
+                 FROM attendance_records a
+                 JOIN schedule_sessions ss ON ss.id = a.session_id
+                 WHERE a.tenant_id = ? AND a.student_id = ?
+                   AND EXISTS (SELECT 1 FROM students ls WHERE ls.id = ? AND ls.tenant_id = ?
+                               AND ${liveEnrollmentSql('ls')})
+                 ORDER BY ss.starts_at DESC LIMIT ${boundedLimit}`,
+                [tenantId, enrollmentId, enrollmentId, tenantId],
+            );
+        },
 
         gradeSummary: async (tenantId, enrollmentId) => {
             const rows = await db.query<{ course_id: string; course_name: string; total_score: number; total_max: number; items: number; last_recorded_at: unknown }>(
@@ -241,9 +278,11 @@ export function createSqlParentViewsStore(db: ParentViewsDataAccess): ParentView
                  FROM gradebook_scores gs
                  JOIN courses c ON c.id = gs.course_id AND c.tenant_id = ?
                  WHERE gs.tenant_id = ? AND gs.student_enrollment_id = ?
+                   AND EXISTS (SELECT 1 FROM students ls WHERE ls.id = ? AND ls.tenant_id = ?
+                               AND ${liveEnrollmentSql('ls')})
                  GROUP BY c.id, c.name
                  ORDER BY c.name`,
-                [tenantId, tenantId, enrollmentId],
+                [tenantId, tenantId, enrollmentId, enrollmentId, tenantId],
             );
             return {
                 courses: rows.map((row) => ({

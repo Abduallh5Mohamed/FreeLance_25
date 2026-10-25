@@ -458,7 +458,7 @@ export async function processVideo(videoId: string, tenantId: string): Promise<v
 
         await execute(
             'UPDATE videos SET status = ?, processing_error = ? WHERE id = ? AND tenant_id = ?',
-            ['failed', error instanceof Error ? error.message : 'Unknown error', videoId, tenantId]
+            ['failed', (error instanceof Error ? error.message : 'Unknown error').slice(0, 500), videoId, tenantId]
         );
 
         throw error;

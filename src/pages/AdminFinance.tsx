@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, BarChart3, Calculator, CircleAlert, Clock3, CreditCard, Database, Download, FileText, RefreshCw, Save, Trash2, TrendingUp, Users } from 'lucide-react';
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import Header from '@/components/Header';
@@ -9,13 +9,13 @@ import { Input } from '@/components/ui/input';
 import {
   createAnalystCalculation, deleteAnalystCalculation, downloadAdminFinanceReport, getAdminFinance,
   getAnalystCalculations, getVideoCommission, recordAnalystPdfExport, updateVideoCommission,
-  type AdminFinanceData, type AnalystCalculation,
+  AUTH_SESSION_CHANGED_EVENT, type AdminFinanceData, type AnalystCalculation,
 } from '@/lib/api';
 import tabwebAcademyLogo from '@/assets/Tabweb_Academy_Logo.png';
 
 const money = (value: number) => `${value.toLocaleString('ar-EG', { maximumFractionDigits: 2 })} ج.م`;
 const count = (value: number) => value.toLocaleString('ar-EG');
-const percent = (value: number | null) => value == null ? 'لا توجد فترة مقارنة' : `${value.toLocaleString('ar-EG')}٪`;
+const percent = (value: number | null, emptyLabel = 'لا توجد فترة مقارنة') => value == null ? emptyLabel : `${value.toLocaleString('ar-EG')}٪`;
 const subscriptionLabels: Record<string, string> = {
   pending: 'معلّق', active: 'نشط', past_due: 'مستحق', grace_period: 'مهلة', expired: 'منتهي', completed: 'فترة مكتملة', suspended: 'موقوف', cancelled: 'ملغي',
 };
@@ -91,7 +91,7 @@ function AnalyticsPdfReport({ data, months, calculations, scenario }: { data: Ad
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5mm' }}><div style={compactBox}><h3 style={{ fontSize: '13px' }}>حالات الاشتراك</h3><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '9px' }}><tbody>{data.subscription_breakdown.map(item => <tr key={item.label}><td style={{ padding: '2mm', borderBottom: '1px solid #e2e8f0' }}>{subscriptionLabels[item.label] || item.label}</td><td style={{ padding: '2mm', textAlign: 'center', borderBottom: '1px solid #e2e8f0' }}>{count(item.count)}</td><td style={{ padding: '2mm', textAlign: 'left', borderBottom: '1px solid #e2e8f0' }}>{money(item.amount)}</td></tr>)}</tbody></table></div><div style={compactBox}><h3 style={{ fontSize: '13px' }}>وسائل الدفع</h3><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '9px' }}><tbody>{data.payment_methods.map(item => <tr key={item.label}><td style={{ padding: '2mm', borderBottom: '1px solid #e2e8f0' }}>{methodLabels[item.label] || item.label}</td><td style={{ padding: '2mm', textAlign: 'center', borderBottom: '1px solid #e2e8f0' }}>{item.verified}/{item.attempts}</td><td style={{ padding: '2mm', textAlign: 'left', borderBottom: '1px solid #e2e8f0' }}>{money(item.revenue)}</td></tr>)}</tbody></table></div></div>
       <div style={{ marginTop: '5mm', ...compactBox }}><h3 style={{ fontSize: '13px' }}>شرائح أحجام المدرسين</h3><div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: '2mm', marginTop: '3mm' }}>{data.instructor_portfolio.map(item => <div key={item.bucket} style={{ padding: '3mm', background: '#eef2ff', borderRadius: '2mm', textAlign: 'center' }}><strong dir="ltr">{item.bucket}</strong><div style={{ fontSize: '9px', marginTop: '1mm' }}>{item.instructors} مدرس</div><div style={{ fontSize: '8px', color: '#64748b' }}>{item.students} طالب</div></div>)}</div></div>
       <h2 style={{ fontSize: '16px', margin: '6mm 0 4mm' }}>نسب تشغيلية رئيسية</h2><div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '3mm' }}>{[
-        ['قبول الدفع', percent(data.summary.payment_approval_rate)], ['طلاب أونلاين', percent(data.summary.students ? data.summary.online_students/data.summary.students*100 : null)], ['أنشطة نشطة', percent(data.summary.total_tenants ? data.summary.active_tenants/data.summary.total_tenants*100 : null)], ['متوسط الطلاب', data.summary.average_students_per_instructor.toLocaleString('ar-EG')],
+        ['قبول الدفع', percent(data.summary.payment_approval_rate, 'لا توجد بيانات كافية')], ['طلاب أونلاين', percent(data.summary.students ? data.summary.online_students/data.summary.students*100 : null, 'لا توجد بيانات كافية')], ['أنشطة نشطة', percent(data.summary.total_tenants ? data.summary.active_tenants/data.summary.total_tenants*100 : null, 'لا توجد بيانات كافية')], ['متوسط الطلاب', data.summary.average_students_per_instructor.toLocaleString('ar-EG')],
       ].map(([label,value]) => <div key={String(label)} style={{ ...compactBox, textAlign: 'center' }}><div style={{ color: '#64748b', fontSize: '9px' }}>{label}</div><strong style={{ display: 'block', color: '#0f766e', fontSize: '15px', marginTop: '2mm' }}>{value}</strong></div>)}</div>
       <div style={{ marginTop: '6mm', padding: '5mm', borderRadius: '3mm', borderRight: '4px solid #4f46e5', background: '#eef2ff' }}><h3 style={{ fontSize: '13px', margin: 0 }}>قراءة التحليل</h3><p style={{ fontSize: '10px', lineHeight: 2, margin: '2mm 0 0' }}>تعتمد المقارنة الزمنية على تاريخ اعتماد الدفعة. الرسم الدائري يعرض الجزء من الكل، بينما تُستخدم الأعمدة عند مقارنة أحجام مختلفة. إذا كانت بعض الفئات غير ظاهرة فهذا يعني أن قاعدة البيانات لا تحتوي سجلات منها خلال الفترة المختارة.</p></div>
     </PdfPage>
@@ -100,7 +100,7 @@ function AnalyticsPdfReport({ data, months, calculations, scenario }: { data: Ad
         ['مدرسون جدد مفترضون', scenario.newInstructors], ['متوسط سعر الخطة', money(scenario.planPrice)], ['تحويل المعلق', `${scenario.pendingConversion}%`], ['مخاطر عدم التجديد', `${scenario.churnRisk}%`], ['إيراد متوقع', money(projectedRevenue)], ['الفارق عن الهدف', money(projectedRevenue-scenario.targetRevenue)],
       ].map(([label,value]) => <div key={String(label)} style={compactBox}><div style={{ color: '#64748b', fontSize: '9px' }}>{label}</div><strong style={{ display: 'block', marginTop: '2mm', fontSize: '14px', color: '#312e81' }}>{value}</strong></div>)}</div>
       <h2 style={{ fontSize: '16px', marginBottom: '4mm' }}>الحسابات المحفوظة</h2><div style={{ ...compactBox, marginBottom: '6mm' }}>{calculations.length === 0 ? <p style={{ fontSize: '10px' }}>لا توجد حسابات مخصصة محفوظة.</p> : calculations.map(item => <div key={item.id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 35mm', gap: '3mm', padding: '3mm 0', borderBottom: '1px solid #e2e8f0', fontSize: '9px' }}><strong>{item.name}</strong><span>{metricCatalog.find(metric => metric.key===item.left_metric)?.label} · {operatorLabels[item.operator]}</span><strong style={{ textAlign: 'left' }}>{formatCalculated(calculate(item,data.summary),item.result_format)}</strong></div>)}</div>
-      <div style={{ marginBottom: '6mm', ...compactBox }}><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', marginBottom: '2mm' }}><strong>التقدم نحو هدف الإيراد</strong><span>{percent(scenario.targetRevenue ? projectedRevenue/scenario.targetRevenue*100 : null)}</span></div><div style={{ height: '6mm', borderRadius: '3mm', overflow: 'hidden', background: '#e2e8f0' }}><div style={{ height: '100%', width: `${Math.min(100, scenario.targetRevenue ? projectedRevenue/scenario.targetRevenue*100 : 0)}%`, background: 'linear-gradient(90deg,#4f46e5,#10b981)' }} /></div></div>
+      <div style={{ marginBottom: '6mm', ...compactBox }}><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', marginBottom: '2mm' }}><strong>التقدم نحو هدف الإيراد</strong><span>{percent(scenario.targetRevenue ? projectedRevenue/scenario.targetRevenue*100 : null, 'لم تحدد هدفًا')}</span></div><div style={{ height: '6mm', borderRadius: '3mm', overflow: 'hidden', background: '#e2e8f0' }}><div style={{ height: '100%', width: `${Math.min(100, scenario.targetRevenue ? projectedRevenue/scenario.targetRevenue*100 : 0)}%`, background: 'linear-gradient(90deg,#4f46e5,#10b981)' }} /></div></div>
       <h2 style={{ fontSize: '16px', marginBottom: '4mm' }}>توصيات المتابعة</h2><div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '3mm', marginBottom: '6mm' }}>{[
         ['التجديد', `${data.summary.expiring_7_days} اشتراكًا خلال 7 أيام`, 'إعداد قائمة متابعة قبل موعد الانتهاء.'],
         ['التحصيل', money(data.summary.pending_amount), 'فحص المحاولات المعلقة حسب الأقدمية.'],
@@ -121,8 +121,6 @@ const analyticsViewCopy: Record<AdminAnalyticsView, { eyebrow: string; title: st
   governance: { eyebrow: 'حوكمة البيانات', title: 'جودة البيانات وقاموس المؤشرات', description: 'كشف مشاكل البيانات وتوحيد تعريف المؤشرات حتى تبقى التقارير قابلة للمراجعة والمقارنة.' },
 };
 
-const financeCache = new Map<number, { data: AdminFinanceData; expiresAt: number }>();
-const FINANCE_CACHE_TTL_MS = 30_000;
 
 export default function AdminFinance({ view = 'overview' }: { view?: AdminAnalyticsView }) {
   const [data, setData] = useState<AdminFinanceData | null>(null);
@@ -137,29 +135,59 @@ export default function AdminFinance({ view = 'overview' }: { view?: AdminAnalyt
   const [calculationForm, setCalculationForm] = useState({ name: '', left_metric: 'revenue_month', operator: 'add' as AnalystCalculation['operator'], right_source: 'metric', right_metric: 'revenue_previous_month', constant_value: '', result_format: 'money' as AnalystCalculation['result_format'] });
   const [scenario, setScenario] = useState({ newInstructors: '5', planPrice: '350', pendingConversion: '70', churnRisk: '10', targetRevenue: '10000' });
   const [videoCommission, setVideoCommission] = useState({ percent: '2.00', can_manage: false, updated_at: null as string | null });
-  const load = async (force = false) => {
-    setLoading(true); setError(null);
+  const financeLoadSequence = useRef(0);
+  const load = async (_force = false) => {
+    const sequence = financeLoadSequence.current + 1;
+    financeLoadSequence.current = sequence;
+    const requestedMonths = months;
+    const token = localStorage.getItem('authToken');
+    const isCurrent = () => financeLoadSequence.current === sequence && token === localStorage.getItem('authToken');
+    setLoading(true); setError(null); setData(null);
     try {
-      const cached = financeCache.get(months);
-      if (!force && cached && cached.expiresAt > Date.now()) {
-        setData(cached.data);
-        return;
-      }
-      const freshData = await getAdminFinance(months);
-      financeCache.set(months, { data: freshData, expiresAt: Date.now() + FINANCE_CACHE_TTL_MS });
-      setData(freshData);
+      const freshData = await getAdminFinance(requestedMonths);
+      if (isCurrent()) setData(freshData);
     }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'تعذر تحميل التقرير التحليلي'); }
-    finally { setLoading(false); }
+    catch (cause) {
+      if (isCurrent()) setError(cause instanceof Error ? cause.message : 'تعذر تحميل التقرير التحليلي');
+    }
+    finally { if (isCurrent()) setLoading(false); }
   };
-  useEffect(() => { void load(); }, [months]);
+  useEffect(() => {
+    const refresh = () => {
+      financeLoadSequence.current += 1;
+      setData(null); setCalculations([]); setNotice(null);
+      setVideoCommission({ percent: '', can_manage: false, updated_at: null });
+      void load();
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (!event.key || event.key === 'authToken' || event.key === 'currentUser') refresh();
+    };
+    void load();
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      financeLoadSequence.current += 1;
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [months]);
   useEffect(() => {
     if (view !== 'overview') return;
-    getVideoCommission().then(value => setVideoCommission({ percent: String(value.percent), can_manage: value.can_manage, updated_at: value.updated_at })).catch(() => undefined);
+    let cancelled = false;
+    const token = localStorage.getItem('authToken');
+    getVideoCommission().then(value => {
+      if (!cancelled && token === localStorage.getItem('authToken')) setVideoCommission({ percent: String(value.percent), can_manage: value.can_manage, updated_at: value.updated_at });
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
   }, [view]);
   useEffect(() => {
     if (!data?.can_calculate || (view !== 'scenarios' && view !== 'reports')) return;
-    getAnalystCalculations().then(setCalculations).catch(cause => setError(cause instanceof Error ? cause.message : 'تعذر تحميل الحسابات المحفوظة'));
+    let cancelled = false;
+    const token = localStorage.getItem('authToken');
+    const isCurrent = () => !cancelled && token === localStorage.getItem('authToken');
+    getAnalystCalculations().then(value => { if (isCurrent()) setCalculations(value); })
+      .catch(cause => { if (isCurrent()) setError(cause instanceof Error ? cause.message : 'تعذر تحميل الحسابات المحفوظة'); });
+    return () => { cancelled = true; };
   }, [data?.can_calculate, view]);
   const exportReport = async () => {
     setExporting(true); setError(null); setNotice(null);
@@ -237,7 +265,7 @@ export default function AdminFinance({ view = 'overview' }: { view?: AdminAnalyt
       <MetricCard label="إجمالي الإيراد المؤكد" value={money(data.summary.revenue_total)} help="مجموع دفعات اشتراك المدرسين التي اعتمدها مسؤول مخول فقط." tone="emerald" />
       <MetricCard label="التحصيل النقدي المعتمد" value={money(data.summary.cash_collected_total)} help={`يشمل شحن رصيد الخدمات المعتمد (${money(data.summary.topup_cash_collected)}) حتى لو لم يُستخدم كله في التجديد بعد.`} tone="blue" />
       <MetricCard label="رصيد خدمات غير مستخدم" value={money(data.summary.unused_service_credit)} help="التزام خدمات قائم للمدرسين؛ ليس إيراد اشتراك حتى يُخصم عند التجديد أو استخدام خدمة." tone="amber" />
-      <MetricCard label="نسبة قبول محاولات الدفع" value={percent(data.summary.payment_approval_rate)} help={`${count(data.summary.verified_attempts)} مؤكدة مقابل ${count(data.summary.rejected_attempts)} مرفوضة؛ المعلّقة لا تدخل في النسبة.`} tone="blue" />
+      <MetricCard label="نسبة قبول محاولات الدفع" value={percent(data.summary.payment_approval_rate, 'لا توجد بيانات كافية')} help={`${count(data.summary.verified_attempts)} مؤكدة مقابل ${count(data.summary.rejected_attempts)} مرفوضة؛ المعلّقة لا تدخل في النسبة.`} tone="blue" />
       <MetricCard label="متوسط الدفعة المؤكدة" value={money(data.summary.average_verified_payment)} help="إجمالي الإيراد المؤكد ÷ عدد الدفعات المؤكدة." />
       <MetricCard label="اشتراكات تشغيلية" value={count(data.summary.active_subscriptions)} help={`من أصل ${count(data.summary.total_subscriptions)} فترة اشتراك مسجلة.`} tone="blue" />
       <MetricCard label="تنتهي خلال 7 أيام" value={count(data.summary.expiring_7_days)} help={`${count(data.summary.expiring_30_days)} اشتراكًا ينتهي خلال 30 يومًا ويحتاج تخطيط تجديد.`} tone="amber" />
@@ -258,7 +286,7 @@ export default function AdminFinance({ view = 'overview' }: { view?: AdminAnalyt
       ].map(([label, value, color]) => <div key={String(label)} className="flex items-center justify-between rounded-lg border p-3"><div className="flex items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${color}`} /><span>{label}</span></div><strong>{count(Number(value))}</strong></div>)}</CardContent></Card></div>}
 
     {view === 'charts' && <div className="grid gap-6 lg:grid-cols-2"><Card><CardHeader><CardTitle>توزيع حالات الاشتراك</CardTitle><p className="text-sm text-slate-500">العدد والقيمة المتعاقد عليها لكل حالة، وليست إيرادًا محققًا.</p></CardHeader><CardContent className="space-y-4">{data?.subscription_breakdown.map(item => <div key={item.label}><div className="mb-1 flex justify-between text-sm"><span>{subscriptionLabels[item.label] || item.label}</span><span>{count(item.count)} · {money(item.amount)}</span></div><div className="h-2 rounded bg-slate-100"><div className="h-2 rounded bg-indigo-500" style={{ width: `${(item.count / maxSubscriptionCount) * 100}%` }} /></div></div>)}</CardContent></Card>
-      <Card><CardHeader><CardTitle>كفاءة وسائل الدفع</CardTitle><p className="text-sm text-slate-500">تُستخدم لمعرفة القنوات الأكثر استخدامًا ونجاحًا.</p></CardHeader><CardContent className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-slate-500"><th className="p-2 text-right">الوسيلة</th><th className="p-2">المحاولات</th><th className="p-2">المؤكد</th><th className="p-2">نسبة النجاح</th><th className="p-2 text-left">الإيراد</th></tr></thead><tbody>{data?.payment_methods.map(item => <tr key={item.label} className="border-b last:border-0"><td className="p-2">{methodLabels[item.label] || item.label}</td><td className="p-2 text-center">{count(item.attempts)}</td><td className="p-2 text-center">{count(item.verified)}</td><td className="p-2 text-center">{percent(item.attempts ? Number(((item.verified / item.attempts) * 100).toFixed(1)) : null)}</td><td className="p-2 text-left font-medium">{money(item.revenue)}</td></tr>)}</tbody></table></CardContent></Card></div>}
+      <Card><CardHeader><CardTitle>كفاءة وسائل الدفع</CardTitle><p className="text-sm text-slate-500">تُستخدم لمعرفة القنوات الأكثر استخدامًا ونجاحًا.</p></CardHeader><CardContent className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-slate-500"><th className="p-2 text-right">الوسيلة</th><th className="p-2">المحاولات</th><th className="p-2">المؤكد</th><th className="p-2">نسبة النجاح</th><th className="p-2 text-left">الإيراد</th></tr></thead><tbody>{data?.payment_methods.map(item => <tr key={item.label} className="border-b last:border-0"><td className="p-2">{methodLabels[item.label] || item.label}</td><td className="p-2 text-center">{count(item.attempts)}</td><td className="p-2 text-center">{count(item.verified)}</td><td className="p-2 text-center">{percent(item.attempts ? Number(((item.verified / item.attempts) * 100).toFixed(1)) : null, 'لا توجد بيانات كافية')}</td><td className="p-2 text-left font-medium">{money(item.revenue)}</td></tr>)}</tbody></table></CardContent></Card></div>}
 
     {view === 'overview' && <section><div className="mb-3 flex items-center gap-2"><Users className="h-5 w-5 text-indigo-600" /><h2 className="text-xl font-bold">حجم الأعمال وقاعدة المستخدمين</h2></div><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
       {data && <><MetricCard label="المدرسون" value={count(data.summary.instructors)} help={`${count(data.summary.active_tenants)} نشاطًا نشطًا و${count(data.summary.suspended_tenants)} موقوفًا.`} />

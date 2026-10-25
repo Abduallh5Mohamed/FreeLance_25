@@ -21,8 +21,13 @@
  * No `any`, no ts-ignore, no network at import, no timer at construction.
  */
 
-import { createAssignmentCleanupRecovery } from './assignment-cleanup-recovery';
+import {
+    createAssignmentCleanupRecovery,
+    DEFAULT_CLEANUP_RUN_BUDGET_MS,
+    MAX_CLEANUP_RUN_BUDGET_MS,
+} from './assignment-cleanup-recovery';
 import type {
+    AssignmentCleanupHaltReason,
     AssignmentCleanupObligationStore,
     AssignmentCleanupRunReport,
     AssignmentObjectListing,
@@ -96,7 +101,14 @@ export interface AssignmentRecoveryReadiness {
 /* ------------------------------------------------------------------------- */
 
 export type AssignmentRecoveryHaltReason =
-    /** `stop()` was called before or between passes. */
+    /**
+     * `stop()` was called **and a configured pass was therefore prevented from
+     * starting or cut short**: before the run, between the passes, or inside the
+     * scan pass (which reads the flag before its claim and between batches).
+     * A stop that lands after every configured pass has already finished is not
+     * reported — nothing was cut short, and naming it would describe a halt that
+     * did not happen.
+     */
     | 'stopped'
     /** A run was already in flight; nothing was started. */
     | 'already_running'
@@ -104,10 +116,38 @@ export type AssignmentRecoveryHaltReason =
     | 'unconfigured'
     /** Neither pass is usable because an injected adapter declared itself unavailable. */
     | 'unavailable'
-    /** The overall budget was exhausted before the second pass. */
-    | 'budget_exhausted';
+    /**
+     * The run's total budget ran out: the scan pass was not started, or the scan
+     * pass was refused before it claimed/scanned because the window was already
+     * gone. Distinct from a pass reaching its own page/item/elapsed cap, which is
+     * a bounded completion with a resumable `continuation` — not a halt.
+     */
+    | 'budget_exhausted'
+    /**
+     * The cleanup pass was configured and halted for a reason of its own: an
+     * unavailable store, a failed claim, a corrupt row, a lost fence. Work may
+     * remain and the run did not complete; `cleanup.halted` names the exact
+     * cause. This member exists because the alternative — `halted: null` beside
+     * a child `halted: 'claim_store_failed'` — reported an unknown outcome as a
+     * clean run to any supervisor that reads only `halted`.
+     */
+    | 'cleanup_halted'
+    /**
+     * The scan pass was configured and aborted for a reason of its own: a failed
+     * claim, a corrupt row, an unavailable store. `scan.aborted` names the exact
+     * cause.
+     */
+    | 'scan_halted';
 
 export interface AssignmentRecoveryRunReport {
+    /**
+     * Why the run ended early, or `null` when every configured pass either
+     * completed or reached its own configured bound (that bounded pass reports
+     * its own `halted` and `continuation` in its own report). `null` therefore
+     * never conceals a pass that failed: those report `cleanup_halted` /
+     * `scan_halted`, and a stop that actually cut something short reports
+     * `stopped`.
+     */
     halted: AssignmentRecoveryHaltReason | null;
     /** `null` when the cleanup pass did not run (unconfigured or skipped). */
     cleanup: AssignmentCleanupRunReport | null;
@@ -128,7 +168,11 @@ export interface AssignmentRecoveryBounds {
     cleanupMaxPages?: number;
     /** Cleanup obligations inspected per run (clamped 1–200). */
     cleanupMaxItems?: number;
-    /** Cleanup wall-clock budget (clamped 1 ms–30 s). */
+    /**
+     * Cleanup wall-clock budget (clamped 1 ms–30 s), additionally capped by
+     * `totalBudgetMs`: the first pass may not spend a window the run does not
+     * have.
+     */
     cleanupRunBudgetMs?: number;
     /** Cleanup claim lease (clamped 5 s–5 min). */
     cleanupLeaseMs?: number;
@@ -142,7 +186,12 @@ export interface AssignmentRecoveryBounds {
     scanTimeoutMs?: number;
     /** Durable scan claim lease (clamped 5 s–10 min). */
     scanLeaseMs?: number;
-    /** Total budget for one `runOnce` across both passes (clamped 1 ms–5 min). */
+    /**
+     * Total budget for one `runOnce` across both passes (clamped 1 ms–5 min).
+     * Enforced on the cleanup pass (via its run budget), on whether the scan
+     * pass starts, and inside the scan pass (its cooperative predicate refuses
+     * the batch it is about to scan once the window is gone).
+     */
     totalBudgetMs?: number;
 }
 
@@ -163,7 +212,12 @@ export interface AssignmentRecoveryFactoryOptions {
     /** Row lookup used by orphan planning. */
     submissionLookup?: AssignmentSubmissionLookup;
     now?: () => Date;
-    /** Injected for determinism; defaults to a fresh UUID per pass. */
+    /**
+     * Injected for determinism. Each pass resolves its claim owner **once, at
+     * construction** (default: a fresh UUID), so every `runOnce()` of one runtime
+     * reuses that owner; the per-row claim version — not the owner — is what
+     * fences a replayed claim.
+     */
     newOwnerId?: () => string;
     bounds?: AssignmentRecoveryBounds;
     /** Observability hook. Must never alter an outcome. */
@@ -175,7 +229,11 @@ export interface AssignmentRecoveryRuntime {
     describeReadiness(): AssignmentRecoveryReadiness;
     /** One bounded pass over both configured recovery paths. Never schedules itself. */
     runOnce(): Promise<AssignmentRecoveryRunReport>;
-    /** Cooperative stop: no new pass or cleanup item starts; in-flight work finishes. */
+    /**
+     * Cooperative stop, honoured by BOTH passes: no new cleanup page or item and
+     * no new scan claim or batch starts. In-flight work finishes — a delete or a
+     * scan already running cannot be un-run.
+     */
     stop(): void;
     /** Wait for the in-flight run (if any) and return its report; starts nothing. */
     drain(): Promise<AssignmentRecoveryRunReport | null>;
@@ -202,6 +260,26 @@ export const createAssignmentRecoveryRuntime = (
         MAX_RECOVERY_TOTAL_BUDGET_MS,
     );
 
+    /**
+     * The cleanup pass may not outlive the run's total budget.
+     *
+     * `totalBudgetMs` is documented as the budget "across both passes", but the
+     * cleanup pass only ever saw its own `cleanupRunBudgetMs` (default 5 s,
+     * ceiling 30 s). With `totalBudgetMs` below that, the *first* pass alone ran
+     * past the declared window and the window was then checked only before the
+     * second pass — a bound the run had already broken. The configured value is
+     * clamped exactly as the coordinator clamps it, then capped by the total.
+     */
+    const cleanupRunBudgetMs = Math.min(
+        clampInt(
+            bounds.cleanupRunBudgetMs,
+            DEFAULT_CLEANUP_RUN_BUDGET_MS,
+            1,
+            MAX_CLEANUP_RUN_BUDGET_MS,
+        ),
+        totalBudgetMs,
+    );
+
     const cleanupRecovery = createAssignmentCleanupRecovery({
         store: options.cleanupStore,
         objectStore: options.objectStore,
@@ -210,7 +288,7 @@ export const createAssignmentRecoveryRuntime = (
         pageSize: bounds.cleanupPageSize,
         maxPages: bounds.cleanupMaxPages,
         maxItems: bounds.cleanupMaxItems,
-        runBudgetMs: bounds.cleanupRunBudgetMs,
+        runBudgetMs: cleanupRunBudgetMs,
         leaseMs: bounds.cleanupLeaseMs,
         onError: options.onError,
     });
@@ -226,6 +304,34 @@ export const createAssignmentRecoveryRuntime = (
      */
     const scanStop = { stopped: false };
 
+    /**
+     * The scan pass's share of the total budget.
+     *
+     * `totalBudgetMs` used to bound only the *start* of the second pass, so a run
+     * with a 1 ms total budget still spent a full scan window inside it (one
+     * batch of up to `scanBatchSize` objects, each bounded only by
+     * `scanTimeoutMs`, i.e. up to 120 s per wave): the declared bound was
+     * enforced once and then ignored for the rest of the run. The deadline is set
+     * per run and read by the same predicate as the stop flag, so the scan pass
+     * refuses the batch it is about to scan instead of running past the window.
+     *
+     * `scanBudgetRefused` records *why* the predicate answered `false`. The
+     * worker reports `aborted: 'stopped'` for any refusal (it cannot see which
+     * predicate fired), so without this the runtime would report `stopped` for a
+     * budget stop — one cause's reason returned for another.
+     */
+    let scanBudgetDeadlineMs: number | null = null;
+    let scanBudgetRefused = false;
+
+    const scanShouldContinue = (): boolean => {
+        if (scanStop.stopped) return false;
+        if (scanBudgetDeadlineMs !== null && now().getTime() >= scanBudgetDeadlineMs) {
+            scanBudgetRefused = true;
+            return false;
+        }
+        return true;
+    };
+
     const scanWorker = options.scanStore && options.objectStore
         ? createAssignmentScanWorker({
             store: options.scanStore,
@@ -239,7 +345,7 @@ export const createAssignmentRecoveryRuntime = (
             scanTimeoutMs: bounds.scanTimeoutMs,
             leaseMs: bounds.scanLeaseMs,
             onError: options.onError,
-            shouldContinue: () => !scanStop.stopped,
+            shouldContinue: scanShouldContinue,
         })
         : null;
 
@@ -257,29 +363,46 @@ export const createAssignmentRecoveryRuntime = (
      * (`fenced`) for a pass that could never run. These predicates mirror the
      * downstream capability contracts, so a stub cannot satisfy them by shape
      * alone.
+     *
+     * The names are the ones on the port types, not abbreviations: the listing
+     * and lookup used to be probed under `list`/`find`, which no port declares,
+     * so a correct implementation was reported `unconfigured`; and the cleanup
+     * store and the object store were not probed at all, so `{}` read as
+     * `configured` and the pass then died on a missing method.
      */
     const hasCallable = (value: unknown, method: string): boolean =>
         typeof value === 'object' && value !== null
         && typeof (value as Record<string, unknown>)[method] === 'function';
 
+    const objectStoreConfigured = hasCallable(options.objectStore, 'statObject');
+    const cleanupStoreConfigured = hasCallable(options.cleanupStore, 'recordPending')
+        && hasCallable(options.cleanupStore, 'claimBatch')
+        && hasCallable(options.cleanupStore, 'completeClaim')
+        && hasCallable(options.cleanupStore, 'releaseClaim')
+        && hasCallable(options.cleanupStore, 'completeUnclaimed');
     const scannerConfigured = hasCallable(options.scanner, 'scan');
     const scanStoreConfigured = hasCallable(options.scanStore, 'listPendingScanBatch')
         && hasCallable(options.scanStore, 'recordScanVerdict');
-    const claimsCapable = hasCallable(options.scanStore?.claims, 'claimBatch');
-    const listingConfigured = hasCallable(options.listing, 'list');
-    const lookupConfigured = hasCallable(options.submissionLookup, 'find');
+    // `AssignmentScanClaimStore` is a pair. Probing only `claimBatch` reported
+    // `fenced` for a claims object that could take a lease but never hand one
+    // back: the worker calls `releaseClaim` on every row that stays pending and
+    // on every claim it refuses mid-batch, so a missing release is a lease held
+    // until expiry and an under-reported `claimsReleased`, not a fenced run.
+    const claimsCapable = hasCallable(options.scanStore?.claims, 'claimBatch')
+        && hasCallable(options.scanStore?.claims, 'releaseClaim');
+    const listingConfigured = hasCallable(options.listing, 'listTenantObjects');
+    const lookupConfigured = hasCallable(options.submissionLookup, 'hasSubmissionForVersion');
 
     const readiness = (): AssignmentRecoveryReadiness => {
         const capability = cleanupRecovery.describeCapability();
-        const durableCleanupStore = capability.durableStore;
-        const exactVersionDelete = options.objectStore ? capability.exactVersionDelete : 'unknown';
+        const durableCleanupStore = cleanupStoreConfigured ? 'configured' : 'unconfigured';
+        const exactVersionDelete = objectStoreConfigured ? capability.exactVersionDelete : 'unknown';
         const scanner: 'configured' | 'unconfigured' = scannerConfigured ? 'configured' : 'unconfigured';
         const scanStore: 'configured' | 'unconfigured' = scanStoreConfigured ? 'configured' : 'unconfigured';
-        const hasObjectStore = options.objectStore !== undefined;
         const cleanupUnavailable = options.cleanupStore?.availability?.mode === 'unavailable';
         const scanUnavailable = options.scanStore?.availability?.mode === 'unavailable';
 
-        const cleanupReason: AssignmentRecoveryReason | null = !hasObjectStore
+        const cleanupReason: AssignmentRecoveryReason | null = !objectStoreConfigured
             ? 'object-store-unconfigured'
             : cleanupUnavailable
                 ? 'cleanup-store-unavailable'
@@ -288,7 +411,7 @@ export const createAssignmentRecoveryRuntime = (
                     : (exactVersionDelete === 'supported' ? null : 'exact-delete-unsupported');
         // A scan pass without an object store cannot prove which version it is
         // scanning, so it is not "configured" no matter what else is injected.
-        const scanReason: AssignmentRecoveryReason | null = !hasObjectStore
+        const scanReason: AssignmentRecoveryReason | null = !objectStoreConfigured
             ? 'object-store-unconfigured'
             : scanUnavailable
                 ? 'scan-store-unavailable'
@@ -315,7 +438,7 @@ export const createAssignmentRecoveryRuntime = (
             // object store or no scan store there is nothing that could take a
             // claim, so reporting `in-run-only` there described a discipline no
             // pass was following.
-            scanClaimFencing: scanUnavailable || scanStore === 'unconfigured' || !hasObjectStore
+            scanClaimFencing: scanUnavailable || scanStore === 'unconfigured' || !objectStoreConfigured
                 ? 'unavailable'
                 : claimsCapable
                     && options.scanStore?.capabilities?.fencedVerdictWrite === true
@@ -328,19 +451,19 @@ export const createAssignmentRecoveryRuntime = (
     };
 
     /**
-     * Cooperative stop flag shared with the scan pass.
-     *
-     * The scan worker has no stop surface of its own — it exposes only
-     * `runOnce()` — so `stop()` used to halt the cleanup pass while the scan
-     * pass kept claiming batches and running concurrent scans to completion,
-     * and the run then reported `halted: null` as if it had finished cleanly.
-     * The flag is read by the worker before each batch claim and between
-     * batches, so a mid-run stop is both honoured and visible.
+     * A cleanup halt that is neither "drained" (`null`) nor the pass reaching its
+     * own configured page/item/elapsed bound (`budget_exhausted`, resumable from
+     * `continuation`). Everything else — an unavailable store, a failed claim, a
+     * corrupt row, a lost fence — means the pass could not do its work, so the
+     * run is not a completed run.
      */
-    const scanStop = { stopped: false };
+    const cleanupCompletedOrBounded = (reason: AssignmentCleanupHaltReason | null): boolean =>
+        reason === null || reason === 'stopped' || reason === 'budget_exhausted';
 
     const execute = async (): Promise<AssignmentRecoveryRunReport> => {
         const startedAtMs = now().getTime();
+        // Per run: a refusal recorded by the previous run must not colour this one.
+        scanBudgetRefused = false;
         const current = readiness();
         if (stopped) {
             return { halted: 'stopped', cleanup: null, scan: null, elapsedMs: 0, readiness: current };
@@ -363,24 +486,41 @@ export const createAssignmentRecoveryRuntime = (
         let scanReport: AssignmentScanRunResult | null = null;
         let halted: AssignmentRecoveryHaltReason | null = null;
 
-        // Every child pass is awaited inside this guard, so a rejection is
-        // observed here rather than escaping `runOnce()`/`drain()` as an
-        // unhandled rejection when the owner calls `runOnce()` without awaiting
-        // (the documented usage). The original error is re-thrown after the
-        // in-flight bookkeeping is settled, so the caller still sees it.
+        // Every child pass is awaited inside this guard, so its rejection is
+        // observed here and re-thrown unchanged: the caller of `runOnce()` /
+        // `drain()` sees the ORIGINAL error, and the `finally` in `runOnce` that
+        // clears `running`/`inFlight` cannot replace it. This guard does not
+        // swallow the error and does not make the returned promise safe to
+        // ignore — an owner that neither awaits nor handles it still gets an
+        // unhandled rejection, which is the owner's decision, not a silent
+        // success manufactured here.
         try {
             if (current.cleanup === 'configured') {
                 cleanupReport = await cleanupRecovery.runOnce();
             }
             if (stopped) {
-                halted = 'stopped';
+                // A stop between the passes halts the run only when it actually
+                // prevented something. With no scan pass configured the cleanup
+                // pass was the whole run, so naming `stopped` there described a
+                // cut that never happened.
+                if (current.scanRecovery === 'configured'
+                    || (cleanupReport !== null && cleanupReport.halted === 'stopped')) {
+                    halted = 'stopped';
+                }
             } else if (current.scanRecovery === 'configured' && scanWorker) {
                 if (now().getTime() - startedAtMs >= totalBudgetMs) {
                     // The cleanup pass consumed the whole window; the scan pass is
                     // not started half-way, because a scan is not interruptible.
                     halted = 'budget_exhausted';
                 } else {
-                    scanReport = await scanWorker.runOnce();
+                    scanBudgetDeadlineMs = startedAtMs + totalBudgetMs;
+                    try {
+                        scanReport = await scanWorker.runOnce();
+                    } finally {
+                        // Cleared even when the pass throws: a stale deadline
+                        // would bound the NEXT run by this run's window.
+                        scanBudgetDeadlineMs = null;
+                    }
                 }
             }
         } catch (error) {
@@ -390,10 +530,25 @@ export const createAssignmentRecoveryRuntime = (
             throw error;
         }
 
-        // A stop that arrived while the scan pass was in flight must be visible:
-        // `halted: null` used to be reported for a run that was cut short.
-        if (halted === null && stopped && scanReport !== null && scanReport.aborted !== 'stopped') {
-            halted = 'stopped';
+        // A configured pass that halted for a reason of its own is NOT a
+        // completed run. `halted: null` used to be returned next to a child
+        // `halted: 'claim_store_failed'`, so a supervisor that reads `halted`
+        // recorded a clean run whose cleanup store had failed after claiming a
+        // page. The child report keeps the exact cause; `halted` names the pass.
+        //
+        // A child failure outranks a stop that arrived later (the failure is why
+        // the work could not be done), and outranks `budget_exhausted` (which
+        // only says the scan was not started).
+        if (cleanupReport !== null && !cleanupCompletedOrBounded(cleanupReport.halted)) {
+            halted = 'cleanup_halted';
+        } else if (scanReport !== null && scanReport.aborted !== null && scanReport.aborted !== 'stopped') {
+            halted = 'scan_halted';
+        } else if (halted === null && scanReport !== null && scanReport.aborted === 'stopped') {
+            // The scan pass honoured a refusal. The worker reports
+            // `aborted: 'stopped'` for both causes it can see, so the cause is
+            // named from the predicate that actually refused: a budget deadline
+            // is not a stop, and a stop is not a budget.
+            halted = scanBudgetRefused ? 'budget_exhausted' : 'stopped';
         }
 
         return {

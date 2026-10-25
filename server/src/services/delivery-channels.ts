@@ -183,8 +183,8 @@ const DIGIT_RUN_PATTERN = /\d{6,}/g;
 export const redactPiiText = (text: string): string => {
     const masked = text
         .replace(EMAIL_PATTERN, REDACTION_MASK)
-        .replace(SECRET_ASSIGNMENT_PATTERN, `$1=${REDACTION_MASK}`)
         .replace(BEARER_TOKEN_PATTERN, `$1 ${REDACTION_MASK}`)
+        .replace(SECRET_ASSIGNMENT_PATTERN, `$1=${REDACTION_MASK}`)
         .replace(QUOTED_FRAGMENT_PATTERN, `"${REDACTION_MASK}"`)
         .replace(DIGIT_RUN_PATTERN, REDACTION_MASK);
     return masked.replace(/\s+/g, ' ').slice(0, 200);

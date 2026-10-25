@@ -124,13 +124,24 @@ function normalizeOperationId(value: unknown): string | null {
     return OPERATION_ID_RE.test(trimmed) ? trimmed : null;
 }
 
+/**
+ * Strict non-negative byte count. Digits only.
+ *
+ * `Number('0x10')` returned 16 and `Number('1e3')` returned 1000, so a
+ * hex- or exponent-shaped string was accepted as a byte count. An unsafe
+ * integer is also refused: it is not a representable quantity, and two
+ * distinct real sizes would collide on one double.
+ */
 function normalizeBytes(value: unknown): number | null {
-    const parsed = typeof value === 'number'
-        ? value
-        : typeof value === 'string' && value.trim()
-            ? Number(value)
-            : Number.NaN;
-    if (!Number.isInteger(parsed) || parsed < 0) return null;
+    let parsed: number;
+    if (typeof value === 'number') {
+        parsed = value;
+    } else if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+        parsed = Number(value.trim());
+    } else {
+        return null;
+    }
+    if (!Number.isSafeInteger(parsed) || parsed < 0) return null;
     return parsed;
 }
 

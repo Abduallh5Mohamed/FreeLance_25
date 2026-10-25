@@ -116,9 +116,20 @@ export function planLectureReorder(
     };
 }
 
+/** A binding refusal must abort writes already made by the create unit. */
+class LectureBindingRollback extends Error {
+    constructor(readonly decision: Extract<VideoBindingDecision, { ok: false }>) {
+        super('Lecture video binding refused');
+        this.name = 'LectureBindingRollback';
+    }
+}
+
 export const createLectureRouter = (deps: LectureRouterDeps): Router => {
     const router = Router();
-    const { query, queryOne, execute } = deps.db;
+    // `execute` is deliberately NOT taken from the pool: every write in this
+    // router runs on the transaction receiver, so a mutation can never be
+    // issued on the shared pool while the surrounding transaction is open.
+    const { query, queryOne } = deps.db;
     const optionalAuthenticate = deps.optionalAuthenticate;
     const authenticateToken = deps.authenticate;
     const requireTeachingWriteAccess = deps.requireTeachingWriteAccess;
@@ -150,6 +161,155 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
         targetCourseId,
         hasPlatformCapability,
     });
+
+    /**
+     * Exact affected-row count.
+     *
+     * `undefined` is neither zero nor one: it is a driver result this route
+     * cannot interpret, so it is refused instead of coerced. Coercing it to 0
+     * would turn a write that actually landed into a reported miss, and
+     * coercing it to 1 would fabricate a transition nobody observed.
+     */
+    const affectedRowsOf = (
+        result: { affectedRows?: unknown } | null | undefined,
+        operation: string,
+    ): number => {
+        const value = result?.affectedRows;
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+            throw new Error(`lectures ${operation} did not report a usable affected-row count`);
+        }
+        return value;
+    };
+
+    /**
+     * Batched READ-side proof of a stored `video://` reference.
+     *
+     * The write path proves a binding before it stores one, but a row written
+     * before that contract existed — or by another lane — carries a value this
+     * router never verified. Canonical SYNTAX is not authority: `video://<id>`
+     * only names a candidate asset. This resolves the SAME proof the write path
+     * uses (`validateVideoBinding`), from the same server rows:
+     *   1. the asset must exist in `videos`;
+     *   2. its tenant comes from its DECLARED authorities only —
+     *      `videos.tenant_id` and/or `videos.course_id -> courses.tenant_id`;
+     *      two authorities that disagree prove no tenant at all, and no
+     *      authority proves nothing;
+     *   3. the destination tenant is the lecture's own
+     *      `course_id -> courses.tenant_id`, read from server rows;
+     *   4. `destination === video` is required EXACTLY.
+     *
+     * Anything unproven stays `null`. The stored value is never rewritten and
+     * no substitute URL is produced, so the caller sees "no playable
+     * reference" rather than a different one. At most two extra reads per
+     * response, whatever the row count — never one per row.
+     */
+    const proveLectureMediaReferences = async (
+        reader: LectureDataAccess,
+        rows: ReadonlyArray<Record<string, any>>,
+    ): Promise<Map<string, string | null>> => {
+        const proven = new Map<string, string | null>();
+        const candidates: Array<{ rowId: string; videoUrl: string; videoId: string; courseId: string }> = [];
+        for (const row of rows) {
+            if (!row || typeof row !== 'object' || row.id == null) continue;
+            const rowId = String(row.id);
+            // Fail closed before any check: a row is withheld until proven.
+            proven.set(rowId, null);
+            if (typeof row.video_url !== 'string' || row.course_id == null) continue;
+            const parsed = parseVideoReference(row.video_url);
+            if (!parsed.ok) continue;
+            candidates.push({
+                rowId,
+                videoUrl: parsed.videoUrl,
+                videoId: parsed.videoId,
+                courseId: String(row.course_id),
+            });
+        }
+        if (candidates.length === 0) return proven;
+
+        const videoIds = Array.from(new Set(candidates.map((candidate) => candidate.videoId)));
+        const videos = await reader.query<{ id: string; tenant_id: string | null; course_id: string | null }>(
+            `SELECT id, tenant_id, course_id FROM videos WHERE id IN (${videoIds.map(() => '?').join(',')})`,
+            videoIds,
+        );
+        const videoById = new Map<string, { id: string; tenant_id: string | null; course_id: string | null }>(
+            videos.map((video): [string, { id: string; tenant_id: string | null; course_id: string | null }] => [
+                String(video.id), video,
+            ]),
+        );
+
+        // Destination tenants (the lectures' courses) and the video-side course
+        // tenants needed to prove the video's own two authorities agree.
+        const courseIds = Array.from(new Set([
+            ...candidates.map((candidate) => candidate.courseId),
+            ...videos
+                .map((video) => (video.course_id == null ? null : String(video.course_id)))
+                .filter((id): id is string => id !== null),
+        ]));
+        const courses: Array<{ id: string; tenant_id: string | null }> = courseIds.length === 0
+            ? []
+            : await reader.query<{ id: string; tenant_id: string | null }>(
+                `SELECT id, tenant_id FROM courses WHERE id IN (${courseIds.map(() => '?').join(',')})`,
+                courseIds,
+            );
+        const courseTenantById = new Map<string, string | null>(
+            courses.map((course): [string, string | null] => [
+                String(course.id),
+                course.tenant_id == null ? null : String(course.tenant_id),
+            ]),
+        );
+
+        for (const candidate of candidates) {
+            const video = videoById.get(candidate.videoId);
+            if (!video) continue; // the named asset does not exist
+            const directTenant = video.tenant_id == null ? null : String(video.tenant_id);
+            const videoCourseTenant = video.course_id == null
+                ? null
+                : courseTenantById.get(String(video.course_id)) ?? null;
+            // Two declared authorities that disagree prove no tenant at all.
+            if (directTenant && videoCourseTenant && directTenant !== videoCourseTenant) continue;
+            const videoTenant = directTenant ?? videoCourseTenant;
+            if (!videoTenant) continue;
+            const destinationTenant = courseTenantById.get(candidate.courseId) ?? null;
+            if (!destinationTenant || destinationTenant !== videoTenant) continue;
+            proven.set(candidate.rowId, candidate.videoUrl);
+        }
+        return proven;
+    };
+
+    /**
+     * Withhold every lecture `video_url` this router has not proven. Nothing is
+     * read from the row's own value when projecting, so a stored reference can
+     * never be echoed by accident. Playback authorization itself stays with
+     * the secure-video entitlement path — this only decides whether a
+     * reference may be disclosed at all.
+     */
+    const projectLectureMedia = async <T extends Record<string, any>>(
+        reader: LectureDataAccess,
+        rows: T[],
+    ): Promise<T[]> => {
+        const list = Array.isArray(rows) ? rows : [];
+        const proven = await proveLectureMediaReferences(reader, list);
+        return list.map((row) => {
+            if (!row || typeof row !== 'object') return row;
+            const rowId = (row as Record<string, any>).id;
+            // The stored value is overwritten, never consulted: an unproven
+            // reference becomes `null` rather than being passed through.
+            return {
+                ...row,
+                video_url: rowId == null ? null : proven.get(String(rowId)) ?? null,
+            } as T;
+        });
+    };
+
+    const projectLectureMediaOne = async <T extends Record<string, any>>(
+        reader: LectureDataAccess,
+        row: T | null,
+    ): Promise<T | null> => {
+        if (!row || typeof row !== 'object') return row;
+        const [projected] = await projectLectureMedia(reader, [row]);
+        return projected ?? row;
+    };
+
     const getMutationScope = (req: AuthRequest) => {
         const instructorId = instructorScopeId(req);
         if (instructorId) {
@@ -247,6 +407,9 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 return res.json([]);
             }
 
+            // This list selects EXPLICIT columns and deliberately carries no
+            // media field, so there is nothing here to leak: a discovery
+            // response names lectures, it does not hand out a reference.
             let sql = `
                 SELECT
                     l.id,
@@ -359,7 +522,9 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
 
             console.log(`[Lectures] Looking up student for userId: ${userId}`);
 
-            // First, get user info to find their phone
+            // The phone is used ONLY as a server-side join key to the
+            // enrollment row. It is PII: it is never logged and never returned
+            // to the caller.
             const userRecord = await queryOne(
                 'SELECT id, phone, role FROM users WHERE id = ? AND role = "student"',
                 [userId]
@@ -369,8 +534,6 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 console.log(`[Lectures] User not found or has no phone: ${userId}`);
                 return res.json([]);
             }
-
-            console.log(`[Lectures] Found user with phone: ${userRecord.phone}`);
 
             // Find student by phone (students table has phone directly). Defense in
             // depth: only an approved, currently-active enrollment (not revoked or
@@ -387,11 +550,11 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             );
 
             if (!student) {
-                console.log(`[Lectures] Student not found for phone: ${userRecord.phone}`);
+                // Neither the phone that failed to resolve nor the student's
+                // name is logged: both are PII.
+                console.log('[Lectures] No active approved enrollment for the resolved user');
                 return res.json([]);
             }
-
-            console.log(`[Lectures] Found student: ${student.name} (grade: ${student.grade_id}, group: ${student.group_id})`);
 
             // Get lectures for student's grade and group
             let sql = `
@@ -440,8 +603,12 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
 
             const lectures = await query(sql, params);
 
-            console.log(`[Lectures] Student ${userId} (grade: ${student.grade_id}, group: ${student.group_id}) - Found ${lectures?.length || 0} lectures`);
-            res.json(lectures);
+            // Every row here is `l.*`, so the stored `video_url` must be
+            // projected: a lecture being published is not proof that its
+            // reference names a real, same-workspace asset.
+            const projected = await projectLectureMedia(deps.db, lectures as Record<string, any>[]);
+            console.log(`[Lectures] Student ${userId} - Found ${projected.length} lectures`);
+            res.json(projected);
         } catch (error) {
             console.error('Get student lectures error:', error);
             res.status(500).json({ error: 'Failed to fetch student lectures' });
@@ -492,7 +659,12 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             }
             if (!(await enforceLectureBranch(req, res, req.params.id, req.query?.branch_id))) return;
 
-            res.json(lecture);
+            // `l.*` carries the stored reference, so it is projected: the
+            // asset must exist and its tenant must be exactly this lecture's
+            // course tenant. Publication alone proves neither, so a legacy raw
+            // URL or a foreign asset is withheld as `null` — never rewritten
+            // and never replaced by a fallback link.
+            res.json(await projectLectureMediaOne(deps.db, lecture as Record<string, any>));
         } catch (error) {
             console.error('Get lecture error:', error);
             res.status(500).json({ error: 'Failed to fetch lecture' });
@@ -565,6 +737,13 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 }
             }
 
+            // The default course is RESOLVED here but CREATED inside the same
+            // transaction as the lecture. A write issued on the shared pool
+            // before the binding transaction can survive a failed create and
+            // leave an orphan course behind; the destination course is part of
+            // the binding, so it moves with it. The read stays outside because
+            // the common case (the course already exists) needs no write.
+            let defaultCourseTenant: string | null = null;
             if (!actualCourseId && ownerId) {
                 const selectedTenant = req.user?.tenantId;
                 if (!selectedTenant) {
@@ -572,24 +751,18 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 }
                 // Keep a default course confined to the caller's selected
                 // tenant and server-derived owner.
-                let defaultCourse = await queryOne(
+                const defaultCourse = await queryOne<{ id: string }>(
                     `SELECT id FROM courses WHERE name=? AND instructor_id=? AND tenant_id=? LIMIT 1`,
                     ['فيديوهاتي', ownerId, selectedTenant]
                 );
-                if (!defaultCourse) {
-                    const courseId = uuidv4();
-                    await execute(
-                        `INSERT INTO courses (id,tenant_id,instructor_id,name,subject,description,is_active)
-                         VALUES (?,?,?,?,?,?,TRUE)`,
-                        [courseId, selectedTenant, ownerId, 'فيديوهاتي', 'عام', 'فيديوهاتي خاصة بالمحاضر']
-                    );
-                    actualCourseId = courseId;
-                } else {
+                if (defaultCourse) {
                     actualCourseId = defaultCourse.id;
+                } else {
+                    defaultCourseTenant = selectedTenant;
                 }
             }
 
-            if (!actualCourseId) {
+            if (!actualCourseId && !defaultCourseTenant) {
                 return res.status(400).json({
                     error: 'Course ID is required'
                 });
@@ -607,16 +780,38 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 return res.status(403).json({ error: 'Branch is derived from the lecture group' });
             }
 
-            console.log('[Lectures] Creating lecture:', { course_id: actualCourseId, grade_id, group_id, instructor_id: ownerId, title, video_url });
+            // Identifiers only. The video reference and the title are content,
+            // and the reference is exactly the value this route is careful not
+            // to disclose, so neither is logged.
+            console.log('[Lectures] Creating lecture:', {
+                course_id: actualCourseId ?? null,
+                grade_id: grade_id ?? null,
+                group_id: group_id ?? null,
+                instructor_id: ownerId ?? null,
+                default_course: defaultCourseTenant !== null,
+            });
 
             const lectureId = uuidv4();
             if (!deps.transaction) throw new Error('Lecture creation requires transactional data access');
-            const outcome = await deps.transaction(async (tx) => {
+            await deps.transaction(async (tx) => {
+                // The destination course is settled INSIDE this transaction: a
+                // default course created here rolls back with a refused
+                // binding instead of outliving it.
+                let courseId = actualCourseId ? String(actualCourseId) : null;
+                if (!courseId) {
+                    courseId = uuidv4();
+                    await tx.execute(
+                        `INSERT INTO courses (id,tenant_id,instructor_id,name,subject,description,is_active)
+                         VALUES (?,?,?,?,?,?,TRUE)`,
+                        [courseId, defaultCourseTenant, ownerId, 'فيديوهاتي', 'عام', 'فيديوهاتي خاصة بالمحاضر']
+                    );
+                }
+
                 // A `video://` link is only accepted once the video is proven
                 // to exist, belong to this workspace and be usable by the
                 // caller, and is not already bound elsewhere.
-                const binding = await validateLectureVideoBinding(tx, req, video_url, lectureId, actualCourseId);
-                if (!binding.ok) return { kind: 'denied' as const, binding };
+                const binding = await validateLectureVideoBinding(tx, req, video_url, lectureId, courseId);
+                if (!binding.ok) throw new LectureBindingRollback(binding);
 
                 await tx.execute(
                 `INSERT INTO lectures
@@ -624,7 +819,7 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     lectureId,
-                    actualCourseId,
+                    courseId,
                     grade_id || null,
                     group_id || null,
                     ownerId,
@@ -646,19 +841,12 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                     resourceType: 'lecture',
                     resourceId: lectureId,
                     newValue: snapshotRow({
-                        course_id: actualCourseId, grade_id, group_id, instructor_id: ownerId,
-                        title, description, video_url, duration_minutes, price, display_order, is_free, is_published,
+                        course_id: courseId, grade_id, group_id, instructor_id: ownerId,
+                        title, description, video_url: binding.videoUrl, duration_minutes, price, display_order, is_free, is_published,
                     }),
                 });
                 return { kind: 'created' as const };
             });
-
-            if (outcome.kind === 'denied') {
-                return res.status(outcome.binding.status).json({
-                    error: outcome.binding.error,
-                    code: outcome.binding.code,
-                });
-            }
 
             const newLecture = await queryOne(
                 'SELECT * FROM lectures WHERE id = ?',
@@ -666,8 +854,11 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             );
 
             console.log('[Lectures] Created lecture:', newLecture?.id);
-            res.status(201).json(newLecture);
+            res.status(201).json(await projectLectureMediaOne(deps.db, newLecture as Record<string, any> | null));
         } catch (error) {
+            if (error instanceof LectureBindingRollback) {
+                return res.status(error.decision.status).json({ error: error.decision.error, code: error.decision.code });
+            }
             console.error('Create lecture error:', error);
             res.status(500).json({ error: 'Failed to create lecture' });
         }
@@ -714,16 +905,21 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                     }
                 }
 
-                let count = 0;
+                // MySQL counts rows CHANGED, not matched. A lecture already
+                // sitting at its target position reports 0, so replaying an
+                // identical order used to fail here with 500 even though every
+                // row was correct. The set itself was validated and locked
+                // above, so 0 and 1 are both success; more than one row for a
+                // primary key is an anomaly and is refused.
+                let applied = 0;
                 for (const assignment of plan.assignments) {
                     const result = await tx.execute(
                         'UPDATE lectures SET display_order=? WHERE id=? AND course_id=? AND archived_at IS NULL',
                         [assignment.display_order, assignment.id, courseId]
                     );
-                    if (result.affectedRows) count += 1;
-                }
-                if (count !== plan.assignments.length) {
-                    throw new Error('Lecture set changed while applying reorder');
+                    const changed = affectedRowsOf(result, 'lecture reorder');
+                    if (changed > 1) throw new Error('lecture reorder matched more than one row');
+                    if (changed === 1) applied += 1;
                 }
                 await recordAudit(tx.execute, {
                     actorUserId: req.user?.id ?? null,
@@ -733,7 +929,7 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                     resourceId: courseId,
                     newValue: { ordered_ids: plan.assignments.map((a) => a.id) },
                 });
-                return { kind: 'updated' as const, updated: count, plan };
+                return { kind: 'updated' as const, updated: applied, plan };
             });
 
             if (outcome.kind === 'missing') return res.status(404).json({ error: 'Course not found in your workspace' });
@@ -755,10 +951,13 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             if (!mutationScope) {
                 return res.status(404).json({ error: 'Lecture not found' });
             }
-            const existing = await queryOne<{
-                id: string; instructor_id: string | null; video_url: string; archived_at: Date | string | null;
-            }>(
-                `SELECT l.id, l.instructor_id, l.video_url, l.archived_at
+            // Early guard only: this read decides 404/410 before a transaction
+            // is opened. It deliberately does NOT inform the replacement
+            // decision — a value read out here is a snapshot, so both the
+            // sold-access fence and the video comparison use the row locked
+            // INSIDE the transaction below.
+            const existing = await queryOne<{ id: string; archived_at: Date | string | null }>(
+                `SELECT l.id, l.archived_at
                  FROM lectures l
                  INNER JOIN courses c ON c.id = l.course_id
                  WHERE l.id = ? AND ${mutationScope.readPredicate}`,
@@ -785,6 +984,13 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
             if (scopeId && price !== undefined && (!Number.isFinite(Number(price)) || Number(price) <= 0)) {
                 return res.status(400).json({ error: 'Video price must be greater than zero' });
             }
+            // Canonical form is validated BEFORE the transaction: it is pure
+            // input validation, it needs no database state, and keeping it here
+            // preserves the existing 400-before-409 precedence. The sold-access
+            // check itself is NOT done here any more — a read taken out here is
+            // a snapshot that a concurrent sale can outrun. It moved inside the
+            // transaction, below.
+            let requestedVideoUrl: string | null = null;
             if (video_url !== undefined) {
                 const videoReference = parseVideoReference(String(video_url));
                 if (!videoReference.ok) {
@@ -794,10 +1000,7 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                             : 'Video link is not a canonical platform video reference',
                     });
                 }
-                const licensed = await queryOne('SELECT id FROM instructor_shared_lectures WHERE lecture_id=? LIMIT 1', [req.params.id]);
-                if (licensed && existing.video_url !== video_url) {
-                    return res.status(409).json({ error: 'The video file cannot be replaced after access has been sold' });
-                }
+                requestedVideoUrl = videoReference.videoUrl;
             }
 
             if (!deps.transaction) throw new Error('Lecture update requires transactional data access');
@@ -814,15 +1017,68 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 if (!current) return { kind: 'missing' as const };
                 if (current.archived_at) return { kind: 'archived' as const };
 
+                // ── Sold-access fence ───────────────────────────────────────
+                // A lecture whose access has been sold must not have its video
+                // replaced. The check belongs HERE, not before the transaction,
+                // and the reason is not "a fresher read":
+                //
+                //  PRIMARY FENCE — the lecture row is already locked FOR UPDATE
+                //  above and stays locked for this whole transaction. The only
+                //  writer of `instructor_shared_lectures` is
+                //  `POST /offers/:offerId/accept`
+                //  (server/src/routes/instructor-video-requests.ts:237), and
+                //  that INSERT must satisfy
+                //  `FOREIGN KEY (lecture_id) REFERENCES lectures(id)`. InnoDB
+                //  checks foreign-key constraints BEFORE inserting the child
+                //  row, so it must take a SHARED lock on this very `lectures`
+                //  row first — which this transaction holds exclusively. A share
+                //  row therefore cannot be created between this check and the
+                //  UPDATE below: it waits for this commit. This holds at any
+                //  isolation level, and the lock order is acyclic (that writer
+                //  holds nothing this transaction needs, so it simply waits).
+                //
+                //  WHY `FOR UPDATE` ON THE SHARES ROW TOO — the fence above
+                //  stops a sale from STARTING mid-replacement; this read makes
+                //  sure a sale that already COMMITTED is actually seen. A
+                //  locking read returns the latest committed row, not this
+                //  transaction's snapshot, so a share committed before we took
+                //  the lecture lock is visible. Under REPEATABLE READ it also
+                //  next-key-locks the `lecture_id` range (the FK mandates an
+                //  index with `lecture_id` leftmost — the declared
+                //  `uq_instructor_lecture (instructor_id, lecture_id)` does not
+                //  qualify), which is additional protection, not the guarantee.
+                //
+                // Scope note (held, not fixed here): that sale writer commits
+                // the purchase and the share in ONE transaction, so a sale that
+                // begins after this commit buys the lecture in its new state.
+                // What remains outside this fence is an offer accepted for a
+                // video the seller replaces before that sale commits — a window
+                // that lives entirely in instructor-video-requests.ts and is
+                // listed as a held item in the handoff.
+                const replacingVideoUrl: string | null = (
+                    requestedVideoUrl !== null
+                    && requestedVideoUrl !== String(current.video_url ?? '')
+                ) ? requestedVideoUrl : null;
+                if (replacingVideoUrl !== null) {
+                    const soldAccess = await tx.query<{ id: number | string }>(
+                        'SELECT id FROM instructor_shared_lectures WHERE lecture_id = ? FOR UPDATE',
+                        [req.params.id],
+                    );
+                    if (soldAccess.length > 0) return { kind: 'sold' as const };
+                }
+
                 // Only a NEW association is validated: an update that leaves
                 // video_url untouched does not re-bind and must not be blocked
                 // by a legacy link that predates this check. When it does
                 // change, the destination course is re-read from the lecture
-                // row inside this transaction, so a moved course re-proves the
-                // tenant binding.
-                let storedVideoUrl = video_url;
-                if (video_url !== undefined && String(video_url) !== String(current.video_url ?? '')) {
-                    const binding = await validateLectureVideoBinding(tx, req, video_url, req.params.id);
+                // row inside this transaction by the validator itself
+                // (`resolveDestinationCourseId`), so the binding is proven
+                // against the row's CURRENT course. This route never changes
+                // `course_id`; a course moved by another path is therefore
+                // re-proven on the next video write, not invented here.
+                let storedVideoUrl: string | null = requestedVideoUrl;
+                if (replacingVideoUrl !== null) {
+                    const binding = await validateLectureVideoBinding(tx, req, replacingVideoUrl, req.params.id);
                     if (!binding.ok) return { kind: 'bindingDenied' as const, binding };
                     storedVideoUrl = binding.videoUrl;
                 }
@@ -853,7 +1109,13 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                     ]
                 );
 
-                if (update.affectedRows > 0) {
+                // The row was read `FOR UPDATE` above, so it EXISTS: a count of
+                // 0 means the submitted values already equal the stored ones,
+                // never "not found". Only a real transition is audited, and
+                // more than one row for a primary key is an anomaly.
+                const changed = affectedRowsOf(update, 'lecture update');
+                if (changed > 1) throw new Error('lecture update matched more than one row');
+                if (changed === 1) {
                     await recordAudit(tx.execute, {
                         actorUserId: req.user?.id ?? null,
                         tenantId: req.user?.tenantId ?? null,
@@ -866,18 +1128,22 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                         }),
                     });
                 }
-                return { kind: 'updated' as const, affectedRows: update.affectedRows };
+                return { kind: 'updated' as const, changed };
             });
 
             if (outcome.kind === 'missing') return res.status(404).json({ error: 'Lecture not found' });
             if (outcome.kind === 'archived') return res.status(410).json({ error: 'Archived lectures cannot be changed or republished' });
+            if (outcome.kind === 'sold') {
+                // Same status and message as before; only the decision point
+                // moved, from a pre-transaction snapshot to the fenced read.
+                return res.status(409).json({ error: 'The video file cannot be replaced after access has been sold' });
+            }
             if (outcome.kind === 'bindingDenied') {
                 return res.status(outcome.binding.status).json({
                     error: outcome.binding.error,
                     code: outcome.binding.code,
                 });
             }
-            if (outcome.affectedRows === 0) return res.status(404).json({ error: 'Lecture not found' });
 
             const updatedLecture = await queryOne(
                 `SELECT l.*
@@ -890,7 +1156,9 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                 return res.status(404).json({ error: 'Lecture not found' });
             }
 
-            res.json(updatedLecture);
+            // `l.*` again: the echo is projected too, so an unchanged legacy
+            // reference cannot ride back out on a successful write.
+            res.json(await projectLectureMediaOne(deps.db, updatedLecture as Record<string, any>));
         } catch (error) {
             console.error('Update lecture error:', error);
             res.status(500).json({ error: 'Failed to update lecture' });
@@ -921,7 +1189,13 @@ export const createLectureRouter = (deps: LectureRouterDeps): Router => {
                      WHERE id = ? AND ${mutationScope.writePredicate} AND archived_at IS NULL`,
                     [req.params.id, mutationScope.value]
                 );
-                if (result.affectedRows === 0) return { kind: 'missing' as const };
+                // The row is locked and un-archived above, so a 0 here means
+                // the write predicate (tenant authority) did not cover it —
+                // answered as not-found rather than disclosed. `undefined` is
+                // refused by the helper instead of being read as 0.
+                const archivedRows = affectedRowsOf(result, 'lecture archive');
+                if (archivedRows === 0) return { kind: 'missing' as const };
+                if (archivedRows > 1) throw new Error('lecture archive matched more than one row');
                 await recordAudit(tx.execute, {
                     actorUserId: req.user?.id ?? null,
                     tenantId: req.user?.tenantId ?? null,
@@ -983,7 +1257,11 @@ export default createLectureRouter({
                         sql, params,
                     ).then((res) => {
                         const header = res[0] as { insertId?: number; affectedRows?: number };
-                        return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+                        const affectedRows = header.affectedRows;
+                        if (typeof affectedRows !== 'number' || !Number.isSafeInteger(affectedRows)) {
+                            throw new Error('lectures transaction execute did not report a usable affected-row count');
+                        }
+                        return { insertId: typeof header.insertId === 'number' && Number.isSafeInteger(header.insertId) ? header.insertId : 0, affectedRows };
                     }),
             };
             const result = await fn(txDb);

@@ -563,6 +563,14 @@ export function createSqlPlaybackProgressService(db: PlaybackStoreDb, deps: SqlP
             if (lastMs !== null && now.getTime() - lastMs < minHeartbeatInterval) {
                 return { accepted: false, reason: 'rate_limited' };
             }
+            // The UPDATE is a refresh, not a decision, and its count is NOT
+            // read: under MySQL's changed-rows semantics `SET last_heartbeat_at
+            // = NOW()` reports 0 when the value it writes equals the stored
+            // one, so a 0 here cannot be told apart from "no active row" and
+            // must not be turned into a refusal. Liveness is decided by the
+            // `status = 'active'` read above; the `AND status = 'active'`
+            // predicate keeps the write from reviving a session that was ended
+            // in between, and the next heartbeat re-reads.
             await db.execute(
                 `UPDATE playback_session_slots SET last_heartbeat_at = NOW() WHERE session_id = ? AND status = 'active'`,
                 [input.sessionId],

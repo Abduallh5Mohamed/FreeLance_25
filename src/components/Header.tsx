@@ -2,7 +2,7 @@ import { subscribeSessionChange } from '@/lib/session-events';
 import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { signOutSession } from '@/lib/api-http';
+import { AUTH_SESSION_CHANGED_EVENT, signOutSession } from '@/lib/api-http';
 import { NotificationBell } from "@/components/NotificationBell";
 import {
   BookOpen,
@@ -62,16 +62,44 @@ const Header = () => {
   }, [isCollapsed]);
 
   useEffect(() => {
-    const userStr = localStorage.getItem("currentUser");
-    if (userStr) {
+    const refreshIdentity = () => {
+      const userStr = localStorage.getItem("currentUser");
+      if (!userStr) {
+        setCurrentUser(null);
+        setUserName("");
+        return;
+      }
       try {
-        const user = JSON.parse(userStr);
+        const parsed: unknown = JSON.parse(userStr);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          setCurrentUser(null);
+          setUserName("");
+          return;
+        }
+        const user = parsed as AccessProfile;
         setCurrentUser(user);
-        setUserName(user.name || "");
+        setUserName(typeof user.name === "string" ? user.name : "");
       } catch (e) {
         console.error("Error parsing user:", e);
+        setCurrentUser(null);
+        setUserName("");
       }
-    }
+    };
+
+    refreshIdentity();
+
+    const storage = (event: StorageEvent) => {
+      if (event.key === "currentUser" || event.key === "authToken" || event.key === null) {
+        refreshIdentity();
+      }
+    };
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, refreshIdentity);
+    window.addEventListener("storage", storage);
+
+    return () => {
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, refreshIdentity);
+      window.removeEventListener("storage", storage);
+    };
   }, []);
 
   useEffect(() => subscribeSessionChange(() => {

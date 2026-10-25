@@ -12,6 +12,35 @@ import { useToast } from "@/hooks/use-toast";
 import { getStudentExams, Exam, User } from "@/lib/api";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 
+type LocalSessionSnapshot = {
+  token: string | null;
+  userId: string | null;
+  role: string | null;
+};
+
+/** Reads the local session without throwing on a malformed payload. */
+const readLocalSession = (): LocalSessionSnapshot | null => {
+  const token = localStorage.getItem('authToken');
+  const userStr = localStorage.getItem('currentUser');
+  if (!userStr) return null;
+  try {
+    const parsed: unknown = JSON.parse(userStr);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const record = parsed as { id?: unknown; role?: unknown };
+    if (typeof record.id !== 'string' || !record.id) return null;
+    return {
+      token,
+      userId: record.id,
+      role: typeof record.role === 'string' ? record.role : null,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const sessionIdentity = (session: LocalSessionSnapshot | null): string =>
+  session ? `${session.token ?? ''}|${session.userId ?? ''}` : '';
+
 export type ExamStatus = 'available' | 'upcoming' | 'completed' | 'expired';
 
 export interface StudentExam extends Exam {
@@ -112,6 +141,17 @@ const StudentExams = () => {
   const [loadError, setLoadError] = useState<string | null>(null);
   // Monotonic sequence so a slow in-flight response can never overwrite a newer one
   const loadSeqRef = useRef(0);
+  const isMountedRef = useRef(true);
+  // One navigation per click burst; a second tap must not issue a second entry.
+  const startNavigationRef = useRef(false);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      loadSeqRef.current += 1;
+    };
+  }, []);
 
   const readStudentUser = (): User | null => {
     try {
@@ -140,10 +180,32 @@ const StudentExams = () => {
 
   const loadExams = async () => {
     const requestSeq = ++loadSeqRef.current;
+    const startingSession = readLocalSession();
+    const startingSessionKey = sessionIdentity(startingSession);
+    const isCurrentRequest = () => isMountedRef.current && requestSeq === loadSeqRef.current;
+
+    const discardForChangedSession = (): boolean => {
+      if (sessionIdentity(readLocalSession()) === startingSessionKey) return false;
+      const currentSession = readLocalSession();
+      if (!isCurrentRequest()) return true;
+      if (!currentSession || currentSession.role !== 'student') {
+        navigate('/auth');
+        return true;
+      }
+      setExams([]);
+      setLoadError('تغيرت جلسة الدخول. يرجى إعادة تحميل الامتحانات.');
+      toast({
+        title: 'انتهت الجلسة',
+        description: 'تغيرت جلسة الدخول أثناء تحميل الامتحانات.',
+        variant: 'destructive'
+      });
+      return true;
+    };
+
     setLoading(true);
     setLoadError(null);
     try {
-      const studentId = readStudentUser()?.id;
+      const studentId = startingSession?.role === 'student' ? startingSession.userId : null;
 
       if (!studentId) {
         toast({
@@ -152,13 +214,13 @@ const StudentExams = () => {
           variant: 'destructive'
         });
         setLoadError('لم يتم العثور على بيانات الطالب');
-        setLoading(false);
         return;
       }
 
       // ✅ Fetch exams ONLY for this student's group
       const data = await getStudentExams(studentId);
-      if (requestSeq !== loadSeqRef.current) return; // stale response — a newer load superseded this one
+      if (!isCurrentRequest()) return; // stale/unmounted response — a newer load superseded this one
+      if (discardForChangedSession()) return; // stale session response — never applied
       const now = new Date();
 
       console.log(`📚 Loaded ${data?.length || 0} exams for student's group`);
@@ -177,7 +239,8 @@ const StudentExams = () => {
 
       setExams(examsData);
     } catch (error) {
-      if (requestSeq !== loadSeqRef.current) return;
+      if (!isCurrentRequest()) return;
+      if (discardForChangedSession()) return;
       console.error('Error loading exams:', error);
       setLoadError(error instanceof Error && error.message ? error.message : 'فشل تحميل الامتحانات');
       toast({
@@ -186,7 +249,7 @@ const StudentExams = () => {
         variant: 'destructive'
       });
     } finally {
-      if (requestSeq === loadSeqRef.current) setLoading(false);
+      if (isCurrentRequest()) setLoading(false);
     }
   };
 
@@ -255,6 +318,8 @@ const StudentExams = () => {
   });
 
   const handleStartExam = (exam: StudentExam) => {
+    if (startNavigationRef.current) return;
+
     if (!canStartExam(exam)) {
       let message = 'لا يمكن الدخول للامتحان';
       if (exam.status === 'upcoming') {
@@ -273,6 +338,7 @@ const StudentExams = () => {
       return;
     }
 
+    startNavigationRef.current = true;
     navigate(`/take-exam/${exam.id}`);
   };
 

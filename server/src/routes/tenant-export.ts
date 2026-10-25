@@ -39,6 +39,10 @@ import { recordAudit } from '../security/audit';
 import { requireAdminPermission } from '../security/admin-permissions';
 import { normalizeId } from '../services/announcements';
 import {
+    createSqlExportOwnershipPort,
+    ExportOwnershipCapabilityError,
+    EXPORT_OWNERSHIP_OWNED_PREDICATE,
+    EXPORT_OWNERSHIP_REQUIRED_COLUMNS,
     EXPORT_PLATFORM_PERMISSION,
     TenantExportDataAccess,
     TenantExportDeps,
@@ -49,6 +53,8 @@ import {
     processTenantExport,
     requestTenantExport,
 } from '../services/tenant-export';
+import { verifyTenantExportOwnershipSchema, isTenantExportSchemaReportFor } from '../services/tenant-export-schema';
+import type { TenantExportSchemaReport } from '../services/tenant-export-schema';
 import type { ExportFailureCode, ExportOwnershipPort } from '../services/tenant-export';
 
 export interface TenantExportRouteDeps {
@@ -464,23 +470,116 @@ const tenantOwnerTenantId = async (userId: string, tenantId: string): Promise<bo
 };
 
 /**
- * Production wiring.
+ * What a startup check must produce before the real ownership port may be
+ * activated.
  *
- * `ownership` is deliberately NOT wired here. The concrete adapter
- * (`createSqlExportOwnershipPort` in the service) needs the
- * `export_owner`/`owner_epoch`/`owner_lease_until_ms` columns, and those do not
- * exist yet (the I2 request). Wiring the real adapter against a schema that
- * lacks them would make every claim statement fail — which fails closed, but it
- * would also mean the surface reports a schema fault on every request instead
- * of a clear "not configured". So the router passes nothing until the columns
- * land, and the service refuses at request time with an audited 503.
+ * Deliberately NOT a boolean. The caller reports the COLUMN NAMES it actually
+ * read from `information_schema.COLUMNS` for `tenant_data_exports`, and this
+ * module cross-checks them against `EXPORT_OWNERSHIP_REQUIRED_COLUMNS`. A
+ * caller-shaped report alone leaves the surface at its audited 503
+ * instead of wiring a port whose every claim would fail.
  *
- * The adapter is exported and reviewable; it is not executed here and no
- * placeholder stands in for it. The export surface is therefore inert in
- * production by design — the same "correct in source, inert until the schema
- * lands" posture the rest of this lane uses.
+ * It is still an ATTESTATION, not proof: nothing here re-reads the catalog,
+ * because this module performs no I/O at import or construction. What it buys
+ * is that a wrong attestation is checkable and refuses loudly.
+ *
+ * The attestation covers the COLUMNS only. The same migration also creates four
+ * named CHECK constraints — `chk_tenant_export_owner_pair`,
+ * `chk_tenant_export_owner_epoch`, `chk_tenant_export_owner_lease` and
+ * `chk_tenant_export_owner_claim` — and a startup that intends to activate this
+ * port must confirm those too; the adapter cannot see them, so they are named
+ * here rather than pretended to be checked.
  */
-export default createTenantExportRouter({
+export interface TenantExportOwnershipSchemaAttestation {
+    /** The migration this attestation covers. Only the ownership migration is accepted. */
+    readonly migration: '20261024_05';
+    /** Column names read from `information_schema.COLUMNS` for `tenant_data_exports`. */
+    readonly columns: readonly string[];
+    /** When that read happened (ms since epoch). */
+    readonly checkedAtMs: number;
+}
+
+export interface TenantExportRuntimeOptions extends TenantExportRouteDeps {
+    /**
+     * Absent or `null` ⇒ the runtime keeps the service's audited 503
+     * (`ownership_capability_absent`). There is no "assume it is applied" path.
+     */
+    /** Metadata only; cannot activate ownership without trusted catalog proof. */
+    ownershipSchema?: TenantExportOwnershipSchemaAttestation | null;
+    ownershipVerification?: TenantExportSchemaReport | null;
+}
+
+export interface TenantExportRuntime {
+    readonly router: Router;
+    /** `null` when ownership is inactive; the service then refuses with an audited 503. */
+    readonly ownership: ExportOwnershipPort | null;
+    /** The exact column set a startup check must cover. */
+    readonly ownershipRequiredColumns: readonly string[];
+    /** The four-term fence every owned transition carries. */
+    readonly ownershipOwnedPredicate: string;
+    /** Why ownership is inactive, or `null` when it is wired. */
+    readonly ownershipInactiveReason: string | null;
+}
+
+/**
+ * Resolve ownership activation without trusting caller-shaped metadata.
+ * The real SQL adapter exists in the service, but activation needs trusted
+ * catalog evidence bound to this database seam, including column/constraint
+ * shape and enforcement. No such verifier is implemented here, so every
+ * metadata-only composition remains explicitly unavailable. No I/O occurs.
+ */
+const resolveOwnership = (
+    db: TenantExportDataAccess,
+    report: TenantExportSchemaReport | null | undefined,
+): { port: ExportOwnershipPort | null; reason: string | null } => {
+    const valid = () => isTenantExportSchemaReportFor(report, db, Date.now());
+    if (!valid()) return { port: null, reason: 'trusted, fresh database-bound ownership catalog proof is absent' };
+    const executor = Object.assign(
+        (sql: string, params: unknown[] = []) => db.execute(sql, params),
+        { query: <T>(sql: string, params: unknown[] = []) => db.query<T>(sql, params) },
+    );
+    const adapter = createSqlExportOwnershipPort(executor);
+    const guard = () => { if (!valid()) throw new ExportOwnershipCapabilityError(); };
+    const port: ExportOwnershipPort = {
+        describe: () => { guard(); return adapter.describe(); },
+        claim: (run, input) => { guard(); return adapter.claim(run, input); },
+        failureStatement: input => { guard(); return adapter.failureStatement(input); },
+        releaseStatement: input => { guard(); return adapter.releaseStatement(input); },
+    };
+    if (adapter.renew) port.renew = input => { guard(); return adapter.renew!(input); };
+    return { port: Object.freeze(port), reason: null };
+};
+
+/**
+ * ONE explicit composition entry for the tenant-export surface.
+ *
+ * The route, the service and the ownership adapter are composed here from a
+ * single dependency set, so a deployment cannot wire a router whose service has
+ * no fencing port, or a port over a different data-access seam than the one the
+ * service reads through. Everything the surface needs to be honest about its
+ * own state is returned alongside the router: the exact column set a startup
+ * check must cover, the fence predicate, and the reason ownership is inactive
+ * when it is.
+ *
+ * Construction is inert: no query, no connection, no timer, no listener, and no
+ * job is started or scheduled.
+ */
+export const createTenantExportRuntime = (options: TenantExportRuntimeOptions): TenantExportRuntime => {
+    const ownership = resolveOwnership(options.db, options.ownershipVerification);
+    return {
+        router: createTenantExportRouter({ ...options, ownership: ownership.port ?? undefined }),
+        ownership: ownership.port,
+        ownershipRequiredColumns: [...EXPORT_OWNERSHIP_REQUIRED_COLUMNS],
+        ownershipOwnedPredicate: EXPORT_OWNERSHIP_OWNED_PREDICATE,
+        ownershipInactiveReason: ownership.reason,
+    };
+};
+
+/** Production stays unavailable until an explicit catalog check succeeds.
+ * Verification is never performed during import or construction. Reports expire
+ * after fifteen minutes; explicit re-verification is required, with no timer.
+ */
+const productionOptions: TenantExportRouteDeps = {
     db: productionDb,
     authenticate: async (req, res, next) => {
         const { authenticateToken } = await import('../middleware/auth');
@@ -492,4 +591,11 @@ export default createTenantExportRouter({
     storage: new LocalTenantExportStorage(process.env.TENANT_EXPORT_STORAGE_DIR ?? 'storage/tenant-exports'),
     secret: process.env.TENANT_EXPORT_SECRET,
     ownership: undefined,
-});
+};
+export const initializeTenantExportOwnership = async (): Promise<TenantExportSchemaReport> => {
+    productionOptions.ownership = undefined;
+    const report = await verifyTenantExportOwnershipSchema(productionDb);
+    productionOptions.ownership = resolveOwnership(productionDb, report).port ?? undefined;
+    return report;
+};
+export default createTenantExportRouter(productionOptions);

@@ -19,10 +19,14 @@ import {
   Bot,
   GraduationCap
 } from 'lucide-react';
-import axios from 'axios';
-import { sendAiChatMessage } from '@/lib/api';
+import { sendAiChatMessage, AUTH_SESSION_CHANGED_EVENT, verifyCurrentSession, getCurrentStudentEnrollment, authenticatedApiFetch, readAuthenticatedApiJson } from '@/lib/api';
 
-const API_URL = '/api';
+// All chat HTTP uses the shared session-revocation boundary.
+const chatRequest = async <T = any,>(path: string, init?: RequestInit): Promise<{ data: T }> => {
+  const response = await authenticatedApiFetch(path, init);
+  if (!response.ok) throw new Error('تعذر إتمام طلب المحادثة (' + response.status + ')');
+  return { data: await readAuthenticatedApiJson(response) as T };
+};
 
 interface User {
   id: string;
@@ -67,10 +71,99 @@ interface Conversation {
   last_seen: string;
 }
 
+const AI_ASSISTANT_ID = 'ai-assistant';
+const AI_HISTORY_KEY_PREFIX = 'ai-messages-';
+
+const aiHistoryKey = (studentId: string) => AI_HISTORY_KEY_PREFIX + studentId;
+
+const createWelcomeAiMessage = (studentId: string): Message => ({
+  id: 1,
+  sender_id: AI_ASSISTANT_ID,
+  receiver_id: studentId,
+  content: 'السلام عليكم! أنا مساعدك الذكي المتخصص في مادة التاريخ. كيف يمكنني مساعدتك اليوم؟',
+  message_type: 'text',
+  is_edited: false,
+  is_deleted: false,
+  created_at: new Date().toISOString(),
+  is_delivered: true,
+  is_read: true
+});
+
+const normalizeStoredAiMessage = (value: unknown, studentId: string): Message | null => {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const id = record.id;
+  const senderId = record.sender_id;
+  const content = record.content;
+  const createdAt = record.created_at;
+  if (typeof id !== 'number' || !Number.isSafeInteger(id)) return null;
+  if (typeof senderId !== 'string' || (senderId !== studentId && senderId !== AI_ASSISTANT_ID)) return null;
+  if (typeof content !== 'string' || typeof createdAt !== 'string') return null;
+  const messageType = record.message_type === 'image' ? 'image'
+    : record.message_type === 'text' ? 'text' : null;
+  if (!messageType) return null;
+  const imageUrl = typeof record.image_url === 'string' ? record.image_url : undefined;
+  if (messageType === 'image' && !imageUrl) return null;
+  const receiverId = typeof record.receiver_id === 'string' && record.receiver_id
+    ? record.receiver_id
+    : senderId === AI_ASSISTANT_ID ? studentId : AI_ASSISTANT_ID;
+  const participantsValid = (senderId === studentId && receiverId === AI_ASSISTANT_ID)
+    || (senderId === AI_ASSISTANT_ID && receiverId === studentId);
+  if (!participantsValid) return null;
+  return {
+    id,
+    sender_id: senderId,
+    receiver_id: receiverId,
+    content,
+    message_type: messageType,
+    image_url: imageUrl,
+    is_edited: record.is_edited === true,
+    edited_at: typeof record.edited_at === 'string' ? record.edited_at : undefined,
+    is_deleted: record.is_deleted === true,
+    deleted_at: typeof record.deleted_at === 'string' ? record.deleted_at : undefined,
+    created_at: createdAt,
+    sender_name: typeof record.sender_name === 'string' ? record.sender_name : undefined,
+    sender_role: typeof record.sender_role === 'string' ? record.sender_role : undefined,
+    is_delivered: record.is_delivered !== false,
+    is_read: record.is_read !== false
+  };
+};
+
+const readStoredAiHistory = (raw: string | null, studentId: string): { messages: Message[]; corrupt: boolean } => {
+  if (raw === null) return { messages: [], corrupt: false };
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return { messages: [], corrupt: true };
+    const seen = new Set<number>();
+    const messages: Message[] = [];
+    let corrupt = false;
+    for (const entry of parsed) {
+      const message = normalizeStoredAiMessage(entry, studentId);
+      if (!message || seen.has(message.id)) {
+        corrupt = true;
+        continue;
+      }
+      seen.add(message.id);
+      messages.push(message);
+    }
+    return { messages, corrupt };
+  } catch {
+    return { messages: [], corrupt: true };
+  }
+};
+
+const writeStoredAiHistory = (studentId: string, messages: Message[]): boolean => {
+  try {
+    localStorage.setItem(aiHistoryKey(studentId), JSON.stringify(messages));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export default function StudentChat() {
   const navigate = useNavigate();
   const [user, setUser] = useState<any>(null);
-  const [socket, setSocket] = useState<Socket | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [academicContacts, setAcademicContacts] = useState<User[]>([]);
   const [contactsError, setContactsError] = useState<string | null>(null);
@@ -86,7 +179,105 @@ export default function StudentChat() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const conversationDraftsRef = useRef(new Map<string, string>());
+  const pendingSendRef = useRef<{ peer: string; content: string; editId: number | null; token: string | null } | null>(null);
+  const sendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const typingStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const readReceiptQueueRef = useRef(new Set<number>());
+  const aiTranscriptRef = useRef<Message[]>([]);
+  const localMessageIdRef = useRef(-Date.now());
+  const aiBusyRef = useRef(false);
+  const imageBusyRef = useRef(false);
+  const messageTextRef = useRef('');
+  const currentUserIdRef = useRef<string | null>(null);
+  const [sendPending, setSendPending] = useState(false);
+  const [sendNotice, setSendNotice] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  const selectedUserRef = useRef<User | null>(null);
+  const messageLoadRef = useRef(0);
+  const socketRef = useRef<Socket | null>(null);
+  const sessionTokenRef = useRef(localStorage.getItem('authToken'));
+
+  const nextLocalMessageId = () => {
+    const id = localMessageIdRef.current;
+    localMessageIdRef.current -= 1;
+    return id;
+  };
+
+  const setConversationDraft = (peer: string, value: string) => {
+    if (value.length > 0) conversationDraftsRef.current.set(peer, value);
+    else conversationDraftsRef.current.delete(peer);
+  };
+
+  const updateMessageText = (value: string) => {
+    messageTextRef.current = value;
+    setMessageText(value);
+  };
+
+  const rememberActiveDraft = () => {
+    const peer = selectedUserRef.current?.id;
+    if (peer && messageTextRef.current.length > 0) setConversationDraft(peer, messageTextRef.current);
+  };
+
+  const isSessionCurrent = () => mountedRef.current && !!sessionTokenRef.current
+    && sessionTokenRef.current === localStorage.getItem('authToken');
+  const isActiveMessage = (message: Message) => {
+    const peer = selectedUserRef.current?.id;
+    return !!peer && (String(message.sender_id) === peer || String(message.receiver_id) === peer);
+  };
+
   const getToken = () => localStorage.getItem('authToken');
+
+  const flushReadReceipts = () => {
+    const activeSocket = socketRef.current;
+    const userId = currentUserIdRef.current;
+    if (!activeSocket?.connected || !userId || !isSessionCurrent()) return;
+    for (const messageId of Array.from(readReceiptQueueRef.current)) {
+      activeSocket.emit('message:read', { messageId, userId });
+      readReceiptQueueRef.current.delete(messageId);
+    }
+  };
+
+  const queueReadReceipts = (source: Message[]) => {
+    const userId = currentUserIdRef.current;
+    if (!userId) return;
+    for (const message of source) {
+      const messageId = Number(message?.id);
+      if (message && Number.isSafeInteger(messageId) && messageId > 0
+        && String(message.receiver_id) === userId && String(message.sender_id) !== userId
+        && message.is_read !== true) {
+        readReceiptQueueRef.current.add(messageId);
+      }
+    }
+    flushReadReceipts();
+  };
+
+  const stopTyping = (peer: string | null) => {
+    if (typingStopTimerRef.current) clearTimeout(typingStopTimerRef.current);
+    typingStopTimerRef.current = null;
+    const activeSocket = socketRef.current;
+    const userId = currentUserIdRef.current;
+    if (peer && peer !== AI_ASSISTANT_ID && activeSocket?.connected && userId && isSessionCurrent()) {
+      activeSocket.emit('typing:stop', { senderId: userId, receiverId: peer });
+    }
+  };
+
+  const completePendingSend = (peer: string | null, content: string, editId: number | null) => {
+    const pending = pendingSendRef.current;
+    if (!pending || pending.peer !== peer || pending.content !== content || pending.editId !== editId
+      || pending.token !== localStorage.getItem('authToken')) return;
+    if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+    sendTimerRef.current = null;
+    pendingSendRef.current = null;
+    setSendPending(false);
+    const draft = conversationDraftsRef.current.get(pending.peer);
+    if (draft !== undefined && draft.trim() === pending.content) conversationDraftsRef.current.delete(pending.peer);
+    if (selectedUserRef.current?.id === peer) {
+      if (messageTextRef.current.trim() === pending.content) updateMessageText('');
+      setEditingMessageId(current => current === editId ? null : current);
+      setSendNotice(null);
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -102,16 +293,94 @@ export default function StudentChat() {
 
   // Initialize
   useEffect(() => {
-    const userStr = localStorage.getItem('currentUser');
-    if (!userStr) { navigate('/auth'); return; }
+    mountedRef.current = true;
+    let disposed = false;
+    const invalidateSession = () => {
+      if (sessionTokenRef.current === localStorage.getItem('authToken')) return;
+      const peer = selectedUserRef.current?.id;
+      const activeSocket = socketRef.current;
+      const activeUserId = currentUserIdRef.current;
+      if (peer && peer !== AI_ASSISTANT_ID && activeSocket?.connected && activeUserId) {
+        activeSocket.emit('typing:stop', { senderId: activeUserId, receiverId: peer });
+      }
+      mountedRef.current = false;
+      messageLoadRef.current += 1;
+      socketRef.current?.disconnect();
+      socketRef.current = null;
+      selectedUserRef.current = null;
+      currentUserIdRef.current = null;
+      if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+      if (typingStopTimerRef.current) clearTimeout(typingStopTimerRef.current);
+      sendTimerRef.current = null;
+      typingStopTimerRef.current = null;
+      pendingSendRef.current = null;
+      readReceiptQueueRef.current.clear();
+      aiTranscriptRef.current = [];
+      messageTextRef.current = '';
+      setUser(null); setSelectedUser(null); setMessages([]); setConversations([]);
+      setAcademicContacts([]); setMessageText('');
+      setSendPending(false); setSendNotice(null); setIsLoading(false);
+      setEditingMessageId(null); setIsTyping(false);
+      conversationDraftsRef.current.clear();
+      navigate('/auth', { replace: true });
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (!event.key || event.key === 'authToken') invalidateSession();
+    };
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, invalidateSession);
+    window.addEventListener('storage', onStorage);
 
-    try {
-      const userData = JSON.parse(userStr);
-      setUser(userData);
-      loadConversations();
-      loadAcademicContacts();
-      initializeSocket(userData);
-    } catch { navigate('/auth'); }
+    void (async () => {
+      try {
+        if (!getToken()) { navigate('/auth'); return; }
+        const verification = await verifyCurrentSession();
+        if (disposed || !isSessionCurrent()) return;
+        if (verification.state === 'anonymous') { navigate('/auth'); return; }
+        if (verification.state === 'changed') return;
+        if (verification.state !== 'authenticated') {
+          setContactsError('تعذر التحقق من الجلسة مؤقتًا؛ أعد تحميل الصفحة للمحاولة.'); return;
+        }
+        if (verification.user.role !== 'student') { navigate('/auth'); return; }
+        const enrollment = await getCurrentStudentEnrollment();
+        if (disposed || !isSessionCurrent()) return;
+        if (!enrollment?.id || !enrollment.tenant_id) {
+          setContactsError('اختر مساحة طالب نشطة قبل فتح الرسائل.'); return;
+        }
+        currentUserIdRef.current = verification.user.id;
+        setUser(verification.user);
+        void loadConversations();
+        void loadAcademicContacts();
+        initializeSocket(verification.user);
+      } catch {
+        if (!disposed && isSessionCurrent()) setContactsError('تعذر التحقق من الجلسة؛ أعد تحميل الصفحة.');
+      }
+    })();
+    return () => {
+      disposed = true;
+      const peer = selectedUserRef.current?.id;
+      const activeSocket = socketRef.current;
+      const activeUserId = currentUserIdRef.current;
+      if (peer && peer !== AI_ASSISTANT_ID && activeSocket?.connected && activeUserId) {
+        activeSocket.emit('typing:stop', { senderId: activeUserId, receiverId: peer });
+      }
+      mountedRef.current = false;
+      messageLoadRef.current += 1;
+      socketRef.current?.disconnect();
+      socketRef.current = null;
+      selectedUserRef.current = null;
+      currentUserIdRef.current = null;
+      if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+      if (typingStopTimerRef.current) clearTimeout(typingStopTimerRef.current);
+      sendTimerRef.current = null;
+      typingStopTimerRef.current = null;
+      pendingSendRef.current = null;
+      readReceiptQueueRef.current.clear();
+      aiTranscriptRef.current = [];
+      conversationDraftsRef.current.clear();
+      messageTextRef.current = '';
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, invalidateSession);
+      window.removeEventListener('storage', onStorage);
+    };
   }, []);
 
   // Initialize Socket.IO
@@ -122,29 +391,36 @@ export default function StudentChat() {
       transports: ['websocket', 'polling']
     });
 
+    socketRef.current = newSocket;
+    newSocket.onAny(() => { if (!isSessionCurrent()) newSocket.disconnect(); });
     newSocket.on('connect', () => {
+      if (!isSessionCurrent()) return;
       newSocket.emit('user:connect', userData.id);
+      flushReadReceipts();
     });
 
     newSocket.on('message:new', (message: any) => {
+      if (!isSessionCurrent()) return;
       try {
-        if (message && message.content) {
+        if (message && message.id && isActiveMessage(message) && (message.content || message.image_url)) {
+          const incoming: Message = {
+            id: message.id || Date.now(),
+            sender_id: message.sender_id || '',
+            receiver_id: message.receiver_id || '',
+            content: message.content || '',
+            message_type: message.message_type || 'text',
+            image_url: message.image_url,
+            is_edited: message.is_edited || false,
+            is_deleted: message.is_deleted || false,
+            created_at: message.created_at || new Date().toISOString(),
+            is_read: message.is_read || false,
+            is_delivered: message.is_delivered || false
+          };
           setMessages(prev => {
-            if (prev.some(m => m.id === message.id)) return prev;
-            return [...prev, {
-              id: message.id || Date.now(),
-              sender_id: message.sender_id || '',
-              receiver_id: message.receiver_id || '',
-              content: message.content || '',
-              message_type: message.message_type || 'text',
-              image_url: message.image_url,
-              is_edited: message.is_edited || false,
-              is_deleted: message.is_deleted || false,
-              created_at: message.created_at || new Date().toISOString(),
-              is_read: message.is_read || false,
-              is_delivered: message.is_delivered || false
-            }];
+            if (prev.some(m => m.id === incoming.id)) return prev;
+            return [...prev, incoming];
           });
+          queueReadReceipts([incoming]);
         }
         loadConversations();
       } catch (error) {
@@ -153,236 +429,343 @@ export default function StudentChat() {
     });
 
     newSocket.on('message:sent', (message: Message) => {
+      if (!isSessionCurrent() || !message?.id) return;
+      completePendingSend(message.receiver_id, message.content, null);
+      if (!isActiveMessage(message)) return;
       setMessages(prev => {
-        const filtered = prev.filter(m => m.id < 1000000000000 || m.sender_id !== message.sender_id || m.content !== message.content);
         if (prev.some(m => m.id === message.id)) {
           return prev.map(m => m.id === message.id ? message : m);
         }
-        return [...filtered, message];
+        return [...prev, message];
       });
     });
 
-    newSocket.on('message:read', (data: { messageId: number; readAt: Date }) => {
+    newSocket.on('message:read', (data: { messageId: number; readAt?: Date | string }) => {
+      if (!isSessionCurrent() || typeof data?.messageId !== 'number') return;
+      const readAt = data.readAt ? String(data.readAt) : new Date().toISOString();
       setMessages(prev => prev.map(msg =>
-        msg.id === data.messageId ? { ...msg, is_read: true, read_at: data.readAt.toString() } : msg
+        msg.id === data.messageId ? { ...msg, is_read: true, read_at: readAt } : msg
       ));
     });
 
     newSocket.on('message:edited', (data: any) => {
+      if (!isSessionCurrent()) return;
+      const pending = pendingSendRef.current;
+      if (pending?.editId === data.messageId) completePendingSend(pending.peer, data.content, data.messageId);
       setMessages(prev => prev.map(msg =>
         msg.id === data.messageId ? { ...msg, content: data.content, is_edited: true, edited_at: data.editedAt } : msg
       ));
     });
 
+    newSocket.on('message:error', () => {
+      if (isSessionCurrent() && pendingSendRef.current) {
+        setSendNotice('تعذر تأكيد الإرسال. المسودة محفوظة؛ راجع سجل المحادثة قبل إعادة المحاولة.');
+      }
+    });
+
     newSocket.on('message:deleted', (data: { messageId: number }) => {
+      if (!isSessionCurrent()) return;
       setMessages(prev => prev.filter(msg => msg.id !== data.messageId));
     });
 
     newSocket.on('user:status', (data: { userId: string; isOnline: boolean; lastSeen?: Date }) => {
+      if (!isSessionCurrent()) return;
       setAcademicContacts((previous) => previous.map((contact) =>
         contact.id === data.userId
           ? { ...contact, is_online: data.isOnline, last_seen: data.lastSeen?.toString() }
           : contact
       ));
-      if (selectedUser && selectedUser.id === data.userId) {
+      if (selectedUserRef.current?.id === data.userId) {
         setSelectedUser(prev => prev ? { ...prev, is_online: data.isOnline, last_seen: data.lastSeen?.toString() } : null);
       }
     });
 
     newSocket.on('typing:start', (data: { userId: string }) => {
-      if (selectedUser && data.userId === selectedUser.id) setIsTyping(true);
+      if (isSessionCurrent() && data.userId === selectedUserRef.current?.id) setIsTyping(true);
     });
-    newSocket.on('typing:stop', () => setIsTyping(false));
-    newSocket.on('disconnect', () => console.log('🔌 Student socket disconnected'));
+    newSocket.on('typing:stop', (data: { userId: string }) => { if (isSessionCurrent() && data.userId === selectedUserRef.current?.id) setIsTyping(false); });
+    newSocket.on('disconnect', () => {
+      if (!isSessionCurrent()) return;
+      console.log('🔌 Student socket disconnected');
+      if (pendingSendRef.current) {
+        setSendNotice('انقطع الاتصال. نتيجة الإرسال غير مؤكدة والمسودة محفوظة؛ راجع سجل المحادثة قبل إعادة الإرسال.');
+      }
+    });
     newSocket.on('connect_error', (err: any) => console.error('Socket error:', err.message));
-
-    setSocket(newSocket);
-    return () => { newSocket.disconnect(); };
   };
-
-  // Save AI messages to localStorage
-  useEffect(() => {
-    if (selectedUser?.id === 'ai-assistant' && messages.length > 0 && user?.id) {
-      localStorage.setItem(`ai-messages-${user.id}`, JSON.stringify(messages));
-    }
-  }, [messages, selectedUser, user]);
 
   const loadConversations = async () => {
     try {
       const token = getToken();
-      const res = await axios.get(`${API_URL}/messages/conversations`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setConversations(res.data || []);
+      const res = await chatRequest('/messages/conversations');
+      if (!isSessionCurrent() || token !== getToken()) return;
+      setConversations(Array.isArray(res.data) ? res.data : []);
     } catch (error) {
-      console.error('Error loading conversations:', error);
+      if (isSessionCurrent()) setContactsError('تعذر تحميل المحادثات؛ أعد المحاولة.');
     }
   };
 
   const loadAcademicContacts = async () => {
     try {
       const token = getToken();
-      const response = await axios.get<User[]>(`${API_URL}/messages/users/available`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setAcademicContacts(response.data || []);
+      const response = await chatRequest<User[]>('/messages/users/available');
+      if (!isSessionCurrent() || token !== getToken()) return;
+      setAcademicContacts(Array.isArray(response.data) ? response.data : []);
       setContactsError(null);
     } catch (error) {
-      console.error('Error loading academic contacts:', error);
+      if (!isSessionCurrent()) return;
       setAcademicContacts([]);
       setContactsError('تعذر تحميل جهات التواصل المسموح بها. حاول مرة أخرى.');
     }
   };
 
   const loadMessages = async (userId: string) => {
-    if (userId === 'ai-assistant') {
-      const storedMessages = localStorage.getItem(`ai-messages-${user?.id}`);
-      if (storedMessages) {
-        setMessages(JSON.parse(storedMessages));
-      } else {
-        setMessages([{
-          id: 1, sender_id: 'ai-assistant', receiver_id: user?.id || 'unknown',
-          content: 'السلام عليكم! أنا مساعدك الذكي المتخصص في مادة التاريخ. كيف يمكنني مساعدتك اليوم؟',
-          message_type: 'text', is_edited: false, is_deleted: false,
-          created_at: new Date().toISOString(), is_delivered: true, is_read: true
-        }]);
+    const sequence = ++messageLoadRef.current;
+    const tokenAtStart = getToken();
+    const ownsLoad = () => isSessionCurrent() && sequence === messageLoadRef.current
+      && tokenAtStart === getToken() && selectedUserRef.current?.id === userId;
+    if (userId === AI_ASSISTANT_ID) {
+      const studentId = user?.id;
+      if (!isSessionCurrent() || selectedUserRef.current?.id !== userId) return;
+      if (!studentId) {
+        setMessages([]);
+        setIsLoading(false);
+        return;
       }
+      let raw: string | null = null;
+      let readFailed = false;
+      try {
+        raw = localStorage.getItem(aiHistoryKey(studentId));
+      } catch {
+        readFailed = true;
+      }
+      const stored = readFailed
+        ? { messages: [] as Message[], corrupt: true }
+        : readStoredAiHistory(raw, studentId);
+      const nextMessages = stored.messages.length > 0 ? stored.messages : [createWelcomeAiMessage(studentId)];
+      aiTranscriptRef.current = nextMessages;
+      setMessages(nextMessages);
+      if (stored.corrupt) {
+        setSendNotice('تعذر قراءة سجل المساعد المحلي بالكامل؛ عُرض ما أمكن قراءته. لن يُستبدل السجل حتى يؤكد الخادم ردًا جديدًا.');
+      }
+      setIsLoading(false);
       return;
     }
 
     setIsLoading(true);
     try {
       const token = getToken();
-      const res = await axios.get(`${API_URL}/messages/${userId}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const res = await chatRequest('/messages/' + encodeURIComponent(userId));
+      if (!ownsLoad()) return;
+      if (!Array.isArray(res.data)) throw new Error('Invalid message list');
       setMessages(res.data);
-      // Mark all as read
+      queueReadReceipts(res.data);
       try {
-        await axios.put(`${API_URL}/messages/mark-all-read/${userId}`, {}, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        await chatRequest('/messages/mark-all-read/' + encodeURIComponent(userId), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{}' });
         loadConversations();
       } catch (err) {
         console.error('Error marking messages as read:', err);
       }
     } catch (error) {
-      console.error('Error loading messages:', error);
+      if (ownsLoad()) setSendNotice('تعذر تحميل سجل المحادثة؛ القائمة الحالية ليست إثباتًا لعدم وجود رسائل.');
     } finally {
-      setIsLoading(false);
+      if (ownsLoad()) setIsLoading(false);
     }
   };
 
   // Send message
   const sendMessage = async () => {
-    if (!messageText.trim() || !selectedUser) return;
+    if (!isSessionCurrent() || !messageText.trim() || !selectedUser || pendingSendRef.current || aiBusyRef.current) return;
+    const studentId = user?.id || currentUserIdRef.current;
+    if (!studentId) return;
 
-    if (selectedUser.id === 'ai-assistant') {
+    if (selectedUser.id === AI_ASSISTANT_ID) {
+      aiBusyRef.current = true;
+      const currentMessage = messageText.trim();
+      const userMessageId = nextLocalMessageId();
       const userMessage: Message = {
-        id: Date.now(), sender_id: user.id, receiver_id: 'ai-assistant',
-        content: messageText, message_type: 'text', is_edited: false, is_deleted: false,
+        id: userMessageId, sender_id: studentId, receiver_id: AI_ASSISTANT_ID,
+        content: currentMessage, message_type: 'text', is_edited: false, is_deleted: false,
         created_at: new Date().toISOString(), is_delivered: true, is_read: true
       };
+      aiTranscriptRef.current = [...aiTranscriptRef.current, userMessage];
+      setConversationDraft(AI_ASSISTANT_ID, currentMessage);
       setMessages(prev => [...prev, userMessage]);
-      const currentMessage = messageText;
-      setMessageText('');
+      updateMessageText('');
       if (textareaRef.current) textareaRef.current.style.height = '48px';
       setIsTyping(true);
 
       sendAiChatMessage(currentMessage)
         .then(aiResponse => {
-          if (aiResponse) {
-            setMessages(prev => [...prev, {
-              id: Date.now() + 1, sender_id: 'ai-assistant', receiver_id: user.id,
-              content: aiResponse, message_type: 'text',
-              is_edited: false, is_deleted: false, created_at: new Date().toISOString(),
-              is_delivered: true, is_read: true
-            }]);
-          } else { throw new Error('No valid response from AI'); }
-          setIsTyping(false);
+          if (typeof aiResponse !== 'string' || !aiResponse.trim()) throw new Error('No valid response from AI');
+          if (!isSessionCurrent()) return;
+          const reply: Message = {
+            id: nextLocalMessageId(), sender_id: AI_ASSISTANT_ID, receiver_id: studentId,
+            content: aiResponse, message_type: 'text',
+            is_edited: false, is_deleted: false, created_at: new Date().toISOString(),
+            is_delivered: true, is_read: true
+          };
+          const transcript = aiTranscriptRef.current.some(message => message.id === userMessageId)
+            ? aiTranscriptRef.current
+            : [...aiTranscriptRef.current, userMessage];
+          const nextTranscript = transcript.some(message => message.id === reply.id)
+            ? transcript
+            : [...transcript, reply];
+          aiTranscriptRef.current = nextTranscript;
+          const persisted = writeStoredAiHistory(studentId, nextTranscript);
+          const draft = conversationDraftsRef.current.get(AI_ASSISTANT_ID);
+          if (draft !== undefined && draft.trim() === currentMessage) conversationDraftsRef.current.delete(AI_ASSISTANT_ID);
+          if (selectedUserRef.current?.id === AI_ASSISTANT_ID) {
+            setMessages(prev => {
+              const withUser = prev.some(message => message.id === userMessageId) ? prev : [...prev, userMessage];
+              return withUser.some(message => message.id === reply.id) ? withUser : [...withUser, reply];
+            });
+            setSendNotice(persisted ? null : 'تم تأكيد رد المساعد، لكن تعذر حفظ السجل محليًا؛ ستظهر المحادثة في هذه الجلسة فقط.');
+            setIsTyping(false);
+          }
         })
         .catch(() => {
-          setMessages(prev => [...prev, {
-            id: Date.now() + 1, sender_id: 'ai-assistant', receiver_id: user.id,
-            content: '⚠️ عذراً، حدث خطأ في الاتصال بالمساعد الذكي.\n\nالرجاء المحاولة مرة أخرى أو التواصل مع الأستاذ. 📞',
-            message_type: 'text', is_edited: false, is_deleted: false,
-            created_at: new Date().toISOString(), is_delivered: true, is_read: true
-          }]);
+          aiTranscriptRef.current = aiTranscriptRef.current.filter(message => message.id !== userMessageId);
+          if (!isSessionCurrent() || selectedUserRef.current?.id !== AI_ASSISTANT_ID) return;
+          setMessages(prev => prev.filter(message => message.id !== userMessageId));
+          if (messageTextRef.current.length === 0) {
+            setConversationDraft(AI_ASSISTANT_ID, currentMessage);
+            updateMessageText(currentMessage);
+          }
+          setSendNotice('تعذر تأكيد رد المساعد. لم تُحفظ الرسالة غير المؤكدة في السجل؛ راجع المسودة قبل إعادة المحاولة، ولا إعادة إرسال تلقائية.');
           setIsTyping(false);
-        });
+        }).finally(() => { aiBusyRef.current = false; });
       return;
     }
 
-    if (!socket) return;
-
+    const activeSocket = socketRef.current;
+    if (!activeSocket?.connected) {
+      setSendNotice('الاتصال غير متاح؛ لم يتم إرسال الرسالة والمسودة محفوظة.');
+      return;
+    }
+    const pending = { peer: selectedUser.id, content: messageText.trim(), editId: editingMessageId,
+      token: getToken() };
+    pendingSendRef.current = pending; // synchronous latch before emit
+    setConversationDraft(pending.peer, pending.content);
+    setSendPending(true);
+    setSendNotice('جارٍ انتظار تأكيد الحفظ من الخادم…');
+    sendTimerRef.current = setTimeout(() => {
+      if (isSessionCurrent() && pendingSendRef.current === pending) {
+        setSendNotice('نتيجة الإرسال غير مؤكدة. المسودة محفوظة؛ راجع المحادثة قبل إعادة الإرسال.');
+      }
+    }, 15000);
     if (editingMessageId) {
-      socket.emit('message:edit', { messageId: editingMessageId, userId: user.id, content: messageText });
-      setEditingMessageId(null);
+      activeSocket.emit('message:edit', { messageId: editingMessageId, userId: studentId, content: pending.content });
     } else {
-      const tempMessage: Message = {
-        id: Date.now(), sender_id: user.id, receiver_id: selectedUser.id,
-        content: messageText, message_type: 'text', is_edited: false, is_deleted: false,
-        created_at: new Date().toISOString(), is_delivered: false, is_read: false
-      };
-      setMessages(prev => [...prev, tempMessage]);
-      socket.emit('message:send', {
-        senderId: user.id, receiverId: selectedUser.id, content: messageText, messageType: 'text'
+      activeSocket.emit('message:send', {
+        senderId: studentId, receiverId: selectedUser.id, content: pending.content, messageType: 'text'
       });
     }
-    setMessageText('');
-    if (textareaRef.current) textareaRef.current.style.height = '48px';
-    if (socket && selectedUser) {
-      socket.emit('typing:stop', { senderId: user.id, receiverId: selectedUser.id });
+    // Neither an emit nor a timeout proves persistence. Keep the draft until
+    // the existing server sent/edited event acknowledges this socket's write.
+    stopTyping(selectedUser.id);
+  };
+
+  const releaseUnconfirmedSend = () => {
+    const pending = pendingSendRef.current;
+    if (!pending) return;
+    if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+    sendTimerRef.current = null;
+    pendingSendRef.current = null;
+    setSendPending(false);
+    if (selectedUserRef.current?.id === pending.peer) {
+      setSendNotice('أُنهيت حالة الانتظار دون إعادة إرسال. قد تكون الرسالة محفوظة على الخادم؛ راجع سجل المحادثة قبل الإرسال مرة أخرى.');
     }
   };
 
   const sendImage = async (file: File) => {
-    if (!selectedUser || selectedUser.id === 'ai-assistant') return;
+    if (!isSessionCurrent() || !selectedUser || selectedUser.id === 'ai-assistant' || imageBusyRef.current) return;
+    imageBusyRef.current = true;
     const formData = new FormData();
     formData.append('image', file);
     formData.append('receiver_id', selectedUser.id);
     try {
       const token = getToken();
-      const res = await axios.post(`${API_URL}/messages/upload-image`, formData, {
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
-      });
-      setMessages(prev => [...prev, res.data]);
+      const res = await chatRequest('/messages/upload-image', { method: 'POST', body: formData });
+      if (!isSessionCurrent() || token !== getToken() || selectedUserRef.current?.id !== res.data.receiver_id) return;
+      setMessages(prev => prev.some(message => message.id === res.data.id) ? prev : [...prev, res.data]);
     } catch (error) {
-      console.error('Error uploading image:', error);
+      if (isSessionCurrent()) setSendNotice('لم يتم تأكيد رفع الصورة؛ راجع المحادثة قبل المحاولة مرة أخرى.');
+    } finally {
+      imageBusyRef.current = false;
     }
   };
 
   const handleTyping = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setMessageText(e.target.value);
+    const value = e.target.value;
+    updateMessageText(value);
+    const peer = selectedUserRef.current?.id;
+    if (peer) setConversationDraft(peer, value);
     if (textareaRef.current) {
       textareaRef.current.style.height = '48px';
       textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 150) + 'px';
     }
-    if (socket && selectedUser && selectedUser.id !== 'ai-assistant') {
-      socket.emit('typing:start', { senderId: user.id, receiverId: selectedUser.id });
-      setTimeout(() => { socket.emit('typing:stop', { senderId: user.id, receiverId: selectedUser.id }); }, 2000);
+    const activeSocket = socketRef.current;
+    const studentId = currentUserIdRef.current;
+    if (activeSocket?.connected && peer && peer !== AI_ASSISTANT_ID && studentId && isSessionCurrent()) {
+      const tokenAtStart = getToken();
+      activeSocket.emit('typing:start', { senderId: studentId, receiverId: peer });
+      if (typingStopTimerRef.current) clearTimeout(typingStopTimerRef.current);
+      typingStopTimerRef.current = setTimeout(() => {
+        typingStopTimerRef.current = null;
+        if (isSessionCurrent() && getToken() === tokenAtStart
+          && selectedUserRef.current?.id === peer && activeSocket.connected) {
+          activeSocket.emit('typing:stop', { senderId: studentId, receiverId: peer });
+        }
+      }, 2000);
     }
   };
 
   const selectUser = (chatUser: User) => {
+    if (!isSessionCurrent()) return;
+    const previousPeer = selectedUserRef.current?.id;
+    rememberActiveDraft();
+    stopTyping(previousPeer);
+    selectedUserRef.current = chatUser;
+    setSendNotice(pendingSendRef.current ? 'هناك إرسال سابق غير مؤكد؛ راجع سجل المحادثة السابقة قبل أي إعادة إرسال.' : null);
+    setIsTyping(false);
     setSelectedUser(chatUser);
     setMessages([]);
     setEditingMessageId(null);
-    setMessageText('');
+    updateMessageText(conversationDraftsRef.current.get(chatUser.id) ?? '');
     loadMessages(chatUser.id);
   };
 
   const deleteMessage = (messageId: number) => {
-    if (!socket || !user) return;
-    socket.emit('message:delete', { messageId, userId: user.id });
+    const activeSocket = socketRef.current;
+    const studentId = currentUserIdRef.current;
+    if (!activeSocket?.connected || !studentId || !isSessionCurrent()) return;
+    activeSocket.emit('message:delete', { messageId, userId: studentId });
   };
 
   const startEditing = (message: Message) => {
     setEditingMessageId(message.id);
-    setMessageText(message.content);
+    updateMessageText(message.content);
+  };
+
+  const cancelEditing = () => {
+    setEditingMessageId(null);
+    const peer = selectedUserRef.current?.id;
+    if (peer) setConversationDraft(peer, '');
+    updateMessageText('');
   };
 
   const handleBackToList = () => {
+    const previousPeer = selectedUserRef.current?.id;
+    rememberActiveDraft();
+    stopTyping(previousPeer);
+    selectedUserRef.current = null;
+    messageLoadRef.current += 1;
+    setIsTyping(false);
+    setIsLoading(false);
+    setSendNotice(null);
+    setEditingMessageId(null);
+    updateMessageText('');
     setSelectedUser(null);
     setMessages([]);
   };
@@ -411,6 +794,9 @@ export default function StudentChat() {
   const showContactsList = !isMobile || (isMobile && !selectedUser);
   const showChatArea = !isMobile || (isMobile && !!selectedUser);
 
+  if (!user && contactsError) {
+    return <div dir="rtl" className="p-6"><p role="alert">{contactsError}</p><Button onClick={() => window.location.reload()}>إعادة تحميل الصفحة</Button></div>;
+  }
   if (!user) {
     return (
       <div className="flex items-center justify-center h-screen bg-slate-50">
@@ -722,12 +1108,25 @@ export default function StudentChat() {
                   </div>
                 </div>
 
+                {sendNotice && <div className="px-4 py-2 text-sm">
+                  <p role="status" aria-live="polite">{sendNotice}</p>
+                  {sendPending && selectedUser && pendingSendRef.current?.peer === selectedUser.id && (
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      <Button
+                        variant="outline" size="sm" onClick={() => void loadMessages(selectedUser.id)}
+                      >مراجعة سجل المحادثة</Button>
+                      <Button
+                        variant="ghost" size="sm" onClick={releaseUnconfirmedSend}
+                      >إنهاء الانتظار دون إعادة إرسال</Button>
+                    </div>
+                  )}
+                </div>}
                 {/* Input Area - Fixed at bottom */}
                 <div className="p-3 md:p-4 bg-white border-t shrink-0">
                   {editingMessageId && (
                     <div className="bg-orange-50 p-2 rounded-lg mb-2 flex items-center justify-between">
                       <span className="text-sm text-orange-700">تعديل الرسالة</span>
-                      <Button variant="ghost" size="sm" onClick={() => { setEditingMessageId(null); setMessageText(''); }}>إلغاء</Button>
+                      <Button variant="ghost" size="sm" onClick={cancelEditing}>إلغاء</Button>
                     </div>
                   )}
                   <div className="max-w-3xl mx-auto flex items-end gap-2">
@@ -756,7 +1155,7 @@ export default function StudentChat() {
                     </div>
                     <Button
                       onClick={sendMessage}
-                      disabled={!messageText.trim()}
+                      disabled={!messageText.trim() || sendPending}
                       className="shrink-0 rounded-full h-12 w-12 bg-orange-500 hover:bg-orange-600 text-white shadow-lg mb-1 transition-transform active:scale-95"
                     >
                       <Send className={`h-5 w-5 ${!messageText.trim() ? 'opacity-50' : ''}`} />
