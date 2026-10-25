@@ -1430,11 +1430,18 @@ mistaken for a working recording path. Enumerated by area:
 
 | area | required objects | what it proves | what it does **not** prove |
 |---|---|---|---|
-| participant lifecycle | R19 presence actor, R21 `KEY (outcome, occurred_at_ms, id)`, R22 cursor columns + paired-NULL CHECK + `utf8mb4_0900_bin`, R23 CHECK admitting the four `ignored:*` | join/leave ordering and cursor durability | nothing about recordings |
+| participant lifecycle | R22 cursor columns + paired-NULL CHECK + `utf8mb4_0900_bin`, R23 CHECK admitting the four `ignored:*` and the OLD `chk_live_callback_outcome` **gone** | join/leave ordering and cursor durability | nothing about recordings |
 | recording ingest ledger | R12–R15 ingest columns/index/sink keys | that an event was admitted and can be replayed | nothing about the library or the meter |
 | library promotion | R16 tenant-scoped `video_assets` unique, R18 nullable recording columns | that a promoted asset is unique per provider recording | nothing about bytes being charged |
 | storage metering | the meter's own store (external) | that bytes were recorded or deduplicated | nothing about the session |
-| recovery checkpoint | R24 `20261023_04_live_recovery_checkpoint.sql` | that a sweep resumes where it stopped | nothing about correctness of the rows |
+| recovery checkpoint | R24 `20261024_04_live_recovery_checkpoint.sql` | that a sweep resumes where it stopped | nothing about correctness of the rows |
+
+**CORRECTED (Agent 3, contract-closure review).** The `participant lifecycle` row previously listed
+“R19 presence actor” and “R21 `KEY (outcome, occurred_at_ms, id)`”. **No migration in
+`server/migrations/` creates either object** — `grep` for `live_` across every `2026102[3-9]*.sql` returns
+exactly three files (`20261022_06`, `20261023_02`, `20261024_04`), and neither R19 nor R21 appears in them.
+Those two claims were removed rather than satisfied by inventing DDL, and `verifyLiveSchema` never required
+them. §21 is the authoritative statement of what the verifier asserts.
 
 The operational-evidence grant is scoped `'live.callback.path'` and **cannot** certify the recording flow; that
 is why `readiness().recordingConfigured` is a separate, configuration-only verdict and why
@@ -1493,3 +1500,250 @@ own digest is in `handoff/WORKBUDDY-LIVE-COMPOSITION-OPEN-PATHS-20261023.md`.
   `st:{assetId}:{operationId}` and answers `deduplicated`; `ingested` is terminal and a replay answers
   `duplicate` without re-driving the meter. That behaviour is unchanged and remains unexecuted.
 - **No drain/stop gap was found that a timer would fix.** The primitives exist; what is missing is a caller.
+
+---
+
+## 21. The schema verifier contract — what `verifyLiveSchema` actually asserts
+
+Task `server-live-schema-verification-contract-20261024-01`, contract-closure review. Three files touched:
+`server/src/services/live-session-sql.ts`, `server/src/services/live-runtime-factory.ts`, this document.
+No migration, route, service or index file was edited; no SQL, database, test, compiler, typecheck, build,
+service, provider, Docker or Git command was run. **No catalog query was executed in this review.** Everything
+below is read from the requirement tables in the source and from the migrations as text.
+
+**Why this section exists.** A previous pass added `verifyLiveSchema` and died before reporting it. The code was
+therefore unverified evidence, and its comments were not trustworthy. This section is the contract that the code
+is now held to, the inventory of what it asserts, and the exact places where it did not match the migrations.
+
+### 21.1 The five areas and where their requirements come from
+
+| area | code | tables | migration ground truth |
+|---|---|---|---|
+| `sessionLifecycle` | `live-session-sql.ts:1641` | `live_sessions`, `live_session_participants`, `live_session_callbacks` | `20261022_06:56-76`, `:280-297`, `:460-476` + R23 in `20261023_02:328,346` |
+| `presenceOrdering` | `:1816` | `live_session_participants` | `20261023_02:144` (combined ALTER), `:158`, `:165`, `:192` |
+| `presenceEventIdentity` | `:1851` | `live_session_participants` + `information_schema.COLLATIONS` | `20261023_02:144,165` (`utf8mb4_0900_bin`) |
+| `ingestLedger` | `:1876` | `live_recording_ingests` | `20261022_06:635-658` |
+| `recoveryCheckpoint` | `:1969` | `live_recovery_checkpoints` | `20261024_04:149-181` |
+
+`LIVE_SCHEMA_CONTRACT_VERSION` is `live-schema-20261024-3` (`:1390`). A report carrying any other string is
+refused by the factory with `invalid_deps`, and an operational grant issued against an older string is refused
+as `not-verified` — an old label never inherits the tighter claim.
+
+### 21.2 Required columns — 50 distinct columns (51 requirements), all matched
+
+Each requirement is `(name, DATA_TYPE, length, charset, collation, signedness, enum vocabulary, NULLability,
+EXTRA empty, and — for the R22 pair — no DEFAULT)`. Verified by `columnMismatch` (`:2495`). The count is 51
+requirements over 50 distinct columns: `presence_event_id` is asserted twice, once by `presenceOrdering`
+(existence and nullability in context) and once by `presenceEventIdentity` (the collation contract).
+
+| table | columns | migration |
+|---|---|---|
+| `live_sessions` | `id CHAR(36)`, `tenant_id CHAR(36)`, `host_user_id CHAR(36)`, `title VARCHAR(200)`, `state ENUM('scheduled','live','ended','cancelled')`, `provider VARCHAR(128) NULL`, `provider_room_id VARCHAR(128) NULL`, `starts_at_ms BIGINT`, `ended_at_ms BIGINT NULL`, `max_participants INT UNSIGNED`, `created_at_ms BIGINT` — all `utf8mb4/utf8mb4_unicode_ci` | `20261022_06:57-67` |
+| `live_session_participants` | `id`, `tenant_id`, `session_id`, `user_id` `CHAR(36)`; `role ENUM('host','cohost','participant')`; `ticket_fingerprint CHAR(64)`; `joined_at_ms`, `last_seen_at_ms` `BIGINT`; `left_at_ms BIGINT NULL` | `20261022_06:281-289` |
+| `live_session_callbacks` | `id`, `tenant_id`, `session_id` `CHAR(36)`; `provider VARCHAR(128)`; `event_id VARCHAR(128)`; `kind VARCHAR(32)`; `occurred_at_ms BIGINT`; `outcome VARCHAR(48)` — all NOT NULL | `20261022_06:461-468` |
+| `live_session_participants` (R22) | `presence_event_at_ms BIGINT NULL` **no DEFAULT**; `presence_event_id VARCHAR(128) NULL` `utf8mb4_0900_bin` **no DEFAULT** | `20261023_02:158,165` |
+| `live_recording_ingests` | 12 columns incl. `duration_seconds INT UNSIGNED`, `storage_bytes BIGINT UNSIGNED`, `outcome VARCHAR(32)`, `claim_owner VARCHAR(64) NULL`, `claim_expires_at_ms BIGINT NULL` | `20261022_06:636-647` |
+| `live_recovery_checkpoints` | `purpose VARCHAR(64)` `0900_bin`; `cursor_occurred_at_ms BIGINT NULL`; `cursor_id VARCHAR(64) NULL` `0900_bin`; `owner VARCHAR(128) NULL` `0900_bin`; `lease_expires_at_ms BIGINT NULL`; `row_version BIGINT UNSIGNED`; `sweep_generation BIGINT UNSIGNED`; `updated_at_ms BIGINT` | `20261024_04:152-169` |
+
+**Result: every required column matches its migration, including the two collation regimes** (table default
+`utf8mb4_unicode_ci` vs the byte-exact `utf8mb4_0900_bin` on the three identity columns). No column requirement
+is unsupported by a migration.
+
+### 21.3 Required indexes — 17 requirements, exact order, no prefix
+
+Matched by name, `NON_UNIQUE`, full column list in `SEQ_IN_INDEX` order, and `SUB_PART IS NULL`
+(`buildIndexIndex` `:2205`, compared in `evaluateArea`). Order matters because `(tenant_id, id)` and
+`(id, tenant_id)` are different parent keys for a composite tenant FK.
+
+- `live_sessions`: `PRIMARY(id)`, `uq_live_session_id_tenant(tenant_id,id)` UNIQUE,
+  `uq_live_session_room(provider,provider_room_id)` UNIQUE, `idx_live_sessions_tenant(tenant_id,state,starts_at_ms)`
+  — `20261022_06:68-71`.
+- `live_session_participants`: `PRIMARY(id)`, `uq_live_participant(session_id,user_id)` UNIQUE,
+  `uq_live_participant_tenant(tenant_id,session_id,id)` UNIQUE, `idx_live_participant_active(session_id,left_at_ms)`
+  — `20261022_06:290-293`.
+- `live_session_callbacks`: `PRIMARY(id)`, `uq_live_callback(tenant_id,provider,event_id)` UNIQUE,
+  `idx_live_callback_session(tenant_id,session_id)` — `20261022_06:469-471`.
+- `live_recording_ingests`: `PRIMARY(id)`, `uq_ingest_event(tenant_id,provider,event_id)` UNIQUE,
+  `uq_ingest_recording(tenant_id,provider,provider_recording_id)` UNIQUE,
+  `idx_live_ingest_pending(outcome,claim_expires_at_ms)`, `idx_live_ingest_session(tenant_id,session_id)`
+  — `20261022_06:648-652`.
+- `live_recovery_checkpoints`: `PRIMARY(purpose)` — `20261024_04:172`.
+
+**Result: all 17 match. `PRIMARY` is required by name, which is what MySQL reports.**
+
+### 21.4 Required CHECKs — 13 present + 1 required ABSENT
+
+Each must exist in `TABLE_CONSTRAINTS` with `CONSTRAINT_TYPE='CHECK'`, be `ENFORCED='YES'`, and still express
+the declared predicate, recognised **structurally** from `CHECK_CLAUSE` (`checkShapeMatches` `:2407`) — never
+from the constraint name.
+
+| CHECK | shape asserted | migration |
+|---|---|---|
+| `chk_live_session_ended` | `(state='ended') = (ended_at_ms IS NOT NULL)` | `20261022_06:73` |
+| `chk_live_session_max_participants` | `max_participants BETWEEN 1 AND 5000` | `:74` |
+| `chk_live_callback_outcome_v2` | `outcome IN (<the nine values>)` | `20261023_02:328,346` |
+| `chk_live_participant_cursor_pair` | `(presence_event_at_ms IS NULL) = (presence_event_id IS NULL)` | `20261023_02:192` |
+| `chk_live_ingest_lease_pair` | `(claim_owner IS NULL) = (claim_expires_at_ms IS NULL)` | `20261022_06:655` |
+| `chk_live_ingest_terminal_release` | `outcome='pending' OR (claim_owner IS NULL AND claim_expires_at_ms IS NULL)` | `:656` |
+| `chk_live_recovery_cursor_pair` / `_lease_pair` | the two all-or-NULL pairs | `20261024_04:173-174` |
+| `chk_live_recovery_cursor_ms` / `_lease_ms` | `col IS NULL OR col <= 9007199254740991` | `:175-176` |
+| `chk_live_recovery_version` / `_generation` | `row_version BETWEEN 1 AND …`, `sweep_generation BETWEEN 0 AND …` | `:177-178` |
+| `chk_live_recovery_changed_ms` | `updated_at_ms <= 9007199254740991` | `:179` |
+
+**Required ABSENT: `live_session_callbacks.chk_live_callback_outcome`.** `20261023_02:328` drops it in the same
+atomic `ALTER` that installs `_v2`, `:387` drops it in the both-present state, and the migration's own final
+guard treats `@c6_oc_old_end = 1` as drift (`:421`). While it survives it is still enforced and still admits
+only the five original values, so the four `ignored:*` outcomes this adapter writes would raise 3819. Its
+absence is now a required fact (§21.7 defect 2).
+
+### 21.5 Required foreign keys — 7, with schema, table and column order
+
+`KEY_COLUMN_USAGE` is read ordered by `ORDINAL_POSITION` (`buildForeignKeyIndex`), and each FK is checked for:
+referencing columns in order, referenced table, referenced columns in order, and
+`REFERENCED_TABLE_SCHEMA === DATABASE()` — the tenant boundary, so a child row cannot name another database's
+parent row.
+
+- `live_sessions.fk_live_session_tenant(tenant_id) → tenants(id)` — `20261022_06:72`.
+- `live_session_participants.fk_live_participant_tenant(tenant_id) → tenants(id)`, and
+  `fk_live_participant_session(tenant_id,session_id) → live_sessions(tenant_id,id)` — `:294-295`.
+- `live_session_callbacks.fk_live_callback_tenant(tenant_id) → tenants(id)`,
+  `fk_live_callback_session(tenant_id,session_id) → live_sessions(tenant_id,id)` — `:472-473`.
+- `live_recording_ingests.fk_live_ingest_tenant(tenant_id) → tenants(id)`,
+  `fk_live_ingest_session(tenant_id,session_id) → live_sessions(tenant_id,id)` — `:653-654`.
+- `live_recovery_checkpoints`: **none, by design** — the absence is recorded in `notes` (`:2027-2030`), and
+  `20261024_04:30-33` states the same.
+
+**Result: all 7 match, including column order. `ON DELETE RESTRICT` is deliberately not asserted — it is not
+part of what the adapter depends on, and asserting it would be a requirement no migration fact supports.**
+
+### 21.6 Verdict semantics — `verified` / `absent` / `unknown`
+
+`evaluateArea` (`:2566`) evaluates three buckets in a fixed order, and the order is the safety property:
+
+1. **`absent`** — a PROVEN mismatch: a row was READ and the fact is different (wrong type, wrong length, wrong
+   collation, wrong nullability, non-empty `EXTRA`, a forbidden DEFAULT, wrong index order, wrong uniqueness, a
+   prefix index, a missing row **in a result set scoped to a known schema**, a CHECK that is `NOT ENFORCED` or
+   whose clause no longer matches, a FK pointing at another schema/table/column order, or the R23 old CHECK
+   still present).
+2. **`unknown`** — anything not measured: a failed read (privilege, connection, missing
+   `information_schema` table, unsupported flavour), an unreadable `ENFORCED`, an unreadable `CHECK_CLAUSE`, an
+   unreadable `NON_UNIQUE`, an unreadable `DATABASE()`, an unclassifiable collation, or a MariaDB/pre-8 server.
+3. **`verified`** — reached only when **both** lists are empty, i.e. every required fact was read and matched.
+
+`unknown` is not a fourth shade of `verified`: the factory treats any area that is not `verified` as blocking
+(`live-runtime-factory.ts:1259`), so `unknown` ⇒ `fullyReady: 'unconfigured'` ⇒ **unavailable**. `absent` and
+`unknown` both deny readiness; they differ only in what they tell the operator (drift vs. unmeasured).
+
+### 21.7 Defects found and fixed (all three files owned by this review)
+
+1. **CHECK_CLAUSE outer parentheses — false `absent` on a valid deployment.**
+   *Before:* `between`, `atMost`, `nullOrAtMost`, `membership` matched the clause with a leading `^` anchor and
+   no parenthesis handling, while `normalizeCheckClause` preserves parentheses. MySQL returns
+   `` (`max_participants` between 1 and 5000) ``, so the normalised `(max_participantsbetween1and5000)` failed the
+   regex and `chk_live_session_max_participants`, `chk_live_callback_outcome_v2` and all four R24 range CHECKs
+   were reported **absent** on a correct database. The migration itself anticipates both renderings
+   (`20261023_02:308-317` lists `(...)` and `...`), so the verifier was stricter than the contract.
+   *After:* `checkShapeMatches` strips one REDUNDANT outer pair before matching (`:2399-2401`), using the
+   existing `stripOuterParens` that only removes a pair spanning the whole text. Grouping is preserved, no
+   predicate is weakened, and `(a OR b) AND c` is still distinguished from `a OR (b AND c)`.
+2. **The dropped R23 CHECK was never asserted absent — false `verified`.**
+   *Before:* only `chk_live_callback_outcome_v2` was required. A half-applied `20261023_02` (state A′/E: old
+   CHECK present, v2 also present) reported `verified` while the old five-value CHECK still rejected every
+   `ignored:mapping-unavailable` / `ignored:ordering-unavailable` / `ignored:stale-event` /
+   `ignored:ambiguous-event` write at runtime.
+   *After:* `AreaSpec.forbiddenChecks` (`:1547`), one entry (`:1766`), evaluated at `:2695`: a present forbidden
+   CHECK is `absent` with the reason naming the replacement. A failed constraint read stays `unknown`.
+3. **Unreadable `DATABASE()` produced `absent` — false `absent`.**
+   *Before:* every schema-scoped read filters `TABLE_SCHEMA = DATABASE()`. With no schema selected (or the name
+   denied) those queries succeed and return **zero rows**, which the evaluator read as "table is absent" and
+   reported `absent` for all five areas — a valid deployment declared broken because of a connection setting.
+   *After:* `schemaKnown` gates every absence conclusion through `failAbsent` (`:2591-2599`); an unreadable
+   schema name makes the area `unknown` with that reason. A row that IS returned and differs is still `absent`.
+4. **Unreadable `NON_UNIQUE` was coerced to "not unique" — false `absent`.**
+   *Before:* `readCatalogInt(row.NON_UNIQUE) !== 0` set `unique = false` for a NULL/unparseable flag, so a
+   required UNIQUE key was reported `NOT UNIQUE`.
+   *After:* `CatalogIndex.unique` is `boolean | null`; an unreadable flag is `unknown` for that index, not a
+   mismatch.
+5. **Operational grant was re-read from the caller's `deps` object on every call.**
+   *Before:* `readiness()` passed `deps.operationalEvidence`, so the object handed to the factory could be
+   replaced after construction even though the documented contract is "load it BEFORE composition".
+   *After:* the grant is captured once at construction (`live-runtime-factory.ts:978`) and re-verified on every
+   call. Provenance, executor identity, deployment, contract, scope and expiry checks are unchanged — the
+   capture removes a mutation channel, it does not add or relax a check.
+
+**Contract version bumped** `live-schema-20261024-2` → `live-schema-20261024-3` because a report now also
+asserts a forbidden constraint's absence and no longer depends on MySQL's parenthesis rendering. Reports and
+grants under the older string are refused rather than reinterpreted.
+
+### 21.8 Catalog robustness — the enumerated failure modes
+
+| condition | behaviour |
+|---|---|
+| permission denied on `information_schema` | the read throws, `readCatalog` returns `ok:false`, the area is `unknown` with `code: message` — never `absent` |
+| non-MySQL / MariaDB | `SELECT DATABASE()` or `information_schema.COLUMNS` fails ⇒ `unknown`; a MariaDB version string, an unparseable major, or major < 8 ⇒ `presenceEventIdentity: unknown` (never `compatible`) |
+| empty result set, schema known | a required object is genuinely missing ⇒ `absent` |
+| empty result set, schema NOT known | `unknown` (defect 3) |
+| NULL in a catalog column | `ENFORCED` NULL ⇒ `unknown`; `CHECK_CLAUSE` NULL ⇒ `unknown`; `NON_UNIQUE` NULL ⇒ `unknown`; `COLLATION_NAME` NULL on a varchar ⇒ `incompatible` (the row was read and its shape is not the contract) |
+| `COLUMN_DEFAULT` | only the R22 pair is constrained (`noDefault`). MySQL reports SQL NULL both for "no default" and for `DEFAULT NULL`; the two are semantically identical on a nullable column, so the ambiguity cannot flip a verdict. `DEFAULT CURRENT_TIMESTAMP` / `DEFAULT_GENERATED` would be caught by the `EXTRA` check before the default check |
+| `EXTRA` | any non-empty `EXTRA` (generated, auto-increment, on-update, `DEFAULT_GENERATED`) fails the column — a stored column is required, and this is checked before `noDefault` |
+| `SELECT VERSION()` empty/failed | report carries `serverVersion: ''`, `presenceEventIdentity` becomes `unknown` |
+| executor unusable | `invalid_deps` — the only throw |
+
+### 21.9 Provenance, expiry, and operational separation — status
+
+- **Report provenance.** `verifyLiveSchema` registers each report in a module-private `WeakSet` and in a
+  `WeakMap` keyed by the **executor object** (`:3003`, `isLiveSchemaReportFor` `:3017`). The factory accepts a
+  report only through `assertUsableReport` (`live-runtime-factory.ts:987`): `isLiveSchemaReportFor(report,
+  executor)` **and** `report.contractVersion === LIVE_SCHEMA_CONTRACT_VERSION`, else `invalid_deps`. A
+  structurally identical literal, or a report measured on another connection, is refused.
+- **Expiry.** `LIVE_SCHEMA_MAX_AGE_MS = 15 min`; `schemaFreshnessMs` can only shorten it (`resolveFreshnessMs`,
+  clamped, non-finite/non-positive ⇒ maximum). `readiness()` re-reads the clock on every call, so an aged-out
+  report stops counting without a restart.
+- **Operational evidence is a SEPARATE grant, never implied.** `describeOperationalState` requires, in order:
+  provenance (`isOperationalEvidenceGrantFor` — WeakSet + per-executor WeakMap), a non-null server-side
+  `compositionContext`, exact `deploymentId`, exact `executorId`, exact contract version, the
+  `live.callback.path` scope, and `expiresAtMs > now`. `operational: 'verified'` additionally requires
+  `fullyReady === 'configured'`. **A schema `verified` never yields `operational: 'verified'`** — the two
+  verdicts share no input, and the scope string is not in any report.
+- **Nothing at import time.** No `db`/pool import, no top-level statement, no `await`, no mount, no timer, no
+  `process.on`. `createLiveSessionsRouter` is called only when `optionalAuthenticate` is supplied; the verifier
+  is never called by the factory.
+
+### 21.10 Unresolved mismatches and held questions (not fixed here)
+
+1. **`live_session_presence_intervals` is not verified by any area.** The store writes it
+   (`openPresenceInterval`/`closePresenceInterval`/`listPresenceIntervals`) and it exists in
+   `20261022_06:887-904`, but no `AreaSpec` covers it — so `presence` can read `configured` with that table
+   absent. **Question for the schema owner:** should a sixth area `presenceIntervals` be added (which changes
+   `LIVE_SCHEMA_AREAS`, the report shape and the contract version again), or is the presence table's absence
+   acceptable because `sessionLifecycle` already fails first?
+2. **`live_sessions.state DEFAULT 'scheduled'` is not required.** The migration declares it
+   (`20261022_06:61`); the verifier tolerates its absence because every INSERT names `state` explicitly
+   (`insertSessionRow`). **Question:** is the default load-bearing for any writer outside this lane?
+3. **`ON DELETE RESTRICT` is not asserted** on the three composite FKs (`20261022_06:295,473,654`). It is not
+   something the adapter depends on, so asserting it would add a requirement with no code justification.
+   **Question:** does any operator runbook depend on RESTRICT rather than CASCADE semantics?
+4. **`verifyLiveSchema` does not assert that the R23 migration's `chk_live_callback_outcome_v2` is the ONLY
+   outcome constraint** beyond the named forbidden one; a third, differently-named outcome CHECK would pass.
+   Held: naming every possible constraint is not possible from the catalog; the forbidden-name assertion covers
+   the one the migrations actually create and drop.
+5. **A future-dated report is treated as fresh.** `ageMs = Math.max(0, now - checkedAtMs)`
+   (`live-runtime-factory.ts:1251`), so a report with a clock ahead of the reader stays inside the window.
+   Left as is deliberately: rejecting negative ages would turn normal NTP skew into a false `unconfigured`.
+   Recorded as a limit, not fixed.
+6. **`SECTION 20.5` previously claimed R19/R21 objects that no migration creates.** Corrected in place; the
+   verifier never required them, so no code change followed.
+
+### 21.11 What this section does NOT claim
+
+No test, compiler, typecheck or build was run, so the edited code is **unproven as code**: the changes are
+argued by reading. No catalog query was executed, so **no statement here is an observation about a database**.
+No deployment was measured, so `fullyReady` and `operational` remain **unverified for every environment**, and
+nothing in this section makes the live lane operationally ready.
+
+
+## Codex source correction: presence interval coverage (2026-10-24)
+
+The schema contract is now `live-schema-20261024-4`. The existing required `presenceOrdering` area also verifies `live_session_presence_intervals`: eight columns, primary/deduplication/open/participant indexes, the paired NULL close-reason CHECK, and tenant/participant foreign-key column shapes, transcribed from `20261022_06_live_sessions_recordings.sql`. The table is included in catalog reads. A missing or unreadable interval dependency cannot establish verified presence ordering. No sixth area was added.
+
+Readiness rejects future-dated schema reports instead of clamping their age to zero. Existing executor provenance, expiry limits and separate operational evidence remain required. Foreign-key delete actions remain outside this matcher and must not be claimed verified. These are source corrections only: no compiler, tests, SQL or runtime verification was executed. Earlier section inventories and version-3 references describe the earlier delivery, not the current requirement count.

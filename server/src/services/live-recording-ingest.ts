@@ -295,15 +295,37 @@ export function buildRecordingAssetDedupeKey(tenantId: string, provider: string,
     return `${tenantId}\u0000${provider}\u0000${providerRecordingId}`;
 }
 
+/**
+ * Strict non-negative integer, digits only.
+ *
+ * `parseInt('12abc')` returned 12, so a provider `durationSeconds` of
+ * `"12abc"` was accepted, persisted and METERED instead of being refused as
+ * `invalid-duration`; `"1e21"` returned 1 and `"9007199254740993"` silently
+ * became `9007199254740992`, charging the wrong number of bytes.
+ */
 function toNonNegativeInt(value: unknown): number | null {
-    const parsed = typeof value === 'number' ? Math.trunc(value) : Number.parseInt(String(value ?? ''), 10);
-    if (!Number.isFinite(parsed) || parsed < 0) return null;
-    return parsed;
+    if (typeof value === 'number') {
+        return Number.isSafeInteger(value) && value >= 0 ? value : null;
+    }
+    if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+        const parsed = Number(value.trim());
+        return Number.isSafeInteger(parsed) ? parsed : null;
+    }
+    return null;
 }
 
 export function normalizeGraceSeconds(value: unknown): number {
-    const parsed = typeof value === 'number' ? Math.trunc(value) : Number.parseInt(String(value ?? ''), 10);
-    if (!Number.isFinite(parsed)) return DEFAULT_RECORDING_GRACE_SECONDS;
+    // Digits only: `parseInt('12abc')` returned 12, so a malformed configured
+    // grace silently became a real one instead of falling back to the default.
+    let parsed: number;
+    if (typeof value === 'number') {
+        parsed = Number.isSafeInteger(value) ? value : Number.NaN;
+    } else if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+        parsed = Number(value.trim());
+    } else {
+        parsed = Number.NaN;
+    }
+    if (!Number.isSafeInteger(parsed)) return DEFAULT_RECORDING_GRACE_SECONDS;
     return Math.min(MAX_RECORDING_GRACE_SECONDS, Math.max(0, parsed));
 }
 
@@ -1564,9 +1586,12 @@ export function createRecordingIngestService(deps: RecordingIngestDeps): Recordi
                     metering,
                     library,
                     asset_id: assetId,
-                    // An `ingested` row with `storage_accounted: false` is a
-                    // real state (no meter composed) and must be readable as
-                    // such: the ledger is terminal, the accounting is not.
+                    // `terminal` above requires `storageAccounted`, so this is
+                    // always `true` on an `ingested` audit. It is written
+                    // explicitly so an operator can read the accounting fact
+                    // off the terminal event instead of inferring it, and so a
+                    // future change that relaxed terminality would be visible
+                    // here rather than silent.
                     storage_accounted: storageAccounted,
                     meter_operation_id: storageAccounted
                         ? buildRecordingMeterOperationId({

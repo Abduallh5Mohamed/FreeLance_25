@@ -1,16 +1,16 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { FileText, Download, Eye, Search, Filter, File, Image, Video, PlayCircle, BookOpen, Play, X } from "lucide-react";
+import { FileText, Download, Eye, Search, Filter, File, Link as LinkIcon, Presentation, Video, PlayCircle, BookOpen, Play, X, AlertCircle, RefreshCw } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
 import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
-import { getStudentMaterials, CourseMaterial, User } from "@/lib/api-http";
+import { getStudentMaterials, CourseMaterial, User, AUTH_SESSION_CHANGED_EVENT } from "@/lib/api-http";
 import { VideoPlayer } from "@/components/VideoPlayer";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
 
@@ -27,69 +27,102 @@ const StudentContent = () => {
   const [materials, setMaterials] = useState<Material[]>([]);
   const [selectedMaterial, setSelectedMaterial] = useState<Material | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const requestRef = useRef(0);
+  const sessionRef = useRef(0);
 
-  // Check authentication
-  useEffect(() => {
+  const loadMaterials = useCallback(async () => {
+    const requestId = ++requestRef.current;
+    const session = sessionRef.current;
     const userStr = localStorage.getItem('currentUser');
-    const user: User | null = userStr ? JSON.parse(userStr) : null;
+    let user: User | null = null;
+    try {
+      user = userStr ? JSON.parse(userStr) as User : null;
+    } catch {
+      user = null;
+    }
 
-    if (!user || user.role !== 'student') {
-      navigate('/auth');
+    if (!localStorage.getItem('authToken')) {
+      setMaterials([]);
+      setHasLoaded(false);
+      setLoading(false);
+      navigate('/auth', { replace: true });
       return;
     }
 
-    loadMaterials();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!user || user.role !== 'student') {
+      setMaterials([]);
+      setHasLoaded(false);
+      setLoading(false);
+      setLoadError(true);
+      return;
+    }
 
-  const loadMaterials = async () => {
+    setLoading(true);
+    setLoadError(false);
     try {
-      setLoading(true);
-
-      // Get current user from localStorage
-      const userStr = localStorage.getItem('currentUser');
-      const user: User | null = userStr ? JSON.parse(userStr) : null;
-
-      console.log('👤 Current user:', user);
-
-      if (!user) {
-        console.error('❌ No user found in localStorage');
-        setMaterials([]);
-        return;
-      }
-
-      // Use student_id if available, otherwise use user id
-      const studentIdentifier = user.student_id || user.id;
-      console.log('🔑 Student identifier:', studentIdentifier);
-
-      // Get materials for this student's group only
-      const data = await getStudentMaterials(studentIdentifier);
-      console.log('📚 Materials received from API:', data);
-
-      const contentData = data || [];
-      setMaterials(contentData);
-      console.log('✅ Materials set to state:', contentData.length, 'items');
+      const data = await getStudentMaterials(user.id);
+      if (requestId !== requestRef.current || session !== sessionRef.current) return;
+      setMaterials(data || []);
+      setHasLoaded(true);
     } catch (error) {
-      console.error('❌ Error loading materials:', error);
+      if (requestId !== requestRef.current || session !== sessionRef.current) return;
+      console.error('Error loading materials:', error);
+      setLoadError(true);
       toast({
         title: 'خطأ',
         description: 'فشل تحميل المحتوى',
         variant: 'destructive'
       });
     } finally {
-      setLoading(false);
+      if (requestId === requestRef.current && session === sessionRef.current) {
+        setLoading(false);
+      }
     }
-  };
+  }, [navigate, toast]);
+
+  useEffect(() => {
+    void loadMaterials();
+
+    const refresh = () => {
+      sessionRef.current += 1;
+      requestRef.current += 1;
+      setSelectedMaterial(null);
+      setMaterials([]);
+      setHasLoaded(false);
+      setLoadError(false);
+      setLoading(false);
+      void loadMaterials();
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'authToken' || event.key === 'currentUser' || event.key === null) refresh();
+    };
+
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      requestRef.current += 1;
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [loadMaterials]);
+
+  useEffect(() => {
+    setSelectedMaterial(null);
+  }, [searchQuery, selectedType]);
 
   const getIcon = (type?: string) => {
     switch (type) {
       case 'pdf':
         return <FileText className="w-5 h-5 text-red-500" />;
-      case 'image':
-        return <Image className="w-5 h-5 text-blue-500" />;
       case 'video':
         return <Video className="w-5 h-5 text-green-500" />;
-      case 'document':
+      case 'presentation':
+        return <Presentation className="w-5 h-5 text-cyan-500" />;
+      case 'link':
+        return <LinkIcon className="w-5 h-5 text-blue-500" />;
+      case 'other':
         return <File className="w-5 h-5 text-purple-500" />;
       default:
         return <FileText className="w-5 h-5 text-gray-500" />;
@@ -100,39 +133,37 @@ const StudentContent = () => {
     switch (type) {
       case 'pdf':
         return 'PDF';
-      case 'image':
-        return 'صورة';
       case 'video':
         return 'فيديو';
-      case 'document':
-        return 'مستند';
+      case 'presentation':
+        return 'عرض تقديمي';
+      case 'link':
+        return 'رابط';
+      case 'other':
+        return 'ملف آخر';
       default:
         return 'ملف';
     }
   };
 
-  const getThumbnailUrl = (fileUrl?: string) => {
-    if (!fileUrl) return 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=400';
+  const getThumbnailUrl = (fileUrl?: string): string | null => {
+    if (!fileUrl) return null;
 
-    // If it's a direct image URL, use it as thumbnail
     if (fileUrl.includes('.jpg') || fileUrl.includes('.png') || fileUrl.includes('.gif') || fileUrl.includes('.webp')) {
       return fileUrl;
     }
 
-    // If it's a Google Drive URL, generate preview thumbnail
     if (fileUrl.includes('drive.google.com')) {
       const fileId = fileUrl.match(/\/d\/([a-zA-Z0-9-_]+)/)?.[1];
       if (fileId) return `https://drive.google.com/thumbnail?id=${fileId}&sz=w200`;
     }
 
-    // If it's a YouTube URL, generate YouTube thumbnail
     if (fileUrl.includes('youtube.com') || fileUrl.includes('youtu.be')) {
       const videoId = fileUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&]+)/)?.[1];
       if (videoId) return `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
     }
 
-    // Default fallback
-    return 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=400';
+    return null;
   };
 
   const filteredMaterials = materials.filter(material => {
@@ -143,12 +174,35 @@ const StudentContent = () => {
     return matchesSearch && matchesType;
   });
 
+  const hasCurrentSession = () => {
+    if (localStorage.getItem('authToken')) return true;
+    toast({
+      title: "انتهت الجلسة",
+      description: "يرجى تسجيل الدخول مرة أخرى",
+      variant: "destructive"
+    });
+    navigate('/auth', { replace: true });
+    return false;
+  };
+
   const handleView = (material: Material) => {
+    if (!hasCurrentSession()) return;
     if (material.material_type === 'video') {
+      // Only the canonical platform reference (`video://<id>`) is playable
+      // through the secure player. A raw/private/external URL is never opened
+      // as a playback fallback.
+      if (!material.file_url?.startsWith('video://')) {
+        toast({
+          title: "غير متاح",
+          description: "هذا الفيديو غير متاح للمشاهدة الآمنة",
+          variant: "destructive"
+        });
+        return;
+      }
       setSelectedMaterial(material);
     } else if (material.file_url) {
       // Open PDF or other files in new tab
-      window.open(material.file_url, '_blank');
+      window.open(material.file_url, '_blank', 'noopener,noreferrer');
       toast({
         title: "جاري فتح الملف",
         description: material.title
@@ -163,6 +217,15 @@ const StudentContent = () => {
   };
 
   const handleDownload = (material: Material) => {
+    if (!hasCurrentSession()) return;
+    if (material.material_type === 'video' || material.file_url?.startsWith('video://')) {
+      toast({
+        title: "غير متاح",
+        description: "التحميل المباشر للفيديوهات غير متاح",
+        variant: "destructive"
+      });
+      return;
+    }
     if (material.file_url) {
       // For Google Drive files, convert to download link
       let downloadUrl = material.file_url;
@@ -173,7 +236,7 @@ const StudentContent = () => {
           downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
         }
       }
-      window.open(downloadUrl, '_blank');
+      window.open(downloadUrl, '_blank', 'noopener,noreferrer');
       toast({
         title: "جاري تحميل الملف",
         description: material.title
@@ -236,8 +299,9 @@ const StudentContent = () => {
                     { value: 'all', label: 'الكل', icon: Filter },
                     { value: 'pdf', label: 'PDF', icon: FileText },
                     { value: 'video', label: 'فيديو', icon: Video },
-                    { value: 'image', label: 'صور', icon: Image },
-                    { value: 'document', label: 'مستندات', icon: File }
+                    { value: 'presentation', label: 'عرض تقديمي', icon: Presentation },
+                    { value: 'link', label: 'رابط', icon: LinkIcon },
+                    { value: 'other', label: 'ملف آخر', icon: File }
                   ].map((filter) => {
                     const Icon = filter.icon;
                     return (
@@ -273,40 +337,52 @@ const StudentContent = () => {
               >
                 <Card className="overflow-hidden hover:shadow-2xl transition-all duration-300 h-full flex flex-col group">
                   {/* Thumbnail */}
-                  {material.thumbnail || material.file_url && (
-                    <div className="relative h-48 bg-gradient-to-br from-primary/20 to-accent/20 overflow-hidden">
-                      <img
-                        src={material.thumbnail || getThumbnailUrl(material.file_url)}
-                        alt={material.title}
-                        className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=400';
-                        }}
-                      />
-                      <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                        {material.material_type === 'video' ? (
-                          <div className="flex flex-col items-center gap-3">
-                            <PlayCircle className="w-16 h-16 text-white drop-shadow-lg" />
-                            <span className="text-white font-medium">{material.duration_minutes || 0} دقيقة</span>
+                  <div className="relative h-48 bg-gradient-to-br from-primary/20 to-accent/20 overflow-hidden">
+                    {(() => {
+                      const thumbnailUrl = material.thumbnail || getThumbnailUrl(material.file_url);
+                      if (!thumbnailUrl) {
+                        return (
+                          <div className="w-full h-full flex items-center justify-center [&>svg]:w-12 [&>svg]:h-12">
+                            {getIcon(material.material_type)}
                           </div>
-                        ) : (
-                          <Eye className="w-12 h-12 text-white" />
-                        )}
-                      </div>
-                      <div className="absolute top-2 right-2">
-                        <Badge className="gap-1 shadow-lg">
-                          {getIcon(material.material_type)}
-                          {getTypeLabel(material.material_type)}
-                        </Badge>
-                      </div>
+                        );
+                      }
+                      return (
+                        <img
+                          src={thumbnailUrl}
+                          alt={material.title}
+                          className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
+                          onError={(event) => {
+                            event.currentTarget.style.display = 'none';
+                          }}
+                        />
+                      );
+                    })()}
+                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                      {material.material_type === 'video' ? (
+                        <div className="flex flex-col items-center gap-3">
+                          <PlayCircle className="w-16 h-16 text-white drop-shadow-lg" />
+                          <span className="text-white font-medium">
+                            {material.duration_minutes ? `${material.duration_minutes} دقيقة` : 'مدة غير متاحة'}
+                          </span>
+                        </div>
+                      ) : (
+                        <Eye className="w-12 h-12 text-white" />
+                      )}
                     </div>
-                  )}
+                    <div className="absolute top-2 right-2">
+                      <Badge className="gap-1 shadow-lg">
+                        {getIcon(material.material_type)}
+                        {getTypeLabel(material.material_type)}
+                      </Badge>
+                    </div>
+                  </div>
 
                   {/* Content */}
                   <CardContent className="p-4 flex-1 flex flex-col">
                     <div className="flex-1">
                       <Badge variant="outline" className="mb-2 text-xs">
-                        {material.course_name || 'مادة عامة'}
+                        {material.course_name || 'دورة غير محددة'}
                       </Badge>
                       <h3 className="font-bold text-base mb-2 line-clamp-2">
                         {material.title}
@@ -315,9 +391,19 @@ const StudentContent = () => {
                         {material.description}
                       </p>
                       <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                        <span>{new Date(material.created_at || new Date()).toLocaleDateString('ar-EG')}</span>
+                        <span>
+                          {material.created_at
+                            ? new Date(material.created_at).toLocaleDateString('ar-EG')
+                            : 'تاريخ غير متاح'}
+                        </span>
                         <span>•</span>
-                        <span>{material.duration_minutes ? `${material.duration_minutes} دقيقة` : 'ملف'}</span>
+                        <span>
+                          {material.duration_minutes
+                            ? `${material.duration_minutes} دقيقة`
+                            : material.material_type === 'video'
+                              ? 'مدة غير متاحة'
+                              : 'ملف'}
+                        </span>
                       </div>
                     </div>
 
@@ -346,8 +432,37 @@ const StudentContent = () => {
           </AnimatePresence>
         </div>
 
+        {loading && materials.length === 0 && !loadError && (
+          <div className="text-center py-16 text-muted-foreground" aria-live="polite">
+            جارٍ تحميل المحتوى...
+          </div>
+        )}
+
+        {/* Fetch Failure */}
+        {loadError && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="text-center py-16"
+          >
+            <GlassmorphicCard className="max-w-md mx-auto">
+              <CardContent className="pt-8 pb-8">
+                <AlertCircle className="w-16 h-16 mx-auto mb-4 text-destructive" />
+                <h3 className="text-lg font-semibold mb-2">تعذّر تحميل المحتوى</h3>
+                <p className="text-sm text-muted-foreground mb-4">
+                  لم نتمكن من التحقق من موادك الآن. لا توجد قائمة فارغة مؤكدة.
+                </p>
+                <Button onClick={() => void loadMaterials()} disabled={loading} className="gap-2">
+                  <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                  إعادة المحاولة
+                </Button>
+              </CardContent>
+            </GlassmorphicCard>
+          </motion.div>
+        )}
+
         {/* Empty State */}
-        {filteredMaterials.length === 0 && (
+        {!loading && !loadError && hasLoaded && filteredMaterials.length === 0 && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}

@@ -229,10 +229,15 @@ read the same tables and both write the same storage keys. A module-level `IN_FL
 (`:1355`) now rejects a second attempt with `ExportInProgressError` **before** any read, and the id
 is released in `finally` (`:1583-1589`).
 
-**Residual, stated rather than hidden:** across processes the CAS keeps the *row* correct but the
-loser can still overwrite the winner's `manifest.json`, because the storage key is derived from the
-export id alone. Closing that needs a fencing column on `tenant_data_exports` — the same I2 request
-already recorded (§7.1). It was not invented here.
+**Residual, stated rather than hidden (SUPERSEDED by §A.5, 2026-10-23):** across processes the CAS
+keeps the *row* correct but the loser can still overwrite the winner's `manifest.json`, because the
+storage key is derived from the export id alone. Closing that needs a fencing column on
+`tenant_data_exports` — the same I2 request already recorded (§7.1). It was not invented here.
+
+> **Correction (§G.7):** this residual no longer exists. Every key is now
+> `{prefix}/{tenantId}/{exportId}/{attemptId}/…` with `attemptId = randomUUID()`, so a loser writes only
+> under its own prefix and no row ever references those objects (§A.5). What I2 still buys is
+> exclusivity of the *row transitions*, not artifact isolation.
 
 ### 4.6 The cooldown measured from the wrong timestamp
 
@@ -337,6 +342,14 @@ a complete one.
 
 ### 7.1 I2 — fencing on `tenant_data_exports` (blocks cross-process attempt safety)
 
+> **Superseded twice — read §C.9 and §G.8 instead.** The DDL below was the first draft of the request
+> and does **not** match the statements the service now binds. The canonical contract is
+> `export_owner` / `owner_epoch` / `owner_lease_until_ms` (§C.9), which is exactly what
+> `OWNERSHIP_CLAIM_SQL`, `OWNERSHIP_FAILURE_SQL`, `OWNERSHIP_ABORT_SQL`, `OWNERSHIP_RELEASE_SQL`,
+> `OWNERSHIP_RENEW_SQL`, `OWNERSHIP_READ_EPOCH_SQL` and the completion CAS reference. The
+> `active_tenant_lock` column and the `uq_tenant_export_active` key below are the *separate* one-active
+> guarantee already delivered by migration 20261018_23, not part of the ownership fence.
+
 ```sql
 ALTER TABLE tenant_data_exports
     ADD COLUMN claim_owner     VARCHAR(64)  NULL,
@@ -350,7 +363,8 @@ Required semantics (same discipline as the assignment cleanup claim): claim = `o
 claim_version + lease` CAS; a lost CAS must halt the attempt, not retry; `pending` is reclaimable
 only after `claim_lease_until_ms`; the completion transition is fenced on `claim_owner` and
 `claim_version`. Until this lands, `IN_FLIGHT_EXPORTS` covers one process and the CAS keeps the row
-correct; the manifest object can still be clobbered by a second process (§4.5).
+correct. The manifest object is **not** clobberable by a second process: every key carries its own
+attempt id (§A.5, §G.4), so what I2 still buys is row-transition exclusivity, not artifact isolation.
 
 ### 7.2 Separate job contract (not implemented here, not needed for correctness today)
 
@@ -477,6 +491,15 @@ WHERE id = ? AND tenant_id = ? AND status = 'pending'
 row, so a concurrent winner survives any failure this attempt suffers afterwards. When the row has
 moved on, the statement matches nothing and that is the correct outcome.
 
+> **Superseded by §C.2/§C.3 and §B.2 (2026-10-23), restated in §G.7.** The predicate above is no
+> longer what the module uses, and `bestEffortMarkFailed` no longer exists. Every row-mutating
+> attempt transition now carries the four-term fence
+> `export_owner = ? AND owner_epoch = ? AND owner_lease_until_ms > ? AND status = 'pending'` plus the
+> `id`/`tenant_id` pins, and the only failure-path row write is the fenced statement returned by
+> `ownership.failureStatement(...)` inside `recordOwnedFailure`. The claim's own predicate is a
+> *different* statement by necessity: it installs owner, epoch and lease, and matches only an unowned
+> or lapsed row.
+
 `inTransaction` (`:1060`) no longer falls back to autocommit: a caller without the seam gets
 `ExportTransactionCapabilityError` (`:248`) **before anything is written**. `requestTenantExport`
 refuses at `:1111` before a job row exists, so a tenant is never left with a pending job that cannot
@@ -557,6 +580,14 @@ The honest linearization point is the **COMMIT of the row transition**, not a si
 | 12 | compensating write/audit throws | — | swallowed | swallowed |
 
 Rows 9 and 11 are the two that must never touch the row, and they no longer do.
+
+> **Correction (§G.7):** "pending-only" in this table now means the fenced transition
+> (`owner + epoch + live lease + pending`), not a bare `status = 'pending'` predicate, and the table's
+> audit column is out of date in one row: row 2 (no transaction seam at process time) writes **no**
+> row and audits `tenant_export.ownership_unproven`, not `tenant_export.failed` — a `failed` audit
+> would assert a job state this call never established. Rows 3–8 and 10 are the rows that still move
+> exactly one fenced row and audit `tenant_export.failed` / `tenant_export.aborted` in the same
+> transaction; row 12 is gone (no compensating write exists anywhere).
 
 `issueExportDownloadToken` was examined and left as-is: it uses the same required-seam
 `inTransaction`, its only row write is the token rotation guarded by the same CAS, and a failed
@@ -905,3 +936,671 @@ The three statements in §C.7 are the ones the adapter runs verbatim.
 No tests, no typecheck, no SQL/DB/storage/provider/secret, no Git, no migration, no new file, no
 production activation. The arrow-declaration audit is a textual scan, not a compile. Every row of §C.8
 is static reasoning about the delivered source.
+
+---
+
+# ADDENDUM 4 — 2026-10-24 — the claim seam: one connection, both seams
+
+Task: `server-export-claim-seam-correction-20261024-01`. Fifth review of the export surface, third
+followup on attempt ownership. ADDENDA 1–3 are preserved; the search files and
+`routes/tenant-export.ts` are byte-identical to the previous delivery. This addendum corrects one
+claim in §C.4 and changes one call site.
+
+## D.1 The defect: the caller handed the port an execute-only handle
+
+§C.4 said the claim's epoch "is read back through a declared `query` seam on the claim executor". That
+was true of `createSqlExportOwnershipPort` and false of its only caller. `runTenantExport` passed
+
+```ts
+ownership.claim((sql, params) => tx.execute(sql, params), { … })
+```
+
+— a function with no `query` member. Static trace of the delivered source, pre-fix:
+
+1. `claim` runs `OWNERSHIP_CLAIM_SQL` through that handle; the UPDATE matches one row, so
+   `affectedRowsOf(…, 'ownership claim') === 1` passes (`:1774`).
+2. The adapter then needs the installed epoch and finds no read seam:
+   `typeof claimRun.query !== 'function'` ⇒ `ExportOwnershipCapabilityError` (`:1775-1779`). It does
+   not guess `1`, which is correct.
+3. The throw happens inside the `inTransaction` callback, so the wrapper rejects; on the transaction
+   seam's contract that rolls the claim UPDATE back, so the row is not left half-claimed. A wrapper
+   that rejected without rolling back would leave the row owned with a live five-minute lease and no
+   running attempt — the same block as D.4.2, from a different cause.
+4. `grant` is still `null` (the assignment never completed), so the outer catch takes the
+   `grant === null` branch: `tenant_export.ownership_unproven`, no row write, rethrow.
+5. `classifyExportFailure` ⇒ `ownership_capability_absent` ⇒ route 503
+   `The tenant export service is not configured` (`routes/tenant-export.ts:100`).
+
+Consequence, stated without inflation: this is **not** a fencing hole — nothing is left owned and no
+winner is demoted. It is a total capability failure. With the I2 columns present, the shipped adapter
+injected, and the router wired, **no attempt could ever claim a row**, so every export request would
+return 503. The adapter was correct; the caller did not satisfy the contract it declared.
+
+Why a typecheck does not catch it: `ExportOwnershipClaimExecutor.query` is **optional**
+(`:1743-1745`), so an execute-only function is assignable to it. The contract is enforced only at
+runtime, inside the adapter.
+
+## D.2 The fix
+
+`services/tenant-export.ts:1968-2001` (was `:1968-1976`). Before: the execute-only arrow. After: a
+claim executor carrying **both** members, built inside the transaction callback:
+
+```ts
+const claimExecutor: ExportOwnershipClaimExecutor = Object.assign(
+    (sql: string, params?: unknown[]) => tx.execute(sql, params),
+    {
+        query: <T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> =>
+            tx.query<T>(sql, params),
+    },
+);
+return ownership.claim(claimExecutor, { … });
+```
+
+Three properties, each deliberate:
+
+1. **Same connection.** Both members close over the same `tx` the transaction seam produced. The claim
+   write and the epoch read-back cannot land on different connections, so the epoch returned is the
+   epoch this attempt actually installed.
+2. **Receiver preserved.** Both call `tx` as a method (`tx.execute`, `tx.query`), never as a bare
+   function reference, so an access object whose methods read `this` is not dereferenced.
+3. **No fallback.** The adapter's `run ?? executor` fallback is not used to paper over a missing
+   `query`: the port's constructor executor may belong to another connection, and an epoch read from
+   another connection is not this attempt's epoch. A caller that cannot supply both seams on one
+   connection must fail, which is what the adapter already does.
+
+Nothing else in the module changed. `failureStatement` / `releaseStatement` return SQL only and need
+no read seam, so `recordOwnedFailure` is untouched.
+
+## D.3 Preserved, re-read after the edit
+
+| Property | Where |
+|---|---|
+| claim: id + tenant + `pending` + owner install + epoch increment + lease install | `:1690-1695` |
+| failure / abort: id + tenant + owner + epoch + live lease + `pending` | `:1698-1711` |
+| release: same fence, clears owner and lease | `:1718-1723` |
+| completion: id + tenant + `pending` + owner + epoch + live lease | `:2131-2155` |
+| `affectedRows` checked at claim, failure, completion, token rotation; `undefined` throws | `:495-501`, `:1774`, `:1877`, `:2153`, `:2368` |
+| terminal audit only inside the transaction that moved exactly one row | `:1873-1890`, `:2156-2166` |
+| per-attempt namespace from `randomUUID()`, not `deps.newId` | `:1952` |
+| `completion_conflict` / `completion_unknown`: audit only, no row write | `:2190-2211` |
+| mandatory transaction seam, refused before any side effect | `:1278-1292`, `:1928` |
+
+## D.4 Held for the schema owner (Codex), with exact traces
+
+**D.4.1 The three columns are still the precondition for wiring.** `ownership` stays `undefined`
+(`routes/tenant-export.ts:494`). If it were wired before the columns exist, the claim UPDATE would
+raise `ER_BAD_FIELD_ERROR` (1054) *before* the read-back is even attempted; `claim` does not catch it,
+so it propagates out of the transaction, `grant` stays `null`, `classifyExportFailure` maps 1054 to
+`source_unavailable`, and every request answers 503 `The export data source is unavailable` with a
+`tenant_export.ownership_unproven` audit. That is a schema fault per request — the outcome the route
+comment predicts — not a fencing failure, but it is not an acceptable steady state either.
+
+**D.4.2 A pending row whose lease lapsed blocks the tenant permanently.** `requestTenantExport:1311-1320`
+selects `status='pending'` with **no lease term** and answers 409. A row left `pending` by
+`completion_conflict`, `ownership_lost`, `failure_audit_rolled_back` or `failure_commit_unknown` is
+therefore never re-requestable; only `processTenantExport(id)` can re-claim it, and no route exposes
+that for an existing id. The lease-aware pre-check would be:
+
+```sql
+SELECT id, status FROM tenant_data_exports
+WHERE tenant_id = ? AND status = 'pending'
+  AND (export_owner IS NULL OR owner_lease_until_ms IS NULL OR owner_lease_until_ms <= ?)
+LIMIT 1
+```
+
+Expected signature: `deps.db.queryOne<{ id: string; status: string }>(sql, [tenantId, nowMs])`, with
+`nowMs = captureTransitionClock(now)` so the pre-check and the claim cannot disagree about liveness.
+**Not applied**: it references I2 columns on a request path that runs before schema verification, and
+it relaxes the one-active rule from "never steal" to "steal an expired claim" — an owner decision, not
+a source fix. Today's behaviour is the conservative side of that decision.
+
+**D.4.3 The lease is never renewed.** `EXPORT_OWNERSHIP_LEASE_MS` is a fixed five minutes (`:378`) and
+nothing extends it. An export that runs longer than the lease cannot complete: its completion UPDATE
+matches zero rows (lease dead) ⇒ `completion_conflict`, audit-only, row left `pending`, its artifacts
+orphaned under an unreferenced namespace. Closing this needs one of: a longer lease, a renewal
+statement between tables, or a hard per-tenant export duration cap below the lease. Owner decision; no
+code change made.
+
+> **Superseded by §F.1 (2026-10-24).** Renewal is implemented as the optional `renew` member with the
+> `OWNERSHIP_RENEW_SQL` live-lease CAS, invoked at each bounded phase boundary (§G.1). The fixed
+> five-minute lease is unchanged; what a renewal buys is a fresh five minutes from a freshly captured
+> clock. The duration-cap alternative in this paragraph is still **not** implemented and remains a
+> product decision (§F.4.1).
+
+**D.4.4 Ambiguous commit on the create path leaves an unowned pending row.**
+`requestTenantExport:1339-1367` rethrows any non-duplicate error and its comment claims "Any other
+failure rolls the whole insert back, so no pending row and no unaudited job survive". That holds when
+the wrapper fails *before* COMMIT; when the wrapper fails *on* COMMIT the INSERT may have committed, and
+the caller receives an error with no job id. The row then blocks the tenant exactly as in D.4.2, and
+no one holds its id. Distinguishing it needs the same two-flag treatment as completion
+(`statusWritten` / `callbackFinished`), and any compensating delete is forbidden by ADDENDUM 1's rule.
+Recorded, not changed.
+
+**D.4.5 One label is optimistic, and harmless.** `recordOwnedFailure:1892-1898` returns
+`audit_rolled_back` both when the audit threw after a one-row write and when the statement itself
+threw before any write, and the outer audit's reason says the row "is still pending". Inside a
+transaction a failed statement cannot have committed the row, so the assertion holds for a wrapper
+that rolls back; if the wrapper itself fails to roll back, the label overstates what is known. The
+audit is non-terminal and asserts no final state, so nothing is demoted or fabricated by it. Left
+as-is; a fifth outcome name would be a contract change for no observable difference.
+
+## D.5 Reviewed and deliberately not changed
+
+* `routes/tenant-export.ts` — **byte-identical**. `serviceDeps`' audit binding still preserves the
+  receiver (`:83`); `ownership: undefined` left per D.4.1; the failure→HTTP table, the abort binding
+  (`:135-147`, `:272-274`) and `res.headersSent` guard re-read.
+* `createSqlExportOwnershipPort` — its SQL, its refusal on an unreadable epoch, and its
+  `affectedRowsOf` check are correct as written. Softening the refusal into a fallback would read the
+  epoch off another connection and is not done.
+* `issueExportDownloadToken:2363-2368` — a completed-row mutation, not an attempt transition; the
+  rotation is fenced by `status='completed'` + tenant, its count is checked, and no owner/epoch applies.
+* The request INSERT (`:1341-1345`) has no `affectedRows` check. It is a creation inside the same
+  transaction as its audit, not an owned transition, and no terminal/success state audit is coupled to
+  it. Left unchanged rather than widened.
+* `releaseStatement` is declared on the port and never called: a claim is released only by the lease
+  lapsing or by a terminal transition. Releasing on `ownership_lost` or `completion_conflict` would be
+  wrong (the row is not this attempt's), and releasing on `audit_rolled_back` would only shorten the
+  block described in D.4.2. Left.
+* `captureTransitionClock`, `validateOwnershipGrant`, `requireOwnershipCapability`,
+  `classifyExportFailure`, `affectedRowsOf`, the per-table read/coverage code, and the download token
+  path were read line by line and are unchanged.
+
+## D.6 Not verified
+
+No test was run or edited; no typecheck, compiler or build; no SQL/DB/storage/provider/secret; no Git;
+no migration; no new file; no production activation. The `Object.assign` + generic-arrow construction
+was reasoned about, not compiled: if it does not typecheck, the fix is a cast at the same call site and
+not a behaviour change. The edited block's delimiters were traced by hand and the file was checked for
+CR bytes; **no scripted balance or arrow-declaration audit was run this time**, so this addendum does
+not carry the shape evidence ADDENDUM 3 carried. Nothing here is a readiness claim: the adapter
+existing was never the gap, and wiring still depends on D.4.1.
+
+## D.7 Hashes
+
+| Path | Before this addendum | After this addendum |
+|---|---|---|
+| `server/src/routes/tenant-export.ts` | `eb6c6628776d345d48a7f9eabdeb26acddf672352186a71e457dba7cd9866073` (22 225) | **unchanged, byte-identical** |
+| `server/src/services/tenant-export.ts` | `b3b42774dbf5745762ae1c01599ff54cb912e1d94674e29c38f6d4b5ad0d53e8` (114 590) | `d41d1f6ecebdf0fb78ecaff7057ba0f75c2cde2969214989189f8091110ebdc3` (115 945) |
+| `server/src/routes/search.ts` | not reopened | not reopened |
+| `server/src/services/search.ts` | not reopened | not reopened |
+
+Line count 2 502 → 2 525 (23 lines: the claim executor, its comments, and the arrow-body wrapper).
+No CR byte in the file after the edit (LF preserved).
+
+## D.8 Acceptance asks
+
+1. Confirm the only source change in this addendum is the claim call site (`:1968-2001`) and that
+   `routes/tenant-export.ts` is untouched.
+2. Decide D.4.2 (lease-aware one-active pre-check) and D.4.3 (lease renewal vs. duration cap). Both are
+   owner decisions; neither is applied.
+3. Confirm the I2 columns (§C.9) before `ownership` is wired, per D.4.1.
+
+---
+
+# ADDENDUM 5 — 2026-10-24 — `owner_epoch` is parsed, not type-tested
+
+Task: export attempt ownership follow-up. Sixth review of the export surface, fourth on attempt
+ownership. ADDENDA 1–4 preserved. One source file changed (`services/tenant-export.ts`), one file
+written (this one). `routes/tenant-export.ts`, both search files, and every other file are untouched.
+The D.2 claim seam is preserved verbatim (`:2037-2045`).
+
+## E.1 The defect: a valid epoch was rejected for its JavaScript type
+
+`createSqlExportOwnershipPort.claim` read the installed epoch back and then tested it inline:
+
+```ts
+const epoch = Array.isArray(rows) ? rows[0]?.owner_epoch : undefined;
+if (typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 1) {
+    throw new ExportOwnershipCapabilityError();
+}
+```
+
+`owner_epoch` is `INT` in the schema (§C.9), but the *JavaScript* type is not part of the schema.
+mysql2 returns `DECIMAL`/`BIGINT` (and `BIGINT`-backed integers) as a **string** unless the connection
+sets a type cast, so a perfectly valid claim arrives as `'1'`. The `typeof epoch !== 'number'` arm then
+refused it, the throw rolled the claim back inside the transaction, `grant` stayed `null`, and the
+outer catch took the `grant === null` branch ⇒ `ownership_unproven` ⇒ 503. This is the D.1 failure
+mode a second time, from a different cause: the adapter was right about the fence and wrong about the
+driver's return type, so **no attempt could claim a row** on a string-returning connection. It is a
+false negative, not a fencing hole — nothing is left owned and no winner is demoted.
+
+## E.2 The fix: `parseOwnerEpoch`, at `:1776`
+
+Accepted, and they must denote the same value:
+
+| Input | Result |
+|---|---|
+| `1`, `42`, `9007199254740991` (safe positive integer `number`) | accepted, returned as-is |
+| `'1'`, `'42'`, `'9007199254740991'` (strict `/^\d+$/` string, safe integer `>= 1`) | accepted, `Number()`-converted |
+
+Refused, each ⇒ `ExportOwnershipCapabilityError`, never a guess, never a clamp:
+
+| Input | Why |
+|---|---|
+| `0`, `'0'`, `'000'` | not positive |
+| `-1`, `'-1'`, `'+1'` | sign; fails `typeof`/pattern |
+| `' 1'`, `'1 '`, `'1\n'` | whitespace; `\d` only |
+| `1.5`, `'1.0'`, `'1e3'`, `'0x1'`, `'1_000'` | fraction / exponent / hex / separator |
+| `9007199254740992`, `'9007199254740993'` | past `MAX_SAFE_INTEGER`; `Number()` rounds to a non-safe double and `isSafeInteger` refuses it |
+| `null`, `undefined`, `true`, `[]`, `{}` | not a number or a digit string |
+| `NaN`, `Infinity`, `-Infinity` | not safe integers |
+
+The digit string is parsed **after** the pattern, never before: `Number(' 1')` would return `1`, so the
+pattern is what rejects whitespace and signs, and `Number()` only ever sees `[0-9]+`. `'01'` is
+accepted because it denotes the same integer; no digit is discarded before conversion. The regex has no
+`g` flag, so `lastIndex` cannot make a second call behave differently.
+
+The read-back is also now required to identify **exactly one** row (`rows.length === 1`), where the old
+code took `rows[0]` from any non-empty array. Zero rows after an UPDATE that matched one row means the
+fence stopped matching inside the same transaction; more than one means the predicate is not selective.
+Neither is a grant. This cannot reject a valid claim: the statement is keyed on `id`.
+
+**`validateOwnershipGrant` (`:1660-1675`) was deliberately left strict.** It validates the port's
+*declared* TypeScript contract (`epoch: number`), not a driver row, and it runs after the adapter has
+normalised the value. Relaxing it would let a substitute port smuggle a string past the interface, and
+would not fix the driver case, which the adapter already absorbs.
+
+## E.3 Reviewed, not changed
+
+1. **Second attempt while a lease is live.** Two gates, neither sufficient alone. `requestTenantExport`
+   refuses any `pending` row with 409 (`:1311-1320`) — over-broad, never under-broad. Cross-process,
+   the claim UPDATE requires `(export_owner IS NULL OR owner_lease_until_ms <= ?)` (`:1694`), so a live
+   lease matches 0 rows ⇒ `claim` returns `null` ⇒ `ExportOwnershipLostError` ⇒
+   `ownership_unproven` audit and no row write (`:2057-2061`, `:2267-2283`). In-process,
+   `claimLocalAttempt` throws `ExportInProgressError` first. No change.
+2. **Lease expiry during an export.** The completion UPDATE carries `owner_lease_until_ms > ?` with a
+   clock captured once before the transaction (`:2164`, `:2186-2204`); a lapsed lease matches 0 rows ⇒
+   `ExportStateConflictError` ⇒ `completion_conflict` ⇒ audit-only, no row write, row left `pending`.
+   The failure and abort statements carry the same term. No change — the gap is that the 5-minute lease
+   is never renewed (D.4.3, restated in E.4), which is a policy question, not a parse question.
+3. **Publishing after ownership is lost.** The publication point is the COMMIT of the fenced row
+   transition, not the manifest write. A loser writes only under its own `randomUUID()` attempt prefix
+   (`:2007-2008`), so it cannot overwrite the winner's keys, and no row ever references its objects;
+   they are orphans, not a published export. Re-read and unchanged.
+4. **Unknown commit.** No compensating UPDATE was added anywhere. `callbackFinished` still short-circuits
+   to `ExportCompletionUnknownError` / `commit_unknown` with audit only (`:2224-2231`, `:1949`), so a
+   commit that may have installed the winner is never demoted by a loser. Preserved exactly.
+5. `requestTenantExport`'s lease-blind pre-check (D.4.2) is unchanged: it now *matters more*, because a
+   claim can actually succeed, but making it lease-aware is an owner decision that relaxes
+   "never steal" to "steal an expired claim", and it touches a path that runs before schema
+   verification. Recorded, not applied.
+
+## E.4 Contract request — lease renewal (NOT implemented)
+
+Adding renewal is a port-contract change, so it is specified here and nowhere in code:
+
+```ts
+// on ExportOwnershipPort, alongside claim/failureStatement/releaseStatement
+renew?(input: {
+    exportId: string; tenantId: string; owner: string; epoch: number;
+    nowMs: number;          // captured once, reused by the lease term
+    leaseUntilMs: number;   // nowMs + EXPORT_OWNERSHIP_LEASE_MS
+}): Promise<boolean>;       // true = renewed, false = ownership lost
+```
+
+```sql
+UPDATE tenant_data_exports
+SET owner_lease_until_ms = ?
+WHERE id = ? AND tenant_id = ? AND export_owner = ? AND owner_epoch = ?
+  AND owner_lease_until_ms > ? AND status = 'pending'
+```
+
+Conditions: `affectedRows === 1` ⇒ renewed; `0` ⇒ stop before writing more bytes and take the existing
+ownership-lost path (no terminal write). Params, in order: `leaseUntilMs, exportId, tenantId, owner,
+epoch, nowMs` — the same six terms the failure statement already binds, with the lease written instead
+of the status. The new lease must extend from the captured clock, never from
+the old expiry. The statement must run between tables, never mid-table, and must never resurrect an
+expired lease — hence the live-lease term, which makes `0` the correct answer for a stale claimant.
+`renew` must stay **optional** so `requireOwnershipCapability` (`:1626-1653`) and every existing
+injected port keep working; a required member would be a breaking contract change. Alternative, cheaper
+and also unimplemented: a hard per-tenant export duration cap below `EXPORT_OWNERSHIP_LEASE_MS`.
+
+## E.5 Hashes
+
+| Path | Before | After |
+|---|---|---|
+| `server/src/services/tenant-export.ts` | `d41d1f6ecebdf0fb78ecaff7057ba0f75c2cde2969214989189f8091110ebdc3` (115 945 B) | `21d9ae98d79b6407212fb5b929bea854cb29e33dfd68fe960631b7e184dc18fa` (118 985 B) |
+| `server/src/routes/tenant-export.ts` | `eb6c6628776d345d48a7f9eabdeb26acddf672352186a71e457dba7cd9866073` | **unchanged** |
+| `server/src/services/search.ts` | `6ec9d497d33e0dc8a7858a5f4547f783c917c7a38d8074e3dd127186cac5c29d` | **unchanged** |
+| `server/src/routes/search.ts` | `4055aee27792d83b3d82efd08823cb335cd53b514a4fa8a7af1dadc365ac2eca` | **unchanged** |
+
+2 525 → 2 580 lines (+55: the parse helper, its comment, the exact-one-row check, and the extended
+read-back comment). No CR byte after the edit.
+
+## E.6 Not verified
+
+No test written or run; no typecheck, compiler or build; no SQL/DB/storage/provider/secret; no Git; no
+migration; no new file; no production wiring (`ownership` stays `undefined`). The accept/reject table in
+E.2 is a specification of `parseOwnerEpoch`'s arms, not a test result; it was reasoned from the code and
+`Number`/`Number.isSafeInteger` semantics. Nothing here is a readiness claim: wiring still depends on
+D.4.1, and a renewal decision is still open under E.4.
+
+## E.7 Acceptance asks
+
+1. Confirm `parseOwnerEpoch` is the only behavioural change and that `validateOwnershipGrant` was left
+   strict on purpose (E.2).
+2. Confirm the D.2 seam (`:2037-2045`) is byte-identical.
+3. Decide E.4 (renewal contract vs. duration cap) and D.4.2 (lease-aware pre-check); both remain
+   unimplemented.
+
+---
+
+# ADDENDUM 6 — 2026-10-24 — optional lease renewal
+
+Task: export lease renewal, correctness follow-up on the delivered source. ADDENDA 1–5 preserved.
+One source file changed (`services/tenant-export.ts`) and this document. `routes/tenant-export.ts`,
+both search files and every other path are untouched.
+
+This addendum **supersedes the status line of §E.4**: the renewal contract specified there is now
+implemented, exactly as specified (same six bound terms, same live-lease predicate, optional member).
+The alternative recorded in E.4 — a hard per-tenant duration cap — is **not** implemented and remains
+an open owner decision (F.4).
+
+## F.1 What was added
+
+`ExportOwnershipPort.renew?` (`:477`) — **optional**, so `requireOwnershipCapability` (`:1667-1694`)
+still requires only the four existing operations and every previously injected port keeps working. A
+port that omits `renew` renews nothing; that is the no-effect refusal described in F.3.
+
+`ExportOwnershipRenewInput` (`:421-439`) carries `exportId, tenantId, owner, epoch, nowMs,
+leaseUntilMs` — the six terms the failure statement already binds, with the lease written instead of
+the status. `leaseUntilMs` is derived by the caller from a captured `nowMs`, never from the expiry in
+the row.
+
+`OWNERSHIP_RENEW_SQL` (`:1821-1838`), fixed text with bound parameters only:
+
+```sql
+UPDATE tenant_data_exports
+SET owner_lease_until_ms = ?
+WHERE id = ? AND tenant_id = ? AND export_owner = ? AND owner_epoch = ?
+  AND owner_lease_until_ms > ? AND status = 'pending'
+```
+
+Params in order: `leaseUntilMs, exportId, tenantId, owner, epoch, nowMs`. `createSqlExportOwnershipPort`
+(`:1983-1996`) runs it on the injected executor and returns
+`affectedRowsOf(updated, 'ownership renewal') === 1`, so `undefined` **throws** (it is neither zero nor
+one and is never coerced), `1` is `true`, and `0` is `false`.
+
+`renewOwnedLease` (`:1737-1771`) is the caller-side step. It captures the clock once
+(`captureTransitionClock`), computes `leaseUntilMs = nowMs + EXPORT_OWNERSHIP_LEASE_MS`, calls `renew`
+as a **member** (receiver preserved, same discipline as the claim seam), and throws
+`ExportOwnershipLostError` unless the result is exactly `true`. It also skips a renewal whose new
+expiry would not exceed the expiry this attempt already installed: a no-op `UPDATE` reports zero
+affected rows on a changed-rows connection, and zero is read as a lost lease, so the skip prevents a
+false "ownership lost" on two renewals inside the same millisecond.
+
+Call sites, all **before** the bounded expensive phase they protect and **between** tables (never
+mid-table, per E.4):
+
+| Where | Line | Protects |
+|---|---|---|
+| top of each `EXPORT_TABLE_PLAN` iteration, after the abort check and the budget skip | `:2212-2219` | that table's paged read + storage write |
+| before `buildOmittedCoverage` | `:2255-2262` | the omitted-row probe statements |
+| after the pre-manifest abort check, before the manifest write | `:2313-2320` | publication of `manifest.json` |
+
+The attempt tracks `leaseUntilMs`, initialised from `grant.leaseUntilMs` (`:2194`) and advanced only by
+a renewal that proved a live lease. The lease policy is **unchanged**: `EXPORT_OWNERSHIP_LEASE_MS` is
+still five minutes (`:383`), and renewal extends by that same amount from the current clock.
+
+## F.2 Consequences, traced
+
+| # | Scenario | Path | Row write | Audit |
+|---|---|---|---|---|
+| 1 | **renewal returns `false`** (lease lapsed, epoch taken over, or row no longer `pending`) | `ExportOwnershipLostError` ⇒ `ownership_lost`; `grant` is held, so the existing owned failure path runs and its fenced statement matches 0 rows | **none** | `tenant_export.ownership_lost` |
+| 2 | **renewal returns a non-boolean** (a substitute port) | not exactly `true` ⇒ same as #1 | **none** | `tenant_export.ownership_lost` |
+| 3 | **renewal throws** (driver error, capability error) | propagates; classified; the owned failure transition runs under a still-live lease | `failed` + code, if the lease is live | `tenant_export.failed`, same transaction |
+| 4 | **`renew` absent** | no-op, expiry unchanged, attempt continues | unchanged | unchanged |
+| 5 | **long export** | the lease is extended before each phase, so the completion CAS's `owner_lease_until_ms > ?` can be satisfied where it previously could not | `completed` | `tenant_export.completed` |
+| 6 | **expired claimant tries to renew** | the `owner_lease_until_ms > ?` term matches 0 rows; the expiry is never written | **none** | per #1 |
+
+A lease is never resurrected: the statement's live-lease term, evaluated in the same statement that
+writes the new expiry, refuses a lapsed claim, and the new expiry always comes from the current clock.
+
+## F.3 Preserved
+
+* **No-effect refusal when `renew` is absent.** `renew` stays optional, `requireOwnershipCapability`
+  is unchanged in what it demands, and a port without it behaves exactly as before this addendum.
+* **Original exception and `commit_unknown` semantics.** No new row write, no compensation, and no
+  new failure code were introduced. `callbackFinished` / `statusWritten`, `ExportCompletionUnknownError`
+  and the audit-only `completion_unknown` / `completion_conflict` branches are untouched, so a renewal
+  can only ever take the pre-existing `ownership_lost` path.
+* **Per-attempt winner isolation.** The attempt prefix is still `randomUUID()`-derived, only the
+  completion CAS persists `storage_key`, and a loser's objects stay under its own prefix and are
+  referenced by no row. Renewal adds no key and no deletion.
+* The fixed five-minute lease, the four-term fence, `parseOwnerEpoch`, the claim seam (§D.2), the
+  mandatory transaction seam, bounded reads and the incomplete manifest are unchanged.
+
+## F.4 Held for the owner (PRODUCT POLICY — not implemented)
+
+**F.4.1 Total export duration is now unbounded.** Renewal removes the "a run longer than five minutes
+can never complete" defect (§D.4.3 / §E.4), but it also removes the only implicit ceiling: an attempt
+can now hold the tenant's one-active slot for as long as it keeps renewing. Whether a hard
+per-tenant export duration cap (the cheaper alternative in E.4) should exist **in addition to**
+renewal, and what that cap is, is a product decision. No cap, timer or deadline was invented here; the
+byte/row bounds in §6 still bound the work, and renewal is only attempted before a phase, never
+unconditionally.
+
+**F.4.2 Renewal cadence vs. remaining work.** Renewal is per table and per phase boundary, not
+time-based. A single table's read is already bounded (500-row pages, 50 000 rows, shared byte budget),
+so a phase cannot run unbounded without an abort — but "renew every N seconds during a long page loop"
+would need a timer, which this task forbids. If a phase ever exceeds the lease, the correct fix is a
+shorter phase, not a timer inside the page loop.
+
+**F.4.3 D.4.2 is still open.** The lease-aware one-active pre-check is unchanged: a `pending` row whose
+lease lapsed still answers 409 on the request path. Renewal makes that state less likely, not
+impossible, and relaxing "never steal" to "steal an expired claim" remains an owner decision.
+
+**F.4.4 Orphan namespaces (§A.5) remain unpurged**, as before.
+
+## F.5 Hashes
+
+| Path | Before | After |
+|---|---|---|
+| `server/src/services/tenant-export.ts` | `21d9ae98d79b6407212fb5b929bea854cb29e33dfd68fe960631b7e184dc18fa` (118 985 B) | `9329106bebe811b600bd33c71e9257f164228b5087092c15a829eaa6a4cce0fb` (126 488 B) |
+| `server/src/routes/tenant-export.ts` | `eb6c6628776d345d48a7f9eabdeb26acddf672352186a71e457dba7cd9866073` | **unchanged, byte-identical** |
+| `server/src/services/search.ts` | `6ec9d497d33e0dc8a7858a5f4547f783c917c7a38d8074e3dd127186cac5c29d` | **unchanged, byte-identical** |
+| `server/src/routes/search.ts` | `4055aee27792d83b3d82efd08823cb335cd53b514a4fa8a7af1dadc365ac2eca` | **unchanged, byte-identical** |
+
+2 580 → 2 747 lines. No CR byte in the file after the edit (LF preserved).
+
+## F.6 Not verified
+
+No test was written or run; no typecheck, compiler or build; no SQL/DB/storage/provider/secret; no Git;
+no migration; no new file; no production wiring (`ownership` stays `undefined` in the router, so
+`renew` is not reachable in production and nothing here activates it). Every row of F.2 is static
+reasoning about the source, not an executed test. The `renew.call(...)` construction was reasoned
+about, not compiled; if it does not typecheck the fix is a local cast at that call site and not a
+behaviour change. Nothing here is a readiness claim.
+
+## F.7 Acceptance asks
+
+1. Confirm `renew` is optional and that `requireOwnershipCapability` was deliberately left requiring
+   only the four existing operations (F.3).
+2. Confirm `affectedRows === 0` on renewal takes the existing `ownership_lost` path with no row write,
+   and that `undefined` throws (F.1, F.2).
+3. Decide F.4.1: should a hard per-tenant export duration cap exist in addition to renewal, and at
+   what value?
+4. D.4.2 (lease-aware pre-check) and A.5 (orphan purge) remain open.
+
+---
+
+# ADDENDUM 7 — 2026-10-24 — renewed lease traced end to end; stale claims corrected
+
+Independent contract-closure review of the export attempt-ownership / lease contract. Prior addenda were
+treated as untrusted: every statement below was re-derived from the current body, not from a previous
+report. ADDENDA 1–6 are preserved; their stale statements are marked in place (§G.7).
+
+Files changed: `server/src/services/tenant-export.ts` (**comments only** — no executable statement,
+signature, SQL string or bound parameter changed) and this document. Nothing else was written: no
+route, no schema/migration, no new file, no test.
+
+**Result of the trace: no behavioural defect was found in the five areas reviewed (A–E).** That is a
+statement about the source as read, not an acceptance, and not a readiness claim — production wiring
+is still `ownership: undefined` (§D.4.1).
+
+## G.1 The renewed lease, phase by phase
+
+Line anchors are for the file at the hash in §G.9 (2 754 lines).
+
+| # | Phase | Cost | Renewal before it | Fence that actually stops a stale attempt |
+|---|---|---|---|---|
+| 0 | claim | 1 UPDATE + 1 SELECT | — | claim CAS: `id + tenant + pending + (unowned OR lease <= now)` |
+| 1 | each table: paged read + `storage.write` | bounded: ≤50 000 rows, ≤64 MiB shared budget; page count follows `pageSize` (500 default) | **yes** — `:2219`, at the top of each `EXPORT_TABLE_PLAN` iteration, after the abort check and the budget skip | next renewal, or the completion CAS |
+| 2 | omitted-row probes (`buildOmittedCoverage`) | 16 `COUNT(*)` statements (13 omitted-table + 3 child) | **yes** — `:2262` | as above |
+| 3 | manifest construction | in-memory, no I/O | no (no I/O) | — |
+| 4 | abort check | — | — | — |
+| 5 | `storage.write(manifest.json)` | one write | **yes** — `:2320`, after the abort check, before the write | as above |
+| 6 | completion CAS + completed audit | 1 UPDATE + 1 audit, one transaction | no (single statement) | the CAS's own four terms |
+| 7 | terminal failure/abort | 1 UPDATE + 1 audit, one transaction | no | the failure statement's four terms |
+
+`renewOwnedLease` (`:1744`) captures the clock **once** (`captureTransitionClock`), computes
+`leaseUntilMs = nowMs + EXPORT_OWNERSHIP_LEASE_MS`, and passes both to the port; the port writes the
+passed `leaseUntilMs` (`OWNERSHIP_RENEW_SQL`, `:1840`), so the new expiry is always
+`captured now + 5 min` and never `old expiry + 5 min`. An expired claim cannot renew: the same
+statement carries `owner_lease_until_ms > ?` with that captured `nowMs`, so a lapsed lease matches zero
+rows and the attempt stops.
+
+**The one phase not renewed internally is the page loop** (`readExportTable`). It is a deliberate,
+bounded choice, and its worst case is safe: a lease that lapses mid-table cannot publish anything —
+the next boundary's renewal returns `false` (`ownership_lost`, no row write) or the completion CAS
+matches zero rows. What it can leave behind is an unreferenced table object under this attempt's own
+prefix. Adding a timer inside the loop would be the forbidden fix (§F.4.2).
+
+**A wrong local lease belief cannot publish.** The attempt's tracked `leaseUntilMs` (`:2201`, advanced
+only by a successful renewal) is used *only* to skip a renewal that would not move the expiry forward.
+It is never bound as a lease term: every SQL lease term uses a freshly captured clock against the
+value the database holds. So even a belief that is too high can only cause a skipped renewal and a
+later refusal — never a completion after expiry.
+
+## G.2 The publication statement
+
+The only statement that publishes an export is the completion UPDATE (`:2360`):
+
+```sql
+UPDATE tenant_data_exports
+SET status = 'completed', storage_key = ?, file_size = ?, manifest = ?,
+    expires_at = ?, completed_at = CURRENT_TIMESTAMP
+WHERE id = ? AND tenant_id = ? AND status = 'pending'
+  AND export_owner = ? AND owner_epoch = ?
+  AND owner_lease_until_ms > ?
+```
+
+It is **not** id-only, and it is not pending-only: owner, epoch, live lease, intended state and tenant
+are all evaluated by the database in the same statement that writes `storage_key`. The success audit
+(`tenant_export.completed`) is written in the same transaction, after `affectedRows === 1`. There is no
+second statement anywhere that sets `status = 'completed'` (grep: one occurrence, `:2362`), so no
+publication path exists outside this fence.
+
+## G.3 `affectedRows` semantics, statement by statement
+
+| Statement | `1` | `0` | `undefined` / unusable |
+|---|---|---|---|
+| claim (`:1942`) | proceed to the epoch read-back | `claim` returns `null` ⇒ `ExportOwnershipLostError` ⇒ `ownership_unproven`, no row write | throws (`affectedRowsOf`, `:540`) |
+| renewal (`:2002`) | `true` | `false` ⇒ `ExportOwnershipLostError` | throws |
+| failure/abort (`:2064`) | audit in the same transaction | `ownership_lost`, non-terminal audit | throws, caught as `audit_rolled_back` (non-terminal, no state asserted — §D.4.5) |
+| completion (`:2382`) | audit, commit | `ExportStateConflictError` ⇒ `completion_conflict`, audit only | throws ⇒ same conflict path, transaction rolls back |
+| token rotation (`:2597`) | proceed | 409, no token | throws |
+
+`undefined` is never coerced to `0` or `1` anywhere: `affectedRowsOf` refuses a non-safe-integer count.
+No statement treats `0` as success.
+
+## G.4 Ambiguous commit, and the absence of compensation
+
+`callbackFinished` (`:2398`) is set only after the audit returns inside the callback, so a wrapper
+throw after it is the ambiguous-commit case: `ExportCompletionUnknownError` ⇒ `completion_unknown` ⇒
+audit `tenant_export.completion_unknown`, **no row write, no completed audit, no failed audit**
+(`:2419-2432`). `statusWritten` alone ⇒ deterministic rollback ⇒ `failureCode = 'audit_failed'` and the
+ordinary fenced failure path. There is **no compensating UPDATE and no DELETE anywhere in the file**
+(grep for `storage.delete`/`remove`: none), so nothing can demote or drop a winning attempt.
+
+Per-attempt isolation is intact: `attemptId = randomUUID()` (`:2143`), keys
+`{prefix}/{tenantId}/{exportId}/{attemptId}/{table}.jsonl` and `…/manifest.json`, and the only pointer
+ever persisted is the winner's, written by the CAS above. A loser's objects stay under its own prefix
+and are referenced by no row.
+
+## G.5 Abort
+
+`abortIfRequested` runs before every table (`:2208`), before every page, before every probe, and once
+more before the manifest write (`:2314`). An abort therefore writes no manifest and takes the fenced
+`aborted` transition (`status='failed', error='aborted'`, audited `tenant_export.aborted` inside the
+same transaction). There is no path that audits `tenant_export.completed` after an abort, and no abort
+path touches storage at all — artifacts already written are orphans under this attempt's namespace.
+An abort that loses the race to the COMMIT does not retract a published export, and the function
+returns the manifest as completed.
+
+## G.6 Receiver preservation
+
+`claimExecutor` (`:2173`) is `Object.assign((sql, params) => tx.execute(sql, params), { query: (sql, params) => tx.query(sql, params) })`
+— both members close over the same `tx` and call it as a method, so the claim write and the epoch
+read-back cannot land on different connections and neither loses `this`. `recordOwnedFailure` calls
+`tx.execute` (`:2064`), the completion calls `db.execute` (`:2360`), `inTransaction` calls
+`db.transaction(fn)` (`:1280`), and the renewal is invoked as `renew.call(ownership, …)` (`:1763`).
+No detached method reference remains on any of these paths.
+
+## G.7 Corrections to earlier claims in this document
+
+| Where | Stale claim | Corrected in place |
+|---|---|---|
+| §4.5 residual | "the loser can still overwrite the winner's `manifest.json`, because the storage key is derived from the export id alone" | marked superseded → per-attempt prefix (§A.5) |
+| §7.1 | I2 DDL naming `claim_owner` / `claim_version` / `claim_lease_until_ms` | marked superseded → §C.9 (`export_owner` / `owner_epoch` / `owner_lease_until_ms`), which is what every statement binds |
+| §A.3 | "every row-mutating statement uses `WHERE id = ? AND tenant_id = ? AND status = 'pending'`" and `bestEffortMarkFailed` | marked superseded → four-term fence; the symbol no longer exists |
+| §A.7 | "pending-only" row writes; row 2 audited `failed` | marked corrected → fenced transition; row 2 audits `ownership_unproven` with no row write |
+| §D.4.3 | "the lease is never renewed" | marked superseded → §F.1 |
+
+Any statement in ADDENDA 1–5 that the lease is never renewed, or that a failure-path write is a bare
+`status = 'pending'` UPDATE, is superseded by §F.1 and this addendum.
+
+## G.8 Held — product policy, exact contract, NOT implemented
+
+1. **Lease-aware one-active pre-check** (§D.4.2). `requestTenantExport` still refuses any `pending`
+   row with 409. The exact patch, which must use the **same disjunct shape as the claim** (a row with
+   an owner but a NULL lease is claimable by neither today):
+
+   ```sql
+   SELECT id, status FROM tenant_data_exports
+   WHERE tenant_id = ? AND status = 'pending'
+     AND (export_owner IS NULL OR owner_lease_until_ms IS NULL OR owner_lease_until_ms <= ?)
+   LIMIT 1
+   ```
+
+   Signature: `deps.db.queryOne<{ id: string; status: string }>(sql, [tenantId, captureTransitionClock(now)])`.
+   Not applied: it relaxes "never steal" to "steal an expired claim" (owner decision) and it references
+   I2 columns on a path that runs before schema verification.
+2. **Hard per-tenant export duration cap** (§F.4.1). Not implemented; no value invented. Renewal
+   removes the implicit five-minute ceiling, so total runtime is bounded only by the row/byte caps.
+3. **Orphan namespace retention/purge** (§A.5). Not implemented; no deletion exists.
+4. **Ambiguous commit on the create path** (§D.4.4). `requestTenantExport` still cannot distinguish a
+   COMMIT failure from a pre-COMMIT failure; a compensating delete is forbidden by §A.3's rule.
+5. **`releaseStatement` is declared and never called** (§D.5). Unchanged: a claim ends by lease lapse
+   or by a terminal transition.
+6. **Production wiring** (§D.4.1). `ownership` stays `undefined`; this addendum does not activate it.
+
+## G.9 What changed in source, and hashes
+
+Three header comments only, all of them statements the body contradicted:
+
+* the concurrency paragraph claimed a loser can overwrite the winner's manifest "because the storage
+  key is derived from the export id alone" — false since §A.5; now says the loser cannot overwrite and
+  that I2 buys row-transition exclusivity only;
+* the lease sentence said renewal happens "between tables"; it now names all three boundaries and the
+  `captured now + lease` rule;
+* the stale-`pending` paragraph said the table has no owner/fencing column without noting that the port
+  now declares them.
+
+| Path | Before | After |
+|---|---|---|
+| `server/src/services/tenant-export.ts` | `9329106bebe811b600bd33c71e9257f164228b5087092c15a829eaa6a4cce0fb` (126 488 B) | `97e44592dfc70755c55ad4d3daf32ff58088a920d2c6e747c133a58cde932228` (127 048 B) |
+| `server/src/routes/tenant-export.ts` | `eb6c6628776d345d48a7f9eabdeb26acddf672352186a71e457dba7cd9866073` | **unchanged, byte-identical** |
+| `server/src/services/search.ts` | `6ec9d497d33e0dc8a7858a5f4547f783c917c7a38d8074e3dd127186cac5c29d` | **unchanged, byte-identical** |
+| `server/src/routes/search.ts` | `4055aee27792d83b3d82efd08823cb335cd53b514a4fa8a7af1dadc365ac2eca` | **unchanged, byte-identical** |
+| `docs/streams/server/WORKBUDDY-SEARCH-EXPORT-CLOSURE-20261023.md` | — | this file |
+
+2 747 → 2 754 lines (+7, all comment lines). No CR byte in either file.
+
+## G.10 Not verified
+
+No test written or run; no compiler, typecheck or build; no SQL or DB execution; no storage provider,
+service, Docker or listener; no Git; no mock; no new file; no schema or migration edit; production
+wiring untouched. Every row of §G.1–G.6 is static reasoning about the source at the hash above, not an
+observed run. Nothing here is an acceptance or a readiness claim: wiring still depends on §D.4.1, and
+§G.8 items 1–2 are owner decisions.

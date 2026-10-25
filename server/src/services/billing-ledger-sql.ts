@@ -28,8 +28,10 @@
  * HK2: one normalization path for BIGINT values, safe for number/string/bigint.
  */
 
+import { randomUUID } from 'node:crypto';
 import {
     ACCOUNT_KINDS,
+    ACCOUNT_NORMAL_SIDE,
     AccountKind,
     AccountBalanceChange,
     InsertJournalInput,
@@ -43,6 +45,9 @@ import {
     LineDirection,
     MAX_ACCOUNT_BALANCE_MINOR,
     MAX_AMOUNT_MINOR,
+    MAX_TENANT_ID_LENGTH,
+    ReservationJournalLink,
+    ReservationJournalRole,
 } from './billing-ledger';
 import {
     InsertReservationResult,
@@ -77,7 +82,9 @@ export type BillingLedgerSqlErrorCode =
     | 'version_out_of_range'
     | 'invalid_row'
     | 'duplicate_key'
-    | 'foreign_key_violation';
+    | 'foreign_key_violation'
+    | 'lock_deadlock'
+    | 'lock_wait_timeout';
 
 export class BillingLedgerSqlError extends Error {
     constructor(public readonly code: BillingLedgerSqlErrorCode, message: string) {
@@ -146,8 +153,12 @@ export function normalizeSqlVersion(value: unknown, field: string): number {
 }
 
 const affectedRowsOf = (result: { affectedRows?: number | string }): number => {
-    const value = typeof result.affectedRows === 'string' ? Number(result.affectedRows) : result.affectedRows;
-    return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+    const raw = result.affectedRows;
+    const value = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : raw;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+        throw new BillingLedgerSqlError('invalid_row', 'affectedRows is unreadable; a write result cannot be classified');
+    }
+    return value;
 };
 
 const isDuplicateError = (error: unknown): boolean =>
@@ -157,6 +168,37 @@ const isForeignKeyError = (error: unknown): boolean => {
     if (typeof error !== 'object' || error === null) return false;
     const code = (error as { code?: unknown }).code;
     return code === 'ER_NO_REFERENCED_ROW_2' || code === 'ER_ROW_IS_REFERENCED_2';
+};
+
+const isDeadlockError = (error: unknown): boolean => {
+    if (typeof error !== 'object' || error === null) return false;
+    const code = (error as { code?: unknown }).code;
+    return code === 'ER_LOCK_DEADLOCK';
+};
+
+const isLockWaitTimeoutError = (error: unknown): boolean => {
+    if (typeof error !== 'object' || error === null) return false;
+    const code = (error as { code?: unknown }).code;
+    return code === 'ER_LOCK_WAIT_TIMEOUT';
+};
+
+const errorMessageOf = (error: unknown): string => {
+    if (error instanceof Error) return error.message;
+    if (typeof error === 'object' && error !== null) {
+        const candidate = (error as { message?: unknown }).message ?? (error as { sqlMessage?: unknown }).sqlMessage;
+        if (typeof candidate === 'string') return candidate;
+    }
+    return '';
+};
+
+/** mysql2 reports the violated key inside the error message; match REAL names. */
+const duplicateKeyNameOf = (error: unknown): string | null => {
+    if (!isDuplicateError(error)) return null;
+    const match = /for key '?([A-Za-z0-9_.$]+)'?/.exec(errorMessageOf(error));
+    if (match === null) return null;
+    const value = match[1] as string;
+    const lastDot = value.lastIndexOf('.');
+    return lastDot < 0 ? value : value.slice(lastDot + 1);
 };
 
 const toIso = (value: string | Date): string => {
@@ -184,6 +226,13 @@ const asDirection = (value: string): LineDirection => {
 const asReservationStatus = (value: string): ReservationStatus => {
     if (value !== 'reserved' && value !== 'released' && value !== 'consumed') {
         throw new BillingLedgerSqlError('invalid_row', 'a reservation has an unknown status');
+    }
+    return value;
+};
+
+const asReservationJournalRole = (value: string): ReservationJournalRole => {
+    if (value !== 'reserve' && value !== 'release' && value !== 'consume' && value !== 'reversal') {
+        throw new BillingLedgerSqlError('invalid_row', 'a reservation journal link has an unknown role');
     }
     return value;
 };
@@ -238,6 +287,11 @@ interface ReservationRowDb {
     updated_at: string | Date;
     reservation_key?: string | null;
     key_payload_hash?: string | null;
+}
+
+interface ReservationJournalRowDb {
+    reservation_id: string;
+    journal_role: string;
 }
 
 interface IdempotencyRowDb {
@@ -314,6 +368,100 @@ class BillingLedgerSqlTransaction implements ReservationTransaction {
         );
         const row = rows[0];
         return row ? mapAccount(row) : null;
+    }
+
+    async provisionAccountIdempotent(
+        tenantId: string,
+        kind: AccountKind,
+        currency: string,
+    ): Promise<LedgerAccount> {
+        if (typeof tenantId !== 'string' || tenantId.length === 0 || tenantId.length > MAX_TENANT_ID_LENGTH) {
+            throw new LedgerError('invalid_tenant', 'tenantId is outside the CHAR(36) contract bound');
+        }
+        if (!(ACCOUNT_KINDS as readonly string[]).includes(kind)) {
+            throw new LedgerError('account_kind_mismatch', 'account kind is unknown');
+        }
+        if (typeof currency !== 'string' || !/^[A-Z]{3}$/.test(currency)) {
+            throw new LedgerError('invalid_currency', 'currency must be a three-letter uppercase ISO-4217 code');
+        }
+
+        const normalSide = ACCOUNT_NORMAL_SIDE[kind];
+
+        // Locking read first to avoid holding shared locks that can deadlock with
+        // concurrent insert attempts (error 1213). Only INSERT when no row exists.
+        const existingRows = await this.conn.query<AccountRowDb>(
+            `SELECT ${ACCOUNT_COLUMNS}
+               FROM billing_accounts
+              WHERE tenant_id = ? AND kind = ? AND currency = ?
+              LIMIT 1
+              FOR UPDATE`,
+            [tenantId, kind, currency],
+        );
+        const existing = existingRows[0];
+        if (existing !== undefined) {
+            const account = mapAccount(existing);
+            if (account.tenantId !== tenantId || account.kind !== kind || account.currency !== currency) {
+                throw new BillingLedgerSqlError('invalid_row', 'provisioned account read back with a different identity');
+            }
+            return account;
+        }
+
+        const id = randomUUID();
+        await this.conn.execute(`SAVEPOINT ${SAVEPOINT}`);
+        try {
+            await this.conn.execute(
+                `INSERT INTO billing_accounts
+                    (id, tenant_id, kind, normal_side, currency, balance_minor, version)
+                 VALUES (?, ?, ?, ?, ?, 0, 1)`,
+                [id, tenantId, kind, normalSide, currency],
+            );
+            await this.conn.execute(`RELEASE SAVEPOINT ${SAVEPOINT}`);
+        } catch (error) {
+            await this.rollbackToSavepoint();
+            if (isDeadlockError(error)) {
+                throw new BillingLedgerSqlError('lock_deadlock', 'account provisioning hit a deadlock');
+            }
+            if (isLockWaitTimeoutError(error)) {
+                throw new BillingLedgerSqlError('lock_wait_timeout', 'account provisioning hit a lock wait timeout');
+            }
+            if (!isDuplicateError(error)) {
+                if (isForeignKeyError(error)) {
+                    throw new BillingLedgerSqlError(
+                        'foreign_key_violation',
+                        'provisioned account referenced a missing tenant',
+                    );
+                }
+                throw error;
+            }
+            const keyName = duplicateKeyNameOf(error);
+            if (keyName !== null && keyName !== 'uq_billing_account_tenant_kind_currency') {
+                throw new BillingLedgerSqlError(
+                    'duplicate_key',
+                    'account provisioning violated a unique key outside tenant/kind/currency',
+                );
+            }
+            // Fallback: re-read with a locking read after a duplicate (race between select and insert).
+            // Never alter its balance or version.
+            const rows = await this.conn.query<AccountRowDb>(
+                `SELECT ${ACCOUNT_COLUMNS}
+                   FROM billing_accounts
+                  WHERE tenant_id = ? AND kind = ? AND currency = ?
+                  LIMIT 1
+                  FOR UPDATE`,
+                [tenantId, kind, currency],
+            );
+            const row = rows[0];
+            if (row === undefined) {
+                throw new BillingLedgerSqlError('invalid_row', 'provisioned account duplicate could not be read back');
+            }
+            const account = mapAccount(row);
+            if (account.tenantId !== tenantId || account.kind !== kind || account.currency !== currency) {
+                throw new BillingLedgerSqlError('invalid_row', 'provisioned account read back with a different identity');
+            }
+            return account;
+        }
+
+        return { id, tenantId, kind, normalSide, currency, balanceMinor: 0n, version: 1 };
     }
 
     private async getJournalOn(tenantId: string, journalId: string): Promise<JournalRecord | null> {
@@ -403,6 +551,50 @@ class BillingLedgerSqlTransaction implements ReservationTransaction {
             throw new BillingLedgerSqlError('invalid_row', 'idempotency registry row is outside the requested tenant/scope');
         }
         return this.assembleJournal(row);
+    }
+
+    async findReservationJournalLink(
+        tenantId: string,
+        journalId: string,
+    ): Promise<ReservationJournalLink | null> {
+        // Persisted link, tenant-scoped, plain consistent read inside the unit.
+        const reservationRows = await this.conn.query<ReservationJournalRowDb>(
+            `SELECT r.id AS reservation_id,
+                    CASE
+                        WHEN r.reserve_journal_id = ? THEN 'reserve'
+                        WHEN r.release_journal_id = ? THEN 'release'
+                        WHEN r.consume_journal_id = ? THEN 'consume'
+                        ELSE 'reserve'
+                    END AS journal_role
+               FROM billing_reservations r
+              WHERE r.tenant_id = ?
+                AND (r.reserve_journal_id = ? OR r.release_journal_id = ? OR r.consume_journal_id = ?)
+              LIMIT 1`,
+            [journalId, journalId, journalId, tenantId, journalId, journalId, journalId],
+        );
+        const reservation = reservationRows[0];
+        if (reservation !== undefined) {
+            return {
+                tenantId,
+                reservationId: reservation.reservation_id,
+                journalRole: asReservationJournalRole(reservation.journal_role),
+            };
+        }
+
+        const eventRows = await this.conn.query<ReservationJournalRowDb>(
+            `SELECT e.reservation_id AS reservation_id, e.event_type AS journal_role
+               FROM billing_reservation_events e
+              WHERE e.tenant_id = ? AND e.journal_id = ?
+              LIMIT 1`,
+            [tenantId, journalId],
+        );
+        const event = eventRows[0];
+        if (event === undefined) return null;
+        return {
+            tenantId,
+            reservationId: event.reservation_id,
+            journalRole: asReservationJournalRole(event.journal_role),
+        };
     }
 
     private async getReservationOn(tenantId: string, reservationId: string): Promise<ReservationRecord | null> {
@@ -567,7 +759,7 @@ class BillingLedgerSqlTransaction implements ReservationTransaction {
             if (error instanceof AccountCasConflict) {
                 return { ok: false, reason: 'account_version_conflict', accountId: error.accountId };
             }
-            if (isDuplicateError(error)) return this.resolveJournalDuplicate(input);
+            if (isDuplicateError(error)) return this.resolveJournalDuplicate(input, error);
             if (isForeignKeyError(error)) {
                 throw new BillingLedgerSqlError(
                     'foreign_key_violation',
@@ -600,7 +792,10 @@ class BillingLedgerSqlTransaction implements ReservationTransaction {
         await this.conn.execute(`RELEASE SAVEPOINT ${SAVEPOINT}`);
     }
 
-    private async resolveJournalDuplicate(input: InsertJournalInput): Promise<InsertJournalResult> {
+    private async resolveJournalDuplicate(
+        input: InsertJournalInput,
+        error: unknown,
+    ): Promise<InsertJournalResult> {
         const rows = await this.conn.query<IdempotencyRowDb>(
             `SELECT tenant_id, scope, idempotency_key, payload_hash, journal_id, reservation_id
                FROM billing_idempotency_keys
@@ -610,6 +805,11 @@ class BillingLedgerSqlTransaction implements ReservationTransaction {
         );
         const registry = rows[0];
         if (!registry) {
+            // Two different keys racing to reverse the same journal collide on
+            // (tenant, reversal_of_journal_id); surface the domain's own code.
+            if (duplicateKeyNameOf(error) === 'uq_billing_journal_reversal') {
+                return { ok: false, reason: 'already_reversed' };
+            }
             throw new BillingLedgerSqlError('duplicate_key', 'journal insert violated a unique key outside the idempotency registry');
         }
         if (registry.tenant_id !== input.journal.tenantId || registry.scope !== 'journal') {

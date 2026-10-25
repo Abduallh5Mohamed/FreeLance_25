@@ -63,15 +63,17 @@ export const execute = async (
 };
 
 export const testConnection = async (): Promise<boolean> => {
+    let connection: mysql.PoolConnection | null = null;
     try {
-        const connection = await getPool().getConnection();
+        connection = await getPool().getConnection();
         await connection.ping();
-        connection.release();
         console.log('✅ Database connection successful');
         return true;
     } catch (error) {
         console.error('❌ Database connection failed:', error);
         return false;
+    } finally {
+        connection?.release();
     }
 };
 
@@ -87,16 +89,31 @@ export const withTransaction = async <T>(
     fn: (connection: mysql.PoolConnection) => Promise<T>,
 ): Promise<T> => {
     const connection = await getPool().getConnection();
-    await connection.beginTransaction();
+    let reusable = true;
     try {
+        // BEGIN can reject too: cleanup must cover admission as well as work.
+        await connection.beginTransaction();
         const result = await fn(connection);
         await connection.commit();
         return result;
     } catch (error) {
-        await connection.rollback();
+        try {
+            await connection.rollback();
+        } catch {
+            // Never return a connection with unknown transaction state to the
+            // pool, and never replace the callback/commit error with cleanup.
+            reusable = false;
+            try { connection.destroy(); } catch { /* retain the original failure */ }
+        }
+        // A rejected COMMIT remains ambiguous. No retry or compensation here.
         throw error;
     } finally {
-        connection.release();
+        if (reusable) {
+            // Cleanup has no authority to replace the unit's result or error:
+            // a failed release must not be handed a poisoned connection back.
+            try { connection.release(); }
+            catch { try { connection.destroy(); } catch { /* retain the original failure */ } }
+        }
     }
 };
 

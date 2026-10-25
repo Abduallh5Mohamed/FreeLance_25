@@ -72,10 +72,24 @@ function normalizeId(value: unknown): string | null {
     return trimmed;
 }
 
+/**
+ * Strict non-negative integer. Digits only.
+ *
+ * `parseInt('12abc')` returned 12 and `'1e21'` returned 1, so a malformed
+ * provider or client quantity was silently coerced into a real one instead of
+ * being refused. A non-safe integer is also refused: an unsafe double is not a
+ * representable quantity, and `9007199254740993` used to become
+ * `9007199254740992` — silently wrong seconds charged.
+ */
 function toNonNegativeInt(value: unknown): number | null {
-    const parsed = typeof value === 'number' ? Math.trunc(value) : Number.parseInt(String(value ?? ''), 10);
-    if (!Number.isFinite(parsed) || parsed < 0) return null;
-    return parsed;
+    if (typeof value === 'number') {
+        return Number.isSafeInteger(value) && value >= 0 ? value : null;
+    }
+    if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+        const parsed = Number(value.trim());
+        return Number.isSafeInteger(parsed) ? parsed : null;
+    }
+    return null;
 }
 
 /**
@@ -190,9 +204,12 @@ export function validateUsageEvent(input: UsageEventInput): UsageValidation {
         storageBytes = parsed;
     }
 
-    const occurredAtMs = input.occurredAtMs === undefined || input.occurredAtMs === null
-        ? Date.now()
-        : (Number.isFinite(Number(input.occurredAtMs)) ? Number(input.occurredAtMs) : Date.now());
+    // Safe non-negative integer only. `Number.isFinite(Number(x))` accepted
+    // unsafe and negative values, and an absurd one reached `toMysqlUtc` where
+    // `new Date(ms).toISOString()` throws RangeError inside the insert — a 500
+    // for input that should simply be refused or defaulted.
+    const suppliedOccurredAt = toNonNegativeInt(input.occurredAtMs);
+    const occurredAtMs = suppliedOccurredAt === null ? Date.now() : suppliedOccurredAt;
 
     return {
         ok: true,
@@ -226,7 +243,13 @@ export type RecordUsageResult =
     | { recorded: boolean; deduplicated: boolean }
     | { error: string };
 
-export type HeartbeatLimitReason = 'rate-limit' | 'aggregate-cap';
+/**
+ * `enrollment_unknown` is a FAIL-CLOSED reason, not a rate outcome: the
+ * per-enrollment ceiling could not be evaluated because the caller supplied no
+ * enrollment id, so no heartbeat is admitted rather than admitting it against a
+ * budget nobody checked.
+ */
+export type HeartbeatLimitReason = 'rate-limit' | 'aggregate-cap' | 'enrollment_unknown';
 export type HeartbeatLimitDecision = { allowed: true } | { allowed: false; reason: HeartbeatLimitReason };
 
 export interface HeartbeatLimitInput {
@@ -303,7 +326,13 @@ export function createVideoUsageEventService(deps: VideoUsageEventDeps): VideoUs
 
         heartbeatLimit: async (input) => {
             const enrollmentId = typeof input.studentEnrollmentId === 'string' ? input.studentEnrollmentId.trim() : '';
-            if (!enrollmentId) return { allowed: true };
+            // No enrollment id means the per-enrollment ceiling CANNOT be
+            // evaluated, which is not the same as "no ceiling applies".
+            // Returning `allowed: true` here let a caller that omitted the id
+            // bypass the aggregate cap entirely; the dedupe key still bounds
+            // one session/window, but the enrollment-level budget was skipped.
+            // Deny instead of guessing.
+            if (!enrollmentId) return { allowed: false, reason: 'enrollment_unknown' };
             const window = Math.max(1, Math.trunc(input.windowSeconds));
             const maxEvents = Math.max(1, Math.trunc(input.maxEventsPerWindow));
             const maxSeconds = Math.max(1, Math.trunc(input.maxSecondsPerWindow));

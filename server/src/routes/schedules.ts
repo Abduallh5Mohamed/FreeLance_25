@@ -624,7 +624,7 @@ export const createSchedulesRouter = (deps: SchedulesDeps): Router => {
                      WHERE id=? AND tenant_id=? AND status='scheduled' AND version=?`,
                     [validated.value.reason, scope.userId, id, scope.tenantId, existing.version],
                 );
-                if ((updated.affectedRows ?? 0) === 0) return false;
+                if (updated.affectedRows === 0) return false;
                 await recordAudit(tx.execute, {
                     actorUserId: scope.userId,
                     tenantId: scope.tenantId,
@@ -691,7 +691,7 @@ export const createSchedulesRouter = (deps: SchedulesDeps): Router => {
                         scope.userId, id, scope.tenantId, existing.version,
                     ],
                 );
-                if ((updated.affectedRows ?? 0) === 0) return false;
+                if (updated.affectedRows === 0) return false;
                 await recordAudit(tx.execute, {
                     actorUserId: scope.userId,
                     tenantId: scope.tenantId,
@@ -863,7 +863,11 @@ const productionTransaction = async <T>(fn: (tx: SchedulesDataAccess) => Promise
         execute: async (sql: string, params?: unknown[]) => {
             const [result] = await connection.execute(sql, params as never);
             const header = result as { insertId?: number; affectedRows?: number };
-            return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+            const affectedRows = header.affectedRows;
+            if (typeof affectedRows !== 'number' || !Number.isSafeInteger(affectedRows)) {
+                throw new Error('schedule transaction execute did not report a usable affected-row count');
+            }
+            return { insertId: typeof header.insertId === 'number' && Number.isSafeInteger(header.insertId) ? header.insertId : 0, affectedRows };
         },
     }));
 };

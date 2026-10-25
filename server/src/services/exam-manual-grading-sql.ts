@@ -274,8 +274,15 @@ const GRADEBOOK_SCORE_UPDATE = `UPDATE gradebook_scores
     WHERE id = ? AND tenant_id = ?`;
 
 const affectedRowsOf = (result: { affectedRows?: number | string }): number => {
-    const value = typeof result.affectedRows === 'string' ? Number(result.affectedRows) : result.affectedRows;
-    return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+    const raw = result.affectedRows;
+    if (raw === undefined) {
+        throw new Error('exam-manual-grading-sql update did not report an affected-row count');
+    }
+    const value = typeof raw === 'string' ? Number(raw) : raw;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+        throw new Error('exam-manual-grading-sql affected-row count was not a safe integer');
+    }
+    return value;
 };
 
 const isDuplicateError = (error: unknown): boolean =>

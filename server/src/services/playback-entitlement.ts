@@ -537,7 +537,11 @@ export function createSqlPlaybackEntitlementStore(db: PlaybackEntitlementDb): Pl
                  WHERE session_id = ? AND revoked_at IS NULL`,
                 [toMysqlUtc(revokedAtMs), reason, sessionId],
             );
-            return result.affectedRows ?? 0;
+            const affectedRows = result.affectedRows;
+            if (typeof affectedRows !== 'number' || !Number.isSafeInteger(affectedRows)) {
+                throw new Error('playback-entitlement update did not report a usable affected-row count');
+            }
+            return affectedRows;
         },
 
         recordAudit: async (input) => {

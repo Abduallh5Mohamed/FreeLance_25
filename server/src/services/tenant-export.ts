@@ -28,10 +28,18 @@
  *    Without the capability the surface fails closed before job creation,
  *    before processing and before any storage write. The owner identity is
  *    generated server-side from the crypto source and never taken from a
- *    request. Every ownership-sensitive statement — completion, failure, abort
- *    and release — carries the SAME four-term fence evaluated by the database:
- *    exact owner, exact epoch, a LIVE unexpired lease, and the intended state.
- *    See `EXPORT_OWNERSHIP_OWNED_PREDICATE`.
+ *    request. Every ownership-sensitive statement — completion, failure, abort,
+ *    renewal and release — carries the SAME four-term fence evaluated by the
+ *    database: exact owner, exact epoch, a LIVE unexpired lease, and the
+ *    intended state. See `EXPORT_OWNERSHIP_OWNED_PREDICATE`. The lease itself
+ *    stays a fixed five minutes; it is OPTIONALLY extended at each bounded
+ *    phase boundary — before a table's paged read and its storage write, before
+ *    the omitted-row probes, and before the manifest write — through the port's
+ *    optional `renew` member, and a port that omits that member renews nothing
+ *    (unchanged behaviour). A renewal that cannot prove a live lease stops the
+ *    attempt before more bytes are read, written or published. The expiry a
+ *    renewal installs is always `captured now + lease`, never the expiry
+ *    already in the row, so a lapsed claim cannot be resurrected.
  *  - A terminal `failed`/`aborted` audit exists ONLY inside the same
  *    transaction as an owned transition that moved exactly one row. Zero rows
  *    (lease lost to another attempt), an audit that rolled the transaction
@@ -106,9 +114,12 @@
  *  - Reads are paged by keyset (`id > ?`) with a bounded page size, and both a
  *    per-table row cap and a total byte cap are enforced while reading — the
  *    whole table is never materialised before the JSONL is built.
- *  - Stale `pending` jobs are never reclaimed on age alone: `tenant_data_exports`
- *    has no owner/fencing column, so reclaiming would race a live worker. That
- *    part needs a schema change (I2) and is reported, not invented here.
+ *  - Stale `pending` jobs are never reclaimed on age alone: the deployed
+ *    `tenant_data_exports` has no owner/fencing column yet (the ownership port
+ *    declares them; I2 is still held), so reclaiming would race a live worker.
+ *    The port's lease term is what would make a lease-aware pre-check safe;
+ *    until the columns land this path does not reclaim, and the decision is
+ *    reported, not invented here.
  *
  *  - Abort: `deps.signal` is checked before every page and before every table.
  *    An aborted run writes no further table, writes no manifest, records the
@@ -121,11 +132,12 @@
  *    A MySQL error carries `sql`, `sqlMessage` and the bound parameters, and
  *    the manifest is a downloadable artifact, so raw text is never persisted.
  *  - Concurrency: one in-process attempt per export id is enforced explicitly
- *    (`export_in_progress`). Across processes the completion CAS still decides
- *    the winner and a loser never demotes or fails the winner's row, but the
- *    loser can still overwrite the winner's manifest object because the storage
- *    key is derived from the export id alone. Closing that needs a fencing
- *    column on `tenant_data_exports` (the same I2 request above); it is not
+ *    (`export_in_progress`). Across processes the completion CAS decides the
+ *    winner and a loser never demotes or fails the winner's row; it also cannot
+ *    overwrite the winner's objects, because every key carries this attempt's
+ *    own id (see the per-attempt namespace above). What stays open until the I2
+ *    columns exist is exclusivity of the row transitions themselves: two
+ *    processes can both spend the read budget on the same id. Reported, not
  *    invented here.
  *
  *  - Downloads require a signed, expiring HMAC token
@@ -413,6 +425,26 @@ export interface ExportOwnershipReleaseInput {
     nowMs: number;
 }
 
+/**
+ * Optional lease renewal. Same six terms as the failure statement, with the
+ * lease written instead of the status.
+ *
+ * `nowMs` is captured once per renewal and `leaseUntilMs` is derived from it —
+ * never from the expiry currently in the row — so a renewal can only ever move
+ * the expiry forward to `nowMs + leaseMs`. A renewal that could extend from the
+ * old expiry would let a caller buy time on a claim that has already lapsed.
+ */
+export interface ExportOwnershipRenewInput {
+    exportId: string;
+    tenantId: string;
+    owner: string;
+    epoch: number;
+    /** Validated clock captured at the renewal; the lease term uses it. */
+    nowMs: number;
+    /** Absolute expiry this renewal installs; derived from `nowMs + leaseMs`. */
+    leaseUntilMs: number;
+}
+
 export interface ExportOwnershipContract {
     /** Must equal `EXPORT_OWNERSHIP_OWNED_PREDICATE`. */
     readonly ownedPredicate: string;
@@ -437,6 +469,19 @@ export interface ExportOwnershipPort {
     ): Promise<ExportOwnershipGrant | null>;
     failureStatement(input: ExportOwnershipFailureInput): { sql: string; params: unknown[] };
     releaseStatement(input: ExportOwnershipReleaseInput): { sql: string; params: unknown[] };
+    /**
+     * OPTIONAL lease extension. `true` means the lease was extended under the
+     * same owner + epoch + live lease + `pending` fence; `false` means the row
+     * is no longer this attempt's and the attempt must stop before it reads or
+     * writes any more bytes.
+     *
+     * Optional on purpose: `requireOwnershipCapability` does not require it, so
+     * every existing port keeps working. A port that omits it renews nothing —
+     * the renewal step is a no-op and the attempt runs under the unchanged
+     * fixed `EXPORT_OWNERSHIP_LEASE_MS` policy. Requiring it would be a breaking
+     * contract change for no correctness gain over that behaviour.
+     */
+    renew?(input: ExportOwnershipRenewInput): Promise<boolean>;
 }
 
 /** A table body or the manifest could not be written to the export storage. */
@@ -1134,6 +1179,8 @@ export interface ExportTableCoverage {
     rejected_contradictions: number;
     /** True when a resource cap stopped the read before the table was exhausted. */
     truncated: boolean;
+    /** Which cap stopped the read: row cap, byte budget, or null when whole. */
+    truncated_by: 'rows' | 'bytes' | null;
     pages: number;
 }
 
@@ -1611,8 +1658,11 @@ const captureTransitionClock = (now: () => number): number => {
  * fencing contract.
  *
  * Three things are checked, in order: the port object exists; it exposes the
- * four operations this module calls; and `describe()` returns exactly the
- * canonical predicate and every required column.
+ * four REQUIRED operations this module calls; and `describe()` returns exactly
+ * the canonical predicate and every required column. The fifth operation,
+ * `renew`, is OPTIONAL and is deliberately not required here: requiring it
+ * would be a breaking contract change for every existing port, and a port that
+ * omits it renews nothing rather than failing.
  *
  * This is a CONTRACT CHECK, not proof of enforcement. A port can declare the
  * right strings and still run something else, and this function cannot see the
@@ -1672,6 +1722,61 @@ const validateOwnershipGrant = (
     return { epoch, leaseUntilMs };
 };
 
+/**
+ * Extend this attempt's lease, or refuse to continue.
+ *
+ * Called BEFORE a bounded expensive phase — a table's paged read plus its
+ * storage write, the omitted-row probes, the manifest write — so each phase
+ * starts under a lease that is still live and has at least a full
+ * `EXPORT_OWNERSHIP_LEASE_MS` ahead of it. The clock is captured HERE, once,
+ * and the new expiry is `nowMs + leaseMs`. Extending from the expiry already in
+ * the row would let an already-lapsed claim buy more time, which is precisely
+ * the resurrection the statement's live-lease term refuses.
+ *
+ * Returns the expiry this attempt now believes it holds, so the caller can skip
+ * a renewal that would not move it forward: a no-op UPDATE reports zero
+ * affected rows on a changed-rows connection, and zero is read as a lost lease.
+ *
+ * No-effect refusal: a port without the optional `renew` member renews nothing.
+ * That is the pre-existing behaviour — the fixed five-minute lease, unchanged —
+ * and it must not fail an attempt that ran before renewal existed.
+ */
+const renewOwnedLease = async (
+    ownership: ExportOwnershipPort,
+    input: {
+        exportId: string;
+        tenantId: string;
+        owner: string;
+        epoch: number;
+        now: () => number;
+        /** The expiry this attempt last installed (claim, or last renewal). */
+        leaseUntilMs: number;
+    },
+): Promise<number> => {
+    const renew = ownership.renew;
+    if (typeof renew !== 'function') return input.leaseUntilMs;
+    const nowMs = captureTransitionClock(input.now);
+    const leaseUntilMs = nowMs + EXPORT_OWNERSHIP_LEASE_MS;
+    if (leaseUntilMs <= input.leaseUntilMs) return input.leaseUntilMs;
+    // Called as a member so an adapter whose `renew` reads `this` keeps its
+    // receiver — the same discipline the claim seam follows.
+    const renewed = await renew.call(ownership, {
+        exportId: input.exportId,
+        tenantId: input.tenantId,
+        owner: input.owner,
+        epoch: input.epoch,
+        nowMs,
+        leaseUntilMs,
+    });
+    if (renewed !== true) {
+        // `false` is ownership lost. Anything that is not exactly `true` is not
+        // proof of a live lease either, so it takes the same path rather than
+        // being read as a success.
+        throw new ExportOwnershipLostError();
+    }
+    return leaseUntilMs;
+};
+
 // ---------------------------------------------------------------------------
 // The concrete in-file SQL adapter.
 //
@@ -1721,6 +1826,25 @@ const OWNERSHIP_RELEASE_SQL = `
 `;
 
 /**
+ * Renewal: extends the lease of THIS attempt only.
+ *
+ * The write is fenced by the same four terms as every other owned transition —
+ * exact owner, exact epoch, a lease that is STILL LIVE, and `pending` — so a
+ * claimant whose lease has already lapsed matches zero rows and cannot
+ * resurrect it. That is why the new expiry must come from a captured `nowMs`
+ * and never from the expiry in the row: extending from a dead expiry would be
+ * a resurrection, not a renewal.
+ *
+ * Params, in order: `leaseUntilMs, exportId, tenantId, owner, epoch, nowMs`.
+ */
+const OWNERSHIP_RENEW_SQL = `
+    UPDATE tenant_data_exports
+    SET owner_lease_until_ms = ?
+    WHERE id = ? AND tenant_id = ? AND export_owner = ? AND owner_epoch = ?
+      AND owner_lease_until_ms > ? AND status = 'pending'
+`;
+
+/**
  * The claim's epoch read-back.
  *
  * A claim statement that increments `owner_epoch` must report the value it
@@ -1730,12 +1854,58 @@ const OWNERSHIP_RELEASE_SQL = `
  * owner, live lease and `status='pending'`, so the read cannot observe another
  * attempt's row. An epoch this adapter cannot read is a malformed grant, and a
  * malformed grant is a refusal — never a guessed `1`.
+ *
+ * The column is an integer in the schema, but its JAVASCRIPT type is not part
+ * of that schema: mysql2 returns DECIMAL/BIGINT (and `BIGINT`-backed integers)
+ * as a STRING unless a type cast is configured on the connection. So the
+ * read-back is parsed by `parseOwnerEpoch` rather than type-tested inline: the
+ * value may legitimately arrive as `1` or as `'1'`, and both mean epoch one.
+ * Refusing the string form would reject a valid claim and fail every export
+ * with a capability error, which is a false negative, not a safety property.
  */
 const OWNERSHIP_READ_EPOCH_SQL = `
     SELECT owner_epoch FROM tenant_data_exports
     WHERE id = ? AND tenant_id = ? AND export_owner = ? AND status = 'pending'
       AND owner_lease_until_ms > ?
 `;
+
+/** A canonical, unsigned, base-10 integer literal and nothing else. */
+const OWNER_EPOCH_DECIMAL = /^\d+$/;
+
+/**
+ * Parse the `owner_epoch` a claim read back into the fencing epoch.
+ *
+ * Exactly two shapes are accepted, and they must denote the same thing:
+ *
+ *   `number`  — a SAFE POSITIVE INTEGER (`Number.isSafeInteger(v) && v >= 1`).
+ *               `0`, negatives, `NaN`, `Infinity`, fractions and values past
+ *               `Number.MAX_SAFE_INTEGER` are refused.
+ *   `string`  — a strict decimal digit string (`/^\d+$/`) whose numeric value
+ *               is a safe integer `>= 1`. This is the shape mysql2 produces for
+ *               DECIMAL/BIGINT columns. Whitespace, a leading `+`/`-`, a
+ *               decimal point, an exponent, a hex prefix or any other character
+ *               fails the pattern before `Number()` is ever applied, so nothing
+ *               is coerced: `' 1'`, `'+1'`, `'-1'`, `'1.0'`, `'1e3'` and
+ *               `'0x1'` are all refusals, and `'0'` is refused for being zero.
+ *
+ * The string is converted with `Number()` and then re-tested with
+ * `Number.isSafeInteger`, so a digit string longer than the safe-integer range
+ * rounds to a non-safe double and is refused — it is never truncated, clamped
+ * or wrapped into a plausible-looking epoch. Every refusal throws
+ * `ExportOwnershipCapabilityError`: an epoch this adapter cannot read is a
+ * malformed grant, and a malformed grant must not fence anything.
+ */
+const parseOwnerEpoch = (raw: unknown): number => {
+    if (typeof raw === 'number') {
+        if (Number.isSafeInteger(raw) && raw >= 1) return raw;
+        throw new ExportOwnershipCapabilityError();
+    }
+    if (typeof raw === 'string' && OWNER_EPOCH_DECIMAL.test(raw)) {
+        const parsed = Number(raw);
+        if (Number.isSafeInteger(parsed) && parsed >= 1) return parsed;
+    }
+    throw new ExportOwnershipCapabilityError();
+};
 
 /** Claim executor: the statement seam plus the one read-back it must support. */
 export interface ExportOwnershipClaimExecutor extends ExportStatementExecutor {
@@ -1781,11 +1951,20 @@ export const createSqlExportOwnershipPort = (
                 input.owner,
                 input.nowMs,
             ]);
-            const epoch = Array.isArray(rows) ? rows[0]?.owner_epoch : undefined;
-            if (typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 1) {
+            // The read-back must identify EXACTLY one row. Zero rows means the
+            // fence that matched one row a moment ago no longer matches — the
+            // claim was taken or settled inside this same transaction — and more
+            // than one means the predicate is not selective. Neither is a grant.
+            const row = Array.isArray(rows) && rows.length === 1 ? rows[0] : undefined;
+            if (row === null || typeof row !== 'object') {
                 throw new ExportOwnershipCapabilityError();
             }
-            return { epoch, leaseUntilMs: input.leaseUntilMs };
+            // Parsed, not type-tested: the driver may hand back `1` or `'1'`.
+            // Both are epoch one; anything else is refused (see parseOwnerEpoch).
+            return {
+                epoch: parseOwnerEpoch((row as { owner_epoch?: unknown }).owner_epoch),
+                leaseUntilMs: input.leaseUntilMs,
+            };
         },
         failureStatement: (input) => ({
             sql: input.code === 'aborted' ? OWNERSHIP_ABORT_SQL : OWNERSHIP_FAILURE_SQL,
@@ -1808,6 +1987,20 @@ export const createSqlExportOwnershipPort = (
                 input.nowMs,
             ],
         }),
+        renew: async (input) => {
+            // One statement on the injected executor. `affectedRowsOf` refuses
+            // an unusable count instead of coercing it, so an absent count can
+            // never be read as either "renewed" or "ownership lost".
+            const updated = await executor(OWNERSHIP_RENEW_SQL, [
+                input.leaseUntilMs,
+                input.exportId,
+                input.tenantId,
+                input.owner,
+                input.epoch,
+                input.nowMs,
+            ]);
+            return affectedRowsOf(updated, 'ownership renewal') === 1;
+        },
     };
 };
 
@@ -1963,15 +2156,38 @@ const runTenantExport = async (
     let grant: ExportOwnershipGrant | null = null;
     try {
         grant = validateOwnershipGrant(
-            await inTransaction(deps.db, async (tx) =>
-                ownership.claim((sql, params) => tx.execute(sql, params), {
+            await inTransaction(deps.db, async (tx) => {
+                // The port's claim needs BOTH seams on the SAME connection: it
+                // WRITES the claim through `execute` and then READS the epoch it
+                // installed through `query`. An execute-only handle made
+                // `createSqlExportOwnershipPort` refuse every claim with
+                // `ExportOwnershipCapabilityError` (an epoch it cannot read is a
+                // malformed grant, never a guessed one), so a correctly wired
+                // deployment could not claim a row at all.
+                //
+                // Both members are closures over `tx` and call it as a method,
+                // so the transaction-scoped receiver is preserved: the read-back
+                // cannot land on a different connection than the claim write,
+                // which is what makes the epoch it returns the epoch this
+                // attempt actually holds.
+                const claimExecutor: ExportOwnershipClaimExecutor = Object.assign(
+                    (sql: string, params?: unknown[]) => tx.execute(sql, params),
+                    {
+                        query: <T = Record<string, unknown>>(
+                            sql: string,
+                            params?: unknown[],
+                        ): Promise<T[]> => tx.query<T>(sql, params),
+                    },
+                );
+                return ownership.claim(claimExecutor, {
                     exportId,
                     tenantId,
                     owner,
                     nowMs: claimNowMs,
                     leaseMs: EXPORT_OWNERSHIP_LEASE_MS,
                     leaseUntilMs: claimNowMs + EXPORT_OWNERSHIP_LEASE_MS,
-                })),
+                });
+            }),
             claimNowMs,
         );
         if (grant === null) {
@@ -1980,6 +2196,9 @@ const runTenantExport = async (
             // state may be recorded for it — see the catch below.
             throw new ExportOwnershipLostError();
         }
+        // The expiry this attempt currently holds: the value the claim
+        // installed, moved only by a renewal that proved a live lease.
+        let leaseUntilMs = grant.leaseUntilMs;
         // Resolved INSIDE the guarded region on purpose: an invalid cap must
         // settle the job as failed. Throwing before the transition would leave
         // the row pending and block the tenant behind the one-active rule.
@@ -1993,6 +2212,18 @@ const runTenantExport = async (
                 skipped.push(plan.table);
                 continue;
             }
+            // Renew BEFORE this table's bounded expensive phase — its paged
+            // read and its storage write — so neither can begin under a lease
+            // that lapses mid-table. Never mid-table: the page loop has no
+            // ownership statement of its own.
+            leaseUntilMs = await renewOwnedLease(ownership, {
+                exportId,
+                tenantId,
+                owner,
+                epoch: grant.epoch,
+                now,
+                leaseUntilMs,
+            });
             const read = await readExportTable(deps.db, plan, tenantId, limits, budget, deps.signal);
             const bytes = Buffer.byteLength(read.body, 'utf8');
             const key = `${attemptPrefix}/${plan.table}.jsonl`;
@@ -2012,6 +2243,7 @@ const runTenantExport = async (
                 authorities: plan.authorities.map((authority) => authority.source),
                 rejected_contradictions: read.rejected,
                 truncated: read.truncatedBy !== null,
+                truncated_by: read.truncatedBy,
                 pages: read.pages,
             });
             if (read.rejected > 0) {
@@ -2025,6 +2257,16 @@ const runTenantExport = async (
             totalBytes += bytes;
             if (read.truncatedBy === 'bytes') budgetExhausted = true;
         }
+        // Renew again before the omitted-row probes: they issue one statement
+        // per probed table and are the other bounded expensive phase.
+        leaseUntilMs = await renewOwnedLease(ownership, {
+            exportId,
+            tenantId,
+            owner,
+            epoch: grant.epoch,
+            now,
+            leaseUntilMs,
+        });
         const omittedCoverage = await buildOmittedCoverage(deps.db, tenantId, deps.signal);
         for (const table of skipped) {
             omittedCoverage.omitted.push({
@@ -2070,6 +2312,19 @@ const runTenantExport = async (
         // IS published, and this function returns its manifest rather than
         // reporting a cancellation for an export the client can download.
         abortIfRequested(deps.signal);
+        // Renew once more before the manifest write. Ownership loss must stop
+        // the attempt BEFORE the publication artifact is written, not merely
+        // before the completion CAS: the CAS would refuse the transition, but
+        // the manifest bytes would already exist for a job this attempt no
+        // longer owns.
+        leaseUntilMs = await renewOwnedLease(ownership, {
+            exportId,
+            tenantId,
+            owner,
+            epoch: grant.epoch,
+            now,
+            leaseUntilMs,
+        });
         const manifestKey = `${attemptPrefix}/manifest.json`;
         try {
             await deps.storage.write(manifestKey, JSON.stringify(manifest));

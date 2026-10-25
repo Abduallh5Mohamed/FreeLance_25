@@ -12,6 +12,11 @@ import {
     resourceBranchDenial,
     type ResourceBranchDeps,
 } from '../security/resource-branch';
+import {
+    parseVideoReference,
+    validateVideoBinding,
+    VIDEO_BINDING_CODES,
+} from '../security/video-access-policy';
 
 // Configure multer for receipt image uploads
 const storage = multer.diskStorage({
@@ -247,6 +252,229 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
             if (!membership) return { ok: false, status: 403, error: 'Branch membership required' };
         }
         return { ok: true };
+    };
+
+    // ===============================
+    // CANONICAL VIDEO BINDING (same contract as lectures.ts / materials.ts)
+    // ===============================
+
+    type BindingReader = Pick<PremiumLectureRouterDeps, 'query' | 'queryOne' | 'execute'>;
+    type ProofReader = Pick<PremiumLectureRouterDeps, 'query' | 'queryOne'>;
+
+    /** Rows read by the read-time binding proof (no new columns, no new table). */
+    interface VideoTenantRow { id: string; tenant_id: string | null; course_id: string | null }
+    interface GroupCourseRow { id: string; course_id: string | null }
+    interface CourseTenantRow { id: string; tenant_id: string | null }
+
+    const sqlPlaceholders = (count: number): string => new Array(count).fill('?').join(',');
+
+    const uniqueIds = (values: Array<string | null>): string[] => {
+        const seen = new Set<string>();
+        for (const value of values) if (value != null && value.length > 0) seen.add(value);
+        return [...seen];
+    };
+
+    /**
+     * Prove, from server rows only, that a STORED `video://<id>` still
+     * belongs to the lecture's own destination workspace. Canonical syntax is
+     * not authority: a row written before the binding contract (or written by
+     * another tenant) carries a reference whose tenant/ownership was never
+     * established, so it is not echoed. The proof re-applies the write
+     * contract's tenant rule with read-only SQL — the asset must exist, its
+     * declared tenant(s) must agree and be provable, and the destination
+     * tenant derived from `premium_lectures.group_id -> groups.course_id ->
+     * courses.tenant_id` must equal it exactly. Nothing is rewritten and no
+     * readiness/entitlement state is invented; a row that cannot be proven is
+     * simply projected with `video_url: null` while the record itself is
+     * returned unchanged.
+     *
+     * The proof is deliberately stateless (there is no "verified" column):
+     * an unproven row therefore stays withheld on every read until a write
+     * re-binds it through `validateVideoBinding`. Actor authority and
+     * single-parent uniqueness are NOT decided here — playback authority
+     * remains the secure-video entitlement path's job.
+     */
+    const proveStoredVideoReferences = async (
+        reader: ProofReader,
+        rows: any[],
+    ): Promise<Map<string, string | null>> => {
+        const proven = new Map<string, string | null>();
+        const candidates: Array<{ rowId: string; videoUrl: string; videoId: string; groupId: string | null }> = [];
+        for (const row of rows) {
+            if (!row || typeof row !== 'object' || row.id == null) continue;
+            const rowId = String(row.id);
+            proven.set(rowId, null); // fail closed until proven otherwise
+            if (typeof row.video_url !== 'string') continue;
+            const parsed = parseVideoReference(row.video_url);
+            if (!parsed.ok) continue;
+            candidates.push({
+                rowId,
+                videoUrl: parsed.videoUrl,
+                videoId: parsed.videoId,
+                groupId: row.group_id == null ? null : String(row.group_id),
+            });
+        }
+        if (candidates.length === 0) return proven;
+
+        const videoIds = uniqueIds(candidates.map((candidate) => candidate.videoId));
+        const videos: VideoTenantRow[] = videoIds.length === 0 ? [] : await reader.query<VideoTenantRow>(
+            `SELECT id, tenant_id, course_id FROM videos WHERE id IN (${sqlPlaceholders(videoIds.length)})`,
+            videoIds,
+        );
+        const videoById = new Map<string, VideoTenantRow>(
+            videos.map((video): [string, VideoTenantRow] => [String(video.id), video]),
+        );
+
+        const groupIds = uniqueIds(candidates.map((candidate) => candidate.groupId));
+        const groups: GroupCourseRow[] = groupIds.length === 0 ? [] : await reader.query<GroupCourseRow>(
+            `SELECT id, course_id FROM \`groups\` WHERE id IN (${sqlPlaceholders(groupIds.length)})`,
+            groupIds,
+        );
+        const groupCourseById = new Map<string, string | null>(groups.map((group): [string, string | null] => [
+            String(group.id),
+            group.course_id == null ? null : String(group.course_id),
+        ]));
+
+        const courseIds = uniqueIds([
+            ...videos.map((video) => (video.course_id == null ? null : String(video.course_id))),
+            ...groups.map((group) => (group.course_id == null ? null : String(group.course_id))),
+        ]);
+        const courses: CourseTenantRow[] = courseIds.length === 0 ? [] : await reader.query<CourseTenantRow>(
+            `SELECT id, tenant_id FROM courses WHERE id IN (${sqlPlaceholders(courseIds.length)})`,
+            courseIds,
+        );
+        const courseTenantById = new Map<string, string | null>(courses.map((course): [string, string | null] => [
+            String(course.id),
+            course.tenant_id == null ? null : String(course.tenant_id),
+        ]));
+
+        for (const candidate of candidates) {
+            const video = videoById.get(candidate.videoId);
+            if (!video) continue;
+            const directTenant = video.tenant_id == null ? null : String(video.tenant_id);
+            const courseTenant = video.course_id == null
+                ? null
+                : courseTenantById.get(String(video.course_id)) ?? null;
+            // Two declared authorities that disagree prove no tenant at all.
+            if (directTenant && courseTenant && directTenant !== courseTenant) continue;
+            const videoTenant = directTenant ?? courseTenant;
+            if (!videoTenant) continue;
+            if (!candidate.groupId) continue;
+            const destinationCourseId = groupCourseById.get(candidate.groupId) ?? null;
+            if (!destinationCourseId) continue;
+            const destinationTenant = courseTenantById.get(destinationCourseId) ?? null;
+            if (!destinationTenant || destinationTenant !== videoTenant) continue;
+            proven.set(candidate.rowId, candidate.videoUrl);
+        }
+        return proven;
+    };
+
+    /**
+     * Projection used by every response that carries a premium-lecture row.
+     * The caller passes the PROVEN reference for that row (or null); nothing
+     * is read from the row's own `video_url` here, so a stored value can never
+     * be echoed by accident. Nothing is rewritten in the database: the row
+     * keeps its legacy value and the record is returned in full.
+     */
+    const projectLecture = <T>(row: T, provenVideoUrl: string | null): T => {
+        if (!row || typeof row !== 'object') return row;
+        return { ...(row as object), video_url: provenVideoUrl } as T;
+    };
+
+    /** Prove and project a list of rows (no N+1: three batched reads). */
+    const projectLectures = async (rows: any[]): Promise<any[]> => {
+        const list = Array.isArray(rows) ? rows : [];
+        const proven = await proveStoredVideoReferences(deps, list);
+        return list.map((row) => projectLecture(
+            row,
+            row && typeof row === 'object' && row.id != null ? proven.get(String(row.id)) ?? null : null,
+        ));
+    };
+
+    /** Prove and project a single row (detail / create / update echo). */
+    const projectLectureById = async <T>(row: T): Promise<T> => {
+        if (!row || typeof row !== 'object') return row;
+        const id = (row as { id?: unknown }).id;
+        if (id == null) return projectLecture(row, null);
+        const proven = await proveStoredVideoReferences(deps, [row]);
+        return projectLecture(row, proven.get(String(id)) ?? null);
+    };
+
+    /**
+     * Server-derived destination of a premium lecture. `premium_lectures` has
+     * no course column, so the destination course is read from its own
+     * `group_id` -> `groups.course_id`, and the course's `tenant_id` is the
+     * destination tenant. A lecture without a group, a group without a course,
+     * or a course without a tenant has no provable destination and fails
+     * closed with the policy's own TENANT_UNPROVEN mapping.
+     */
+    const resolvePremiumDestinationCourse = async (
+        reader: Pick<PremiumLectureRouterDeps, 'queryOne'>,
+        groupId: string | null,
+    ): Promise<{ ok: true; courseId: string } | { ok: false; status: number; code: string; error: string }> => {
+        const unproven = {
+            ok: false as const,
+            status: 403,
+            code: VIDEO_BINDING_CODES.TENANT_UNPROVEN as string,
+            error: 'Destination workspace could not be verified',
+        };
+        if (!groupId) return unproven;
+        const group = await reader.queryOne<{ course_id: string | null }>(
+            'SELECT course_id FROM `groups` WHERE id = ?', [groupId],
+        );
+        if (!group || group.course_id == null || String(group.course_id).length === 0) return unproven;
+        const course = await reader.queryOne<{ tenant_id: string | null }>(
+            'SELECT tenant_id FROM courses WHERE id = ?', [group.course_id],
+        );
+        if (!course || course.tenant_id == null || String(course.tenant_id).length === 0) return unproven;
+        return { ok: true, courseId: String(group.course_id) };
+    };
+
+    /**
+     * Bind a canonical `video://<id>` to a premium lecture under the same
+     * contract as lectures/materials: the video must exist, be in the caller's
+     * server-selected tenant, be authorized by the playback policy, sit in the
+     * same tenant as the lecture's destination course, and not be bound
+     * elsewhere. The premium table is an additional parent the shared helper
+     * does not know about, so the single-parent probe is extended to it here.
+     * Must run inside the write transaction (the video row is locked).
+     */
+    const bindPremiumVideo = async (
+        reader: BindingReader,
+        req: AuthRequest,
+        videoUrl: string,
+        selfId: string,
+        groupId: string | null,
+    ) => {
+        const destination = await resolvePremiumDestinationCourse(reader, groupId);
+        if (!destination.ok) return destination;
+
+        const binding = await validateVideoBinding({
+            reader,
+            videoUrl,
+            actorUserId: req.user?.id ?? '',
+            actorTenantId: req.user?.tenantId,
+            actorStudentEnrollmentId: req.user?.studentEnrollmentId,
+            selfId,
+            target: 'lecture',
+            targetCourseId: destination.courseId,
+            hasPlatformCapability: hasPlatformAdmin,
+        });
+        if (!binding.ok) return binding;
+
+        const conflict = await reader.queryOne<{ id: string }>(
+            'SELECT id FROM premium_lectures WHERE video_url = ? AND id <> ? ORDER BY id ASC LIMIT 1',
+            [binding.videoUrl, selfId],
+        );
+        if (conflict) {
+            return {
+                ok: false as const,
+                status: 409,
+                code: VIDEO_BINDING_CODES.ALREADY_BOUND as string,
+                error: 'This video is already linked to another lesson or material',
+            };
+        }
+        return binding;
     };
 
     // ===============================
@@ -550,7 +778,13 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
                 AND (pl.group_id IS NULL OR pl.group_id = ?)
                 ORDER BY pl.created_at DESC
             `, [studentId, studentId, student.grade_id, student.group_id]);
-            res.json(lectures || []);
+            // A catalogue row carries the binding only when this student was
+            // actually granted access AND the stored reference is proven to
+            // belong to the lecture's own destination workspace; otherwise the
+            // reference is withheld (the catalogue row itself is unchanged).
+            const visibleRows = (lectures || []).map((row: any) =>
+                row?.access_id ? row : { ...row, video_url: null });
+            res.json(await projectLectures(visibleRows));
         } catch (error) {
             console.error('Get student premium lectures error:', error);
             res.status(500).json({ error: 'فشل في جلب الحصص المدفوعة' });
@@ -579,7 +813,7 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
                 WHERE pla.student_id = ?
                 ORDER BY pla.granted_at DESC
             `, [studentId]);
-            res.json(lectures || []);
+            res.json(await projectLectures(lectures || []));
         } catch (error) {
             console.error('Get purchased lectures error:', error);
             res.status(500).json({ error: 'فشل في جلب الحصص المشتراة' });
@@ -676,7 +910,7 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
             sql += ' ORDER BY pl.created_at DESC';
 
             const lectures = await deps.query(sql, params);
-            res.json(lectures || []);
+            res.json(await projectLectures(lectures || []));
         } catch (error) {
             console.error('Get premium lectures error:', error);
             res.status(500).json({ error: 'فشل في جلب الحصص المدفوعة' });
@@ -706,7 +940,7 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
             if (!(await enforcePremiumBranch(req, res, id, req.query?.branch_id))) return;
 
             if (await canManageLecture(user, id)) {
-                return res.json(lecture);
+                return res.json(await projectLectureById(lecture));
             }
 
             // Students see a lecture only when access was actually granted;
@@ -717,7 +951,7 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
                     WHERE student_id = ? AND premium_lecture_id = ?
                 `, [user.studentEnrollmentId, id]);
                 if (access) {
-                    return res.json(lecture);
+                    return res.json(await projectLectureById(lecture));
                 }
             }
 
@@ -740,6 +974,19 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
             const decimalPrice = toDecimalMoney(price);
             if (decimalPrice === null) {
                 return res.status(400).json({ error: 'السعر يجب أن يكون موجبًا وبدقتين عشريتين كحد أقصى' });
+            }
+
+            // One canonical reference rule for this write path: `video://`
+            // followed by a non-empty id with no whitespace. A raw private
+            // URL (or any other form) is refused here, before any read or
+            // write, and is never stored verbatim.
+            const videoReference = parseVideoReference(String(video_url));
+            if (!videoReference.ok) {
+                return res.status(400).json({
+                    error: videoReference.reason === 'not-a-reference'
+                        ? 'External video links are not allowed. Upload the video to the platform.'
+                        : 'Video link is not a canonical platform video reference',
+                });
             }
 
             if (!(await hasPlatformAdmin(user.id))) {
@@ -767,13 +1014,29 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
                 return res.status(groupBranch.status).json({ error: groupBranch.error });
             }
 
-            await deps.execute(`
-                INSERT INTO premium_lectures (id, title, description, video_url, thumbnail_url, duration_minutes, price, grade_id, group_id, is_published, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `, [id, title, description || null, video_url, thumbnail_url || null, duration_minutes || 0, decimalPrice, grade_id || null, group_id || null, is_published ? 1 : 0, user.id]);
+            // The binding check and the INSERT share one transaction so the
+            // video row lock covers the write and no raw/unproven reference
+            // can be persisted.
+            const outcome = await withTransaction(async (tx) => {
+                const binding = await bindPremiumVideo(tx, req, videoReference.videoUrl, id, group_id || null);
+                if (!binding.ok) return { kind: 'denied' as const, binding };
+
+                await tx.execute(`
+                    INSERT INTO premium_lectures (id, title, description, video_url, thumbnail_url, duration_minutes, price, grade_id, group_id, is_published, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `, [id, title, description || null, binding.videoUrl, thumbnail_url || null, duration_minutes || 0, decimalPrice, grade_id || null, group_id || null, is_published ? 1 : 0, user.id]);
+                return { kind: 'created' as const };
+            });
+
+            if (outcome.kind === 'denied') {
+                return res.status(outcome.binding.status).json({
+                    error: outcome.binding.error,
+                    code: outcome.binding.code,
+                });
+            }
 
             const newLecture = await deps.queryOne('SELECT * FROM premium_lectures WHERE id = ?', [id]);
-            res.status(201).json(newLecture);
+            res.status(201).json(await projectLectureById(newLecture));
         } catch (error) {
             console.error('Create premium lecture error:', error);
             res.status(500).json({ error: 'فشل في إنشاء الحصة المدفوعة' });
@@ -795,18 +1058,120 @@ export const createPremiumLectureRouter = (deps: PremiumLectureRouterDeps) => {
                 return res.status(targetGroupBranch.status).json({ error: targetGroupBranch.error });
             }
 
+            // The destination GROUP is client-supplied; its tenant is not.
+            // Mirrors the create path: a non-platform writer may only place a
+            // lecture into a group of their own workspace, so an update cannot
+            // move a lecture (and the paid video bound to it) into a foreign
+            // tenant's catalogue. The branch check above only covers
+            // branch-scoped groups, so this is not implied by it.
+            if (group_id && !(await hasPlatformAdmin(req.user!.id))) {
+                if (!req.user!.instructorId) {
+                    return res.status(403).json({ error: 'ليست لديك صلاحية لتحديث الحصة المدفوعة' });
+                }
+                const destinationGroup = await deps.queryOne(`
+                    SELECT g.id
+                    FROM \`groups\` g
+                    INNER JOIN tenants t ON t.owner_user_id = g.instructor_id
+                    WHERE g.id = ? AND t.owner_user_id = ? AND t.status = 'active'
+                `, [group_id, req.user!.id]);
+                if (!destinationGroup) {
+                    return res.status(403).json({ error: 'المجموعة ليست داخل مساحتك' });
+                }
+            }
+
             if (price !== undefined && toDecimalMoney(price) === null) {
                 return res.status(400).json({ error: 'السعر يجب أن يكون موجبًا وبدقتين عشريتين كحد أقصى' });
             }
 
-            await deps.execute(`
-                UPDATE premium_lectures
-                SET title = ?, description = ?, video_url = ?, thumbnail_url = ?, duration_minutes = ?, price = ?, grade_id = ?, group_id = ?, is_published = ?
-                WHERE id = ?
-            `, [title, description || null, video_url, thumbnail_url || null, duration_minutes || 0, toDecimalMoney(price) ?? price, grade_id || null, group_id || null, is_published ? 1 : 0, id]);
+            // Only a NEW association needs a canonical value before any write.
+            // An update that leaves the stored reference untouched does not
+            // rewrite it, so a legacy row (raw URL or an unproven reference)
+            // is never silently rewritten; a MOVE is re-proven inside the
+            // transaction below, because the reference is only authorized for
+            // the destination it was proven against.
+            const current = await deps.queryOne<{ video_url: string | null }>(
+                'SELECT video_url FROM premium_lectures WHERE id = ?', [id],
+            );
+            if (!current) {
+                return res.status(404).json({ error: 'الحصة غير موجودة' });
+            }
+            const changesVideo = video_url !== undefined
+                && String(video_url) !== String(current.video_url ?? '');
+            if (changesVideo) {
+                const videoReference = parseVideoReference(String(video_url));
+                if (!videoReference.ok) {
+                    return res.status(400).json({
+                        error: videoReference.reason === 'not-a-reference'
+                            ? 'External video links are not allowed. Upload the video to the platform.'
+                            : 'Video link is not a canonical platform video reference',
+                    });
+                }
+            }
+
+            const outcome = await withTransaction(async (tx) => {
+                const stored = await tx.queryOne<{ video_url: string | null; group_id: string | null }>(
+                    'SELECT video_url, group_id FROM premium_lectures WHERE id = ? FOR UPDATE', [id],
+                );
+                if (!stored) return { kind: 'missing' as const };
+
+                // The destination is the group this write leaves behind (this
+                // endpoint is a full replace: an omitted group_id clears it,
+                // exactly as the UPDATE below does). It is read as a server
+                // row and mapped to its course tenant — never taken from the
+                // body as authority.
+                const destinationGroupId = group_id ? String(group_id) : null;
+                const destinationChanged =
+                    destinationGroupId !== (stored.group_id == null ? null : String(stored.group_id));
+
+                const replacesVideo = video_url !== undefined
+                    && String(video_url) !== String(stored.video_url ?? '');
+                let storedVideoUrl = replacesVideo ? String(video_url) : (stored.video_url ?? null);
+
+                // A new association is always proven. An UNCHANGED stored
+                // reference is not rewritten, but a destination change
+                // re-proves it: the write contract's tenant equality is a
+                // property of the pair, so the same reference is not
+                // authorized for a different destination tenant. A destination
+                // with no provable tenant is not accepted as a proof — the row
+                // is left untouched and the read projection withholds it.
+                const storedReference = storedVideoUrl == null
+                    ? null
+                    : parseVideoReference(String(storedVideoUrl));
+                const referenceToBind = replacesVideo
+                    ? String(video_url)
+                    : (storedReference && storedReference.ok ? storedReference.videoUrl : null);
+                if (referenceToBind !== null) {
+                    const destinationProvable = replacesVideo || (destinationChanged
+                        && (await resolvePremiumDestinationCourse(tx, destinationGroupId)).ok);
+                    if (destinationProvable) {
+                        const binding = await bindPremiumVideo(
+                            tx, req, referenceToBind, id, destinationGroupId,
+                        );
+                        if (!binding.ok) return { kind: 'denied' as const, binding };
+                        storedVideoUrl = binding.videoUrl;
+                    }
+                }
+
+                await tx.execute(`
+                    UPDATE premium_lectures
+                    SET title = ?, description = ?, video_url = ?, thumbnail_url = ?, duration_minutes = ?, price = ?, grade_id = ?, group_id = ?, is_published = ?
+                    WHERE id = ?
+                `, [title, description || null, storedVideoUrl, thumbnail_url || null, duration_minutes || 0, toDecimalMoney(price) ?? price, grade_id || null, group_id || null, is_published ? 1 : 0, id]);
+                return { kind: 'updated' as const };
+            });
+
+            if (outcome.kind === 'missing') {
+                return res.status(404).json({ error: 'الحصة غير موجودة' });
+            }
+            if (outcome.kind === 'denied') {
+                return res.status(outcome.binding.status).json({
+                    error: outcome.binding.error,
+                    code: outcome.binding.code,
+                });
+            }
 
             const updatedLecture = await deps.queryOne('SELECT * FROM premium_lectures WHERE id = ?', [id]);
-            res.json(updatedLecture);
+            res.json(await projectLectureById(updatedLecture));
         } catch (error) {
             console.error('Update premium lecture error:', error);
             res.status(500).json({ error: 'فشل في تحديث الحصة المدفوعة' });

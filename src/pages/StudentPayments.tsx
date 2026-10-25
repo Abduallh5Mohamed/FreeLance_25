@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,63 +12,45 @@ import { Textarea } from "@/components/ui/textarea";
 import { Search, ChevronDown, ChevronUp, DollarSign, Calendar, Clock, User, Phone, CreditCard, Plus } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
-import axios from 'axios';
+import { getStudents, getGrades, getGroups, getFees, createFee, type Fee, type Grade, type Group, type Student } from "@/lib/api";
 
-const API_URL = import.meta.env.VITE_API_URL || '/api';
-
-interface Student {
-  id: string;
-  name: string;
-  phone: string;
-  guardian_phone: string;
-  barcode: string;
-  grade_id: string;
-  group_id: string;
-  is_active: boolean;
+/** Row shape served by GET /students; the shared Student type omits is_active. */
+interface StudentRow extends Student {
+  is_active?: boolean;
 }
 
-interface Payment {
-  id: string;
-  student_id?: string;
-  student_name: string;
-  phone: string;
-  guardian_phone?: string;
-  amount: number;
-  paid_amount: number;
-  remaining_amount: number;
-  payment_year: number;
-  payment_month: number;
-  payment_date: string;
-  payment_method: string;
-  status: string;
-  notes?: string;
-  created_at: string;
-  grade_id?: string;
-  group_id?: string;
-}
-
-interface Grade {
-  id: string;
-  name: string;
-}
-
-interface Group {
-  id: string;
-  name: string;
-}
+/** Group every fee under the student it belongs to, newest payment first. */
+const groupPaymentsForStudents = (list: StudentRow[], fees: Fee[]) => {
+  const paymentsByStudent: Record<string, Fee[]> = {};
+  for (const student of list) {
+    const studentPayments = fees.filter(fee =>
+      fee.phone === student.phone ||
+      (fee.student_id && fee.student_id === student.id)
+    );
+    studentPayments.sort((a, b) => {
+      const dateA = new Date(a.payment_date || a.created_at || 0).getTime();
+      const dateB = new Date(b.payment_date || b.created_at || 0).getTime();
+      return dateB - dateA;
+    });
+    paymentsByStudent[student.id] = studentPayments;
+  }
+  return paymentsByStudent;
+};
 
 const StudentPayments = () => {
-  const [students, setStudents] = useState<Student[]>([]);
+  const [students, setStudents] = useState<StudentRow[]>([]);
   const [grades, setGrades] = useState<Grade[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
-  const [payments, setPayments] = useState<Record<string, Payment[]>>({});
+  const [payments, setPayments] = useState<Record<string, Fee[]>>({});
   const [expandedStudents, setExpandedStudents] = useState<Set<string>>(new Set());
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedGrade, setSelectedGrade] = useState<string>("all");
   const [selectedGroup, setSelectedGroup] = useState<string>("all");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isPaymentDialogOpen, setIsPaymentDialogOpen] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [paymentFormData, setPaymentFormData] = useState({
     phone: '',
     student_name: '',
@@ -81,65 +63,54 @@ const StudentPayments = () => {
   });
   const { toast } = useToast();
 
+  /** Monotonic load sequence: only the latest fetch is allowed to commit. */
+  const loadSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+  const submitInFlightRef = useRef(false);
+  const studentsRef = useRef<StudentRow[]>([]);
+
   useEffect(() => {
-    const loadData = async () => {
-      setLoading(true);
-      try {
-        const token = localStorage.getItem('token');
-        const headers = { Authorization: `Bearer ${token}` };
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
-        // Fetch all data in parallel
-        const [studentsRes, gradesRes, groupsRes, feesRes] = await Promise.all([
-          axios.get(`${API_URL}/students`, { headers }),
-          axios.get(`${API_URL}/grades`, { headers }),
-          axios.get(`${API_URL}/groups`, { headers }),
-          axios.get(`${API_URL}/fees`, { headers })
-        ]);
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    const seq = ++loadSeqRef.current;
+    try {
+      const [studentsData, gradesData, groupsData, feesData] = await Promise.all([
+        getStudents(),
+        getGrades(),
+        getGroups(),
+        getFees()
+      ]);
 
-        const activeStudents = studentsRes.data.filter((s: Student) => s.is_active);
-        setStudents(activeStudents);
-        setGrades(gradesRes.data.filter((g: Grade & { is_active: boolean }) => g.is_active));
-        setGroups(groupsRes.data.filter((g: Group & { is_active: boolean }) => g.is_active));
+      if (seq !== loadSeqRef.current || !mountedRef.current) return;
 
-        // Group payments by student
-        const paymentsByStudent: Record<string, Payment[]> = {};
-
-        for (const student of activeStudents) {
-          // Get all payments for this student (by phone or student_id)
-          const studentPayments = feesRes.data.filter((fee: Payment) =>
-            fee.phone === student.phone ||
-            (fee.student_id && fee.student_id === student.id)
-          );
-
-          // Sort by date descending (newest first)
-          studentPayments.sort((a: Payment, b: Payment) => {
-            const dateA = new Date(a.payment_date || a.created_at).getTime();
-            const dateB = new Date(b.payment_date || b.created_at).getTime();
-            return dateB - dateA;
-          });
-
-          paymentsByStudent[student.id] = studentPayments;
-        }
-
-        setPayments(paymentsByStudent);
-      } catch (error) {
-        console.error('Error fetching data:', error);
-        toast({
-          title: "خطأ",
-          description: "فشل تحميل البيانات",
-          variant: "destructive",
-        });
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadData();
+      const activeStudents = (studentsData as StudentRow[]).filter((s: StudentRow) => !!s.is_active);
+      setStudents(activeStudents);
+      studentsRef.current = activeStudents;
+      setGrades(gradesData.filter((g: Grade) => !!g.is_active));
+      setGroups(groupsData.filter((g: Group) => !!g.is_active));
+      setPayments(groupPaymentsForStudents(activeStudents, feesData));
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      if (seq !== loadSeqRef.current || !mountedRef.current) return;
+      setLoadError('تعذر تحميل البيانات');
+      toast({
+        title: "خطأ",
+        description: "فشل تحميل البيانات",
+        variant: "destructive",
+      });
+    } finally {
+      if (seq === loadSeqRef.current && mountedRef.current) setLoading(false);
+    }
   }, [toast]);
 
-  const fetchData = async () => {
-    // This function is no longer needed - merged into useEffect
-  };
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const toggleStudent = (studentId: string) => {
     const newExpanded = new Set(expandedStudents);
@@ -271,12 +242,11 @@ const StudentPayments = () => {
 
   const handleSubmitOfflinePayment = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
+    if (submitInFlightRef.current) return; // synchronous guard: one payment per submit
+    submitInFlightRef.current = true;
+    setSubmitting(true);
 
     try {
-      const token = localStorage.getItem('token');
-      const headers = { Authorization: `Bearer ${token}` };
-
       const paymentData = {
         student_name: paymentFormData.student_name,
         phone: paymentFormData.phone,
@@ -298,7 +268,8 @@ const StudentPayments = () => {
         payment_month: new Date().getMonth() + 1
       };
 
-      await axios.post(`${API_URL}/fees`, paymentData, { headers });
+      // Server-confirmed creation only: success is reported after this resolves.
+      await createFee(paymentData);
 
       toast({
         title: "تم التسجيل بنجاح",
@@ -317,21 +288,23 @@ const StudentPayments = () => {
         notes: ''
       });
 
-      // Reload data
-      const feesRes = await axios.get(`${API_URL}/fees`, { headers });
-      const paymentsByStudent: Record<string, Payment[]> = {};
-      for (const student of students) {
-        const studentPayments = feesRes.data.filter((fee: Payment) =>
-          fee.phone === student.phone || (fee.student_id && fee.student_id === student.id)
-        );
-        studentPayments.sort((a: Payment, b: Payment) => {
-          const dateA = new Date(a.payment_date || a.created_at).getTime();
-          const dateB = new Date(b.payment_date || b.created_at).getTime();
-          return dateB - dateA;
-        });
-        paymentsByStudent[student.id] = studentPayments;
+      // Reload fees; a refresh failure must not be reported as a failed payment.
+      const seq = ++loadSeqRef.current;
+      try {
+        const feesData = await getFees();
+        if (seq === loadSeqRef.current && mountedRef.current) {
+          setPayments(groupPaymentsForStudents(studentsRef.current, feesData));
+        }
+      } catch (refreshError) {
+        console.error('Error refreshing payments after submission:', refreshError);
+        if (seq === loadSeqRef.current && mountedRef.current) {
+          toast({
+            title: "تنبيه",
+            description: "تم تسجيل الدفع، لكن تعذر تحديث قائمة الدفعات. أعد تحميل الصفحة.",
+            variant: "destructive",
+          });
+        }
       }
-      setPayments(paymentsByStudent);
     } catch (error) {
       console.error('Error submitting payment:', error);
       toast({
@@ -340,7 +313,8 @@ const StudentPayments = () => {
         variant: "destructive",
       });
     } finally {
-      setLoading(false);
+      submitInFlightRef.current = false;
+      setSubmitting(false);
     }
   };
 
@@ -476,8 +450,8 @@ const StudentPayments = () => {
                   <Button type="button" variant="outline" onClick={() => setIsPaymentDialogOpen(false)}>
                     إلغاء
                   </Button>
-                  <Button type="submit" disabled={loading || !paymentFormData.student_name} className="bg-green-600 hover:bg-green-700">
-                    تسجيل الدفع
+                  <Button type="submit" disabled={submitting || loading || !paymentFormData.student_name} className="bg-green-600 hover:bg-green-700">
+                    {submitting ? "جاري التسجيل..." : "تسجيل الدفع"}
                   </Button>
                 </div>
               </form>
@@ -603,6 +577,11 @@ const StudentPayments = () => {
             <CardTitle>قائمة الطلاب ({filteredStudents.length})</CardTitle>
           </CardHeader>
           <CardContent>
+            {loadError && (
+              <div role="alert" className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                {loadError}
+              </div>
+            )}
             {loading ? (
               <div className="text-center py-8 text-muted-foreground">
                 جاري التحميل...

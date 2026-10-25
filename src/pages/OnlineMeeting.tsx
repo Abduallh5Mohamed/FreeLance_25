@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -8,25 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Video, ExternalLink, Trash2, Edit2, Calendar, Clock, Users } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
-import axios from "axios";
-
-// Helper to get API URL - same pattern as other pages.
-// Vite injects `import.meta.env` at build time; it is absent when this module
-// is imported outside Vite (isolated Node tests), hence the guards below.
-const getApiUrl = () => {
-  const viteEnv: ImportMetaEnv | undefined = import.meta.env;
-  const envApiUrl = viteEnv?.VITE_API_URL;
-  if (envApiUrl) return envApiUrl;
-
-  // In production, use relative path (nginx proxies /api to backend)
-  const currentHost = typeof window !== "undefined" ? window.location.hostname : "";
-  if (currentHost !== "localhost" && currentHost !== "127.0.0.1" && currentHost !== "") {
-    return '/api';
-  }
-  return 'http://localhost:3001/api';
-};
-
-const API_URL = getApiUrl();
+import * as apiHttp from "@/lib/api-http";
 
 /**
  * Synchronous in-flight latch for async UI actions.
@@ -78,9 +61,15 @@ export const isSafeMeetingUrl = (value: string): boolean => {
 };
 
 const extractHttpStatus = (error: unknown): number | undefined => {
-  if (typeof error === "object" && error !== null && "response" in error) {
-    const response = (error as { response?: { status?: unknown } }).response;
-    if (typeof response?.status === "number") return response.status;
+  if (typeof error === "object" && error !== null) {
+    if ("status" in error) {
+      const status = (error as { status?: unknown }).status;
+      if (typeof status === "number") return status;
+    }
+    if ("response" in error) {
+      const response = (error as { response?: { status?: unknown } }).response;
+      if (typeof response?.status === "number") return response.status;
+    }
   }
   return undefined;
 };
@@ -135,12 +124,21 @@ const OnlineMeeting = () => {
   const [filteredGroups, setFilteredGroups] = useState<Group[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [meetingsError, setMeetingsError] = useState<string | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
+  const navigate = useNavigate();
+
+  const isMountedRef = useRef(true);
+  const formGenerationRef = useRef(0);
+  const loadSeqRef = useRef(0);
+  const deleteGuardRef = useRef<Set<string>>(new Set());
 
   // Synchronous latch so a same-tick double click cannot create two meetings.
   const submitGuardRef = useRef<SubmitGuard | null>(null);
   submitGuardRef.current ??= createSubmitGuard();
+  const joinGuardRef = useRef<SubmitGuard | null>(null);
+  joinGuardRef.current ??= createSubmitGuard();
 
   // Copy to clipboard with fallback for non-HTTPS
   const copyToClipboard = async (text: string) => {
@@ -194,62 +192,106 @@ const OnlineMeeting = () => {
   const [scheduledAt, setScheduledAt] = useState("");
   const [durationMinutes, setDurationMinutes] = useState("60");
   const [editingId, setEditingId] = useState<string | null>(null);
+  const draftFingerprint = JSON.stringify([title, description, meetingLink, meetingType, meetingPassword, selectedGrade, selectedGroup, scheduledAt, durationMinutes, editingId]);
+  const latestDraftFingerprintRef = useRef(draftFingerprint);
+  latestDraftFingerprintRef.current = draftFingerprint;
 
   useEffect(() => {
-    fetchGrades();
-    fetchGroups();
-    fetchMeetings();
+    isMountedRef.current = true;
+    void loadCatalogs();
+    void fetchMeetings();
+
+    const refreshSession = () => {
+      loadSeqRef.current += 1;
+      setMeetings([]);
+      setMeetingsError(null);
+      setCatalogError(null);
+      resetForm();
+      void loadCatalogs();
+      void fetchMeetings();
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (!event.key || event.key === 'authToken' || event.key === 'currentUser') refreshSession();
+    };
+
+    window.addEventListener(apiHttp.AUTH_SESSION_CHANGED_EVENT, refreshSession);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      isMountedRef.current = false;
+      formGenerationRef.current += 1;
+      loadSeqRef.current += 1;
+      window.removeEventListener(apiHttp.AUTH_SESSION_CHANGED_EVENT, refreshSession);
+      window.removeEventListener('storage', onStorage);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Filter groups when grade changes
+  // Filter groups when grade changes. The selected group is reset by the
+  // grade control itself, so editing an existing group meeting keeps its group.
   useEffect(() => {
-    if (selectedGrade) {
-      const filtered = groups.filter(g => g.grade_id === selectedGrade);
-      setFilteredGroups(filtered);
-    } else {
-      setFilteredGroups([]);
-    }
-    setSelectedGroup(""); // Reset group when grade changes
+    setFilteredGroups(selectedGrade ? groups.filter(g => g.grade_id === selectedGrade) : []);
   }, [selectedGrade, groups]);
 
-  const getToken = () => localStorage.getItem('token');
-  const getUser = () => {
-    const userData = localStorage.getItem('currentUser');
-    return userData ? JSON.parse(userData) : null;
-  };
-
-  const fetchGrades = async () => {
+  const loadCatalogs = async () => {
+    const startingToken = localStorage.getItem('authToken') ?? '';
     try {
-      const res = await axios.get(`${API_URL}/grades`, {
-        headers: { Authorization: `Bearer ${getToken()}` }
-      });
-      setGrades(res.data);
+      const [gradesData, groupsData] = await Promise.all([
+        apiHttp.getGrades(),
+        apiHttp.getGroups(),
+      ]);
+      if (!isMountedRef.current || startingToken !== (localStorage.getItem('authToken') ?? '')) return;
+      if (!Array.isArray(gradesData) || !Array.isArray(groupsData)) throw new Error('Invalid grades response');
+      setGrades(gradesData);
+      setGroups(groupsData);
+      setCatalogError(null);
     } catch (error) {
-      console.error('Error fetching grades:', error);
-    }
-  };
-
-  const fetchGroups = async () => {
-    try {
-      const res = await axios.get(`${API_URL}/groups`, {
-        headers: { Authorization: `Bearer ${getToken()}` }
-      });
-      setGroups(res.data);
-    } catch (error) {
-      console.error('Error fetching groups:', error);
+      if (!isMountedRef.current || startingToken !== (localStorage.getItem('authToken') ?? '')) return;
+      if (extractHttpStatus(error) === 401) {
+        navigate('/auth');
+        return;
+      }
+      setGrades([]);
+      setGroups([]);
+      setCatalogError('تعذر تحميل الصفوف والمجموعات. تحقق من الجلسة وحاول مرة أخرى.');
     }
   };
 
   const fetchMeetings = async () => {
+    const requestSeq = ++loadSeqRef.current;
+    const startingToken = localStorage.getItem('authToken') ?? '';
+    setMeetings([]);
+    setMeetingsError(null);
+    if (!startingToken) {
+      navigate('/auth');
+      return;
+    }
+    const isCurrent = () =>
+      isMountedRef.current
+      && requestSeq === loadSeqRef.current
+      && startingToken === (localStorage.getItem('authToken') ?? '');
     try {
-      const res = await axios.get(`${API_URL}/meetings`, {
-        headers: { Authorization: `Bearer ${getToken()}` }
-      });
-      setMeetings(res.data);
-      setMeetingsError(null);
+      const response = await apiHttp.authenticatedApiFetch('/meetings');
+      if (!isCurrent()) return;
+      if (response.status === 401) {
+        navigate('/auth');
+        return;
+      }
+      if (!response.ok) {
+        setMeetingsError(describeMeetingsLoadError({ response: { status: response.status } }));
+        return;
+      }
+      const data = await apiHttp.readAuthenticatedApiJson(response);
+      if (!isCurrent()) return;
+      if (!Array.isArray(data)) throw new Error('Invalid meetings response');
+      setMeetings(data);
     } catch (error) {
-      console.error('Error fetching meetings:', error);
+      if (!isCurrent()) return;
+      if ((error as { code?: unknown })?.code === 'CLIENT_SESSION_CHANGED') return;
+      if (extractHttpStatus(error) === 401) {
+        navigate('/auth');
+        return;
+      }
+      setMeetings([]);
       setMeetingsError(describeMeetingsLoadError(error));
     }
   };
@@ -263,12 +305,20 @@ const OnlineMeeting = () => {
       });
       return;
     }
-    // noopener/noreferrer prevents the opened meeting tab from reaching back
-    // into this window (reverse tabnabbing).
-    window.open(link.trim(), "_blank", "noopener,noreferrer");
+    if (!joinGuardRef.current?.tryAcquire()) return;
+    try {
+      // noopener/noreferrer prevents the opened meeting tab from reaching back
+      // into this window (reverse tabnabbing).
+      window.open(link.trim(), "_blank", "noopener,noreferrer");
+    } finally {
+      window.setTimeout(() => joinGuardRef.current?.release(), 1000);
+    }
   };
 
   const resetForm = () => {
+    formGenerationRef.current += 1;
+    submitGuardRef.current = createSubmitGuard();
+    setLoading(false);
     setTitle("");
     setDescription("");
     setMeetingLink("");
@@ -307,11 +357,20 @@ const OnlineMeeting = () => {
       return;
     }
 
+    const startingToken = localStorage.getItem('authToken') ?? '';
+    const generation = formGenerationRef.current;
+    const submittedDraftFingerprint = draftFingerprint;
+    const isCurrentSave = () => isMountedRef.current && generation === formGenerationRef.current
+      && startingToken === (localStorage.getItem('authToken') ?? '');
+    if (!startingToken) {
+      navigate('/auth');
+      return;
+    }
+
     // Synchronous latch: a same-tick duplicate click is rejected here, before
     // any request is sent, so two meetings can never be created.
-    if (!submitGuardRef.current?.tryAcquire()) return;
-
-    const user = getUser();
+    const operationGuard = submitGuardRef.current;
+    if (!operationGuard?.tryAcquire()) return;
     setLoading(true);
 
     try {
@@ -322,36 +381,92 @@ const OnlineMeeting = () => {
         meeting_type: meetingType,
         meeting_password: meetingPassword || null,
         grade_id: selectedGrade,
-        group_id: selectedGroup || null,
+        group_id: selectedGroup && selectedGroup !== 'all' ? selectedGroup : null,
         scheduled_at: scheduledAt,
         duration_minutes: parseInt(durationMinutes),
-        created_by: user?.id
       };
 
-      if (editingId) {
-        await axios.put(`${API_URL}/meetings/${editingId}`, payload, {
-          headers: { Authorization: `Bearer ${getToken()}` }
-        });
-        toast({ title: "تم التحديث", description: "تم تحديث الاجتماع بنجاح" });
-      } else {
-        await axios.post(`${API_URL}/meetings`, payload, {
-          headers: { Authorization: `Bearer ${getToken()}` }
-        });
-        toast({ title: "تم الحفظ", description: "تم إنشاء الاجتماع بنجاح" });
+      const response = await apiHttp.authenticatedApiFetch(
+        editingId ? `/meetings/${encodeURIComponent(editingId)}` : '/meetings',
+        {
+          method: editingId ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        },
+      );
+
+      if (!isCurrentSave()) return;
+      if (response.status === 401) {
+        navigate('/auth');
+        return;
+      }
+      if (!response.ok) {
+        const errorPayload = await apiHttp.readAuthenticatedApiJson(response).catch(() => null);
+        const serverMessage = errorPayload && typeof errorPayload === 'object' && typeof (errorPayload as { error?: unknown }).error === 'string'
+          ? (errorPayload as { error: string }).error
+          : null;
+        throw new Error(serverMessage || 'فشل حفظ الاجتماع');
       }
 
+      const saved = await apiHttp.readAuthenticatedApiJson(response);
+      if (!isCurrentSave()) return;
+      if (localStorage.getItem('authToken') !== startingToken) {
+        toast({
+          title: "تغيّرت الجلسة",
+          description: "لم نتأكد من حفظ الاجتماع في هذه الجلسة. بياناتك باقية للمراجعة قبل إعادة المحاولة.",
+          variant: "destructive"
+        });
+        return;
+      }
+      if (!saved || typeof saved !== 'object' || typeof (saved as { id?: unknown }).id !== 'string') {
+        toast({
+          title: "تعذر تأكيد الحفظ",
+          description: "لم نتأكد من حفظ الاجتماع. بياناتك باقية، راجع القائمة قبل إعادة المحاولة.",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      toast(
+        editingId
+          ? { title: "تم التحديث", description: "تم تحديث الاجتماع بنجاح" }
+          : { title: "تم الحفظ", description: "تم إنشاء الاجتماع بنجاح" }
+      );
+
       resetForm();
-      fetchMeetings();
+      await fetchMeetings();
     } catch (error) {
+      if (!isCurrentSave()) return;
       console.error('Error saving meeting:', error);
-      toast({ title: "خطأ", description: "فشل حفظ الاجتماع", variant: "destructive" });
+      const status = extractHttpStatus(error);
+      if (status === 401) {
+        navigate('/auth');
+        return;
+      }
+      if ((error as { code?: unknown })?.code === 'CLIENT_SESSION_CHANGED') {
+        toast({
+          title: "تغيّرت الجلسة",
+          description: "لم نغيّر بياناتك. أعد المحاولة بعد التأكد من الجلسة الحالية.",
+          variant: "destructive"
+        });
+        return;
+      }
+      const description = status === 403
+        ? "لا تملك صلاحية حفظ الاجتماع في هذه المساحة."
+        : status
+          ? (error instanceof Error && error.message && !/^HTTP\s/.test(error.message) ? error.message : "فشل حفظ الاجتماع")
+          : "تعذر الاتصال بالخادم. تحقق من الشبكة وحاول مرة أخرى.";
+      toast({ title: "خطأ", description, variant: "destructive" });
     } finally {
-      submitGuardRef.current?.release();
-      setLoading(false);
+      operationGuard.release();
+      if (isCurrentSave()) setLoading(false);
     }
   };
 
   const editMeeting = (meeting: Meeting) => {
+    formGenerationRef.current += 1;
+    submitGuardRef.current = createSubmitGuard();
+    setLoading(false);
     setTitle(meeting.title);
     setDescription(meeting.description || "");
     setMeetingLink(meeting.meeting_link);
@@ -366,16 +481,69 @@ const OnlineMeeting = () => {
 
   const deleteMeeting = async (id: string) => {
     if (!confirm("هل أنت متأكد من حذف هذا الاجتماع؟")) return;
+    if (deleteGuardRef.current.has(id)) return;
+    deleteGuardRef.current.add(id);
 
+    const startingToken = localStorage.getItem('authToken') ?? '';
     try {
-      await axios.delete(`${API_URL}/meetings/${id}`, {
-        headers: { Authorization: `Bearer ${getToken()}` }
+      if (!startingToken) {
+        navigate('/auth');
+        return;
+      }
+      const response = await apiHttp.authenticatedApiFetch(`/meetings/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
       });
+      if (!isMountedRef.current || localStorage.getItem('authToken') !== startingToken) return;
+      if (response.status === 401) {
+        navigate('/auth');
+        return;
+      }
+      if (!response.ok) {
+        const errorPayload = await apiHttp.readAuthenticatedApiJson(response).catch(() => null);
+        const serverMessage = errorPayload && typeof errorPayload === 'object' && typeof (errorPayload as { error?: unknown }).error === 'string'
+          ? (errorPayload as { error: string }).error
+          : null;
+        throw new Error(serverMessage || 'فشل حذف الاجتماع');
+      }
+      const confirmation = await apiHttp.readAuthenticatedApiJson(response);
+      if (!isMountedRef.current || localStorage.getItem('authToken') !== startingToken) return;
+      if (!confirmation || typeof confirmation !== 'object'
+          || (confirmation as { message?: unknown }).message !== 'Meeting deleted successfully') {
+        throw new Error('تعذر تأكيد حذف الاجتماع؛ أعد تحميل القائمة قبل المحاولة مرة أخرى');
+      }
+      if (localStorage.getItem('authToken') !== startingToken) {
+        toast({
+          title: "تغيّرت الجلسة",
+          description: "لم نتأكد من نتيجة الحذف. أعد تحميل القائمة قبل المحاولة مرة أخرى.",
+          variant: "destructive"
+        });
+        return;
+      }
       toast({ title: "تم الحذف", description: "تم حذف الاجتماع بنجاح" });
-      fetchMeetings();
+      await fetchMeetings();
     } catch (error) {
+      if (!isMountedRef.current || localStorage.getItem('authToken') !== startingToken) return;
       console.error('Error deleting meeting:', error);
-      toast({ title: "خطأ", description: "فشل حذف الاجتماع", variant: "destructive" });
+      const status = extractHttpStatus(error);
+      if (status === 401) {
+        navigate('/auth');
+        return;
+      }
+      if ((error as { code?: unknown })?.code === 'CLIENT_SESSION_CHANGED') {
+        toast({
+          title: "تغيّرت الجلسة",
+          description: "لم نتأكد من نتيجة الحذف. أعد تحميل القائمة قبل المحاولة مرة أخرى.",
+          variant: "destructive"
+        });
+        return;
+      }
+      toast({
+        title: "خطأ",
+        description: status === 403 ? "لا تملك صلاحية حذف هذا الاجتماع." : "فشل حذف الاجتماع",
+        variant: "destructive"
+      });
+    } finally {
+      deleteGuardRef.current.delete(id);
     }
   };
 
@@ -426,6 +594,14 @@ const OnlineMeeting = () => {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {catalogError && (
+              <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+                <p>{catalogError}</p>
+                <Button size="sm" variant="outline" className="mt-2" onClick={() => void loadCatalogs()}>
+                  إعادة المحاولة
+                </Button>
+              </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Title */}
               <div className="space-y-2">
@@ -478,7 +654,13 @@ const OnlineMeeting = () => {
               {/* Grade Selection - Required */}
               <div className="space-y-2">
                 <Label htmlFor="meeting-grade">الصف الدراسي * (إجباري)</Label>
-                <Select value={selectedGrade} onValueChange={setSelectedGrade}>
+                <Select
+                  value={selectedGrade}
+                  onValueChange={(value) => {
+                    setSelectedGrade(value);
+                    setSelectedGroup("");
+                  }}
+                >
                   <SelectTrigger id="meeting-grade">
                     <SelectValue placeholder="اختر الصف" />
                   </SelectTrigger>

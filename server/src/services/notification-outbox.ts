@@ -1049,6 +1049,13 @@ export interface StaleSendingRecoveryOptions {
     /** Age after which a 'sending' claim counts as abandoned (clamped 60s..24h). */
     olderThanMs?: number;
     limit?: number;
+    /**
+     * Optional tenant bound. A single-tenant process (the worker model: one
+     * worker per tenant) must not sweep — even losslessly — rows owned by
+     * another tenant's worker, so a recovery pass bound to a tenant can pass
+     * the scope here. Absent keeps the historical whole-table sweep.
+     */
+    tenantId?: string;
     now?: () => Date;
     /** Injected alert sink; the emitted entry carries no contact or body. */
     log?: (entry: unknown) => void;
@@ -1070,9 +1077,12 @@ const clampStaleLeaseMs = (raw: unknown): number => {
 /**
  * Detects abandoned claims and flags them once, without touching `status` and
  * without calling any adapter. `updated_at` is bumped by the claim UPDATE, so
- * it is the claim timestamp; a fresh claim is never flagged. The flag itself
- * is a compare-and-set on `last_error`, so concurrent sweeps (or a repeated
- * sweep after a restart) record exactly one flag per abandoned claim.
+ * it is the claim timestamp; a fresh claim is never flagged. Already flagged
+ * rows are excluded from the scan (they can only be resolved by an operator or
+ * an authoritative late result — never by another sweep), so bounded pages keep
+ * making progress past a flagged backlog. The flag itself is still a
+ * compare-and-set on `last_error`, so concurrent sweeps record exactly one
+ * flag per abandoned claim.
  *
  * A dispatcher that is merely slow is unaffected: when its adapter result
  * arrives, `finishRow` writes the authoritative state and clears the marker.
@@ -1088,14 +1098,27 @@ export const recoverStaleSendingRows = async (
         : STALE_SENDING_SCAN_DEFAULT;
     const emit = options.log ?? ((entry: unknown) => console.warn(entry));
     const cutoff = new Date(now().getTime() - leaseMs);
+    const tenantScope =
+        typeof options.tenantId === 'string' && options.tenantId.length > 0 ? options.tenantId : null;
+    // Rows already carrying a quarantine marker are deliberately excluded from
+    // the SELECT, not just from the flag CAS: a flagged row stays 'sending'
+    // until an operator reconciles it, so without this predicate a backlog of
+    // flagged rows larger than `limit` could fill every sweep page and starve
+    // newer abandoned claims behind them (bounded scan with no progress past
+    // the first page). The CAS below remains for concurrent sweeps: if another
+    // sweep flags the row between this SELECT and the write, affectedRows = 0
+    // and it is counted as alreadyFlagged, exactly once overall.
     const rows = await db.query<OutboxRow>(
         `SELECT id, idempotency_key, tenant_id, event_type, purpose, recipient_user_id, recipient_user_type,
                 channel, locale, template_id, payload, status, attempts, max_attempts, next_attempt_at, last_error, delivered_at
          FROM notification_outbox
          WHERE status = 'sending' AND updated_at <= ?
+           AND (last_error IS NULL OR (last_error <> ? AND last_error <> ?))${tenantScope === null ? '' : ' AND tenant_id = ?'}
          ORDER BY updated_at ASC
          LIMIT ${limit}`,
-        [cutoff],
+        tenantScope === null
+            ? [cutoff, STALE_SENDING_MARKER, UNKNOWN_OUTCOME_MARKER]
+            : [cutoff, STALE_SENDING_MARKER, UNKNOWN_OUTCOME_MARKER, tenantScope],
     );
     const flagged: StaleSendingObservation[] = [];
     let alreadyFlagged = 0;
@@ -1297,9 +1320,24 @@ export const enqueueParentReportDelivery = async (
         report_link: `${input.baseUrl.endsWith('/') ? input.baseUrl : `${input.baseUrl}/`}${reportLink}`,
         unsubscribe_link: `${input.baseUrl.endsWith('/') ? input.baseUrl : `${input.baseUrl}/`}${unsubscribeLink}`,
     };
-    const suffix = typeof input.idempotencyKeySuffix === 'string' ? `:${input.idempotencyKeySuffix}` : '';
+    // The key is a bounded digest, not a plain-text join: the old key was
+    // `parent-report:{tenantId}:{parentUserId}:{studentEnrollmentId}:{period}:{channel}{suffix}`,
+    // which with realistic CHAR(36)/VARCHAR(64) uuid identifiers and a common
+    // period measured ~140 characters — past the module's own 120-character
+    // validation cap (and the VARCHAR(160) column), so every realistic parent
+    // report was rejected as validation-failed before any row was written. The
+    // digest keeps the idempotency semantics exactly: same components ⇒ same
+    // key ⇒ duplicate enqueue collapses, and the key always fits the cap.
+    const parentKey = parentReportIdempotencyKey([
+        input.tenantId,
+        input.parentUserId,
+        input.studentEnrollmentId,
+        input.summary.period,
+        input.channel,
+        typeof input.idempotencyKeySuffix === 'string' ? input.idempotencyKeySuffix : '',
+    ]);
     const queued = await enqueueOutboxRow(db, {
-        idempotencyKey: `parent-report:${input.tenantId}:${input.parentUserId}:${input.studentEnrollmentId}:${input.summary.period}:${input.channel}${suffix}`,
+        idempotencyKey: parentKey,
         tenantId: input.tenantId,
         eventType: 'progress_report',
         purpose: 'progress_report',
@@ -1473,6 +1511,10 @@ export interface ProducerEnqueueResult {
 
 const producerIdempotencyKey = (parts: readonly string[]): string =>
     `acad:${createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 40)}`;
+
+/** Bounded deterministic key for P7 parent-report rows (see the call site). */
+const parentReportIdempotencyKey = (parts: readonly string[]): string =>
+    `parent-report:${createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 40)}`;
 
 /**
  * Queues one published academic resource to its server-derived audience.

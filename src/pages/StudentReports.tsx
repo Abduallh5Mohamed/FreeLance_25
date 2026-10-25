@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo } from "react";
+import { authenticatedApiFetch, readAuthenticatedApiJson } from '@/lib/api-http';
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -104,6 +105,11 @@ const StudentReports = () => {
   const [examResultsData, setExamResultsData] = useState<Map<string, any[]>>(new Map());
   const [studentNotes, setStudentNotes] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
+  const [dataLoadError, setDataLoadError] = useState(false);
+  const [unavailableExamStudents, setUnavailableExamStudents] = useState<Set<string>>(new Set());
+  const notesSequence = useRef(0);
+  const notesSaving = useRef<Set<string>>(new Set());
+  const [notesSavingId, setNotesSavingId] = useState<string | null>(null);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState("");
@@ -132,6 +138,7 @@ const StudentReports = () => {
   const loadData = async (role?: string) => {
     try {
       setLoading(true);
+      setDataLoadError(false);
 
       const [studentsData, groupsData, gradesData, attendanceRes, feesRes] = await Promise.all([
         getStudents(),
@@ -149,20 +156,24 @@ const StudentReports = () => {
 
       // Load exam results for each student
       const resultsMap = new Map<string, any[]>();
+      const unavailable = new Set<string>();
       for (const student of (studentsData || [])) {
         try {
           const results = await getStudentExamResults(student.id) as any[];
-          if (results && Array.isArray(results) && results.length > 0) {
+          if (!Array.isArray(results)) throw new Error('Invalid results response');
+          if (results.length > 0) {
             resultsMap.set(student.id, results);
           }
         } catch (e) {
-          // Ignore errors for individual students
+          unavailable.add(student.id);
         }
       }
       setExamResultsData(resultsMap);
+      setUnavailableExamStudents(unavailable);
 
     } catch (error) {
-      console.error('Error loading data:', error);
+      setDataLoadError(true);
+      console.error('Error loading data:');
       toast({
         title: "خطأ",
         description: "فشل تحميل البيانات",
@@ -286,37 +297,22 @@ const StudentReports = () => {
 
   // Save notes to database
   const saveNotes = async () => {
-    if (selectedStudent) {
-      try {
-        const token = localStorage.getItem('token');
-        const response = await fetch(`${import.meta.env.VITE_API_URL || '/api'}/students/${selectedStudent.id}/notes`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-          },
-          body: JSON.stringify({ notes: editingNotes }),
-        });
-        if (response.ok) {
-          const newNotes = new Map(studentNotes);
-          newNotes.set(selectedStudent.id, editingNotes);
-          setStudentNotes(newNotes);
-          toast({
-            title: "تم الحفظ",
-            description: "تم حفظ الملاحظات بنجاح",
-          });
-        } else {
-          throw new Error('Failed to save notes');
-        }
-      } catch (error) {
-        console.error('Error saving notes:', error);
-        toast({
-          title: "خطأ",
-          description: "فشل في حفظ الملاحظات",
-          variant: "destructive",
-        });
-      }
-    }
+    const student = selectedStudent;
+    if (!student || notesSaving.current.has(student.id)) return;
+    const draft = editingNotes;
+    notesSequence.current += 1;
+    notesSaving.current.add(student.id);
+    setNotesSavingId(student.id);
+    try {
+      const response = await authenticatedApiFetch('/students/' + encodeURIComponent(student.id) + '/notes', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notes: draft }),
+      });
+      if (!response.ok) throw new Error('Notes save rejected');
+      setStudentNotes(previous => new Map(previous).set(student.id, draft));
+      toast({ title: 'تم الحفظ', description: 'تم حفظ الملاحظات بنجاح' });
+    } catch {
+      toast({ title: 'تعذّر الحفظ', description: 'الملاحظات لم تُحفظ. النص المكتوب ما زال متاحًا.', variant: 'destructive' });
+    } finally { notesSaving.current.delete(student.id); setNotesSavingId(previous => previous === student.id ? null : previous); }
   };
 
   // Generate WhatsApp message
@@ -363,6 +359,14 @@ const StudentReports = () => {
 
   // Send WhatsApp - يرسل لرقم ولي الأمر فقط
   const sendWhatsApp = (student: Student) => {
+    if (!studentNotes.has(student.id)) {
+      toast({ title: 'الملاحظات غير مؤكدة', description: 'افتح تقرير الطالب لتحميل الملاحظات المحفوظة قبل مشاركة التقرير.', variant: 'destructive' });
+      return;
+    }
+    if (unavailableExamStudents.has(student.id)) {
+      toast({ title: 'التقرير غير مكتمل', description: 'تعذّر تحميل نتائج هذا الطالب؛ أعد التحميل قبل مشاركة التقرير.', variant: 'destructive' });
+      return;
+    }
     const report = calculateStudentReport(student);
 
     // استخدام رقم ولي الأمر فقط
@@ -397,21 +401,19 @@ const StudentReports = () => {
     setEditingNotes(studentNotes.get(student.id) || '');
     setShowReportDialog(true);
 
-    // Load notes from database
+    // A slow response for student A must never overwrite student B's draft.
+    const sequence = ++notesSequence.current;
     try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`${import.meta.env.VITE_API_URL || '/api'}/students/${student.id}/notes`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setEditingNotes(data.notes || '');
-        const newNotes = new Map(studentNotes);
-        newNotes.set(student.id, data.notes || '');
-        setStudentNotes(newNotes);
-      }
-    } catch (error) {
-      console.error('Error loading notes:', error);
+      const response = await authenticatedApiFetch('/students/' + encodeURIComponent(student.id) + '/notes');
+      if (!response.ok) throw new Error('Notes unavailable');
+      const data: unknown = await readAuthenticatedApiJson(response);
+      if (sequence !== notesSequence.current) return;
+      const notes = (data as { notes?: unknown } | null)?.notes;
+      if (notes !== null && notes !== undefined && typeof notes !== 'string') throw new Error('Invalid notes response');
+      setEditingNotes(typeof notes === 'string' ? notes : '');
+      setStudentNotes(previous => new Map(previous).set(student.id, typeof notes === 'string' ? notes : ''));
+    } catch {
+      if (sequence === notesSequence.current) toast({ title: 'تعذّر تحميل الملاحظات', description: 'الملاحظات المحفوظة غير متاحة الآن؛ لا تعتبرها فارغة.', variant: 'destructive' });
     }
   };
 
@@ -437,6 +439,8 @@ const StudentReports = () => {
     );
   }
 
+  if (dataLoadError) return <><Header /><main dir="rtl" role="alert" className="p-8 text-center"><p>تعذّر تحميل بيانات التقارير. البيانات غير متاحة الآن.</p><Button onClick={() => { let role: string | undefined; try { role = JSON.parse(localStorage.getItem('currentUser') || 'null')?.role; } catch { /* AuthGuard handles malformed sessions. */ } void loadData(role); }}>إعادة المحاولة</Button></main></>;
+
   const currentReport = selectedStudent ? calculateStudentReport(selectedStudent) : null;
 
   return (
@@ -444,6 +448,7 @@ const StudentReports = () => {
       <Header />
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 p-6" dir="rtl">
         <div className="max-w-7xl mx-auto space-y-6">
+          {unavailableExamStudents.size > 0 && <div role="alert" className="rounded border border-amber-300 bg-amber-50 p-3 text-amber-950">تعذّر تحميل نتائج بعض الطلاب. التقارير المتأثرة غير مكتملة ومشاركتها متوقفة حتى إعادة التحميل.</div>}
           {/* Header */}
           <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
             <div>
@@ -773,10 +778,11 @@ const StudentReports = () => {
                   <Textarea
                     placeholder="أضف ملاحظات خاصة بهذا الطالب..."
                     value={editingNotes}
-                    onChange={(e) => setEditingNotes(e.target.value)}
+                    disabled={notesSavingId === selectedStudent?.id}
+                    onChange={(e) => { if (selectedStudent && notesSaving.current.has(selectedStudent.id)) return; notesSequence.current += 1; setEditingNotes(e.target.value); }}
                     className="min-h-[100px]"
                   />
-                  <Button onClick={saveNotes} className="mt-3">
+                  <Button onClick={saveNotes} disabled={notesSavingId === selectedStudent?.id} className="mt-3">
                     حفظ الملاحظات
                   </Button>
                 </CardContent>

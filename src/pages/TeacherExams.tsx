@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -8,7 +8,20 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { getCourses, getExams as getExamsHttp, getGrades, getGroups, Course, Exam, Grade, User, Group } from '@/lib/api-http';
+import {
+  ApiRequestError,
+  authenticatedApiFetch,
+  readAuthenticatedApiBlob,
+  getCourses,
+  getExams as getExamsHttp,
+  getGrades,
+  getGroups,
+  Course,
+  Exam,
+  Grade,
+  User,
+  Group,
+} from '@/lib/api-http';
 import { ClipboardCheck, Plus, Trash2, BookOpen, Clock, Edit, GraduationCap, Image as ImageIcon } from 'lucide-react';
 import Header from '@/components/Header';
 import { motion } from 'framer-motion';
@@ -24,6 +37,31 @@ const readApiBase = (): string => {
 };
 
 const API_URL = readApiBase();
+const API_ORIGIN = API_URL.replace(/\/api\/?$/, '');
+const questionImageSrc = (value: string): string =>
+  value.startsWith('http') ? value : `${API_ORIGIN}${value}`;
+
+/** Read a response body through the protected session fence, then parse it. */
+async function readProtectedJson<T>(response: Response): Promise<T | null> {
+  const blob = await readAuthenticatedApiBlob(response);
+  const text = await blob.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function readProtectedErrorMessage(response: Response): Promise<string | null> {
+  const payload = await readProtectedJson<{ error?: unknown }>(response);
+  return payload && typeof payload.error === 'string' ? payload.error : null;
+}
+
+function isSessionChangedError(error: unknown): boolean {
+  return error instanceof ApiRequestError
+    && (error.code === 'CLIENT_SESSION_CHANGED' || error.code === 'SESSION_REQUIRED');
+}
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exported so the isolated test suite exercises the real
@@ -172,37 +210,42 @@ export function createExamAuthoringController(deps: ExamAuthoringDeps) {
 
 const defaultExamAuthoringDeps: ExamAuthoringDeps = {
   createExam: async (payload) => {
-    const response = await fetch(`${API_URL}/exams`, {
+    const response = await authenticatedApiFetch('/exams', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
-      },
-      body: JSON.stringify(payload)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
-    if (!response.ok) throw new Error('Failed to create exam');
-    return response.json();
+    if (!response.ok) {
+      const message = await readProtectedErrorMessage(response);
+      throw new Error(message || 'Failed to create exam');
+    }
+    const created = await readProtectedJson<{ id?: unknown }>(response);
+    if (!created || typeof created.id !== 'string' || !created.id) {
+      throw new Error('تم إرسال طلب الإنشاء لكن تعذّر تأكيد مرجع الامتحان. راجع قائمة الامتحانات قبل إعادة المحاولة.');
+    }
+    return { id: created.id };
   },
   addQuestion: async (examId, payload) => {
-    const response = await fetch(`${API_URL}/exams/${examId}/questions`, {
+    const response = await authenticatedApiFetch(`/exams/${encodeURIComponent(examId)}/questions`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
-      },
-      body: JSON.stringify(payload)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
-    if (!response.ok) throw new Error('Failed to add question');
-    return response.json();
+    if (!response.ok) {
+      const message = await readProtectedErrorMessage(response);
+      throw new Error(message || 'Failed to add question');
+    }
+    return readProtectedJson<unknown>(response);
   },
   deleteExam: async (examId) => {
-    const response = await fetch(`${API_URL}/exams/${examId}`, {
+    const response = await authenticatedApiFetch(`/exams/${encodeURIComponent(examId)}`, {
       method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
-      }
     });
-    if (!response.ok) throw new Error(`Failed to clean up the partial exam (${response.status})`);
+    if (!response.ok) {
+      const message = await readProtectedErrorMessage(response);
+      throw new Error(message || `Failed to clean up the partial exam (${response.status})`);
+    }
+    await readProtectedJson<unknown>(response);
   },
 };
 
@@ -254,6 +297,20 @@ export default function TeacherExams() {
     marks: 1
   });
 
+  const mountedRef = useRef(true);
+  const listSeqRef = useRef(0);
+  const submitBusyRef = useRef(false);
+  const uploadBusyRef = useRef(false);
+  const deleteInFlightRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      listSeqRef.current += 1;
+    };
+  }, []);
+
   // Check authentication
   useEffect(() => {
     const userStr = localStorage.getItem('currentUser');
@@ -304,13 +361,15 @@ export default function TeacherExams() {
   };
 
   const loadExams = async () => {
+    const seq = ++listSeqRef.current;
     try {
-      console.log('📚 Loading exams from MySQL...');
       const data = await getExamsHttp();
-      console.log('✅ Exams loaded from MySQL:', data);
+      if (seq !== listSeqRef.current || !mountedRef.current) return;
       setExams(data || []);
     } catch (error) {
-      console.error('❌ Error loading exams:', error);
+      if (seq !== listSeqRef.current || !mountedRef.current) return;
+      if (isSessionChangedError(error)) return;
+      console.error('Error loading exams:', error);
     }
   };
 
@@ -370,7 +429,14 @@ export default function TeacherExams() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
+    // Synchronous guard: a second click cannot pass before the first request starts.
+    if (submitBusyRef.current) return;
+    submitBusyRef.current = true;
+    const submittedCourse = selectedCourse;
+    const submittedExamData = examData;
+    const submittedQuestions = questions;
+    setLoading(true);
+    try {
     if (!selectedCourse || !examData.title || questions.length === 0) {
       toast({
         title: 'خطأ',
@@ -398,8 +464,6 @@ export default function TeacherExams() {
       return;
     }
 
-    setLoading(true);
-    try {
       // Calculate totals and passing from percentage
       const { totalMarks, passingPercent, passingMarks } = computeExamTotals(questions, examData.passing_score);
 
@@ -450,6 +514,7 @@ export default function TeacherExams() {
       const outcome = await examAuthoringController.submit(examPayload, questionPayloads);
 
       if (outcome.status === 'blocked') return; // duplicate submit ignored
+      if (!mountedRef.current) return;
 
       if (outcome.status === 'cleanup-failed') {
         setCleanupFailure(outcome);
@@ -477,8 +542,8 @@ export default function TeacherExams() {
         description: `تم إنشاء الامتحان بنجاح مع ${outcome.questionsAdded} سؤال`
       });
 
-      // Reset form
-      setExamData({
+      // Reset only what the user has not edited since submitting.
+      setExamData(current => (current === submittedExamData ? {
         title: '',
         description: '',
         grade_id: '',
@@ -486,11 +551,12 @@ export default function TeacherExams() {
         passing_score: '60',
         start_date: '',
         end_date: '',
-      });
-      setQuestions([]);
-      setSelectedCourse('');
+      } : current));
+      setQuestions(current => (current === submittedQuestions ? [] : current));
+      setSelectedCourse(current => (current === submittedCourse ? '' : current));
       loadExams();
     } catch (error) {
+      if (!mountedRef.current || isSessionChangedError(error)) return;
       console.error('Error creating exam:', error);
       toast({
         title: 'خطأ',
@@ -498,30 +564,29 @@ export default function TeacherExams() {
         variant: 'destructive'
       });
     } finally {
-      setLoading(false);
+      submitBusyRef.current = false;
+      if (mountedRef.current) setLoading(false);
     }
   };
 
   const handleDeleteExam = async (id: string) => {
     if (!confirm('هل أنت متأكد من حذف هذا الامتحان؟')) return;
+    if (deleteInFlightRef.current.has(id)) return;
+    deleteInFlightRef.current.add(id);
 
     try {
-      console.log('🗑️ Deleting exam:', id);
-      // Delete exam via Backend API (should cascade delete questions)
-      const response = await fetch(`${API_URL}/exams/${id}`, {
+      const response = await authenticatedApiFetch(`/exams/${encodeURIComponent(id)}`, {
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
-        }
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to delete exam');
+        const message = await readProtectedErrorMessage(response);
+        throw new Error(message || 'Failed to delete exam');
       }
+      await readProtectedJson<unknown>(response);
 
-      console.log('✅ Exam deleted successfully');
       examAuthoringController.confirmCleanup(id);
+      if (!mountedRef.current) return;
       setCleanupFailure(current => current?.examId === id ? null : current);
       toast({
         title: 'نجح',
@@ -529,12 +594,15 @@ export default function TeacherExams() {
       });
       loadExams();
     } catch (error) {
-      console.error('❌ Error deleting exam:', error);
+      if (!mountedRef.current || isSessionChangedError(error)) return;
+      console.error('Error deleting exam:', error);
       toast({
         title: 'خطأ',
         description: 'فشل حذف الامتحان',
         variant: 'destructive'
       });
+    } finally {
+      deleteInFlightRef.current.delete(id);
     }
   };
 
@@ -782,37 +850,41 @@ export default function TeacherExams() {
                             accept="image/*"
                             onChange={async (e) => {
                               const file = e.target.files?.[0];
-                              if (file) {
+                              if (!file) return;
+                              if (uploadBusyRef.current) return;
+                              uploadBusyRef.current = true;
+
+                              try {
                                 const formData = new FormData();
                                 formData.append('image', file);
-
-                                try {
-                                  const response = await fetch(`${API_URL}/exams/upload-question-image`, {
-                                    method: 'POST',
-                                    headers: { Authorization: `Bearer ${localStorage.getItem('authToken') || ''}` },
-                                    body: formData
-                                  });
-
-                                  const data = await response.json().catch(() => null);
-                                  if (response.ok && data?.success && typeof data.imageUrl === 'string' && data.imageUrl.trim()) {
-                                    setCurrentQuestion({ ...currentQuestion, question_image: data.imageUrl });
-                                    toast({ title: 'تم رفع الصورة بنجاح' });
-                                  } else {
-                                    toast({ title: 'فشل رفع الصورة', variant: 'destructive' });
-                                  }
-                                } catch (error) {
-                                  toast({ title: 'فشل رفع الصورة', variant: 'destructive' });
+                                const response = await authenticatedApiFetch('/exams/upload-question-image', {
+                                  method: 'POST',
+                                  body: formData,
+                                });
+                                if (!response.ok) {
+                                  const message = await readProtectedErrorMessage(response);
+                                  throw new Error(message || 'Failed to upload image');
                                 }
+                                const data = await readProtectedJson<{ success?: boolean; imageUrl?: unknown }>(response);
+                                if (!data?.success || typeof data.imageUrl !== 'string' || !data.imageUrl.trim()) {
+                                  throw new Error('Failed to upload image');
+                                }
+                                const imageUrl = data.imageUrl;
+                                if (!mountedRef.current) return;
+                                setCurrentQuestion(current => ({ ...current, question_image: imageUrl }));
+                                toast({ title: 'تم رفع الصورة بنجاح' });
+                              } catch (error) {
+                                if (!mountedRef.current || isSessionChangedError(error)) return;
+                                toast({ title: 'فشل رفع الصورة', variant: 'destructive' });
+                              } finally {
+                                uploadBusyRef.current = false;
                               }
                             }}
                             className="max-w-xs"
                           />
                           {currentQuestion.question_image && (
                             <img
-                              src={currentQuestion.question_image.startsWith('http')
-                                ? currentQuestion.question_image
-                                : `/api${currentQuestion.question_image}`
-                              }
+                              src={questionImageSrc(currentQuestion.question_image)}
                               alt="Preview"
                               className="h-16 w-16 object-cover rounded border"
                             />

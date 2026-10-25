@@ -33,9 +33,21 @@ const VIOLATION_WEIGHTS: Record<string, number> = {
     visibility_change: 0,
 };
 
-// Threshold for auto-suspension
-const SUSPENSION_THRESHOLD = parseInt(process.env.VIOLATION_THRESHOLD || '10');
-const SUSPENSION_DURATION_MINUTES = parseInt(process.env.SUSPENSION_DURATION || '30');
+// Threshold for auto-suspension. Digits only, and a malformed value fails
+// CLOSED to the documented default rather than to NaN: `totalScore >= NaN` is
+// always false, so a non-numeric env value silently disabled auto-suspension
+// entirely, and `Date.now() + NaN*60000` wrote an Invalid Date into
+// `suspended_until`.
+const SUSPENSION_THRESHOLD = parseBoundedEnvInt(process.env.VIOLATION_THRESHOLD, 10, 1, 1_000_000);
+const SUSPENSION_DURATION_MINUTES = parseBoundedEnvInt(process.env.SUSPENSION_DURATION, 30, 1, 1440);
+
+/** Digits-only bounded env integer; anything malformed falls back to `fallback`. */
+function parseBoundedEnvInt(raw: string | undefined, fallback: number, min: number, max: number): number {
+    if (typeof raw !== 'string' || !/^\d+$/.test(raw.trim())) return fallback;
+    const parsed = Number(raw.trim());
+    if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) return fallback;
+    return parsed;
+}
 
 // In-memory session store (for fast access)
 interface VideoSession {
@@ -169,9 +181,13 @@ export async function createVideoSession(params: {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
             [sessionId, userId, videoId, ip, userAgent, fingerprint, screenRes, watermarkSeed]
         );
+        // A usable count is REQUIRED. Skipping the check when `affectedRows` is
+        // absent published a cache-only session — the exact failure the
+        // surrounding comment says must not happen — and `Number(affected)`
+        // coerced rather than validated.
         const affected = (inserted as { affectedRows?: unknown } | null | undefined)?.affectedRows;
-        if (affected !== undefined && Number(affected) < 1) {
-            throw new Error('video_sessions insert affected no row');
+        if (typeof affected !== 'number' || !Number.isSafeInteger(affected) || affected < 1) {
+            throw new Error('video_sessions insert did not report exactly one affected row');
         }
     } catch (e) {
         console.error('[Security] Failed to persist session:', e);
@@ -283,10 +299,35 @@ export function cleanupDeadSessions(): void {
     }
 }
 
-// Run cleanup every 10 seconds
-// Unref'd so importing this module never keeps a test process alive.
-const deadSessionCleanupTimer = setInterval(cleanupDeadSessions, 10000);
-deadSessionCleanupTimer.unref();
+/**
+ * Dead-session cleanup is EXPLICITLY owned.
+ *
+ * A module-level `setInterval` used to run here on import, so merely importing
+ * this module started a self-scheduling 10 s loop issuing DB `UPDATE`s through
+ * `killSession` — a timer the owning process never started and cannot stop.
+ * The sweep itself is still needed (a session whose heartbeat stops would
+ * otherwise stay in `activeSessions` forever), so it is now started and stopped
+ * by the route that owns video sessions, through the same explicit
+ * `start()`/`stop()` shape the video-queue consumer already uses.
+ *
+ * Nothing schedules itself on import any more.
+ */
+let deadSessionCleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Start the dead-session sweep. Idempotent: a second call is a no-op. */
+export function startDeadSessionCleanup(intervalMs: number = 10_000): void {
+    if (deadSessionCleanupTimer !== null) return;
+    if (!Number.isSafeInteger(intervalMs) || intervalMs < 1000) intervalMs = 10_000;
+    deadSessionCleanupTimer = setInterval(cleanupDeadSessions, intervalMs);
+    deadSessionCleanupTimer.unref();
+}
+
+/** Stop the dead-session sweep. Idempotent, and safe before any start. */
+export function stopDeadSessionCleanup(): void {
+    if (deadSessionCleanupTimer === null) return;
+    clearInterval(deadSessionCleanupTimer);
+    deadSessionCleanupTimer = null;
+}
 
 // ═══════════════════════════════════════
 // VIOLATION SCORING

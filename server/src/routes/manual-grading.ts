@@ -2,6 +2,7 @@ import express, { Response, RequestHandler } from 'express';
 import { query, queryOne, execute, getPool } from '../db';
 import { optionalAuth, authenticateToken, instructorScopeId, AuthRequest } from '../middleware/auth';
 import { isSuperAdmin } from '../security/admin-permissions';
+import { recordAudit } from '../security/audit';
 
 /**
  * Data-access seam for the manual-grading router. Production binds ../db;
@@ -146,6 +147,25 @@ const toHundredths = (value: unknown): number | null => {
 
 const formatHundredths = (value: number): string =>
     `${Math.floor(value / 100)}.${String(value % 100).padStart(2, '0')}`;
+
+/**
+ * Exact affected-row count for a single-row transition.
+ *
+ * `undefined` is neither zero nor one. Both transitions below used `=== 0`,
+ * which reads an unreadable count as a WON update: the attempt would be
+ * reported graded (and the response would claim `success: true`) while nothing
+ * moved. A count this route cannot interpret is refused instead.
+ */
+const affectedRowsOf = (
+    result: { affectedRows?: unknown } | null | undefined,
+    operation: string,
+): number => {
+    const value = result?.affectedRows;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+        throw new Error(`manual grading ${operation} did not report a usable affected-row count`);
+    }
+    return value;
+};
 
 export const createManualGradingRouter = (deps: ManualGradingRouterDeps): express.Router => {
     const router = express.Router();
@@ -451,7 +471,7 @@ export const createManualGradingRouter = (deps: ManualGradingRouterDeps): expres
                     [formatHundredths(computedTotal), status, JSON.stringify(normalizedScores),
                         examId, student.id, attempt.id],
                 );
-                if (transition.affectedRows === 0) {
+                if (affectedRowsOf(transition, 'attempt transition') !== 1) {
                     return { status: 409, body: { error: 'This attempt is not awaiting manual grading' } };
                 }
                 const resultTransition = await tx.execute(
@@ -460,7 +480,7 @@ export const createManualGradingRouter = (deps: ManualGradingRouterDeps): expres
                      WHERE exam_id = ? AND student_id = ?`,
                     [formatHundredths(computedTotal), grade, graderId, examId, student.id],
                 );
-                if (resultTransition.affectedRows === 0) {
+                if (affectedRowsOf(resultTransition, 'result transition') !== 1) {
                     throw new Error('Exam result row missing for pending attempt');
                 }
                 for (const answer of answerScores) {
@@ -472,6 +492,30 @@ export const createManualGradingRouter = (deps: ManualGradingRouterDeps): expres
                             examId, student.id, answer.questionId],
                     );
                 }
+
+                // The transition is audited INSIDE the same transaction, which is
+                // the rule every other academic mutation in this lane follows and
+                // this route did not: marks, the letter grade and the per-question
+                // points were all overwritten with no record of who changed them
+                // or what the attempt held before. `oldValue` is the row read
+                // `FOR UPDATE` above, so it is the state this transition actually
+                // replaced, not a re-read that a concurrent writer could have
+                // changed.
+                await recordAudit((sql, params) => tx.execute(sql, params), {
+                    actorUserId: graderId,
+                    tenantId: effectiveTenantId,
+                    action: 'exam.manual_grading.submit',
+                    resourceType: 'exam_attempt',
+                    resourceId: attempt.id,
+                    oldValue: { score: attempt.score, status: attempt.status },
+                    newValue: {
+                        score: formatHundredths(computedTotal),
+                        status,
+                        grade,
+                        essay_questions: answerScores.length,
+                    },
+                    reason: 'Manual grading of essay answers',
+                });
 
                 return {
                     status: 200,

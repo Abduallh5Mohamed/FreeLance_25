@@ -1,29 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Video, ExternalLink, Calendar, Clock, Users } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import StudentHeader from "@/components/StudentHeader";
-import axios from "axios";
-
-// Helper to get API URL - same pattern as other pages.
-// Vite injects `import.meta.env` at build time; it is absent when this module
-// is imported outside Vite (isolated Node tests), hence the guards below.
-const getApiUrl = () => {
-    const viteEnv: ImportMetaEnv | undefined = import.meta.env;
-    const envApiUrl = viteEnv?.VITE_API_URL;
-    if (envApiUrl) return envApiUrl;
-
-    // In production, use relative path (nginx proxies /api to backend)
-    const currentHost = typeof window !== "undefined" ? window.location.hostname : "";
-    if (currentHost !== "localhost" && currentHost !== "127.0.0.1" && currentHost !== "") {
-        return '/api';
-    }
-    return 'http://localhost:3001/api';
-};
-
-const API_URL = getApiUrl();
+import * as apiHttp from "@/lib/api-http";
 
 /**
  * A meeting link may only be opened when it is an absolute http(s) URL with a
@@ -47,9 +29,15 @@ export const isSafeMeetingUrl = (value: string): boolean => {
 };
 
 const extractHttpStatus = (error: unknown): number | undefined => {
-    if (typeof error === "object" && error !== null && "response" in error) {
-        const response = (error as { response?: { status?: unknown } }).response;
-        if (typeof response?.status === "number") return response.status;
+    if (typeof error === "object" && error !== null) {
+        if ("status" in error) {
+            const status = (error as { status?: unknown }).status;
+            if (typeof status === "number") return status;
+        }
+        if ("response" in error) {
+            const response = (error as { response?: { status?: unknown } }).response;
+            if (typeof response?.status === "number") return response.status;
+        }
     }
     return undefined;
 };
@@ -93,6 +81,10 @@ const StudentMeetings = () => {
     const { toast } = useToast();
     const navigate = useNavigate();
 
+    const isMountedRef = useRef(true);
+    const loadSeqRef = useRef(0);
+    const joinGuardRef = useRef(false);
+
     // Copy to clipboard with fallback for non-HTTPS
     const copyToClipboard = async (text: string) => {
         try {
@@ -132,34 +124,66 @@ const StudentMeetings = () => {
         }
     };
 
-    const getToken = () => localStorage.getItem('token');
-    const getUser = () => {
-        const userData = localStorage.getItem('currentUser');
-        return userData ? JSON.parse(userData) : null;
-    };
-
     const fetchMeetings = async () => {
+        const requestSeq = ++loadSeqRef.current;
+        const startingToken = localStorage.getItem('authToken') ?? '';
         setLoading(true);
         setMeetingsError(null);
         // Never show links from a previous student or scope: clear before loading.
         setMeetings([]);
+
+        let studentId = '';
         try {
-            const user = getUser();
-            if (!user) {
+            const userData = localStorage.getItem('currentUser');
+            if (!startingToken || !userData) {
                 navigate('/auth');
                 return;
             }
+            const user = JSON.parse(userData) as { id?: unknown; role?: unknown };
+            if (user.role !== 'student' || typeof user.id !== 'string' || !user.id) {
+                navigate('/forbidden');
+                return;
+            }
+            studentId = user.id;
+        } catch {
+            navigate('/auth');
+            return;
+        }
 
-            const res = await axios.get(`${API_URL}/meetings/student/${user.id}`, {
-                headers: { Authorization: `Bearer ${getToken()}` }
-            });
-            setMeetings(res.data);
+        const isCurrent = () =>
+            isMountedRef.current
+            && requestSeq === loadSeqRef.current
+            && startingToken === (localStorage.getItem('authToken') ?? '');
+
+        try {
+            const response = await apiHttp.authenticatedApiFetch(
+                `/meetings/student/${encodeURIComponent(studentId)}`,
+            );
+            if (!isCurrent()) return;
+            if (response.status === 401) {
+                navigate('/auth');
+                return;
+            }
+            if (!response.ok) {
+                setMeetingsError(describeMeetingsLoadError({ response: { status: response.status } }));
+                return;
+            }
+            const data = await apiHttp.readAuthenticatedApiJson(response);
+            if (!isCurrent()) return;
+            if (!Array.isArray(data)) throw new Error('Invalid meetings response');
+            setMeetings(data);
         } catch (error) {
+            if (!isCurrent()) return;
+            if ((error as { code?: unknown })?.code === 'CLIENT_SESSION_CHANGED') return;
             console.error('Error fetching meetings:', error);
+            if (extractHttpStatus(error) === 401) {
+                navigate('/auth');
+                return;
+            }
             setMeetings([]);
             setMeetingsError(describeMeetingsLoadError(error));
         } finally {
-            setLoading(false);
+            if (isCurrent()) setLoading(false);
         }
     };
 
@@ -172,13 +196,41 @@ const StudentMeetings = () => {
             });
             return;
         }
-        // noopener/noreferrer prevents the opened meeting tab from reaching
-        // back into this window (reverse tabnabbing).
-        window.open(link.trim(), "_blank", "noopener,noreferrer");
+        if (joinGuardRef.current) return;
+        joinGuardRef.current = true;
+        try {
+            // noopener/noreferrer prevents the opened meeting tab from reaching
+            // back into this window (reverse tabnabbing).
+            window.open(link.trim(), "_blank", "noopener,noreferrer");
+        } finally {
+            window.setTimeout(() => {
+                joinGuardRef.current = false;
+            }, 1000);
+        }
     };
 
     useEffect(() => {
-        fetchMeetings();
+        isMountedRef.current = true;
+        void fetchMeetings();
+
+        const refreshSession = () => {
+            loadSeqRef.current += 1;
+            setMeetings([]);
+            setMeetingsError(null);
+            void fetchMeetings();
+        };
+        const onStorage = (event: StorageEvent) => {
+            if (!event.key || event.key === 'authToken' || event.key === 'currentUser') refreshSession();
+        };
+
+        window.addEventListener(apiHttp.AUTH_SESSION_CHANGED_EVENT, refreshSession);
+        window.addEventListener('storage', onStorage);
+        return () => {
+            isMountedRef.current = false;
+            loadSeqRef.current += 1;
+            window.removeEventListener(apiHttp.AUTH_SESSION_CHANGED_EVENT, refreshSession);
+            window.removeEventListener('storage', onStorage);
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 

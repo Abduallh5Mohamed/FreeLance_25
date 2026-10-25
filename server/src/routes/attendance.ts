@@ -52,6 +52,17 @@ export interface AttendanceDataAccess {
     query: DbModule['query'];
     queryOne: DbModule['queryOne'];
     execute: DbModule['execute'];
+    /**
+     * Optional serialized-transaction seam.
+     *
+     * Required by the duplicate-mark guard: without it two concurrent marks for
+     * the same student and day both pass the read check and both insert, because
+     * the legacy `attendance` table has no UNIQUE key on
+     * `(student_id, attendance_date)` for the driver to raise. A caller without
+     * the seam therefore cannot perform the guard soundly, and the route refuses
+     * rather than racing — see `markAttendance`.
+     */
+    transaction?: <T>(fn: (tx: AttendanceDataAccess) => Promise<T>) => Promise<T>;
 }
 
 /**
@@ -195,6 +206,8 @@ interface AttendanceScope {
     platform: boolean;
     tenantId: string | null;
     instructorId: string | null;
+    /** The authenticated principal, recorded as `marked_by` on every mark. */
+    userId: string;
 }
 
 /**
@@ -231,7 +244,7 @@ const resolveAttendanceScope = async (
         return null;
     }
 
-    return { platform, tenantId: user.tenantId ?? null, instructorId };
+    return { platform, tenantId: user.tenantId ?? null, instructorId, userId: user.id };
 };
 
 let dbModule: DbModule | null = null;
@@ -511,8 +524,13 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
             sql += ` ORDER BY a.attendance_date ${order === 'asc' ? 'ASC' : 'DESC'}, a.created_at DESC`;
 
             if (limit) {
-                const limitNum = parseInt(limit as string);
-                if (!isNaN(limitNum) && limitNum > 0 && limitNum <= 1000) {
+                // Digits only. `parseInt('0x10')` returned 16 and `'5abc'`
+                // returned 5, so a malformed `limit` silently became a real page
+                // size instead of being ignored.
+                const limitNum = typeof limit === 'string' && /^\d+$/.test(limit.trim())
+                    ? Number(limit.trim())
+                    : Number.NaN;
+                if (Number.isSafeInteger(limitNum) && limitNum > 0 && limitNum <= 1000) {
                     // LIMIT cannot be a placeholder in MySQL prepared statements
                     sql += ` LIMIT ${limitNum}`;
                 }
@@ -587,6 +605,12 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
             }
 
             let student: StudentRefRow | null = null;
+            // Provenance: how this student was identified is recorded with the
+            // mark. Every row used to be written `method = 'barcode'` — including
+            // a staff member marking by `student_id` — so attendance provenance
+            // was wrong for every manual mark, and `marked_by` was never
+            // populated at all.
+            let attendanceMethod: 'barcode' | 'manual' = 'manual';
 
             if (barcodeValue) {
                 // The barcode lookup carries the caller's scope, so a barcode
@@ -601,10 +625,16 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
                 if (!student) {
                     return res.status(404).json({ error: 'Student not found for provided barcode' });
                 }
+                attendanceMethod = 'barcode';
             } else {
+                // The same liveness rule as the barcode path: a deactivated
+                // student must not be reachable through one identification route
+                // and unreachable through the other.
+                const scopeSql = studentScopeSql(scope);
                 student = await queryOne<StudentRefRow>(
-                    'SELECT id, group_id FROM students WHERE id = ?',
-                    [studentIdValue],
+                    `SELECT sc.id, sc.group_id FROM students sc
+                     WHERE sc.id = ? AND sc.is_active = TRUE${scopeSql.sql}`,
+                    [studentIdValue, ...scopeSql.params],
                 );
                 if (!student) {
                     return res.status(404).json({ error: 'Student not found' });
@@ -642,20 +672,64 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
                 resolvedCourseId = courseIdValue;
             }
 
-            const existing = await findDuplicate(student.id, day);
-            if (existing) {
-                return res.status(409).json({ error: DUPLICATE_MESSAGE });
+            // One attendance row per student per calendar day.
+            //
+            // The legacy `attendance` table has no UNIQUE key on
+            // `(student_id, attendance_date)` — verified across every migration —
+            // so the driver can never raise ER_DUP_ENTRY for this race and the
+            // `isDuplicateKeyError` handler below is unreachable. The check and
+            // the insert are therefore serialized on the STUDENT row: the
+            // transaction locks `students` for this id, the duplicate read runs
+            // inside that lock, and the insert follows in the same unit. A second
+            // concurrent mark for the same student blocks on the lock, then sees
+            // the committed row and answers 409 instead of inserting a twin.
+            //
+            // Without the transaction seam the guard cannot be performed soundly,
+            // so the route refuses rather than racing: an unavailable guard is not
+            // a reason to admit a double-counted mark.
+            if (typeof deps.db.transaction !== 'function') {
+                return res.status(503).json({ error: 'Attendance marking is temporarily unavailable' });
             }
 
             try {
                 const writeScope = studentScopeSql(scope);
-                const inserted = await execute(
-                    `INSERT INTO attendance (id, student_id, course_id, group_id, attendance_date, attendance_time, status, notes, method, created_at)
-                     SELECT UUID(), ?, ?, ?, ?, CURTIME(), ?, ?, 'barcode', NOW()
-                     FROM students sc WHERE sc.id = ? AND sc.group_id <=> ?${writeScope.sql}`,
-                    [student.id, resolvedCourseId, resolvedGroupId, day, status ?? 'present', notes ?? null,
-                        student.id, resolvedGroupId, ...writeScope.params]
-                );
+                const inserted = await deps.db.transaction(async (tx) => {
+                    // Lock the student row first: this is what serializes two
+                    // concurrent marks for the same student. `FOR UPDATE` on the
+                    // scoped read means the second caller waits here rather than
+                    // reading a stale "no duplicate yet".
+                    const locked = await tx.queryOne<{ id: string }>(
+                        `SELECT sc.id FROM students sc WHERE sc.id = ? AND sc.is_active = TRUE${writeScope.sql} FOR UPDATE`,
+                        [student.id, ...writeScope.params],
+                    );
+                    if (!locked) return { affectedRows: 0 } as { affectedRows?: number };
+
+                    const duplicate = await tx.queryOne<{ id: string }>(
+                        `SELECT id FROM attendance
+                         WHERE student_id = ? AND DATE(attendance_date) = ? LIMIT 1`,
+                        [student.id, day],
+                    );
+                    if (duplicate) {
+                        return { affectedRows: 0, duplicate: true } as { affectedRows?: number; duplicate?: boolean };
+                    }
+
+                    return tx.execute(
+                        `INSERT INTO attendance (id, student_id, course_id, group_id, attendance_date, attendance_time, status, notes, method, marked_by, created_at)
+                         SELECT UUID(), ?, ?, ?, ?, CURTIME(), ?, ?, ?, ?, NOW()
+                         FROM students sc WHERE sc.id = ? AND sc.group_id <=> ? AND sc.is_active = TRUE${writeScope.sql}`,
+                        [student.id, resolvedCourseId, resolvedGroupId, day, status ?? 'present', notes ?? null,
+                            attendanceMethod, scope.userId ?? null, student.id, resolvedGroupId, ...writeScope.params]
+                    );
+                });
+                const duplicate = (inserted as { duplicate?: boolean }).duplicate === true;
+                if (duplicate) {
+                    return res.status(409).json({ error: DUPLICATE_MESSAGE });
+                }
+                // A usable count is required: `undefined` is neither zero nor one,
+                // and treating it as either fabricates an outcome.
+                if (typeof inserted.affectedRows !== 'number' || !Number.isSafeInteger(inserted.affectedRows)) {
+                    throw new Error('attendance insert did not report a usable affected-row count');
+                }
                 if (inserted.affectedRows === 0) {
                     return res.status(404).json({ error: 'Student not found' });
                 }
@@ -820,20 +894,26 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
             const attendedStudents = await query<AttendedStudentRow>(
                 `SELECT DISTINCT student_id
                  FROM attendance
-                 WHERE DATE(attendance_date) = ? AND status = 'present'
+                 WHERE DATE(attendance_date) = ? AND status IN ('present','late','excused')
                    AND student_id IN (
                        SELECT id FROM students WHERE group_id = ?${tenantClause}
                    )`,
                 [day, groupId, ...tenantParams]
             );
-            const attendedIds = new Set(attendedStudents.map(({ student_id }) => student_id));
-            const absentStudents = allStudents.filter((student) => !attendedIds.has(student.id));
+            // A student is absent only when NO row exists for the day. A `late`
+            // or `excused` mark is a recorded, approved state, not an absence:
+            // the old query counted only `present`, so a late or excused student
+            // had no matching row, was classified absent, and the guardian
+            // received "لم يحضر/تحضر اليوم" — a factually false notification for
+            // an approved absence.
+            const recordedIds = new Set(attendedStudents.map(({ student_id }) => student_id));
+            const absentStudents = allStudents.filter((student) => !recordedIds.has(student.id));
 
             if (absentStudents.length === 0) {
                 return res.json({
                     message: 'No absent students found',
                     total_students: allStudents.length,
-                    attended: attendedIds.size,
+                    attended: recordedIds.size,
                     absent: 0,
                     notifications_sent: 0,
                     whatsapp_links: []
@@ -902,7 +982,7 @@ export const createAttendanceRouter = (deps: AttendanceRouterDeps): Router => {
             res.json({
                 message: `WhatsApp links generated for ${successCount} absent students`,
                 total_students: allStudents.length,
-                attended: attendedIds.size,
+                attended: recordedIds.size,
                 absent: absentStudents.length,
                 notifications_sent: successCount,
                 results: results,
@@ -922,6 +1002,31 @@ export default createAttendanceRouter({
         query: async <T>(sql: string, params?: unknown[]) => (await loadDb()).query<T>(sql, params),
         queryOne: async <T>(sql: string, params?: unknown[]) => (await loadDb()).queryOne<T>(sql, params),
         execute: async (sql: string, params?: unknown[]) => (await loadDb()).execute(sql, params),
+        transaction: async <T>(fn: (tx: AttendanceDataAccess) => Promise<T>) => {
+            const { withTransaction } = await loadDb();
+            return withTransaction(async (connection) => {
+                const tx: AttendanceDataAccess = {
+                    query: async <R>(sql: string, params?: unknown[]) => {
+                        const [rows] = await connection.execute(sql, params as never);
+                        return rows as unknown as R[];
+                    },
+                    queryOne: async <R>(sql: string, params?: unknown[]) => {
+                        const [rows] = await connection.execute(sql, params as never);
+                        const list = rows as unknown as R[];
+                        return list.length > 0 ? list[0] : null;
+                    },
+                    execute: async (sql: string, params?: unknown[]) => {
+                        const [result] = await connection.execute(sql, params as never);
+                        const header = result as { insertId?: number; affectedRows?: number };
+                        if (typeof header.affectedRows !== 'number' || !Number.isSafeInteger(header.affectedRows)) {
+                            throw new Error('attendance transaction execute did not report a usable affected-row count');
+                        }
+                        return { insertId: header.insertId, affectedRows: header.affectedRows };
+                    },
+                };
+                return fn(tx);
+            });
+        },
     },
     authenticate: authenticateToken,
     optionalAuthenticate: optionalAuth,

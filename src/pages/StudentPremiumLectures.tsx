@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -10,15 +10,16 @@ import {
   X, AlertCircle
 } from "lucide-react";
 import StudentHeader from "@/components/StudentHeader";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { useToast } from "@/hooks/use-toast";
 import { SecureVideoPlayer } from "@/components/SecureVideoPlayer";
-import { SecureYouTubePlayer } from "@/components/SecureYouTubePlayer";
 import {
   getStudentAvailablePremiumLectures, getStudentPurchasedPremiumLectures,
-  getStudentPremiumPayments, submitPremiumLecturePayment,
+  getStudentPremiumPayments, getCurrentStudentEnrollment,
+  authenticatedApiFetch, readAuthenticatedApiJson,
+  AUTH_SESSION_CHANGED_EVENT,
   PremiumLecture, PremiumLecturePayment, User
 } from "@/lib/api-http";
 import { useScreenRecordingPrevention } from "@/hooks/useScreenRecordingPrevention";
@@ -31,7 +32,44 @@ interface Student {
   phone?: string;
   grade_id?: string;
   group_id?: string;
+  tenant_id?: string;
+  business_name?: string;
 }
+
+const readSessionToken = () => localStorage.getItem('authToken') ?? '';
+
+const getErrorStatus = (error: unknown): number | undefined => {
+  if (typeof error === 'object' && error !== null) {
+    if ('status' in error) {
+      const status = (error as { status?: unknown }).status;
+      if (typeof status === 'number') return status;
+    }
+    if ('response' in error) {
+      const response = (error as { response?: { status?: unknown } }).response;
+      if (typeof response?.status === 'number') return response.status;
+    }
+  }
+  return undefined;
+};
+
+const describePremiumLoadError = (error: unknown): string => {
+  const status = getErrorStatus(error);
+  if (status === 401) return 'انتهت صلاحية الجلسة. سجّل الدخول مرة أخرى.';
+  if (status === 403) return 'لا تملك صلاحية عرض الحصص المدفوعة في هذه المساحة.';
+  if (status === 409) return 'اختر مساحة المدرس أولاً لعرض الحصص المدفوعة.';
+  if (status === 404) return 'لم يتم العثور على تسجيل الطالب في هذه المساحة.';
+  if (typeof status === 'number') return 'تعذر تحميل بيانات الحصص المدفوعة من الخادم. حاول مرة أخرى.';
+  return 'تعذر الاتصال بالخادم. تحقق من الشبكة وحاول مرة أخرى.';
+};
+
+const safeHttpUrl = (value: string): URL | null => {
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed : null;
+  } catch {
+    return null;
+  }
+};
 
 const StudentPremiumLectures = () => {
   useScreenRecordingPrevention();
@@ -44,9 +82,16 @@ const StudentPremiumLectures = () => {
   const [purchasedLectures, setPurchasedLectures] = useState<PremiumLecture[]>([]);
   const [myPayments, setMyPayments] = useState<PremiumLecturePayment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [playingVideo, setPlayingVideo] = useState<{ videoId: string; title: string } | null>(null);
-  const [playingYouTube, setPlayingYouTube] = useState<{ videoUrl: string; title: string } | null>(null);
   const [activeTab, setActiveTab] = useState('available');
+
+  const isMountedRef = useRef(true);
+  const userLoadSeqRef = useRef(0);
+  const dataLoadSeqRef = useRef(0);
+  const previewSeqRef = useRef(0);
+  const submitGuardRef = useRef(false);
+  const paymentGenerationRef = useRef(0);
 
   // Payment Dialog State
   const [showPaymentDialog, setShowPaymentDialog] = useState(false);
@@ -56,67 +101,162 @@ const StudentPremiumLectures = () => {
   const [paymentNotes, setPaymentNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    loadUserAndData();
+  const resetPaymentDraft = useCallback(() => {
+    paymentGenerationRef.current += 1;
+    submitGuardRef.current = false;
+    setSubmitting(false);
+    previewSeqRef.current += 1;
+    setShowPaymentDialog(false);
+    setSelectedLecture(null);
+    setReceiptImage(null);
+    setImagePreview(null);
+    setPaymentNotes('');
   }, []);
 
-  const loadUserAndData = async () => {
-    try {
-      setLoading(true);
+  const loadData = useCallback(async (studentId: string) => {
+    const requestSeq = ++dataLoadSeqRef.current;
+    const startingToken = readSessionToken();
+    const isCurrent = () =>
+      isMountedRef.current
+      && requestSeq === dataLoadSeqRef.current
+      && startingToken === readSessionToken();
 
-      const userStr = localStorage.getItem('currentUser');
-      const studentStr = localStorage.getItem('currentStudent');
-
-      if (!userStr) {
-        toast({
-          title: 'خطأ',
-          description: 'يرجى تسجيل الدخول مرة أخرى',
-          variant: 'destructive'
-        });
-        navigate('/auth');
-        return;
-      }
-
-      const user: User = JSON.parse(userStr);
-      setCurrentUser(user);
-
-      // Get student info
-      let studentId = user.student_id || user.id;
-      if (studentStr) {
-        const student: Student = JSON.parse(studentStr);
-        setCurrentStudent(student);
-        studentId = student.id;
-      }
-
-      // Load all data
-      await loadData(studentId);
-    } catch (error) {
-      console.error('Error loading user data:', error);
-      toast({
-        title: 'خطأ',
-        description: 'فشل تحميل البيانات',
-        variant: 'destructive'
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadData = async (studentId: string) => {
     try {
       const [available, purchased, payments] = await Promise.all([
         getStudentAvailablePremiumLectures(studentId),
         getStudentPurchasedPremiumLectures(studentId),
         getStudentPremiumPayments(studentId)
       ]);
+      if (!isCurrent()) return;
+      if (!Array.isArray(available) || !Array.isArray(purchased) || !Array.isArray(payments)) {
+        throw new Error('Invalid premium lectures response');
+      }
 
-      setAvailableLectures(available || []);
-      setPurchasedLectures(purchased || []);
-      setMyPayments(payments || []);
+      setAvailableLectures(available);
+      setPurchasedLectures(purchased);
+      setMyPayments(payments);
+      setLoadError(null);
     } catch (error) {
+      if (!isCurrent()) return;
       console.error('Error loading lectures:', error);
+      if (getErrorStatus(error) === 401) {
+        navigate('/auth');
+        return;
+      }
+      setAvailableLectures([]);
+      setPurchasedLectures([]);
+      setMyPayments([]);
+      setLoadError(describePremiumLoadError(error));
     }
-  };
+  }, [navigate]);
+
+  const loadUserAndData = useCallback(async () => {
+    const requestSeq = ++userLoadSeqRef.current;
+    dataLoadSeqRef.current += 1;
+    const startingToken = readSessionToken();
+
+    setLoading(true);
+    setLoadError(null);
+    setAvailableLectures([]);
+    setPurchasedLectures([]);
+    setMyPayments([]);
+
+    try {
+      if (!startingToken) {
+        navigate('/auth');
+        return;
+      }
+
+      const userStr = localStorage.getItem('currentUser');
+      if (!userStr) {
+        navigate('/auth');
+        return;
+      }
+
+      let user: User;
+      try {
+        user = JSON.parse(userStr) as User;
+      } catch {
+        navigate('/auth');
+        return;
+      }
+      if (!user || typeof user !== 'object') {
+        navigate('/auth');
+        return;
+      }
+      if (user.role !== 'student') {
+        navigate('/forbidden');
+        return;
+      }
+      if (!isMountedRef.current || requestSeq !== userLoadSeqRef.current) return;
+
+      setCurrentUser(user);
+      setCurrentStudent(null);
+
+      // The server-derived enrollment id (selected workspace) is the only id
+      // accepted by the premium endpoints; never fall back to the user id.
+      const student = await getCurrentStudentEnrollment();
+      if (!isMountedRef.current || requestSeq !== userLoadSeqRef.current || startingToken !== readSessionToken()) return;
+      if (!student || typeof student.id !== 'string' || !student.id) {
+        throw new Error('STUDENT_ENROLLMENT_UNRESOLVED');
+      }
+
+      setCurrentStudent(student);
+      await loadData(student.id);
+    } catch (error) {
+      if (!isMountedRef.current || requestSeq !== userLoadSeqRef.current || startingToken !== readSessionToken()) return;
+      console.error('Error loading user data:', error);
+      if (getErrorStatus(error) === 401) {
+        navigate('/auth');
+        return;
+      }
+      setLoadError(describePremiumLoadError(error));
+    } finally {
+      if (isMountedRef.current && requestSeq === userLoadSeqRef.current) setLoading(false);
+    }
+  }, [navigate, loadData]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    void loadUserAndData();
+
+    const refreshSession = () => {
+      userLoadSeqRef.current += 1;
+      dataLoadSeqRef.current += 1;
+      previewSeqRef.current += 1;
+      submitGuardRef.current = false;
+      setCurrentUser(null);
+      setCurrentStudent(null);
+      setAvailableLectures([]);
+      setPurchasedLectures([]);
+      setMyPayments([]);
+      setPlayingVideo(null);
+      setSubmitting(false);
+      resetPaymentDraft();
+      void loadUserAndData();
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (!event.key
+        || event.key === 'authToken'
+        || event.key === 'currentUser'
+        || event.key === 'currentStudent'
+        || event.key === 'currentStudentSpace') {
+        refreshSession();
+      }
+    };
+
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, refreshSession);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      isMountedRef.current = false;
+      paymentGenerationRef.current += 1;
+      userLoadSeqRef.current += 1;
+      dataLoadSeqRef.current += 1;
+      previewSeqRef.current += 1;
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, refreshSession);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [loadUserAndData, resetPaymentDraft]);
 
   const handleCloseVideo = useCallback(() => {
     setPlayingVideo(null);
@@ -131,6 +271,9 @@ const StudentPremiumLectures = () => {
           description: "الحد الأقصى لحجم الصورة هو 5 ميجابايت",
           variant: "destructive",
         });
+        previewSeqRef.current += 1;
+        setReceiptImage(null);
+        setImagePreview(null);
         return;
       }
 
@@ -140,23 +283,42 @@ const StudentPremiumLectures = () => {
           description: "يرجى اختيار صورة فقط",
           variant: "destructive",
         });
+        previewSeqRef.current += 1;
+        setReceiptImage(null);
+        setImagePreview(null);
         return;
       }
 
+      const requestSeq = ++previewSeqRef.current;
       setReceiptImage(file);
       const reader = new FileReader();
       reader.onloadend = () => {
-        setImagePreview(reader.result as string);
+        if (!isMountedRef.current || requestSeq !== previewSeqRef.current) return;
+        setImagePreview(typeof reader.result === 'string' ? reader.result : null);
+      };
+      reader.onerror = () => {
+        if (!isMountedRef.current || requestSeq !== previewSeqRef.current) return;
+        setReceiptImage(null);
+        setImagePreview(null);
+        toast({
+          title: "تعذر قراءة الصورة",
+          description: "اختر صورة أخرى من فضلك",
+          variant: "destructive",
+        });
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const handleOpenPaymentDialog = (lecture: PremiumLecture) => {
-    setSelectedLecture(lecture);
+  const clearReceiptPreview = () => {
+    previewSeqRef.current += 1;
     setReceiptImage(null);
     setImagePreview(null);
-    setPaymentNotes('');
+  };
+
+  const handleOpenPaymentDialog = (lecture: PremiumLecture) => {
+    resetPaymentDraft();
+    setSelectedLecture(lecture);
     setShowPaymentDialog(true);
   };
 
@@ -170,41 +332,113 @@ const StudentPremiumLectures = () => {
       return;
     }
 
+    const startingToken = readSessionToken();
+    const generation = paymentGenerationRef.current;
+    const isCurrentPayment = () => isMountedRef.current
+      && generation === paymentGenerationRef.current && startingToken === readSessionToken();
+    if (!startingToken) {
+      navigate('/auth');
+      return;
+    }
+    if (submitGuardRef.current) return;
+    submitGuardRef.current = true;
     setSubmitting(true);
+
     try {
       const formData = new FormData();
-      formData.append('student_id', currentStudent.id);
       formData.append('premium_lecture_id', selectedLecture.id);
-      formData.append('amount', selectedLecture.price.toString());
+      formData.append('amount', String(selectedLecture.price));
       formData.append('receipt', receiptImage);
       if (paymentNotes) {
         formData.append('notes', paymentNotes);
       }
 
-      await submitPremiumLecturePayment(formData);
+      const response = await authenticatedApiFetch('/premium-lectures/payments', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!isCurrentPayment()) return;
+      if (response.status === 401) {
+        navigate('/auth');
+        return;
+      }
+      if (!response.ok) {
+        const payload = await readAuthenticatedApiJson(response).catch(() => null);
+        if (!isCurrentPayment()) return;
+        const message = payload && typeof payload === 'object' && typeof (payload as { error?: unknown }).error === 'string'
+          ? (payload as { error: string }).error
+          : null;
+        toast({
+          title: response.status === 403 ? "لا تملك صلاحية" : "تعذر إرسال الطلب",
+          description: message || "فشل في إرسال طلب الدفع",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const payment = await readAuthenticatedApiJson(response);
+      if (!isCurrentPayment()) return;
+
+      if (readSessionToken() !== startingToken) {
+        toast({
+          title: "تغيّرت الجلسة",
+          description: "لم نتأكد من تسجيل الطلب في هذه الجلسة. إيصالك وملاحظاتك باقية؛ راجع طلباتي قبل إعادة الإرسال.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (!payment
+        || typeof payment.id !== 'string'
+        || !payment.id
+        || payment.status !== 'pending'
+        || payment.premium_lecture_id !== selectedLecture.id) {
+        toast({
+          title: "تعذر تأكيد الطلب",
+          description: "لم نتأكد من تسجيل طلب الدفع. لم نمسح إيصالك؛ راجع \"طلباتي\" قبل إعادة الإرسال.",
+          variant: "destructive",
+        });
+        return;
+      }
 
       toast({
         title: "تم الإرسال",
         description: "تم إرسال طلب الدفع بنجاح، سيتم مراجعته قريباً",
       });
 
-      setShowPaymentDialog(false);
-      setSelectedLecture(null);
-      setReceiptImage(null);
-      setImagePreview(null);
-      setPaymentNotes('');
-
-      // Reload data
+      resetPaymentDraft();
       await loadData(currentStudent.id);
-    } catch (error: any) {
+    } catch (error) {
+      if (!isCurrentPayment()) return;
       console.error('Error submitting payment:', error);
+      const status = getErrorStatus(error);
+      if (status === 401) {
+        navigate('/auth');
+        return;
+      }
+      if ((error as { code?: unknown })?.code === 'CLIENT_SESSION_CHANGED') {
+        toast({
+          title: "تغيّرت الجلسة",
+          description: "لم نمسح إيصالك. راجع طلباتي قبل إعادة الإرسال.",
+          variant: "destructive",
+        });
+        return;
+      }
       toast({
         title: "خطأ",
-        description: error.message || "فشل في إرسال طلب الدفع",
+        description: status === 403
+          ? "لا تملك صلاحية إرسال طلب دفع لهذه الحصة."
+          : status === 409
+            ? "اختر مساحة المدرس أولاً قبل إرسال طلب الدفع."
+            : error instanceof Error && error.message && !/^HTTP\s/.test(error.message)
+              ? error.message
+              : "فشل في إرسال طلب الدفع",
         variant: "destructive",
       });
     } finally {
-      setSubmitting(false);
+      if (isCurrentPayment()) {
+        submitGuardRef.current = false;
+        setSubmitting(false);
+      }
     }
   };
 
@@ -256,20 +490,18 @@ const StudentPremiumLectures = () => {
         />
       )}
 
-      {/* YouTube/External Video Player Modal */}
-      {playingYouTube && currentUser && (
-        <SecureYouTubePlayer
-          videoUrl={playingYouTube.videoUrl}
-          userId={currentUser.id}
-          studentName={currentUser.name || 'طالب'}
-          groupName={currentStudent?.group_id || 'المجموعة'}
-          title={playingYouTube.title}
-          onClose={() => setPlayingYouTube(null)}
-        />
-      )}
-
       {/* Payment Dialog */}
-      <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
+      <Dialog
+        open={showPaymentDialog}
+        onOpenChange={(open) => {
+          if (open) {
+            setShowPaymentDialog(true);
+            return;
+          }
+          if (submitting) return;
+          resetPaymentDraft();
+        }}
+      >
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="text-xl">إرسال إيصال الدفع</DialogTitle>
@@ -302,10 +534,8 @@ const StudentPremiumLectures = () => {
                         variant="destructive"
                         size="icon"
                         className="absolute top-2 left-2"
-                        onClick={() => {
-                          setReceiptImage(null);
-                          setImagePreview(null);
-                        }}
+                        onClick={clearReceiptPreview}
+                        disabled={submitting}
                       >
                         <X className="w-4 h-4" />
                       </Button>
@@ -319,6 +549,7 @@ const StudentPremiumLectures = () => {
                         type="file"
                         accept="image/*"
                         onChange={handleImageChange}
+                        disabled={submitting}
                         className="hidden"
                       />
                     </label>
@@ -334,6 +565,7 @@ const StudentPremiumLectures = () => {
                   placeholder="أي ملاحظات إضافية..."
                   className="mt-2"
                   rows={3}
+                  disabled={submitting}
                 />
               </div>
             </div>
@@ -342,7 +574,8 @@ const StudentPremiumLectures = () => {
           <DialogFooter className="gap-2">
             <Button
               variant="ghost"
-              onClick={() => setShowPaymentDialog(false)}
+              onClick={resetPaymentDraft}
+              disabled={submitting}
             >
               إلغاء
             </Button>
@@ -371,6 +604,15 @@ const StudentPremiumLectures = () => {
             حصص إضافية مميزة لتعزيز مستواك الدراسي
           </p>
         </motion.div>
+
+        {loadError && (
+          <div role="alert" className="mb-6 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+            <p>{loadError}</p>
+            <Button size="sm" variant="outline" className="mt-2" onClick={() => void loadUserAndData()}>
+              إعادة المحاولة
+            </Button>
+          </div>
+        )}
 
         {/* Search */}
         <motion.div
@@ -409,7 +651,7 @@ const StudentPremiumLectures = () => {
           <TabsContent value="available">
             {loading ? (
               <div className="text-center text-muted-foreground py-12">جاري التحميل...</div>
-            ) : filteredAvailable.length === 0 ? (
+            ) : loadError ? null : filteredAvailable.length === 0 ? (
               <GlassmorphicCard className="py-12 text-center">
                 <Lock className="w-16 h-16 mx-auto text-muted-foreground/40 mb-4" />
                 <p className="text-muted-foreground">لا توجد حصص مدفوعة متاحة حالياً</p>
@@ -508,7 +750,9 @@ const StudentPremiumLectures = () => {
 
           {/* Purchased Lectures */}
           <TabsContent value="purchased">
-            {purchasedLectures.length === 0 ? (
+            {loading ? (
+              <div className="text-center text-muted-foreground py-12">جاري التحميل...</div>
+            ) : loadError ? null : purchasedLectures.length === 0 ? (
               <GlassmorphicCard className="py-12 text-center">
                 <Unlock className="w-16 h-16 mx-auto text-muted-foreground/40 mb-4" />
                 <p className="text-muted-foreground">لم تشترِ أي حصص بعد</p>
@@ -571,23 +815,25 @@ const StudentPremiumLectures = () => {
 
                         <Button
                           onClick={() => {
-                            const videoUrl = lecture.video_url;
-                            
-                            // Check video type
+                            const videoUrl = lecture.video_url?.trim() ?? '';
                             if (videoUrl.startsWith('video://')) {
-                              // MinIO encrypted video
-                              const videoId = videoUrl.replace('video://', '');
+                              const videoId = videoUrl.slice('video://'.length).trim();
+                              if (!videoId) {
+                                toast({
+                                  title: "رابط الفيديو غير صالح",
+                                  description: "لا يمكن تشغيل هذه الحصة الآن. تواصل مع المدرس.",
+                                  variant: "destructive",
+                                });
+                                return;
+                              }
                               setPlayingVideo({ videoId, title: lecture.title });
-                            } else if (videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be')) {
-                              // YouTube video - play in secure player
-                              setPlayingYouTube({ videoUrl, title: lecture.title });
-                            } else if (videoUrl.includes('drive.google.com')) {
-                              // Google Drive - play in secure player (same as YouTube)
-                              setPlayingYouTube({ videoUrl: videoUrl.replace('/view', '/preview'), title: lecture.title });
-                            } else {
-                              // Unknown video type - try secure player
-                              setPlayingYouTube({ videoUrl, title: lecture.title });
+                              return;
                             }
+                            toast({
+                              title: "رابط الفيديو غير مدعوم",
+                              description: "نوع رابط هذه الحصة غير معروف. تواصل مع المدرس.",
+                              variant: "destructive",
+                            });
                           }}
                           className="w-full bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-700 hover:to-teal-700"
                         >
@@ -604,7 +850,9 @@ const StudentPremiumLectures = () => {
 
           {/* My Payments */}
           <TabsContent value="payments">
-            {myPayments.length === 0 ? (
+            {loading ? (
+              <div className="text-center text-muted-foreground py-12">جاري التحميل...</div>
+            ) : loadError ? null : myPayments.length === 0 ? (
               <GlassmorphicCard className="py-12 text-center">
                 <DollarSign className="w-16 h-16 mx-auto text-white/20 mb-4" />
                 <p className="text-white/60">لم ترسل أي طلبات دفع بعد</p>

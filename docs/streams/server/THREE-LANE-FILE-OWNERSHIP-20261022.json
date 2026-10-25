@@ -32,187 +32,309 @@
       "owner": "codex"
     },
     "server/migrations/20260920_00_legacy_baseline.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260920_01_expand_user_roles.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260920_03_guardian_phone_students.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260920_05_instructor_system.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260920_07_exam_attempts.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260920_08_exam_question_images.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260920_09_staff_auth_columns.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260920_10_premium_lecture_tables.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260920_11_video_system.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260921_saas_foundation.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260921_support_tickets.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260922_00_tenant_media_and_subscription_requests.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260923_admin_scope_hardening.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260923_platform_subscription_duration_and_grace.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260924_billing_notifications.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260924_instructor_topups_auto_renewal.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260924_instructor_video_exchange.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260925_01_student_tenant_enrollment.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260925_02_student_enrollment_backfill_review.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260925_03_free_video_security.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260925_04_web_multidrm.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260925_05_web_multidrm_preview.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260926_student_auth_revocation.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260926_video_deterrence_controls.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260927_course_tenant_ownership_and_instructor_subject.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260928_runtime_schema_replacement.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260929_payment_requests_tenant.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20260930_notification_preferences.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261017_01_grades_tenant_scope.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261017_02_missing_core_tables.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261017_03_missing_columns_enums.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261017_04_tenant_columns_backfill.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261017_05_staff_token_version.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261017_06_branch_membership.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261017_07_identity_otp.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261017_08_resource_branch_scope.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_01_m2_identity_catalog_enrollment.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_02_otp_challenge_submission.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_03_content_release_progress.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_04_tenant_branding_domains.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_05_announcements_import.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_06_video_assets_entitlements.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_07_playback_sessions_progress.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_08_question_bank_assignments.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_09_exam_snapshots_grading.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_10_gradebook_certificates.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_11_schedules_attendance_records.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_13_parent_links.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_14_notification_outbox_consent.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_15_playback_entitlement_indexes.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_16_lesson_discussions.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_17_feature_flags_audit_chain.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_18_moderation.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_19_platform_mfa_impersonation.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_21_unsubscribe_token_use.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_22_audit_chain_sequence.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261018_23_search_export.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261021_01_exam_manual_publication.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261021_02_internal_financial_ledger.sql": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/db.ts": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "integration-close-glm",
+      "basis": "Latest direct human request source integration tasks; previous native absence verified. Codex stops writing these paths until termination/review."
     },
     "server/src/index.ts": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "integration-close-deepseek",
+      "basis": "Latest direct human request source integration tasks; previous native absence verified. Codex stops writing these paths until termination/review."
     },
     "server/src/middleware/auth.ts": {
       "owner": "codex"
@@ -262,8 +384,9 @@
       "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/src/routes/attendance-records.ts": {
-      "owner": "workbuddy",
-      "group": "academic"
+      "owner": "codex",
+      "group": "academic",
+      "basis": "Human direct supervisor implementation request,2026-10-24; removed from WorkBuddy queued task before source write"
     },
     "server/src/routes/attendance-reports.ts": {
       "owner": "workbuddy",
@@ -310,7 +433,9 @@
       "owner": "codex"
     },
     "server/src/routes/fees.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/routes/files.ts": {
       "owner": "codex"
@@ -336,7 +461,9 @@
       "group": "media"
     },
     "server/src/routes/instructor-wallet.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/routes/instructors.ts": {
       "owner": "codex"
@@ -350,7 +477,8 @@
     },
     "server/src/routes/manual-grading.ts": {
       "owner": "workbuddy",
-      "group": "academic"
+      "group": "academic",
+      "basis": "Human explicitly distributes remaining source work; finite two-path task20261025-03."
     },
     "server/src/routes/materials.ts": {
       "owner": "workbuddy",
@@ -368,23 +496,35 @@
     },
     "server/src/routes/notification-consent.ts": {
       "owner": "opencode",
-      "group": "notifications"
+      "group": "notifications",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human explicitly resumed two disjoint OpenCode models under Codex supervision,2026-10-24"
     },
     "server/src/routes/notifications.ts": {
       "owner": "opencode",
-      "group": "notifications"
+      "group": "notifications",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human explicitly resumed two disjoint OpenCode models under Codex supervision,2026-10-24"
     },
     "server/src/routes/ops.ts": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human explicit autonomous continuation; prior writers terminated, disjoint round2 R16/R17 scope under Codex supervision,2026-10-24"
     },
     "server/src/routes/parent-links.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/routes/parent-views.ts": {
-      "owner": "claude"
+      "owner": "workbuddy",
+      "priorOwner": "claude",
+      "basis": "Human explicitly distributes remaining source work; finite two-path task20261025-03."
     },
     "server/src/routes/payment-requests.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/routes/platform-flags.ts": {
       "owner": "codex"
@@ -393,7 +533,9 @@
       "owner": "codex"
     },
     "server/src/routes/platform-tenants.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/routes/playback-sessions.ts": {
       "owner": "workbuddy",
@@ -404,7 +546,9 @@
       "group": "media"
     },
     "server/src/routes/progress-reports.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/routes/public-identity.ts": {
       "owner": "codex"
@@ -414,7 +558,9 @@
       "group": "academic"
     },
     "server/src/routes/registration-requests.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/routes/revenues.ts": {
       "owner": "codex"
@@ -436,22 +582,34 @@
       "owner": "codex"
     },
     "server/src/routes/student-enrollment.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/routes/student-import.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/routes/students.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/routes/subscription-plans.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/routes/subscription-requests.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/routes/subscriptions.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/routes/support-tickets.ts": {
       "owner": "codex"
@@ -547,22 +705,34 @@
       "owner": "codex"
     },
     "server/src/services/billing-basis.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/billing-ledger-sql.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/billing-ledger.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/billing-periods.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/billing-pricing.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/billing-reservations.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/certificates.ts": {
       "owner": "codex"
@@ -572,7 +742,9 @@
     },
     "server/src/services/delivery-channels.ts": {
       "owner": "opencode",
-      "group": "notifications"
+      "group": "notifications",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human explicitly resumed two disjoint OpenCode models under Codex supervision,2026-10-24"
     },
     "server/src/services/domain-verification.ts": {
       "owner": "codex"
@@ -618,7 +790,9 @@
       "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/src/services/metrics.ts": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human explicit autonomous continuation; prior writers terminated, disjoint round2 R16/R17 scope under Codex supervision,2026-10-24"
     },
     "server/src/services/minio.ts": {
       "owner": "codex"
@@ -628,22 +802,32 @@
     },
     "server/src/services/notification-consent.ts": {
       "owner": "opencode",
-      "group": "notifications"
+      "group": "notifications",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human explicitly resumed two disjoint OpenCode models under Codex supervision,2026-10-24"
     },
     "server/src/services/notification-outbox.ts": {
       "owner": "opencode",
-      "group": "notifications"
+      "group": "notifications",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human explicitly resumed two disjoint OpenCode models under Codex supervision,2026-10-24"
     },
     "server/src/services/notification-preferences.ts": {
       "owner": "opencode",
-      "group": "notifications"
+      "group": "notifications",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human explicitly resumed two disjoint OpenCode models under Codex supervision,2026-10-24"
     },
     "server/src/services/notification-worker.ts": {
       "owner": "opencode",
-      "group": "notifications"
+      "group": "notifications",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human explicitly resumed two disjoint OpenCode models under Codex supervision,2026-10-24"
     },
     "server/src/services/parent-links.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/platform-mfa.ts": {
       "owner": "codex"
@@ -665,16 +849,24 @@
       "group": "media"
     },
     "server/src/services/progress-publication-sql.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/progress-publication.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/progress-report-source-sql.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/progress-reports.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/question-bank.ts": {
       "owner": "workbuddy",
@@ -699,13 +891,19 @@
       "owner": "codex"
     },
     "server/src/services/student-csv-import.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/subscription-lifecycle.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/subscription-renewal.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/tenant-export.ts": {
       "owner": "workbuddy",
@@ -752,7 +950,9 @@
     },
     "server/src/utils/notifications.ts": {
       "owner": "opencode",
-      "group": "notifications"
+      "group": "notifications",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human explicitly resumed two disjoint OpenCode models under Codex supervision,2026-10-24"
     },
     "server/tests/auth-boundary.test.ts": {
       "owner": "codex"
@@ -767,22 +967,34 @@
       "owner": "codex"
     },
     "server/tests/billing-basis.test.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/billing-ledger-sql.test.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/billing-ledger.test.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/billing-periods.test.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/billing-pricing.test.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/billing-reservations.test.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/domain-verification.test.ts": {
       "owner": "codex"
@@ -792,7 +1004,9 @@
       "group": "academic"
     },
     "server/tests/finance-billing.test.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/helpers/m2-harness.ts": {
       "owner": "codex"
@@ -999,7 +1213,9 @@
       "owner": "codex"
     },
     "server/tests/m2-student-import.test.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/m2-tenant-host-branding.test.ts": {
       "owner": "codex"
@@ -1060,7 +1276,9 @@
       "group": "academic"
     },
     "server/tests/m4-progress-reports.test.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/m4-question-bank.test.ts": {
       "owner": "workbuddy",
@@ -1098,10 +1316,14 @@
       "group": "notifications"
     },
     "server/tests/m6-parent-links.test.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/m6-parent-views.test.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/m7-audit-logs.test.ts": {
       "owner": "codex"
@@ -1152,13 +1374,17 @@
       "owner": "codex"
     },
     "server/tests/progress-publication-sql.test.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/qa-m1-gate-gaps.test.ts": {
       "owner": "codex"
     },
     "server/tests/student-enrollment-security.test.ts": {
-      "owner": "claude"
+      "owner": "codex",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/teacher-school-product-alignment.test.ts": {
       "owner": "codex"
@@ -1220,7 +1446,9 @@
       "owner": "codex"
     },
     "src/components/Header.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human explicit autonomous continuation; prior writers terminated, disjoint round2 R16/R17 scope under Codex supervision,2026-10-24"
     },
     "src/components/InstructorHeader.tsx": {
       "owner": "codex"
@@ -1262,7 +1490,9 @@
       "owner": "codex"
     },
     "src/components/StudentHeader.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human explicit autonomous continuation; prior writers terminated, disjoint round2 R16/R17 scope under Codex supervision,2026-10-24"
     },
     "src/components/StudentHeader_OLD_BACKUP.tsx": {
       "owner": "codex"
@@ -1490,10 +1720,14 @@
       "owner": "codex"
     },
     "src/pages/AdminDashboard.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "glm-admin-workflow-20261025",
+      "basis": "Human explicitly assigned remaining platform source closure; prior GLM termination verified."
     },
     "src/pages/AdminFinance.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "glm-admin-workflow-20261025",
+      "basis": "Human explicitly assigned remaining platform source closure; prior GLM termination verified."
     },
     "src/pages/AdminInstructorOverview.tsx": {
       "owner": "codex"
@@ -1502,7 +1736,9 @@
       "owner": "codex"
     },
     "src/pages/AdminOperations.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "glm-admin-workflow-20261025",
+      "basis": "Human explicitly assigned remaining platform source closure; prior GLM termination verified."
     },
     "src/pages/AdminPlatform.tsx": {
       "owner": "codex"
@@ -1520,7 +1756,9 @@
       "owner": "codex"
     },
     "src/pages/Auth.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human explicit autonomous continuation; prior writers terminated, disjoint round2 R16/R17 scope under Codex supervision,2026-10-24"
     },
     "src/pages/BarcodeAttendance.tsx": {
       "owner": "codex"
@@ -1535,13 +1773,17 @@
       "owner": "codex"
     },
     "src/pages/EditExam.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human explicit autonomous continuation; prior writers terminated, disjoint round2 R16/R17 scope under Codex supervision,2026-10-24"
     },
     "src/pages/EditExam_NEW.tsx": {
       "owner": "codex"
     },
     "src/pages/ExamAccess.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Explicit autonomous delegation round5 after verified native termination; disjoint Codex-owned frontend paths"
     },
     "src/pages/ExamManager.tsx": {
       "owner": "codex"
@@ -1577,22 +1819,30 @@
       "owner": "codex"
     },
     "src/pages/InstructorDashboard.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "glm-instructor-workflow-20261025",
+      "basis": "Human explicitly authorizes next finite source work; no native writer present."
     },
     "src/pages/InstructorLectures.tsx": {
       "owner": "codex"
     },
     "src/pages/InstructorStudents.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Explicit autonomous delegation round5 after verified native termination; disjoint Codex-owned frontend paths"
     },
     "src/pages/InstructorSubscription.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "glm-instructor-workflow-20261025",
+      "basis": "Human explicitly authorizes next finite source work; no native writer present."
     },
     "src/pages/InstructorVideoRequests.tsx": {
       "owner": "codex"
     },
     "src/pages/InstructorWallet.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "glm-instructor-workflow-20261025",
+      "basis": "Human explicitly authorizes next finite source work; no native writer present."
     },
     "src/pages/JoinInstructor.tsx": {
       "owner": "codex"
@@ -1610,7 +1860,9 @@
       "owner": "codex"
     },
     "src/pages/OnlineMeeting.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human latest direct send next OpenCode tasks, disjoint source packages, prior native terminated"
     },
     "src/pages/Profits.tsx": {
       "owner": "codex"
@@ -1631,25 +1883,39 @@
       "owner": "codex"
     },
     "src/pages/StudentChat.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "round12-deepseek",
+      "basis": "Human explicitly assigned two OpenCode tasks; prior native termination verified."
     },
     "src/pages/StudentContent.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "deepseek-student-content-20261025",
+      "basis": "New human-approved finite student workflow task; previous DeepSeek termination verified."
     },
     "src/pages/StudentDashboard.tsx": {
-      "owner": "codex"
+      "owner": "codex",
+      "nativeLane": "codex-direct-frontend-closure-20261025",
+      "basis": "Latest human request new OpenCode tasks while Codex corrects prior pages; nonoverlapping round10"
     },
     "src/pages/StudentExamResults.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Explicit autonomous delegation round5 after verified native termination; disjoint Codex-owned frontend paths"
     },
     "src/pages/StudentExams.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Explicit autonomous delegation round5 after verified native termination; disjoint Codex-owned frontend paths"
     },
     "src/pages/StudentLectures.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "deepseek-student-content-20261025",
+      "basis": "New human-approved finite student workflow task; previous DeepSeek termination verified."
     },
     "src/pages/StudentMeetings.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human latest direct send next OpenCode tasks, disjoint source packages, prior native terminated"
     },
     "src/pages/StudentMessages.tsx": {
       "owner": "codex"
@@ -1658,13 +1924,19 @@
       "owner": "codex"
     },
     "src/pages/StudentPayments.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Explicit autonomous delegation round5 after verified native termination; disjoint Codex-owned frontend paths"
     },
     "src/pages/StudentPremiumLectures.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human latest direct send next OpenCode tasks, disjoint source packages, prior native terminated"
     },
     "src/pages/StudentRegistrationRequests.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Explicit autonomous delegation round5 after verified native termination; disjoint Codex-owned frontend paths"
     },
     "src/pages/StudentReports.tsx": {
       "owner": "codex"
@@ -1673,7 +1945,9 @@
       "owner": "codex"
     },
     "src/pages/Students.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Explicit autonomous delegation round5 after verified native termination; disjoint Codex-owned frontend paths"
     },
     "src/pages/Subscriptions.tsx": {
       "owner": "codex"
@@ -1682,28 +1956,42 @@
       "owner": "codex"
     },
     "src/pages/TakeExam.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Explicit autonomous delegation round5 after verified native termination; disjoint Codex-owned frontend paths"
     },
     "src/pages/TeacherChat.tsx": {
-      "owner": "codex"
+      "owner": "codex",
+      "nativeLane": "codex-direct-frontend-closure-20261025",
+      "basis": "Latest human request new OpenCode tasks while Codex corrects prior pages; nonoverlapping round10"
     },
     "src/pages/TeacherContentManager.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Latest human requests next OpenCode packages; exact nonoverlapping round7 scopes, previous processes absent"
     },
     "src/pages/TeacherDashboard.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Latest human request new OpenCode tasks while Codex corrects prior pages; nonoverlapping round10"
     },
     "src/pages/TeacherExams.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human explicit autonomous continuation; prior writers terminated, disjoint round2 R16/R17 scope under Codex supervision,2026-10-24"
     },
     "src/pages/TeacherLectures.tsx": {
       "owner": "codex"
     },
     "src/pages/TeacherMaterials.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Latest human requests next OpenCode packages; exact nonoverlapping round7 scopes, previous processes absent"
     },
     "src/pages/TeacherPremiumLectures.tsx": {
-      "owner": "codex"
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human latest direct send next OpenCode tasks, disjoint source packages, prior native terminated"
     },
     "src/pages/TenantInvitation.tsx": {
       "owner": "codex"
@@ -1789,214 +2077,285 @@
       "group": "notifications"
     },
     "server/src/services/student-relations.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X1",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/student-relations.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X1",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/student-relations-sql.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X2",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/student-relations-sql.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X2",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/billing-invoices.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X3",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/billing-snapshots.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X3",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/billing-invoices.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X3",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/billing-snapshots.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X3",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/billing-collection.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X4",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/billing-collection.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X4",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/billing-invoices-sql.ts": {
-      "owner": "claude",
-      "allocation": "X5",
-      "sourceScope": "claude-x1-x9-20261022"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Latest human requests next OpenCode packages; exact nonoverlapping round7 scopes, previous processes absent"
     },
     "server/src/services/billing-collection-sql.ts": {
-      "owner": "claude",
-      "allocation": "X5",
-      "sourceScope": "claude-x1-x9-20261022"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Latest human requests next OpenCode packages; exact nonoverlapping round7 scopes, previous processes absent"
     },
     "server/tests/billing-invoices-sql.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X5",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/billing-collection-sql.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X5",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/payment-checkout.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X6",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/payment-checkout.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X6",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/billing-payouts.ts": {
-      "owner": "claude",
-      "allocation": "X7",
-      "sourceScope": "claude-x1-x9-20261022"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Latest human request new OpenCode tasks while Codex corrects prior pages; nonoverlapping round10"
     },
     "server/src/services/billing-refunds.ts": {
-      "owner": "claude",
-      "allocation": "X7",
-      "sourceScope": "claude-x1-x9-20261022"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Latest human request new OpenCode tasks while Codex corrects prior pages; nonoverlapping round10"
     },
     "server/tests/billing-payouts.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X7",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/billing-refunds.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X7",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261022_01_student_relations_events.sql": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X8",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261022_02_billing_invoices_collections.sql": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X8",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261022_03_payments_payouts_refunds.sql": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X8",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/b3-schema-contract.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X8",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "docs/contracts/B3-SCHEMA-CONTRACT-20261022.md": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X8",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "docs/streams/server/CL-A-IDENTITY-20261022.md": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X9",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "docs/streams/server/CL-B-BILLING-20261022.md": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X9",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "docs/streams/server/CL-C-SCHEMA-20261022.md": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X9",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "docs/streams/server/CL-D-PARENT-20261022.md": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "X9",
-      "sourceScope": "claude-x1-x9-20261022"
+      "sourceScope": "claude-x1-x9-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261022_03_payments_checkout.sql": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "post-session-financial-source",
-      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+      "sourceScope": "prospective_registration_not_retrospective_acceptance",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261022_04_payouts_refunds_disputes.sql": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "post-session-financial-source",
-      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+      "sourceScope": "prospective_registration_not_retrospective_acceptance",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/payment-checkout-sql.ts": {
-      "owner": "claude",
-      "allocation": "post-session-financial-source",
-      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Latest human requests next OpenCode packages; exact nonoverlapping round7 scopes, previous processes absent"
     },
     "server/src/services/billing-payouts-sql.ts": {
-      "owner": "claude",
-      "allocation": "post-session-financial-source",
-      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Latest human request new OpenCode tasks while Codex corrects prior pages; nonoverlapping round10"
     },
     "server/src/services/billing-refunds-sql.ts": {
-      "owner": "claude",
-      "allocation": "post-session-financial-source",
-      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Latest human request new OpenCode tasks while Codex corrects prior pages; nonoverlapping round10"
     },
     "server/tests/payment-checkout-sql.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "post-session-financial-source",
-      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+      "sourceScope": "prospective_registration_not_retrospective_acceptance",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/billing-payouts-sql.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "post-session-financial-source",
-      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+      "sourceScope": "prospective_registration_not_retrospective_acceptance",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/billing-refunds-sql.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "post-session-financial-source",
-      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+      "sourceScope": "prospective_registration_not_retrospective_acceptance",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/billing-read-models.ts": {
-      "owner": "claude",
+      "owner": "opencode",
       "allocation": "post-session-financial-source",
-      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+      "sourceScope": "prospective_registration_not_retrospective_acceptance",
+      "priorOwner": "claude",
+      "basis": "Human explicitly assigned two OpenCode tasks; prior native termination verified.",
+      "nativeLane": "round12-glm"
     },
     "server/tests/billing-read-models.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "post-session-financial-source",
-      "sourceScope": "prospective_registration_not_retrospective_acceptance"
+      "sourceScope": "prospective_registration_not_retrospective_acceptance",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261022_06_live_sessions_recordings.sql": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "live-v2-source-schema",
-      "sourceScope": "live-source-contract-r12-r15-20261022"
+      "sourceScope": "live-source-contract-r12-r15-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/tests/live-schema-contract.test.ts": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "live-v2-source-schema",
-      "sourceScope": "live-source-contract-r12-r15-20261022"
+      "sourceScope": "live-source-contract-r12-r15-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "docs/streams/server/CL-E-LIVE-SCHEMA-20261022.md": {
-      "owner": "claude",
+      "owner": "codex",
       "allocation": "live-v2-source-schema",
-      "sourceScope": "live-source-contract-r12-r15-20261022"
+      "sourceScope": "live-source-contract-r12-r15-20261022",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/live-session-sql.ts": {
       "owner": "workbuddy",
@@ -2031,40 +2390,57 @@
       "registrationBasis": "Owner requested large concurrent continuation 2026-10-23; exact paths registered before writing; source only."
     },
     "server/src/services/billing-settlement.ts": {
-      "owner": "claude",
-      "registrationBasis": "Existing owner-approved financial allocation; technical settlement obligation continuation 2026-10-23, source only."
+      "owner": "codex",
+      "registrationBasis": "Existing owner-approved financial allocation; technical settlement obligation continuation 2026-10-23, source only.",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/billing-settlement-sql.ts": {
-      "owner": "claude",
-      "registrationBasis": "Existing owner-approved financial allocation; technical settlement obligation continuation 2026-10-23, source only."
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Latest human requests next OpenCode packages; exact nonoverlapping round7 scopes, previous processes absent"
     },
     "server/migrations/20261023_01_financial_settlement_obligations.sql": {
-      "owner": "claude",
-      "registrationBasis": "Existing owner-approved financial allocation; technical settlement obligation continuation 2026-10-23, source only."
+      "owner": "codex",
+      "registrationBasis": "Existing owner-approved financial allocation; technical settlement obligation continuation 2026-10-23, source only.",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261023_02_live_callback_presence_contract.sql": {
-      "owner": "claude",
-      "registrationBasis": "Source continuation of existing owner-approved financial and live schema allocation; exact R22/R23 and platform lifecycle contracts 2026-10-23."
+      "owner": "codex",
+      "registrationBasis": "Source continuation of existing owner-approved financial and live schema allocation; exact R22/R23 and platform lifecycle contracts 2026-10-23.",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/migrations/20261023_03_platform_obligation_lifecycle.sql": {
-      "owner": "claude",
-      "registrationBasis": "Source continuation of existing owner-approved financial and live schema allocation; exact R22/R23 and platform lifecycle contracts 2026-10-23."
+      "owner": "codex",
+      "registrationBasis": "Source continuation of existing owner-approved financial and live schema allocation; exact R22/R23 and platform lifecycle contracts 2026-10-23.",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/notification-contact-sql.ts": {
       "owner": "opencode",
-      "registrationBasis": "Four-lane notification source closure 2026-10-23"
+      "registrationBasis": "Four-lane notification source closure 2026-10-23",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human explicitly resumed two disjoint OpenCode models under Codex supervision,2026-10-24"
     },
     "server/src/services/notification-runtime-factory.ts": {
       "owner": "opencode",
-      "registrationBasis": "Four-lane notification source closure 2026-10-23"
+      "registrationBasis": "Four-lane notification source closure 2026-10-23",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human explicitly resumed two disjoint OpenCode models under Codex supervision,2026-10-24"
     },
     "server/src/services/notification-dispatch-recovery.ts": {
       "owner": "opencode",
-      "registrationBasis": "Four-lane notification source closure 2026-10-23"
+      "registrationBasis": "Four-lane notification source closure 2026-10-23",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human explicitly resumed two disjoint OpenCode models under Codex supervision,2026-10-24"
     },
     "docs/streams/server/OPENCODE-NOTIFICATION-CLOSURE-20261023.md": {
       "owner": "opencode",
-      "registrationBasis": "Four-lane notification source closure 2026-10-23"
+      "registrationBasis": "Four-lane notification source closure 2026-10-23",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human explicitly resumed two disjoint OpenCode models under Codex supervision,2026-10-24"
     },
     "server/src/security/async-route-boundary.ts": {
       "owner": "codex"
@@ -2073,16 +2449,20 @@
       "owner": "codex"
     },
     "server/src/security/login-session.ts": {
-      "owner": "codex",
-      "registrationBasis": "Explicit owner instruction execute Codex session/MFA work 2026-10-23"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human latest direct send next OpenCode tasks, disjoint source packages, prior native terminated"
     },
     "server/migrations/20261023_04_live_recovery_checkpoint.sql": {
-      "owner": "claude",
-      "registrationBasis": "F1-F4 source continuation of approved live allocation 2026-10-23"
+      "owner": "codex",
+      "registrationBasis": "F1-F4 source continuation of approved live allocation 2026-10-23",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/security/login-session-sql.ts": {
-      "owner": "codex",
-      "registrationBasis": "Owner authorized continued Codex session implementation alongside WorkBuddy 2026-10-23"
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human latest direct send next OpenCode tasks, disjoint source packages, prior native terminated"
     },
     "server/src/security/sensitive-action-mfa-production.ts": {
       "owner": "codex",
@@ -2101,8 +2481,10 @@
       "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
     },
     "server/migrations/20261023_05_assignment_cleanup_scan_fencing.sql": {
-      "owner": "claude",
-      "registrationBasis": "Source continuation of existing academic/storage cleanup allocation; exact schema/store paths 2026-10-23"
+      "owner": "codex",
+      "registrationBasis": "Source continuation of existing academic/storage cleanup allocation; exact schema/store paths 2026-10-23",
+      "priorOwner": "claude",
+      "basis": "Human explicitly cancelled Claude and transferred financial/schema source work to Codex 2026-10-24; no native Claude process present, sanitized direct session stopped."
     },
     "server/src/services/assignment-cleanup-sql.ts": {
       "owner": "workbuddy",
@@ -2111,6 +2493,70 @@
     "docs/streams/server/WORKBUDDY-SEARCH-EXPORT-CLOSURE-20261023.md": {
       "owner": "workbuddy",
       "registrationBasis": "Owner requested continuous Codex + WorkBuddy independent source closure 2026-10-23"
+    },
+    "docs/streams/server/TWO-ACTIVE-LANES-FINAL-SOURCE-CLOSURE-20261023.md": {
+      "owner": "codex",
+      "basis": "Owner explicitly requested final large two-active-lane allocation with Codex supervision 2026-10-23"
+    },
+    "src/components/PlatformMfaPanel.tsx": {
+      "owner": "codex",
+      "basis": "Final owner-approved shared security/frontend source closure; explicit platform MFA panel 2026-10-23"
+    },
+    "docs/streams/server/PLATFORM-REMAINING-INVENTORY-20261024.md": {
+      "owner": "codex",
+      "basis": "Human explicitly requested current platform inventory,2026-10-24"
+    },
+    "server/src/services/worker-observability.ts": {
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human explicit autonomous continuation; prior writers terminated, disjoint round2 R16/R17 scope under Codex supervision,2026-10-24"
+    },
+    "docs/contracts/WORKER-OBSERVABILITY-CONTRACT.md": {
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human explicit autonomous continuation; prior writers terminated, disjoint round2 R16/R17 scope under Codex supervision,2026-10-24"
+    },
+    "docs/streams/server/CODEX-WORKER-OBSERVABILITY-20261024.md": {
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human explicit autonomous continuation; prior writers terminated, disjoint round2 R16/R17 scope under Codex supervision,2026-10-24"
+    },
+    "server/migrations/20261024_01_platform_ledger_account_kinds.sql": {
+      "owner": "codex",
+      "basis": "Human financial/schema takeover; append-only enum expansion required by existing invoice/settlement source; source DDL only"
+    },
+    "server/migrations/20261024_02_platform_settlement_contract.sql": {
+      "owner": "codex",
+      "basis": "Human financial/schema takeover and implement remaining work; exact financial adapter/schema contract closure, source-only"
+    },
+    "server/migrations/20261024_03_login_sessions.sql": {
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human latest direct send next OpenCode tasks, disjoint source packages, prior native terminated"
+    },
+    "server/migrations/20261024_04_live_recovery_checkpoint.sql": {
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human explicitly transferred all Claude schema source to Codex and instructed autonomous remaining work; delegated exact round6 nonoverlapping new paths"
+    },
+    "server/migrations/20261024_05_tenant_export_ownership.sql": {
+      "owner": "codex",
+      "priorOwner": "opencode",
+      "basis": "Native DeepSeek ended with no edits; human authorizes Codex remaining schema; no overlapping writer, one-time migration source"
+    },
+    "server/src/services/tenant-export-ownership-sql.ts": {
+      "owner": "opencode",
+      "nativeLane": "opencode/deepseek-v4.1-flash-free",
+      "basis": "Human explicitly transferred all Claude schema source to Codex and instructed autonomous remaining work; delegated exact round6 nonoverlapping new paths"
+    },
+    "server/bootstrap/m1/platform-source-plan.json": {
+      "owner": "codex",
+      "basis": "Human complete remaining source assembly; explicit pending migration inventory and dependencies, no SQL execution"
+    },
+    "server/migrations/20261024_06_assignment_cleanup_scan_fencing.sql": {
+      "owner": "opencode",
+      "nativeLane": "opencode/glm-5.3-flash-free",
+      "basis": "Human autonomous remaining source work and schema takeover; exact cleanup/scan-fencing adapter schema, no execution"
     }
   },
   "extensions": {
@@ -2123,10 +2569,20 @@
       "approvedAt": "2026-10-22T03:46:56.109Z",
       "basis": "Same owner-approved remaining financial source scope. Actual03 checkout filename reconciled prospectively, previous deviation remains recorded. Source/adapters/readmodels only; unresolved economic policy held. Implementation depends on reviewed domain/schema corrections; no live or API mounting.",
       "paths": 10
+    },
+    "server/src/services/financial-source-composition.ts": {
+      "owner": "opencode",
+      "registrationBasis": "Human explicitly requested implement remaining integration source; prospective registration before write. Pure composition only; no runtime mounting or product policy.",
+      "nativeLane": "integration-close-glm",
+      "basis": "Latest direct human request source integration tasks; previous native absence verified. Codex stops writing these paths until termination/review."
+    },
+    "server/src/services/tenant-export-schema.ts": {
+      "owner": "codex",
+      "registrationBasis": "Human requests trusted export schema verifier and source push after completion; explicit async catalog read only when caller invokes, no runtime execution by agent."
     }
   },
-  "allocationMode": "four-lane",
-  "currentMaster": "docs/streams/server/FOUR-LANE-MASTER-20261023.md",
+  "allocationMode": "two-active-lanes-with-reserved-claude-opencode",
+  "currentMaster": "docs/streams/server/TWO-ACTIVE-LANES-FINAL-SOURCE-CLOSURE-20261023.md",
   "ownershipTransfers": [
     {
       "path": "server/src/routes/notification-consent.ts",

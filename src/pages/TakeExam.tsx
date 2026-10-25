@@ -12,7 +12,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { getExamById, getExamQuestions, canAttemptExam, startExamAttempt, submitExamAttempt, saveExamProgress } from "@/lib/api";
+import { getExamById, getExamQuestions, canAttemptExam, startExamAttempt, submitExamAttempt, saveExamProgress, AUTH_SESSION_CHANGED_EVENT } from "@/lib/api";
 import {
   createExamSubmissionController,
   runExamSubmission,
@@ -63,6 +63,35 @@ interface ExamData {
   questions: Question[];
 }
 
+type LocalSessionSnapshot = {
+  token: string | null;
+  userId: string | null;
+  role: string | null;
+};
+
+/** Reads the local session without throwing on a malformed payload. */
+const readLocalSession = (): LocalSessionSnapshot | null => {
+  const token = localStorage.getItem('authToken');
+  const userStr = localStorage.getItem('currentUser');
+  if (!userStr) return null;
+  try {
+    const parsed: unknown = JSON.parse(userStr);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const record = parsed as { id?: unknown; role?: unknown };
+    if (typeof record.id !== 'string' || !record.id) return null;
+    return {
+      token,
+      userId: record.id,
+      role: typeof record.role === 'string' ? record.role : null,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const sessionIdentity = (session: LocalSessionSnapshot | null): string =>
+  session ? `${session.token ?? ''}|${session.userId ?? ''}` : '';
+
 const TakeExam = () => {
   useScreenRecordingPrevention(); // Prevent screen recording & screenshots
   const { examId } = useParams();
@@ -90,19 +119,48 @@ const TakeExam = () => {
   // plus the countdown auto-submit) cannot invoke the submit API twice, a
   // completed attempt can never begin again, and failures release the latch
   // so the student can retry with answers retained.
-  const submissionControllerRef = useRef<ExamSubmissionController | null>(null);
-  if (submissionControllerRef.current === null) {
-    submissionControllerRef.current = createExamSubmissionController();
-  }
-  const submissionController = submissionControllerRef.current;
+  //
+  // The controller is replaced atomically when the route moves to a different
+  // exam so a completed/failed latch from the previous exam cannot leak into
+  // the next attempt.
+  const [submissionController, setSubmissionController] = useState<ExamSubmissionController>(
+    () => createExamSubmissionController(),
+  );
+  const submissionControllerRef = useRef(submissionController);
+  submissionControllerRef.current = submissionController;
   const [submission, setSubmission] = useState<ExamSubmissionState>(submissionController.getState());
-  useEffect(() => submissionController.subscribe(setSubmission), [submissionController]);
+  useEffect(() => {
+    setSubmission(submissionController.getState());
+    return submissionController.subscribe(setSubmission);
+  }, [submissionController]);
   const isSubmitted = submission.phase === 'submitted';
   const isSubmitting = submission.phase === 'submitting';
   const result = submission.result;
   const submissionError = submission.error;
   // Prevents the countdown effect from re-triggering a failed auto-submit in a loop.
   const submitAttemptedRef = useRef(false);
+
+  // Invalidation fences for in-flight exam loads and countdown work.
+  const loadSeqRef = useRef(0);
+  const loadedExamIdRef = useRef<string | undefined>(undefined);
+  const isMountedRef = useRef(true);
+  const loadedSessionIdentityRef = useRef<string | null>(null);
+  const [sessionEpoch, setSessionEpoch] = useState(0);
+  // Deduplicates concurrent start-attempt calls (effect re-runs, StrictMode).
+  const startInFlightRef = useRef<{ key: string; promise: Promise<unknown> } | null>(null);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    const handleSessionChange = () => setSessionEpoch((epoch) => epoch + 1);
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, handleSessionChange);
+    window.addEventListener('storage', handleSessionChange);
+    return () => {
+      isMountedRef.current = false;
+      loadSeqRef.current += 1;
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, handleSessionChange);
+      window.removeEventListener('storage', handleSessionChange);
+    };
+  }, []);
 
   // Sample exam data - replace with real API call
   const sampleExam: ExamData = {
@@ -191,9 +249,13 @@ const TakeExam = () => {
 
   // ✅ Auto-Save every 10 seconds
   useEffect(() => {
-    if (!examId || !studentId || isSubmitted || !exam) return;
+    if (!examId || !studentId || isSubmitting || isSubmitted || !exam) return;
 
     const interval = setInterval(async () => {
+      // Never write a draft for a different/expired local session.
+      const session = readLocalSession();
+      if (!session || session.userId !== studentId || sessionIdentity(session) !== loadedSessionIdentityRef.current) return;
+
       // Don't save if no answers
       const hasAnswers = Object.keys(answersRef.current).length > 0 ||
         Object.keys(essayAnswersRef.current).length > 0;
@@ -215,24 +277,82 @@ const TakeExam = () => {
     }, 10000); // 10 Seconds
 
     return () => clearInterval(interval);
-  }, [examId, studentId, isSubmitted, exam]);
+  }, [examId, studentId, isSubmitting, isSubmitted, exam]);
 
   useEffect(() => {
-    const loadExamData = async () => {
-      try {
-        if (!examId) return;
+    let cancelled = false;
+    const requestSeq = ++loadSeqRef.current;
+    const isActive = () => !cancelled && requestSeq === loadSeqRef.current && isMountedRef.current;
 
-        // Get student ID from localStorage
-        const userStr = localStorage.getItem('currentUser');
-        const studentStr = localStorage.getItem('currentStudent');
-        if (!userStr) {
+    // A new route exam id starts a completely fresh attempt context; a
+    // completed/failed latch or a buffered answer must never leak across.
+    if (loadedExamIdRef.current !== examId) {
+      loadedExamIdRef.current = examId;
+      const nextController = createExamSubmissionController();
+      submissionControllerRef.current = nextController;
+      setSubmissionController(nextController);
+      setSubmission(nextController.getState());
+      submitAttemptedRef.current = false;
+      startInFlightRef.current = null;
+      setExam(null);
+      setAnswers({});
+      setEssayAnswers({});
+      setAnswerImages({});
+      setTimeLeft(0);
+      setCurrentQuestion(0);
+      setCanAttempt(true);
+      setAttemptMessage('');
+      setAttemptResult(null);
+      setExamStartTime(null);
+      setStudentId('');
+      setUploadingAnswerImage(false);
+      setGeneratingPDF(false);
+    }
+
+    if (!examId) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+
+    const loadExamData = async () => {
+      const startingSession = readLocalSession();
+      const startingSessionKey = sessionIdentity(startingSession);
+      let sessionAbandoned = false;
+
+      const abandonForSession = () => {
+        if (sessionAbandoned) return;
+        sessionAbandoned = true;
+        if (isMountedRef.current) {
+          toast({
+            title: 'انتهت الجلسة',
+            description: 'تغيرت جلسة الدخول أثناء تحميل الامتحان. يرجى تسجيل الدخول من جديد.',
+            variant: 'destructive',
+          });
+          navigate('/auth');
+        }
+      };
+
+      // Discards work started under a previous exam route or a previous
+      // local session (login/logout/account switch).
+      const isStale = (): boolean => {
+        if (!isActive()) return true;
+        if (sessionIdentity(readLocalSession()) !== startingSessionKey) {
+          abandonForSession();
+          return true;
+        }
+        return false;
+      };
+
+      try {
+        if (!startingSession) {
           toast({ title: 'خطأ', description: 'يجب تسجيل الدخول أولاً', variant: 'destructive' });
           navigate('/auth');
           return;
         }
-        const user = JSON.parse(userStr);
-        // Use user.id directly for students (they're in users table with role='student')
-        const currentStudentId = user.id;
+
+        const currentStudentId = startingSession.userId;
         if (!currentStudentId) {
           toast({ title: 'خطأ', description: 'لا يمكن تحديد هوية الطالب. يرجى إعادة تسجيل الدخول.', variant: 'destructive' });
           navigate('/student-exams');
@@ -242,6 +362,7 @@ const TakeExam = () => {
 
         // Check if student can attempt this exam
         const attemptCheck = await canAttemptExam(examId, currentStudentId) as any;
+        if (isStale()) return;
         console.log('🔍 Can attempt check:', attemptCheck);
 
         // ✅ Handle resume case — student has in_progress attempt
@@ -261,7 +382,9 @@ const TakeExam = () => {
             if (attemptCheck.reason === 'already_attempted') {
               try {
                 const examData = await getExamById(examId) as any;
+                if (isStale()) return;
                 const qs = await getExamQuestions(examId);
+                if (isStale()) return;
                 const computedTotal = Array.isArray(qs)
                   ? qs.reduce((sum: number, q: any) => sum + Number(q.marks || q.points || 1), 0)
                   : 0;
@@ -288,6 +411,7 @@ const TakeExam = () => {
                   pendingManualReview,
                 });
               } catch (e) {
+                if (isStale()) return;
                 console.error('Failed to load exam for attempt summary', e);
               }
               setLoading(false);
@@ -307,8 +431,27 @@ const TakeExam = () => {
           }
         }
 
-        // Start exam attempt (Returns attempt object if new or resumed)
-        const attemptResponse: any = await startExamAttempt(examId, currentStudentId);
+        // Start exam attempt (Returns attempt object if new or resumed).
+        // Concurrent equivalent starts share one request, so a re-run of this
+        // effect cannot create a second attempt for the same exam/student.
+        const startKey = `${examId}|${currentStudentId}|${startingSessionKey}`;
+        let startPromise = startInFlightRef.current?.key === startKey
+          ? startInFlightRef.current.promise
+          : null;
+        if (!startPromise) {
+          startPromise = startExamAttempt(examId, currentStudentId);
+          startInFlightRef.current = { key: startKey, promise: startPromise };
+          void startPromise.then(
+            () => {
+              if (startInFlightRef.current?.promise === startPromise) startInFlightRef.current = null;
+            },
+            () => {
+              if (startInFlightRef.current?.promise === startPromise) startInFlightRef.current = null;
+            },
+          );
+        }
+        const attemptResponse: any = await startPromise;
+        if (isStale()) return;
 
         // ✅ Restore answers if resuming
         if (attemptResponse && attemptResponse.answers) {
@@ -331,6 +474,7 @@ const TakeExam = () => {
         // Load exam details
         console.log('🔍 Loading exam with ID:', examId);
         const examData = await getExamById(examId);
+        if (isStale()) return;
         // ... existing code ...
         console.log('📋 Exam data loaded:', examData);
 
@@ -347,6 +491,7 @@ const TakeExam = () => {
         // Load exam questions
         console.log('🎯 Fetching questions for exam:', examId);
         const questions = await getExamQuestions(examId);
+        if (isStale()) return;
         console.log('📝 Questions fetched:', questions, 'Count:', Array.isArray(questions) ? questions.length : 0);
 
         // Convert question options if they're JSON strings
@@ -421,12 +566,15 @@ const TakeExam = () => {
           questions: processedQuestions
         };
 
+        loadedSessionIdentityRef.current = startingSessionKey;
         setExam(fullExam);
 
-        // ✅ Calculate remaining time — if resuming, use server's remainingSeconds
-        if (attemptCheck.reason === 'resuming' && attemptCheck.remainingSeconds > 0) {
+        // ✅ Calculate remaining time — if resuming, use server's remainingSeconds.
+        // An already-elapsed attempt is never granted a fresh full duration.
+        const resumeRemaining = Number(attemptCheck.remainingSeconds);
+        if (attemptCheck.reason === 'resuming' && Number.isFinite(resumeRemaining)) {
           console.log('⏱️ Setting remaining time from server:', attemptCheck.remainingSeconds);
-          setTimeLeft(attemptCheck.remainingSeconds);
+          setTimeLeft(Math.max(0, resumeRemaining));
         } else if (attemptResponse && attemptResponse.started_at) {
           // Fallback: calculate from started_at
           const startedAt = new Date(attemptResponse.started_at);
@@ -434,15 +582,27 @@ const TakeExam = () => {
           const totalDuration = (examData.duration_minutes || 60) * 60;
           const remaining = Math.max(0, totalDuration - elapsed);
           console.log('⏱️ Calculated remaining time:', remaining, 'elapsed:', elapsed);
-          setTimeLeft(remaining > 0 ? remaining : totalDuration);
+          setTimeLeft(remaining);
         } else {
           setTimeLeft((examData.duration_minutes || 60) * 60);
         }
 
         setLoading(false);
       } catch (error) {
+        if (!isActive()) return;
+        if (sessionIdentity(readLocalSession()) !== startingSessionKey) {
+          abandonForSession();
+          return;
+        }
         console.error('❌ Error loading exam:', error);
         setLoading(false);
+        const status = error && typeof error === 'object' && 'status' in error
+          ? Number((error as { status?: unknown }).status)
+          : NaN;
+        if (status === 401) {
+          navigate('/auth');
+          return;
+        }
         toast({
           title: 'خطأ',
           description: 'فشل تحميل الامتحان',
@@ -454,16 +614,25 @@ const TakeExam = () => {
 
     loadExamData();
 
-    // Prevent page refresh during exam
+    return () => { cancelled = true; };
+  }, [examId, navigate, toast]);
+
+  // Prevent page refresh during an unfinished exam without re-running the
+  // exam load whenever the submission phase changes.
+  const isSubmittedRef = useRef(isSubmitted);
+  useEffect(() => {
+    isSubmittedRef.current = isSubmitted;
+  }, [isSubmitted]);
+  useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (!isSubmitted) {
+      if (!isSubmittedRef.current) {
         e.preventDefault();
         e.returnValue = '';
       }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [examId, navigate, toast, isSubmitted]);
+  }, []);
 
   const handleAnswerChange = (questionId: string, answerIndex: number) => {
     setAnswers(prev => ({
@@ -552,10 +721,21 @@ const TakeExam = () => {
   const handleSubmit = useCallback(async () => {
     const controller = submissionControllerRef.current;
     if (!controller) return;
+    if (!isMountedRef.current) return;
 
     if (!examId || !studentId) {
       submitAttemptedRef.current = true;
       controller.fail('تعذر تسليم الامتحان: لم يتم تحديد هوية الطالب. يرجى إعادة تسجيل الدخول والمحاولة مرة أخرى.');
+      return;
+    }
+
+    // A logout/account switch must never submit the buffered answers under a
+    // different local session.
+    const session = readLocalSession();
+    if (!session || session.userId !== studentId || sessionIdentity(session) !== loadedSessionIdentityRef.current) {
+      submitAttemptedRef.current = true;
+      controller.fail('انتهت الجلسة أو تغيرت. يرجى تسجيل الدخول والمحاولة مرة أخرى.');
+      if (isMountedRef.current) navigate('/auth');
       return;
     }
 
@@ -588,6 +768,7 @@ const TakeExam = () => {
       if (run.cause !== undefined) {
         console.error('❌ Failed to submit exam attempt:', run.cause);
       }
+      if (!isMountedRef.current || loadedExamIdRef.current !== examId) return;
       toast({
         title: "خطأ في الإرسال",
         description: run.error,
@@ -600,6 +781,8 @@ const TakeExam = () => {
     // always comes from the server response, never from the local score,
     // and nothing is logged as success before this validation.
     const finalResult = run.result;
+
+    if (!isMountedRef.current || loadedExamIdRef.current !== examId) return;
 
     // ✅ Pending essay review follows the server status
     if (finalResult.pendingManualReview) {
@@ -616,17 +799,32 @@ const TakeExam = () => {
         variant: finalResult.passed ? "default" : "destructive"
       });
     }
-  }, [calculateScore, toast, examId, studentId, answers, essayAnswers, answerImages]);
+  }, [calculateScore, toast, examId, studentId, answers, essayAnswers, answerImages, navigate]);
 
-  // Timer countdown
+  // Keep the countdown callback current without restarting the tick on every
+  // answer edit (handleSubmit changes identity with the answer state).
+  const handleSubmitRef = useRef(handleSubmit);
   useEffect(() => {
-    if (timeLeft > 0 && !isSubmitted && !loading) {
-      const timer = setTimeout(() => setTimeLeft(timeLeft - 1), 1000);
+    handleSubmitRef.current = handleSubmit;
+  }, [handleSubmit]);
+
+  // Timer countdown. Every cleanup stops the pending tick, and a changed or
+  // cleared local session stops the countdown from auto-submitting.
+  useEffect(() => {
+    if (!exam || !canAttempt || loading || isSubmitting || isSubmitted) return;
+
+    const session = readLocalSession();
+    if (studentId && (!session || session.userId !== studentId || sessionIdentity(session) !== loadedSessionIdentityRef.current)) return;
+
+    if (timeLeft > 0) {
+      const timer = setTimeout(() => setTimeLeft((prev) => Math.max(0, prev - 1)), 1000);
       return () => clearTimeout(timer);
-    } else if (timeLeft === 0 && exam && !isSubmitted && !loading && !submitAttemptedRef.current) {
-      handleSubmit();
     }
-  }, [timeLeft, isSubmitted, exam, loading, handleSubmit]);
+
+    if (timeLeft === 0 && !submitAttemptedRef.current) {
+      handleSubmitRef.current();
+    }
+  }, [timeLeft, isSubmitting, isSubmitted, exam, loading, canAttempt, studentId, sessionEpoch]);
 
   // ===== Generate PDF Function =====
   const generateExamPDF = async () => {

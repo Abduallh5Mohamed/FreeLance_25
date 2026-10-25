@@ -1,3 +1,4 @@
+import { authenticatedApiFetch, readAuthenticatedApiJson } from '@/lib/api-http';
 import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,17 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { motion } from "framer-motion";
 import { FloatingParticles } from "@/components/FloatingParticles";
 
-// Vite injects `import.meta.env` at build time; it is absent when this module
-// is imported outside Vite (isolated Node tests), so guard the read.
-const readApiBase = (): string => {
-    try {
-        return import.meta.env.VITE_API_URL || '/api';
-    } catch {
-        return '/api';
-    }
-};
 
-const API_BASE_URL = readApiBase();
 
 export type FetchOutcome = 'ok' | 'unauthorized' | 'forbidden' | 'not_found' | 'error';
 
@@ -144,7 +135,7 @@ const ExamReview = () => {
 
             setStudentId(user.id);
 
-            const response = await fetch(`${API_BASE_URL}/exams/${examId}/review/${user.id}`);
+            const response = await authenticatedApiFetch(`/exams/${examId}/review/${user.id}`);
 
             if (requestSeq !== loadSeqRef.current) return; // stale response
 
@@ -170,12 +161,13 @@ const ExamReview = () => {
                 throw new Error(`Failed to fetch review data (${response.status})`);
             }
 
-            const data = await response.json();
+            const data = await readAuthenticatedApiJson(response);
+            if (requestSeq !== loadSeqRef.current) return;
             if (requestSeq !== loadSeqRef.current) return;
             setReviewData(data);
         } catch (err) {
             if (requestSeq !== loadSeqRef.current) return;
-            console.error('Error loading review:', err);
+            console.error('Error loading review:');
             setError('فشل تحميل بيانات المراجعة');
             toast({
                 variant: "destructive",
@@ -606,7 +598,7 @@ const ExamReview = () => {
                 description: "اضغط على زر الطباعة ثم اختر 'حفظ كـ PDF' من القائمة",
             });
         } catch (error) {
-            console.error('Error generating PDF:', error);
+            console.error('Error generating PDF:');
             toast({
                 title: "خطأ",
                 description: "فشل إنشاء صفحة الطباعة",

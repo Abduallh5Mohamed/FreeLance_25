@@ -652,7 +652,11 @@ export const toUploadLockConnection = (connection: UploadLockRawConnection): Upl
     },
     execute: async (sql: string, params?: unknown[]) => {
         const [result] = await connection.execute(sql, params);
-        return { affectedRows: (result as { affectedRows?: number }).affectedRows ?? 0 };
+        const affectedRows = (result as { affectedRows?: number }).affectedRows;
+        if (typeof affectedRows !== 'number' || !Number.isSafeInteger(affectedRows)) {
+            throw new Error('video upload-lock execute did not report a usable affected-row count');
+        }
+        return { affectedRows };
     },
     beginTransaction: () => connection.beginTransaction(),
     commit: () => connection.commit(),
@@ -1390,6 +1394,18 @@ router.post('/security/log', authenticateToken, async (req: AuthRequest, res: Re
 });
 
 /**
+ * Parse a request query parameter as a positive, in-range integer. Invalid,
+ * non-integer, zero, negative, or out-of-range values fall back to `fallback`
+ * instead of reaching a SQL `LIMIT` / `INTERVAL` binding as `NaN` or an
+ * unbounded number.
+ */
+function parsePositiveIntParam(value: unknown, fallback: number, max: number): number {
+    const n = typeof value === 'string' ? Number(value) : typeof value === 'number' ? value : NaN;
+    if (!Number.isInteger(n) || n < 1 || n > max) return fallback;
+    return n;
+}
+
+/**
  * Get security violations for a user (Admin endpoint)
  */
 router.get('/security/violations/:userId', authenticateToken, requireAdminPermission(PLATFORM_SECURITY_PERMISSION), async (req: Request, res: Response) => {
@@ -1402,7 +1418,7 @@ router.get('/security/violations/:userId', authenticateToken, requireAdminPermis
              WHERE user_id = ?
              ORDER BY created_at DESC
              LIMIT ?`,
-            [userId, parseInt(limit as string)]
+            [userId, parsePositiveIntParam(limit, 50, 1000)]
         );
 
         const stats = await queryOne(
@@ -1436,7 +1452,7 @@ router.get('/security/all-violations', authenticateToken, requireAdminPermission
              WHERE vsl.created_at > DATE_SUB(NOW(), INTERVAL ? HOUR)
              ORDER BY vsl.created_at DESC
              LIMIT ?`,
-            [parseInt(hours as string), parseInt(limit as string)]
+            [parsePositiveIntParam(hours, 24, 8760), parsePositiveIntParam(limit, 100, 1000)]
         );
 
         const summary = await queryOne(
@@ -1446,7 +1462,7 @@ router.get('/security/all-violations', authenticateToken, requireAdminPermission
                 SUM(CASE WHEN activity_type IN ('screenshot', 'screenrecord') THEN 1 ELSE 0 END) as severe_count
              FROM video_security_logs
              WHERE created_at > DATE_SUB(NOW(), INTERVAL ? HOUR)`,
-            [parseInt(hours as string)]
+            [parsePositiveIntParam(hours, 24, 8760)]
         );
 
         res.json({ violations, summary });

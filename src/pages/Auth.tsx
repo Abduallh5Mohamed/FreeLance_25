@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox";
 import { GraduationCap, LogIn, UserPlus, Sparkles, Lock, Mail, User, Phone as PhoneIcon, BookOpen, Users } from "lucide-react";
 import { useNavigate, Link } from "react-router-dom";
-import { signIn } from "@/lib/api";
+import { AUTH_SESSION_CHANGED_EVENT, signIn } from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast";
 import tabwebAcademyLogo from "@/assets/Tabweb_Academy_Logo.png";
 import logBackground from "@/assets/Log_Background.jpg";
@@ -35,62 +35,125 @@ const Auth = () => {
   const [studentType, setStudentType] = useState<"online" | "offline">("online");
   const navigate = useNavigate();
   const { toast } = useToast();
+  const mountedRef = useRef(true);
+  const authBusyRef = useRef(false);
+  const navigationTimerRef = useRef<number | null>(null);
+  const sessionEpochRef = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    const clearPendingNavigation = () => {
+      if (navigationTimerRef.current === null) return;
+      window.clearTimeout(navigationTimerRef.current);
+      navigationTimerRef.current = null;
+      authBusyRef.current = false;
+      if (mountedRef.current) setLoading(false);
+    };
+
+    const handleSessionChange = () => {
+      sessionEpochRef.current += 1;
+      clearPendingNavigation();
+    };
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === null || event.key === 'authToken' || event.key === 'currentUser') {
+        handleSessionChange();
+      }
+    };
+
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, handleSessionChange);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      mountedRef.current = false;
+      clearPendingNavigation();
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, handleSessionChange);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, []);
 
   const explainInviteRegistration = () => toast({
     title: "التسجيل من رابط المدرس",
     description: "اطلب رابط الانضمام من مدرسك. بعد موافقته ستسجل الدخول من هذه الصفحة برقمك وكلمة المرور.",
   });
 
+  // A pending role redirect is valid only while the login it belongs to is
+  // still the current session. Unmount, logout or a newer login cancels it.
+  const goToRoleHome = (path: string, token: string) => {
+    if (navigationTimerRef.current !== null) {
+      window.clearTimeout(navigationTimerRef.current);
+    }
+    const scheduledEpoch = sessionEpochRef.current;
+    navigationTimerRef.current = window.setTimeout(() => {
+      navigationTimerRef.current = null;
+      if (!mountedRef.current) return;
+      const sessionIsCurrent = sessionEpochRef.current === scheduledEpoch
+        && localStorage.getItem('authToken') === token;
+      if (!sessionIsCurrent) {
+        authBusyRef.current = false;
+        setLoading(false);
+        return;
+      }
+      navigate(path);
+    }, 300);
+  };
+
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (authBusyRef.current) return;
+    authBusyRef.current = true;
     setLoading(true);
     setError("");
 
     try {
       if (isLogin) {
-        // Phone-based login
-        const result = await signIn(phone.trim(), password);
+        // Invite-only registration: the else branch throws the user-facing error. //"إنشاء حساب الطالب يتم من رابط الدعوة الذي يرسله المدرس فقط.");
+      // Phone-based login
+      const result = await signIn(phone.trim(), password);
+      if (!mountedRef.current) return;
 
-        if (result.error) {
-          throw new Error(result.error);
-        }
+      if (result.error) {
+        throw new Error(result.error);
+      }
 
-        if (result.user) {
-          // Store user session in localStorage
-          localStorage.setItem('currentUser', JSON.stringify(result.user));
+      if (result.user && result.token) {
+          // Never write or navigate for a session replaced while in flight.
+          if (localStorage.getItem('authToken') !== result.token) {
+            throw new Error("تغيّرت الجلسة أثناء تسجيل الدخول. أعد المحاولة.");
+          }
           // Redirect based on role
           if (result.user.role === 'admin' || result.user.admin_member) {
             toast({ title: "تم تسجيل الدخول بنجاح", description: `مرحباً بك ${result.user.name}` });
-            setTimeout(() => navigate("/admin"), 300);
+            goToRoleHome("/admin", result.token);
           } else if (result.user.role === 'teacher') {
             toast({
               title: "تم تسجيل الدخول بنجاح",
               description: `مرحباً بك ${result.user.name}`,
-            });            setTimeout(() => {
-              navigate("/teacher");
-            }, 300);
+            });            {
+              goToRoleHome("/teacher", result.token);
+            }
           } else if (result.user.role === 'instructor') {
             // Instructor login - unified dashboard (same teaching dashboard as
             // the admin, but scoped to the instructor's own data)
             toast({
               title: "تم تسجيل الدخول بنجاح",
               description: `مرحباً بك ${result.user.name}`,
-            });            setTimeout(() => {
-              navigate(result.user?.billing_only ? "/instructor-subscription" : "/teacher");
-            }, 300);
+            });            {
+              goToRoleHome(result.user.billing_only ? "/instructor-subscription" : "/teacher", result.token);
+            }
           } else if (result.user.role === 'staff') {
             // Staff login - redirect to teacher dashboard (with limited access based on permissions)
             toast({
               title: "تم تسجيل الدخول بنجاح",
               description: `مرحباً بك ${result.user.name}`,
-            });            setTimeout(() => {
-              navigate("/teacher");
-            }, 300);
+            });            {
+              goToRoleHome("/teacher", result.token);
+            }
           } else {
             localStorage.removeItem('currentStudent');
             localStorage.removeItem('currentStudentSpace');
             toast({ title: "تم تسجيل الدخول بنجاح", description: `مرحباً بك ${result.user.name}` });
-            setTimeout(() => navigate('/student-spaces'), 300);
+            goToRoleHome('/student-spaces', result.token);
           }
           return;
         }
@@ -99,7 +162,9 @@ const Auth = () => {
       } else {
         throw new Error("إنشاء حساب الطالب يتم من رابط الدعوة الذي يرسله المدرس فقط.");
       }
-    } catch (error) {      const errorMessage = error instanceof Error ? error.message : "حدث خطأ غير متوقع";
+        } catch (error) {
+      if (!mountedRef.current) return;
+      const errorMessage = error instanceof Error ? error.message :  "حدث خطأ غير متوقع";
       setError(errorMessage);
       toast({
         variant: "destructive",
@@ -107,7 +172,11 @@ const Auth = () => {
         description: errorMessage,
       });
     } finally {
-      setLoading(false);
+      // Keep the form locked until the scheduled redirect runs or is cancelled.
+      if (navigationTimerRef.current === null) {
+        authBusyRef.current = false;
+        if (mountedRef.current) setLoading(false);
+      }
     }
   };
 

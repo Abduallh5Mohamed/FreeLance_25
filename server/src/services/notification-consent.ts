@@ -291,7 +291,7 @@ export const latestConsentEvent = async (
  * a revoke — of any source, including STOP — always denies.
  */
 export const consentAllows = (row: ConsentEventRow | null, channel: string): boolean => {
-    if (!row) return defaultConsentFor(channel);
+    if (!row || row.channel !== channel) return defaultConsentFor(channel);
     return row.action === 'grant';
 };
 
@@ -322,7 +322,10 @@ export const fetchConsentHistory = async (
     input: ConsentHistoryInput,
 ): Promise<ConsentEventRow[]> => {
     if (!isConsentUserType(input.userType)) return [];
-    const limit = Math.min(Math.max(input.limit ?? DEFAULT_HISTORY_LIMIT, 1), MAX_HISTORY_LIMIT);
+    const requested = input.limit;
+    const limit = typeof requested === 'number' && Number.isInteger(requested)
+        ? Math.min(Math.max(requested, 1), MAX_HISTORY_LIMIT)
+        : DEFAULT_HISTORY_LIMIT;
     return db.query<ConsentEventRow>(
         `SELECT id, seq, tenant_id, user_id, user_type, purpose, channel, action, source, recorded_by, recorded_at
          FROM notification_consent_events

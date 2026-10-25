@@ -792,7 +792,11 @@ export function createSqlVideoAssetStore(db: VideoAssetDb): VideoAssetStore {
                     update.expectedStatus,
                 ],
             );
-            return result.affectedRows ?? 0;
+            const affectedRows = result.affectedRows;
+            if (typeof affectedRows !== 'number' || !Number.isSafeInteger(affectedRows)) {
+                throw new Error('video-asset-lifecycle update did not report a usable affected-row count');
+            }
+            return affectedRows;
         },
 
         insertCallback: async (row) => {

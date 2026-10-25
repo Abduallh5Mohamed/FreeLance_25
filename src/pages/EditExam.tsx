@@ -7,7 +7,19 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { getExamById, User, getCourses, getGrades, getGroups, Course, Grade, Group, Exam } from '@/lib/api-http';
+import {
+  ApiRequestError,
+  authenticatedApiFetch,
+  readAuthenticatedApiBlob,
+  User,
+  getCourses,
+  getGrades,
+  getGroups,
+  Course,
+  Grade,
+  Group,
+  Exam,
+} from '@/lib/api-http';
 import { ClipboardCheck, Plus, Trash2, Edit2, Save, ArrowLeft, Image as ImageIcon } from 'lucide-react';
 import Header from '@/components/Header';
 
@@ -22,6 +34,32 @@ const readApiBase = (): string => {
 };
 
 const API_URL = readApiBase();
+const API_ORIGIN = API_URL.replace(/\/api\/?$/, '');
+const questionImageSrc = (value: string): string =>
+  value.startsWith('http') ? value : `${API_ORIGIN}${value}`;
+
+/** Read a response body through the protected session fence, then parse it.
+ *  A stale response cannot be turned into local state after a session change. */
+async function readProtectedJson<T>(response: Response): Promise<T | null> {
+  const blob = await readAuthenticatedApiBlob(response);
+  const text = await blob.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function readProtectedErrorMessage(response: Response): Promise<string | null> {
+  const payload = await readProtectedJson<{ error?: unknown }>(response);
+  return payload && typeof payload.error === 'string' ? payload.error : null;
+}
+
+function isSessionChangedError(error: unknown): boolean {
+  return error instanceof ApiRequestError
+    && (error.code === 'CLIENT_SESSION_CHANGED' || error.code === 'SESSION_REQUIRED');
+}
 
 // The `Exam` type from api-http models the list endpoint only; the detail
 // endpoint (GET /exams/:id) returns the full row including scheduling fields.
@@ -34,6 +72,17 @@ interface ExamDetail extends Exam {
   start_time?: string | null;
   end_time?: string | null;
   exam_date?: string | null;
+}
+
+function sameExamDetailsDraft(a: ExamDetail | null, b: ExamDetail | null): boolean {
+  if (!a || !b) return a === b;
+  return a.title === b.title
+    && (a.course_id || '') === (b.course_id || '')
+    && (a.grade_id || 'all') === (b.grade_id || 'all')
+    && (a.group_id || 'all') === (b.group_id || 'all')
+    && String(a.start_time || '') === String(b.start_time || '')
+    && String(a.end_time || '') === String(b.end_time || '')
+    && a.duration_minutes === b.duration_minutes;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,40 +165,70 @@ interface Question {
   points: number;
 }
 
+const createBlankQuestion = (): Question => ({
+  question_text: '',
+  question_type: 'multiple_choice',
+  option_a: '',
+  option_b: '',
+  option_c: '',
+  option_d: '',
+  correct_answer: 'a',
+  points: 1,
+});
+
+function sameQuestionDraft(a: Question, b: Question): boolean {
+  return a.question_text === b.question_text
+    && (a.question_image || '') === (b.question_image || '')
+    && a.question_type === b.question_type
+    && (a.option_a || '') === (b.option_a || '')
+    && (a.option_b || '') === (b.option_b || '')
+    && (a.option_c || '') === (b.option_c || '')
+    && (a.option_d || '') === (b.option_d || '')
+    && (a.correct_answer || '') === (b.correct_answer || '')
+    && a.points === b.points;
+}
+
 export default function EditExam() {
   const { examId } = useParams();
   const { toast } = useToast();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
-  const [exam, setExam] = useState<any>(null);
+  const [exam, setExam] = useState<ExamDetail | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
   const [editingExamDetails, setEditingExamDetails] = useState(false);
   const [addingNewQuestion, setAddingNewQuestion] = useState(false);
-  const [newQuestion, setNewQuestion] = useState<Question>({
-    question_text: '',
-    question_type: 'multiple_choice',
-    option_a: '',
-    option_b: '',
-    option_c: '',
-    option_d: '',
-    correct_answer: 'a',
-    points: 1
-  });
+  const [newQuestion, setNewQuestion] = useState<Question>(createBlankQuestion);
 
   const [saving, setSaving] = useState(false);
   const saveGuardRef = useRef(createSingleFlightGuard());
+  const uploadGuardRef = useRef(createSingleFlightGuard());
   const loadSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+  const examIdRef = useRef(examId);
+  const examRef = useRef<ExamDetail | null>(exam);
+  const newQuestionRef = useRef<Question>(newQuestion);
+  examIdRef.current = examId;
+  examRef.current = exam;
+  newQuestionRef.current = newQuestion;
 
-  // Single-flight wrapper: blocks concurrent save submits and mirrors the
-  // in-flight state into `saving` so the submit buttons can be disabled.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      loadSeqRef.current += 1;
+    };
+  }, []);
+
+  // Single-flight wrapper: blocks concurrent save submits synchronously and
+  // mirrors the in-flight state into `saving` so the submit buttons can be disabled.
   const runGuardedSave = async (task: () => Promise<void>) => {
     if (saveGuardRef.current.isBusy()) return;
     setSaving(true);
     try {
       await saveGuardRef.current.run(task);
     } finally {
-      setSaving(false);
+      if (mountedRef.current) setSaving(false);
     }
   };
 
@@ -177,6 +256,11 @@ export default function EditExam() {
       return;
     }
 
+    // Route changed: drafts from the previous exam must not leak into this one.
+    setEditingQuestion(null);
+    setEditingExamDetails(false);
+    setAddingNewQuestion(false);
+    setNewQuestion(createBlankQuestion());
     loadCourses();
     loadGrades();
     loadGroups();
@@ -212,15 +296,32 @@ export default function EditExam() {
 
   const loadExamData = async () => {
     const seq = ++loadSeqRef.current;
+    const requestedExamId = examIdRef.current;
+    if (!requestedExamId) {
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
 
       // Load exam details
-      const examData = (await getExamById(examId!)) as ExamDetail | null;
-      if (seq !== loadSeqRef.current) return; // a newer load superseded this one
+      const examResponse = await authenticatedApiFetch(`/exams/${encodeURIComponent(requestedExamId)}`);
+      if (seq !== loadSeqRef.current || !mountedRef.current) return;
+      if (!examResponse.ok) {
+        if (examResponse.status === 404) {
+          setExam(null);
+          setQuestions([]);
+          return;
+        }
+        const message = await readProtectedErrorMessage(examResponse);
+        throw new Error(message || 'Failed to load exam');
+      }
+      const examData = await readProtectedJson<ExamDetail>(examResponse);
+      if (seq !== loadSeqRef.current || !mountedRef.current) return;
+      if (!examData || typeof examData.id !== 'string') throw new Error('Invalid exam response');
 
       // Convert ISO dates to local datetime-local format (YYYY-MM-DDTHH:mm)
-      if (examData?.start_time) {
+      if (examData.start_time) {
         const startDate = new Date(examData.start_time);
         examData.start_time = startDate.getFullYear() + '-' +
           String(startDate.getMonth() + 1).padStart(2, '0') + '-' +
@@ -229,7 +330,7 @@ export default function EditExam() {
           String(startDate.getMinutes()).padStart(2, '0');
       }
 
-      if (examData?.end_time) {
+      if (examData.end_time) {
         const endDate = new Date(examData.end_time);
         examData.end_time = endDate.getFullYear() + '-' +
           String(endDate.getMonth() + 1).padStart(2, '0') + '-' +
@@ -241,12 +342,16 @@ export default function EditExam() {
       setExam(examData);
 
       // Load questions
-      const response = await fetch(`${API_URL}/exams/${examId}/questions`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('authToken') || ''}` },
-      });
-      if (!response.ok) throw new Error('Failed to load questions');
-      const questionsData = await response.json();
-      if (seq !== loadSeqRef.current) return; // stale response, drop it
+      const questionsResponse = await authenticatedApiFetch(
+        `/exams/${encodeURIComponent(requestedExamId)}/questions?t=${Date.now()}`,
+      );
+      if (seq !== loadSeqRef.current || !mountedRef.current) return;
+      if (!questionsResponse.ok) {
+        const message = await readProtectedErrorMessage(questionsResponse);
+        throw new Error(message || 'Failed to load questions');
+      }
+      const questionsData = await readProtectedJson<unknown>(questionsResponse);
+      if (seq !== loadSeqRef.current || !mountedRef.current) return;
 
       // Parse options for multiple choice questions
       const parsedQuestions = (Array.isArray(questionsData) ? questionsData : []).map((q: any) => ({
@@ -256,7 +361,8 @@ export default function EditExam() {
 
       setQuestions(parsedQuestions);
     } catch (error) {
-      if (seq !== loadSeqRef.current) return; // stale failure, keep current view
+      if (seq !== loadSeqRef.current || !mountedRef.current) return; // stale failure, keep current view
+      if (isSessionChangedError(error)) return; // the session layer owns this transition
       console.error('Error loading exam:', error);
       toast({
         title: 'خطأ',
@@ -264,13 +370,17 @@ export default function EditExam() {
         variant: 'destructive'
       });
     } finally {
-      if (seq === loadSeqRef.current) setLoading(false);
+      if (seq === loadSeqRef.current && mountedRef.current) setLoading(false);
     }
   };
 
   const handleUpdateExamDetails = async () => {
     await runGuardedSave(async () => {
+      const requestExamId = examIdRef.current;
       try {
+        if (!exam) return;
+        const submittedDraft: ExamDetail = { ...exam };
+
         // Format dates properly for MySQL - keep local time
         const formatDateTime = (dateStr: string) => {
           if (!dateStr) return null;
@@ -287,38 +397,35 @@ export default function EditExam() {
           start_time: formatDateTime(exam.start_time),
           end_time: formatDateTime(exam.end_time),
           duration_minutes: exam.duration_minutes,
-          total_marks: totalMarks  // ✅ Auto-update total marks from questions
+          total_marks: totalMarks  // Auto-update total marks from questions
         };
 
-        console.log('🔄 Updating exam with data:', updateData);
-
-        const response = await fetch(`${API_URL}/exams/${examId}`, {
+        const response = await authenticatedApiFetch(`/exams/${encodeURIComponent(requestExamId)}`, {
           method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(updateData)
         });
 
         if (!response.ok) {
-          const errorData = await response.json();
-          console.error('❌ Update failed:', errorData);
-          throw new Error('Failed to update exam');
+          const message = await readProtectedErrorMessage(response);
+          throw new Error(message || 'Failed to update exam');
         }
-
-        const result = await response.json();
-        console.log('✅ Update successful:', result);
+        await readProtectedJson<unknown>(response);
+        if (!mountedRef.current || examIdRef.current !== requestExamId) return;
 
         toast({
           title: 'تم التحديث',
           description: 'تم تحديث بيانات الامتحان بنجاح'
         });
 
-        setEditingExamDetails(false);
-        loadExamData();
+        // Do not discard a newer draft the user typed while this save was in flight.
+        if (sameExamDetailsDraft(examRef.current, submittedDraft)) {
+          setEditingExamDetails(false);
+        }
       } catch (error) {
-        console.error('❌ Error updating exam:', error);
+        if (!mountedRef.current || examIdRef.current !== requestExamId) return;
+        if (isSessionChangedError(error)) return;
+        console.error('Error updating exam:', error);
         toast({
           title: 'خطأ',
           description: 'فشل تحديث بيانات الامتحان',
@@ -330,7 +437,9 @@ export default function EditExam() {
 
   const handleUpdateQuestion = async (question: Question) => {
     await runGuardedSave(async () => {
+      const requestExamId = examIdRef.current;
       try {
+        if (!question.id || !requestExamId) return;
         const options = question.question_type === 'multiple_choice'
           ? JSON.stringify({
             a: question.option_a,
@@ -339,34 +448,49 @@ export default function EditExam() {
             d: question.option_d
           })
           : null;
+        const normalizedPoints = normalizePositiveInt(question.points, 1);
+        const updatedQuestion: Question = { ...question, points: normalizedPoints };
 
-        const response = await fetch(`${API_URL}/exams/${examId}/questions/${question.id}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
+        const response = await authenticatedApiFetch(
+          `/exams/${encodeURIComponent(requestExamId)}/questions/${encodeURIComponent(question.id)}`,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              question_text: question.question_text,
+              question_image: question.question_image || null,
+              question_type: question.question_type,
+              options: options,
+              correct_answer: question.correct_answer || null,
+              points: normalizedPoints,
+              explanation: null
+            })
           },
-          body: JSON.stringify({
-            question_text: question.question_text,
-            question_image: question.question_image || null,
-            question_type: question.question_type,
-            options: options,
-            correct_answer: question.correct_answer || null,
-            points: normalizePositiveInt(question.points, 1),
-            explanation: null
-          })
-        });
+        );
 
-        if (!response.ok) throw new Error('Failed to update question');
+        if (!response.ok) {
+          const message = await readProtectedErrorMessage(response);
+          throw new Error(message || 'Failed to update question');
+        }
+        await readProtectedJson<unknown>(response);
+        if (!mountedRef.current || examIdRef.current !== requestExamId) return;
+
+        // Reflect the accepted values locally so other drafts are not reloaded away.
+        setQuestions(current => current.map(item => item.id === question.id ? updatedQuestion : item));
+        setEditingQuestion(current => (
+          current && current.id === question.id && sameQuestionDraft(current, question)
+            ? null
+            : current
+        ));
 
         toast({
           title: 'تم التحديث',
           description: 'تم تحديث السؤال بنجاح'
         });
 
-        setEditingQuestion(null);
-        loadExamData();
       } catch (error) {
+        if (!mountedRef.current || examIdRef.current !== requestExamId) return;
+        if (isSessionChangedError(error)) return;
         toast({
           title: 'خطأ',
           description: 'فشل تحديث السؤال',
@@ -379,81 +503,110 @@ export default function EditExam() {
   const handleDeleteQuestion = async (questionId: string) => {
     if (!confirm('هل أنت متأكد من حذف هذا السؤال؟')) return;
 
-    try {
-      const response = await fetch(`${API_URL}/exams/${examId}/questions/${questionId}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
+    const requestExamId = examIdRef.current;
+    await runGuardedSave(async () => {
+      try {
+        if (!requestExamId) return;
+        const response = await authenticatedApiFetch(
+          `/exams/${encodeURIComponent(requestExamId)}/questions/${encodeURIComponent(questionId)}`,
+          { method: 'DELETE' },
+        );
+
+        if (!response.ok) {
+          const message = await readProtectedErrorMessage(response);
+          throw new Error(message || 'Failed to delete question');
         }
-      });
+        await readProtectedJson<unknown>(response);
+        if (!mountedRef.current || examIdRef.current !== requestExamId) return;
 
-      if (!response.ok) throw new Error('Failed to delete question');
+        // Remove the accepted deletion locally instead of reloading and
+        // discarding unsaved edits in other question drafts.
+        setQuestions(current => current.filter(item => item.id !== questionId));
+        setEditingQuestion(current => current && current.id === questionId ? null : current);
 
-      toast({
+        toast({
         title: 'تم الحذف',
         description: 'تم حذف السؤال بنجاح'
       });
 
-      loadExamData();
-    } catch (error) {
-      toast({
+      } catch (error) {
+        if (!mountedRef.current || examIdRef.current !== requestExamId) return;
+        if (isSessionChangedError(error)) return;
+        toast({
         title: 'خطأ',
         description: 'فشل حذف السؤال',
         variant: 'destructive'
       });
     }
+    });
   };
 
   const handleAddNewQuestion = async () => {
     await runGuardedSave(async () => {
+      const requestExamId = examIdRef.current;
       try {
-        const options = newQuestion.question_type === 'multiple_choice'
+        if (!requestExamId) return;
+        const submitted = { ...newQuestion };
+        const options = submitted.question_type === 'multiple_choice'
           ? JSON.stringify({
-            a: newQuestion.option_a,
-            b: newQuestion.option_b,
-            c: newQuestion.option_c,
-            d: newQuestion.option_d
+            a: submitted.option_a,
+            b: submitted.option_b,
+            c: submitted.option_c,
+            d: submitted.option_d
           })
           : null;
 
-        const response = await fetch(`${API_URL}/exams/${examId}/questions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
+        const response = await authenticatedApiFetch(
+          `/exams/${encodeURIComponent(requestExamId)}/questions`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              question_text: submitted.question_text,
+              question_image: submitted.question_image || null,
+              question_type: submitted.question_type,
+              options: options,
+              correct_answer: submitted.correct_answer || null,
+              points: normalizePositiveInt(submitted.points, 1),
+              explanation: null
+            })
           },
-          body: JSON.stringify({
-            question_text: newQuestion.question_text,
-            question_image: newQuestion.question_image || null,
-            question_type: newQuestion.question_type,
-            options: options,
-            correct_answer: newQuestion.correct_answer || null,
-            points: normalizePositiveInt(newQuestion.points, 1),
-            explanation: null
-          })
-        });
+        );
 
-        if (!response.ok) throw new Error('Failed to add question');
+        if (!response.ok) {
+          const message = await readProtectedErrorMessage(response);
+          throw new Error(message || 'Failed to add question');
+        }
+        const created = await readProtectedJson<Question & { id?: string; options?: unknown }>(response);
+        if (!mountedRef.current || examIdRef.current !== requestExamId) return;
+
+        if (created && typeof created.id === 'string' && created.id) {
+          const createdQuestion: Question = {
+            ...created,
+            ...normalizeQuestionOptions(created.options),
+            points: normalizePositiveInt(created.points, 1),
+          };
+          setQuestions(current => [...current, createdQuestion]);
+        } else if (!editingQuestion) {
+          // A 2xx without the documented row is still committed; refresh the
+          // server list instead of replaying the mutation.
+          loadExamData();
+        }
+
+        // Do not clear a newer question draft typed while this request was in flight.
+        if (sameQuestionDraft(newQuestionRef.current, submitted)) {
+          setNewQuestion(createBlankQuestion());
+          setAddingNewQuestion(false);
+        }
 
         toast({
           title: 'تم الإضافة',
           description: 'تم إضافة السؤال بنجاح'
         });
 
-        // Reset form
-        setNewQuestion({
-          question_text: '',
-          question_type: 'multiple_choice',
-          option_a: '',
-          option_b: '',
-          option_c: '',
-          option_d: '',
-          correct_answer: 'a',
-          points: 1
-        });
-        setAddingNewQuestion(false);
-        loadExamData();
       } catch (error) {
+        if (!mountedRef.current || examIdRef.current !== requestExamId) return;
+        if (isSessionChangedError(error)) return;
         toast({
           title: 'خطأ',
           description: 'فشل إضافة السؤال',
@@ -461,6 +614,39 @@ export default function EditExam() {
         });
       }
     });
+  };
+
+  const uploadQuestionImage = async (file: File, apply: (url: string) => void) => {
+    const requestExamId = examIdRef.current;
+    try {
+      const run = await uploadGuardRef.current.run(async () => {
+        const formData = new FormData();
+        formData.append('image', file);
+        const response = await authenticatedApiFetch('/exams/upload-question-image', {
+          method: 'POST',
+          body: formData,
+        });
+        const result = await readProtectedJson<{ success?: unknown; imageUrl?: unknown; error?: unknown }>(response);
+        if (!response.ok || !result || result.success !== true
+          || typeof result.imageUrl !== 'string' || !result.imageUrl.trim()) {
+          throw new Error(typeof result?.error === 'string' ? result.error : 'فشل رفع الصورة');
+        }
+        if (!mountedRef.current || examIdRef.current !== requestExamId) return;
+        apply(result.imageUrl.trim());
+        toast({ title: 'تم الرفع', description: 'تم رفع الصورة بنجاح' });
+      });
+      if (run.status === 'blocked') {
+        toast({ title: 'جارٍ رفع صورة أخرى', description: 'انتظر اكتمال الرفع الحالي أولاً' });
+      }
+    } catch (error) {
+      if (!mountedRef.current || examIdRef.current !== requestExamId) return;
+      if (isSessionChangedError(error)) return;
+      toast({
+        title: 'خطأ',
+        description: error instanceof Error ? error.message : 'فشل رفع الصورة',
+        variant: 'destructive',
+      });
+    }
   };
 
   if (loading) {
@@ -745,40 +931,10 @@ export default function EditExam() {
                           accept="image/*"
                           onChange={async (e) => {
                             const file = e.target.files?.[0];
-                            if (file) {
-                              try {
-                                const formData = new FormData();
-                                formData.append('image', file);
-
-                                const response = await fetch(`${API_URL}/exams/upload-question-image`, {
-                                  method: 'POST',
-                                  headers: { Authorization: `Bearer ${localStorage.getItem('authToken') || ''}` },
-                                  body: formData
-                                });
-
-                                const result = await response.json().catch(() => null);
-
-                                if (response.ok && result?.success && typeof result.imageUrl === 'string' && result.imageUrl.trim()) {
-                                  setNewQuestion({ ...newQuestion, question_image: result.imageUrl });
-                                  toast({
-                                    title: 'تم الرفع',
-                                    description: 'تم رفع الصورة بنجاح'
-                                  });
-                                } else {
-                                  toast({
-                                    title: 'خطأ',
-                                    description: 'فشل رفع الصورة',
-                                    variant: 'destructive'
-                                  });
-                                }
-                              } catch (error) {
-                                toast({
-                                  title: 'خطأ',
-                                  description: 'فشل رفع الصورة',
-                                  variant: 'destructive'
-                                });
-                              }
-                            }
+                            if (!file) return;
+                            await uploadQuestionImage(file, (url) => {
+                              setNewQuestion(current => ({ ...current, question_image: url }));
+                            });
                           }}
                         />
                         {newQuestion.question_image && (
@@ -786,7 +942,7 @@ export default function EditExam() {
                             <img
                               src={newQuestion.question_image.startsWith('http')
                                 ? newQuestion.question_image
-                                : `${API_URL.replace('/api', '')}${newQuestion.question_image}`
+                                : `${API_ORIGIN}${newQuestion.question_image}`
                               }
                               alt="معاينة"
                               className="max-w-xs rounded border"
@@ -959,40 +1115,15 @@ export default function EditExam() {
                             accept="image/*"
                             onChange={async (e) => {
                               const file = e.target.files?.[0];
-                              if (file) {
-                                try {
-                                  const formData = new FormData();
-                                  formData.append('image', file);
-
-                                  const response = await fetch(`${API_URL}/exams/upload-question-image`, {
-                                    method: 'POST',
-                                    headers: { Authorization: `Bearer ${localStorage.getItem('authToken') || ''}` },
-                                    body: formData
-                                  });
-
-                                  const result = await response.json().catch(() => null);
-
-                                  if (response.ok && result?.success && typeof result.imageUrl === 'string' && result.imageUrl.trim()) {
-                                    setEditingQuestion({ ...editingQuestion, question_image: result.imageUrl });
-                                    toast({
-                                      title: 'تم الرفع',
-                                      description: 'تم رفع الصورة بنجاح'
-                                    });
-                                  } else {
-                                    toast({
-                                      title: 'خطأ',
-                                      description: 'فشل رفع الصورة',
-                                      variant: 'destructive'
-                                    });
-                                  }
-                                } catch (error) {
-                                  toast({
-                                    title: 'خطأ',
-                                    description: 'فشل رفع الصورة',
-                                    variant: 'destructive'
-                                  });
-                                }
-                              }
+                              if (!file) return;
+                              const targetQuestionId = editingQuestion.id;
+                              await uploadQuestionImage(file, (url) => {
+                                setEditingQuestion(current => (
+                                  current && current.id === targetQuestionId
+                                    ? { ...current, question_image: url }
+                                    : current
+                                ));
+                              });
                             }}
                           />
                           {editingQuestion.question_image && (
@@ -1000,7 +1131,7 @@ export default function EditExam() {
                               <img
                                 src={editingQuestion.question_image.startsWith('http')
                                   ? editingQuestion.question_image
-                                  : `${API_URL.replace('/api', '')}${editingQuestion.question_image}`
+                                  : `${API_ORIGIN}${editingQuestion.question_image}`
                                 }
                                 alt="معاينة"
                                 className="max-w-xs rounded border"
@@ -1130,7 +1261,7 @@ export default function EditExam() {
                             <img
                               src={question.question_image.startsWith('http')
                                 ? question.question_image
-                                : `${API_URL.replace('/api', '')}${question.question_image}`
+                                : `${API_ORIGIN}${question.question_image}`
                               }
                               alt="صورة السؤال"
                               className="max-w-full sm:max-w-md rounded-lg mb-3"

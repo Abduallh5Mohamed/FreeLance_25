@@ -1,3 +1,4 @@
+import { authenticatedApiFetch, readAuthenticatedApiJson } from '@/lib/api-http';
 import { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,17 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { CheckCircle2, Clock, Save, User, Image as ImageIcon } from "lucide-react";
 import Header from "@/components/Header";
 
-// Vite injects `import.meta.env` at build time; it is absent when this module
-// is imported outside Vite (isolated Node tests), so guard the read.
-const readApiBase = (): string => {
-    try {
-        return import.meta.env.VITE_API_URL || '/api';
-    } catch {
-        return '/api';
-    }
-};
 
-const API_BASE_URL = readApiBase();
 
 interface Grade {
     id: string;
@@ -100,6 +91,7 @@ const ManualGrading = () => {
     // In-flight attempt keys, so a duplicate submit for the same student/exam
     // cannot fire a second POST before React re-renders.
     const inFlightRef = useRef<Set<string>>(new Set());
+    const pendingSequence = useRef(0);
 
     useEffect(() => {
         fetchGrades();
@@ -108,26 +100,31 @@ const ManualGrading = () => {
 
     const fetchGrades = async () => {
         try {
-            const response = await fetch(`${API_BASE_URL}/grades`);
-            const data = await response.json();
+            const response = await authenticatedApiFetch(`/grades`);
+            if (!response.ok) throw new Error('Grades unavailable');
+            const data: unknown = await readAuthenticatedApiJson(response);
+            if (!Array.isArray(data)) throw new Error('Invalid grades response');
             setGrades(data);
         } catch (error) {
-            console.error('Error fetching grades:', error);
+            setLoadError('تعذّر تحميل المراحل الدراسية');
         }
     };
 
     const fetchGroups = async () => {
         try {
-            const response = await fetch(`${API_BASE_URL}/groups`);
-            const data = await response.json();
+            const response = await authenticatedApiFetch(`/groups`);
+            if (!response.ok) throw new Error('Groups unavailable');
+            const data: unknown = await readAuthenticatedApiJson(response);
+            if (!Array.isArray(data)) throw new Error('Invalid groups response');
             setGroups(data);
         } catch (error) {
-            console.error('Error fetching groups:', error);
+            setLoadError('تعذّر تحميل المجموعات');
         }
     };
 
     const fetchPendingAttempts = async () => {
-        if (!selectedGrade) return;
+        const sequence = ++pendingSequence.current;
+        if (!selectedGrade) { setStudents([]); setLoading(false); return; }
 
         setLoading(true);
         setLoadError(null);
@@ -137,25 +134,26 @@ const ManualGrading = () => {
                 params.set('group_id', selectedGroup);
             }
 
-            const response = await fetch(
-                `${API_BASE_URL}/manual-grading/pending?${params.toString()}`
+            const response = await authenticatedApiFetch(
+                `/manual-grading/pending?${params.toString()}`
             );
 
             if (!response.ok) {
                 throw new Error(`Failed to fetch pending attempts (${response.status})`);
             }
 
-            const data = await response.json();
+            const data = await readAuthenticatedApiJson(response);
+            if (sequence !== pendingSequence.current) return;
 
             // تأكد إن الـ response array
             if (Array.isArray(data)) {
                 setStudents(data);
             } else {
-                setStudents([]);
-                console.error('Expected array but got:', data);
+                throw new Error('Invalid pending attempts response');
             }
         } catch (error) {
-            console.error('Error fetching pending attempts:', error);
+            if (sequence !== pendingSequence.current) return;
+            console.error('Error fetching pending attempts:');
             setLoadError('فشل تحميل محاولات الطلاب');
             toast({
                 title: "خطأ",
@@ -163,14 +161,13 @@ const ManualGrading = () => {
                 variant: "destructive"
             });
         } finally {
-            setLoading(false);
+            if (sequence === pendingSequence.current) setLoading(false);
         }
     };
 
     useEffect(() => {
-        if (selectedGrade && selectedGroup) {
-            fetchPendingAttempts();
-        }
+        void fetchPendingAttempts();
+        return () => { pendingSequence.current += 1; };
     }, [selectedGrade, selectedGroup]);
 
     const filteredGroups = groups.filter(g => g.grade_id === selectedGrade);
@@ -178,6 +175,8 @@ const ManualGrading = () => {
     const handleScoreChange = (studentIndex: number, questionIndex: number, score: string) => {
         const question = students[studentIndex]?.essay_questions[questionIndex];
         if (!question) return;
+        const student = students[studentIndex];
+        if (student && inFlightRef.current.has(`${student.student_id}-${student.exam_id}`)) return;
         const resolved = resolveAssignedScore(score, question.points);
         if (!resolved.valid) return; // out-of-range input reverts (controlled value unchanged)
 
@@ -212,8 +211,8 @@ const ManualGrading = () => {
                 return acc;
             }, {} as Record<string, number>);
 
-            const response = await fetch(
-                `${API_BASE_URL}/manual-grading/submit`,
+            const response = await authenticatedApiFetch(
+                `/manual-grading/submit`,
                 {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -251,7 +250,7 @@ const ManualGrading = () => {
                 variant: "destructive"
             });
         } catch (error) {
-            console.error('Error submitting grades:', error);
+            console.error('Error submitting grades:');
             toast({
                 title: "خطأ",
                 description: "فشل تسليم الدرجات",
@@ -421,6 +420,7 @@ const ManualGrading = () => {
                                                             </Label>
                                                             <Input
                                                                 type="number"
+                                                                disabled={savingId === `${student.student_id}-${student.exam_id}`}
                                                                 min="0"
                                                                 max={question.points}
                                                                 step="0.5"

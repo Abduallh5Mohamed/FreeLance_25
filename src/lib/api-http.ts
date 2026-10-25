@@ -6,7 +6,7 @@
 // Get API base URL from environment or use relative path
 const getApiBaseUrl = (): string => {
     // If VITE_API_URL is defined, use it
-    const envApiUrl = import.meta.env.VITE_API_URL;
+    const envApiUrl = import.meta.env?.VITE_API_URL;
     if (envApiUrl) {
         console.log('🔗 Using API URL from environment:', envApiUrl);
         return envApiUrl;
@@ -78,15 +78,74 @@ export const signOutSession = async (): Promise<{ serverRevoked: boolean; warnin
     };
 };
 
-class ApiRequestError extends Error {
+export class ApiRequestError extends Error {
     constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
 }
+
+const protectedResponses = new WeakMap<Response, { token: string; revision: number }>();
+
+/** Protected page transport: canonical server URL/token, no cross-origin bearer forwarding. */
+export const authenticatedApiFetch = async (endpoint: string, options: RequestInit = {}): Promise<Response> => {
+    if (!endpoint.startsWith('/') || endpoint.startsWith('//') || endpoint.includes(String.fromCharCode(92)) || endpoint.includes('://')) {
+        throw new Error('Invalid API endpoint');
+    }
+    const token = getAuthToken();
+    const revision = authRevision;
+    if (!token) throw new ApiRequestError('Sign in required', 401, 'SESSION_REQUIRED');
+    const headers = new Headers(options.headers);
+    headers.set('Authorization', 'Bearer ' + token);
+    const response = await fetch(API_BASE_URL + endpoint, { ...options, headers, cache: 'no-store' });
+    if (getAuthToken() !== token || authRevision !== revision) {
+        throw new ApiRequestError('Session changed during request', 409, 'CLIENT_SESSION_CHANGED');
+    }
+    protectedResponses.set(response, { token, revision });
+    return response;
+};
+
+/** Recheck the identity after the response body, not just after its headers. */
+export const readAuthenticatedApiJson = async (response: Response): Promise<Awaited<ReturnType<Response['json']>>> => {
+    const binding = protectedResponses.get(response);
+    if (!binding) throw new Error('Response has no protected session binding');
+    const data = await response.json();
+    if (getAuthToken() !== binding.token || authRevision !== binding.revision) {
+        throw new ApiRequestError('Session changed during response', 409, 'CLIENT_SESSION_CHANGED');
+    }
+    return data;
+};
+
+/** Downloads obey the same post-body session fence as protected JSON. */
+export const readAuthenticatedApiBlob = async (response: Response): Promise<Blob> => {
+    const binding = protectedResponses.get(response);
+    if (!binding) throw new Error('Response has no protected session binding');
+    const blob = await response.blob();
+    if (getAuthToken() !== binding.token || authRevision !== binding.revision) {
+        throw new ApiRequestError('Session changed during download', 409, 'CLIENT_SESSION_CHANGED');
+    }
+    return blob;
+};
+
+interface PlatformStepUpMemory {
+    bearer: string; revision: number; token: string; expiresAtMs: number;
+}
+let platformStepUp: PlatformStepUpMemory | null = null;
+export const clearPlatformStepUp = (): void => { platformStepUp = null; };
+const currentPlatformStepUp = (): string | null => {
+    if (!platformStepUp) return null;
+    if (platformStepUp.bearer !== getAuthToken() || platformStepUp.revision !== authRevision
+        || Date.now() >= platformStepUp.expiresAtMs) { platformStepUp = null; return null; }
+    return platformStepUp.token;
+};
+const isPlatformSensitiveMutation = (endpoint: string, method: string): boolean =>
+    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase())
+    && (/^\/admin\/(members|approvals)(?:\/|$)/.test(endpoint)
+        || /^\/platform\/flags(?:\/|$)/.test(endpoint) || endpoint === '/platform/mfa/disable');
 
 // Generic HTTP request helper
 async function request<T>(
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestInit & { auth?: boolean } = {}
 ): Promise<T> {
+    const { auth = true, ...fetchOptions } = options;
     const token = getAuthToken();
     const requestRevision = authRevision;
     const isCurrentSession = () => getAuthToken() === token && authRevision === requestRevision;
@@ -95,14 +154,16 @@ async function request<T>(
     const headers = new Headers(options.headers);
     if (!isFormData && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
 
-    if (token) {
+    if (auth && token) {
         headers.set('Authorization', `Bearer ${token}`);
     }
 
-    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-        ...options,
-        headers,
-    });
+    if (!auth) { headers.delete('Authorization'); headers.delete('x-mfa-step-up'); }
+    if (auth && isPlatformSensitiveMutation(endpoint, options.method || 'GET')) {
+        const stepUp = currentPlatformStepUp();
+        if (stepUp) headers.set('x-mfa-step-up', stepUp);
+    }
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, { ...fetchOptions, headers, cache: 'no-store' });
 
     if (!response.ok) {
         const payload: unknown = await response.json().catch(() => null);
@@ -111,7 +172,7 @@ async function request<T>(
             error: typeof record.error === 'string' ? record.error : 'Request failed',
             code: typeof record.code === 'string' ? record.code : undefined,
         };
-        if (isCurrentSession() && response.status === 403 && error.code === 'BILLING_ONLY') {
+        if (auth && isCurrentSession() && response.status === 403 && error.code === 'BILLING_ONLY') {
             try {
                 const current = JSON.parse(localStorage.getItem('currentUser') || 'null');
                 if (current?.role === 'instructor') localStorage.setItem('currentUser', JSON.stringify({ ...current, billing_only: true }));
@@ -120,18 +181,59 @@ async function request<T>(
                 window.location.assign('/instructor-subscription');
             }
         }
-        if (isCurrentSession() && response.status === 403 && error.code === 'TENANT_SUSPENDED') {
+        if (auth && isCurrentSession() && response.status === 403 && error.code === 'TENANT_SUSPENDED') {
             clearAuthToken();
             if (window.location.pathname !== '/auth') window.location.assign('/auth');
         }
-        if (token && isCurrentSession() && response.status === 401
+        if (auth && token && isCurrentSession() && response.status === 401
             && !['/auth/login', '/auth/register'].includes(endpoint)) clearAuthToken();
+        if (isCurrentSession() && response.status === 403 && error.code
+            && (/^MFA_/.test(error.code) || /^STEP_UP_/.test(error.code))) {
+            clearPlatformStepUp();
+            throw new ApiRequestError('يلزم تحقق إضافي. استخدم لوحة التحقق ثم أعد الإجراء بنفسك؛ مدخلاتك لم تُمسح.', response.status, error.code);
+        }
         throw new ApiRequestError(error.error || `HTTP ${response.status}`, response.status, error.code);
     }
 
-    if (response.status === 204) return undefined as T;
-    return response.json();
+    const data = response.status === 204 ? undefined : await response.json();
+    if (auth && token && !isCurrentSession()) {
+        throw new ApiRequestError('Session changed during response', 409, 'CLIENT_SESSION_CHANGED');
+    }
+    return data as T;
 }
+
+export interface PlatformMfaStatus {
+    enrolled: boolean; status: 'none' | 'pending' | 'active'; session_bound: boolean;
+    locked?: boolean; locked_until?: string | null;
+}
+export const getPlatformMfaStatus = async (): Promise<PlatformMfaStatus> => {
+    const result = await request<PlatformMfaStatus>('/platform/mfa/status');
+    if (!result || !['none', 'pending', 'active'].includes(result.status) || typeof result.session_bound !== 'boolean') throw new Error('تعذّر تأكيد حالة التحقق');
+    return result;
+};
+export const enrollPlatformMfa = async (reason: string) => {
+    const result = await request<{ secret: string; otpauth_uri: string; status: string }>('/platform/mfa/enroll', { method: 'POST', body: JSON.stringify({ reason }) });
+    if (!result || typeof result.secret !== 'string' || !/^[A-Z2-7]+$/.test(result.secret) || result.status !== 'pending') throw new Error('تعذّر قراءة إعداد التحقق؛ أعد تحميل الحالة قبل المحاولة');
+    return result;
+};
+export const verifyPlatformMfa = async (input: { code?: string; recovery_code?: string }): Promise<string[]> => {
+    clearPlatformStepUp();
+    const verificationBearer = getAuthToken();
+    const verificationRevision = authRevision;
+    const result = await request<{ step_up_token: string; step_up_expires_at_ms: number; recovery_codes?: string[] }>('/platform/mfa/verify', { method: 'POST', body: JSON.stringify(input) });
+    if (!result || typeof result.step_up_token !== 'string' || !result.step_up_token.startsWith('su2.')
+        || result.step_up_token.length > 4096 || !Number.isSafeInteger(result.step_up_expires_at_ms)
+        || result.step_up_expires_at_ms <= Date.now()) throw new Error('تعذّر تأكيد صلاحية التحقق');
+    const bearer = getAuthToken();
+    if (!bearer || bearer !== verificationBearer || authRevision !== verificationRevision) throw new ApiRequestError('Session changed; verify again', 401);
+    if (result.recovery_codes !== undefined && (!Array.isArray(result.recovery_codes) || result.recovery_codes.some(code => typeof code !== 'string'))) throw new Error('تعذّر قراءة رموز الاسترداد');
+    platformStepUp = { bearer, revision: authRevision, token: result.step_up_token, expiresAtMs: result.step_up_expires_at_ms };
+    return result.recovery_codes || [];
+};
+export const disablePlatformMfa = async (reason: string): Promise<void> => {
+    await request('/platform/mfa/disable', { method: 'POST', body: JSON.stringify({ reason }) });
+    clearPlatformStepUp();
+};
 
 // ====================================
 // Authentication Functions
@@ -190,20 +292,24 @@ export interface AdminFinanceData {
 }
 export const getAdminFinance = (months = 12) => request<AdminFinanceData>(`/admin/insights/finance?months=${months}`);
 export const downloadAdminFinanceReport = async (months = 12): Promise<void> => {
-    const response = await fetch(`${API_BASE_URL}/admin/insights/finance/export?months=${months}`, {
-        headers: { Authorization: `Bearer ${getAuthToken() || ''}` },
-    });
+    const response = await authenticatedApiFetch('/admin/insights/finance/export?months=' + encodeURIComponent(String(months)));
     if (!response.ok) {
-        const error = await response.json().catch(() => ({ error: 'فشل تنزيل التقرير' }));
-        throw new Error(error.error || 'فشل تنزيل التقرير');
+        // Parse through the protected boundary: a stale failure belongs to its old session.
+        const payload = await readAuthenticatedApiJson(response).catch(cause => {
+            if (cause instanceof ApiRequestError) throw cause;
+            return null;
+        });
+        throw new Error(typeof payload?.error === 'string' ? payload.error : 'فشل تنزيل التقرير');
     }
-    const blob = await response.blob();
+    const blob = await readAuthenticatedApiBlob(response);
     const disposition = response.headers.get('Content-Disposition') || '';
-    const filename = disposition.match(/filename="([^"]+)"/)?.[1] || 'platform-analytics.csv';
+    const proposed = disposition.match(/filename="([^"]+)"/)?.[1] || 'platform-analytics.csv';
+    const filename = proposed.replace(/[\\/\x00-\x1f\x7f]/g, '_').slice(0, 180) || 'platform-analytics.csv';
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
-    anchor.href = url; anchor.download = filename; document.body.appendChild(anchor); anchor.click(); anchor.remove();
-    URL.revokeObjectURL(url);
+    try {
+        anchor.href = url; anchor.download = filename; document.body.appendChild(anchor); anchor.click();
+    } finally { anchor.remove(); URL.revokeObjectURL(url); }
 };
 export interface AnalystCalculation {
     id: string; name: string; left_metric: string; operator: 'add' | 'subtract' | 'multiply' | 'divide' | 'percent_of' | 'growth';
@@ -240,6 +346,7 @@ export const signIn = async (
     const startingToken = getAuthToken();
     try {
         const response = await request<{ user: User; token: string }>('/auth/login', {
+            auth: false,
             method: 'POST',
             body: JSON.stringify({ phone, password }),
         });
@@ -252,8 +359,8 @@ export const signIn = async (
             return { user: null, error: 'تعذّر تأكيد بيانات تسجيل الدخول. أعد المحاولة.' };
         }
         if (response.token) {
-            setAuthToken(response.token);
             localStorage.setItem('currentUser', JSON.stringify(response.user));
+            setAuthToken(response.token);
         }
 
         return { user: response.user, error: null, token: response.token };
@@ -273,6 +380,7 @@ export const signUp = async (
     const startingToken = getAuthToken();
     try {
         const response = await request<{ user: User; token: string }>('/auth/register', {
+            auth: false,
             method: 'POST',
             body: JSON.stringify({ phone, email: email || null, password, name, role }),
         });
@@ -284,8 +392,8 @@ export const signUp = async (
             return { user: null, error: 'تعذّر تأكيد بيانات تسجيل الدخول. أعد المحاولة.' };
         }
         if (response.token) {
-            setAuthToken(response.token);
             localStorage.setItem('currentUser', JSON.stringify(response.user));
+            setAuthToken(response.token);
         }
 
         return { user: response.user, error: null, token: response.token };
@@ -596,12 +704,22 @@ export interface AdminApproval {
     reason: string; status: string; requested_by: string; created_at: string;
 }
 export const getAdminApprovals = () => request<AdminApproval[]>('/admin/approvals');
-export const requestServiceCreditAdjustment = (data: { instructor_id: string; action_key: string; amount: string; reason: string }) =>
-    request<{ id: string; status: string }>('/admin/approvals', { method: 'POST', body: JSON.stringify(data) });
-export const approveAdminApproval = (id: string) =>
-    request<{ status: string; new_balance: string }>(`/admin/approvals/${id}/approve`, { method: 'POST' });
-export const rejectAdminApproval = (id: string, reason: string) =>
-    request<{ status: string }>(`/admin/approvals/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) });
+/** A 2xx alone is not proof of the requested administrative transition. */
+export const requestServiceCreditAdjustment = async (data: { instructor_id: string; action_key: string; amount: string; reason: string }) => {
+    const result = await request<{ id: string; status: string }>('/admin/approvals', { method: 'POST', body: JSON.stringify(data) });
+    if (!result || typeof result.id !== 'string' || !result.id || result.status !== 'pending') throw new Error('تعذر تأكيد تسجيل الطلب. حدّث القائمة قبل إعادة المحاولة.');
+    return result;
+};
+export const approveAdminApproval = async (id: string) => {
+    const result = await request<{ status: string; new_balance: string }>('/admin/approvals/' + encodeURIComponent(id) + '/approve', { method: 'POST' });
+    if (!result || result.status !== 'approved') throw new Error('تعذر تأكيد الاعتماد. حدّث القائمة قبل إعادة المحاولة.');
+    return result;
+};
+export const rejectAdminApproval = async (id: string, reason: string) => {
+    const result = await request<{ status: string }>('/admin/approvals/' + encodeURIComponent(id) + '/reject', { method: 'POST', body: JSON.stringify({ reason }) });
+    if (!result || result.status !== 'rejected') throw new Error('تعذر تأكيد الرفض. حدّث القائمة قبل إعادة المحاولة.');
+    return result;
+};
 
 export interface AdminRole { code: string; name: string; }
 export interface AdminMember {
@@ -609,10 +727,16 @@ export interface AdminMember {
 }
 export const getAdminRoles = () => request<AdminRole[]>('/admin/members/roles');
 export const getAdminMembers = () => request<AdminMember[]>('/admin/members');
-export const createAdminMember = (data: { name: string; phone: string; email?: string; password: string; role_code: string }) =>
-    request<{ id: string; role_code: string }>('/admin/members', { method: 'POST', body: JSON.stringify(data) });
-export const updateAdminMember = (id: string, data: { role_code?: string; is_active?: boolean; password?: string; reason: string }) =>
-    request<{ success: boolean }>(`/admin/members/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+export const createAdminMember = async (data: { name: string; phone: string; email?: string; password: string; role_code: string }) => {
+    const result = await request<{ id: string; role_code: string }>('/admin/members', { method: 'POST', body: JSON.stringify(data) });
+    if (!result || typeof result.id !== 'string' || !result.id || result.role_code !== data.role_code) throw new Error('تعذر تأكيد إنشاء الحساب. حدّث قائمة الفريق قبل إعادة المحاولة.');
+    return result;
+};
+export const updateAdminMember = async (id: string, data: { role_code?: string; is_active?: boolean; password?: string; reason: string }) => {
+    const result = await request<{ success: boolean }>('/admin/members/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify(data) });
+    if (!result || result.success !== true) throw new Error('تعذر تأكيد تحديث الحساب. حدّث القائمة قبل إعادة المحاولة.');
+    return result;
+};
 
 export const sendAiChatMessage = async (message: string): Promise<string> => {
     const response = await request<{ response: string }>('/ai-chat/chat', {
@@ -2359,14 +2483,50 @@ export const getStudentSpaces = () => request<StudentSpace[]>('/student-enrollme
 export const selectStudentSpace = async (studentEnrollmentId: string) => {
     const startedAt = authRevision;
     const startingToken = getAuthToken();
+    const unchanged = () => authRevision === startedAt && getAuthToken() === startingToken;
+    const assertCurrent = () => { if (!unchanged()) throw new ApiRequestError('تغيّرت الجلسة أثناء اختيار المساحة. أعد المحاولة.', 409, 'CLIENT_SESSION_CHANGED'); };
     const result = await request<{ token: string; tenant_id: string; student_enrollment_id: string }>(
-        `/student-enrollment/spaces/${studentEnrollmentId}/select`, { method: 'POST' }
+        '/student-enrollment/spaces/' + encodeURIComponent(studentEnrollmentId) + '/select', { method: 'POST' }
     );
-    if (authRevision !== startedAt || getAuthToken() !== startingToken) {
-        throw new Error('تغيّرت الجلسة أثناء اختيار مساحة الطالب. أعد المحاولة.');
+    assertCurrent();
+    if (!result || typeof result.token !== 'string' || !result.token || typeof result.tenant_id !== 'string'
+        || !result.tenant_id || result.student_enrollment_id !== studentEnrollmentId) throw new Error('تعذّر تأكيد هوية المساحة');
+    // Verify using the candidate bearer before replacing the current browser identity.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    let student: Student & { tenant_id: string; business_name: string; is_active: boolean | number };
+    try {
+        const response = await fetch(API_BASE_URL + '/students/me', {
+            headers: { Authorization: 'Bearer ' + result.token }, cache: 'no-store', signal: controller.signal,
+        });
+        assertCurrent();
+        if (!response.ok) throw new Error('تعذّر تأكيد بيانات المساحة. الجلسة السابقة لم تتغيّر.');
+        student = await response.json();
+        assertCurrent();
+        if (!student || student.id !== studentEnrollmentId || student.tenant_id !== result.tenant_id
+            || typeof student.name !== 'string' || typeof student.business_name !== 'string'
+            || (student.is_active !== true && student.is_active !== 1)) throw new Error('بيانات المساحة لا تطابق الهوية المطلوبة');
+    } finally { clearTimeout(timer); }
+    const selected: StudentSpace = {
+        student_enrollment_id: student.id, tenant_id: student.tenant_id, business_name: student.business_name,
+        grade_id: student.grade_id, group_id: student.group_id, grade_name: student.grade_name, group_name: student.group_name,
+    };
+    const oldStudent = localStorage.getItem('currentStudent');
+    const oldSpace = localStorage.getItem('currentStudentSpace');
+    try {
+        localStorage.setItem('currentStudent', JSON.stringify(student));
+        localStorage.setItem('currentStudentSpace', JSON.stringify(selected));
+        // Last write publishes only after the full, verified identity is stored.
+        setAuthToken(result.token);
+    } catch (cause) {
+        try {
+            if (oldStudent === null) localStorage.removeItem('currentStudent'); else localStorage.setItem('currentStudent', oldStudent);
+            if (oldSpace === null) localStorage.removeItem('currentStudentSpace'); else localStorage.setItem('currentStudentSpace', oldSpace);
+        } catch { clearAuthToken(); }
+        throw cause;
     }
-    setAuthToken(result.token);
-    return result;
+    const committedRevision = authRevision;
+    return { ...result, isCurrentSession: () => authRevision === committedRevision && getAuthToken() === result.token };
 };
 export const getCurrentStudentEnrollment = () => request<Student & { tenant_id: string; business_name: string }>('/students/me');
 export const requestStudentPasswordReset = (inviteToken: string, phone: string) =>

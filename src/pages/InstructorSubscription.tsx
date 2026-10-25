@@ -114,6 +114,12 @@ export default function InstructorSubscription() {
   const [busy, setBusy] = useState(false);
   const loadSeq = useRef(createLoadSequence());
   const mutationGuard = useRef(createInFlightGuard());
+  const aliveRef = useRef(true);
+  // One Idempotency-Key per logical submission: the server dedupes retries of
+  // the same top-up by this key, so a network drop followed by a resubmit can
+  // never create a second pending receipt. Rotated only after a definitive
+  // success, so the next submission starts fresh.
+  const topupKeyRef = useRef<string | null>(null);
   const [graceLeft, setGraceLeft] = useState(0);
   const [graceDeadline, setGraceDeadline] = useState(0);
   const [purpose, setPurpose] = useState<'subscription_renewal' | 'other'>('subscription_renewal');
@@ -127,22 +133,40 @@ export default function InstructorSubscription() {
 
   const load = useCallback(async () => {
     const token = loadSeq.current.next();
+    const startingToken = localStorage.getItem('authToken') ?? '';
     try {
       setError(null);
       const value = await getMyTenantBilling();
-      if (!loadSeq.current.isLatest(token)) return; // stale response discarded
+      if (!aliveRef.current
+        || (localStorage.getItem('authToken') ?? '') !== startingToken
+        || !loadSeq.current.isLatest(token)) return; // unmounted, session changed, or stale response discarded
       setData(value);
       const seconds = Number(value.subscription?.grace_seconds_remaining || 0);
       setGraceLeft(seconds);
       setGraceDeadline(resolveGraceDeadlineMs(value.server_now, seconds, Date.now()));
       setAmount(current => current || (value.subscription?.charge_amount ? String(value.subscription.charge_amount) : ''));
     } catch (cause) {
-      if (!loadSeq.current.isLatest(token)) return;
+      if (!aliveRef.current || !loadSeq.current.isLatest(token)) return;
       setError(cause instanceof Error ? cause.message : 'تعذر تحميل مركز الدفع');
     }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    aliveRef.current = true;
+    const refresh = () => { loadSeq.current.next(); void load(); };
+    const onStorage = (event: StorageEvent) => {
+      if (!event.key || event.key === 'authToken' || event.key === 'currentUser') refresh();
+    };
+    window.addEventListener('auth-session-changed', refresh);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      aliveRef.current = false;
+      loadSeq.current.next();
+      window.removeEventListener('auth-session-changed', refresh);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [load]);
   useEffect(() => {
     if (graceDeadline <= 0) return;
     const tick = () => setGraceLeft(Math.max(0, Math.ceil((graceDeadline - Date.now()) / 1000)));
@@ -152,21 +176,23 @@ export default function InstructorSubscription() {
   }, [graceDeadline]);
 
   const { chargeMinor, balanceMinor, shortfallMinor, inGrace, canRenewManually } = deriveRenewalState(data);
+  const tenantActive = data?.tenant?.status === 'active';
+  const subscriptionKnown = Boolean(data?.subscription);
 
   const run = async (action: () => Promise<unknown>, message: string): Promise<boolean> => {
     if (!mutationGuard.current.acquire()) return false; // duplicate request suppressed
     setBusy(true); setError(null); setSuccess(null);
     try {
       await action();
-      setSuccess(message);
+      if (aliveRef.current) setSuccess(message);
       await load();
       return true;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'تعذر إتمام العملية');
+      if (aliveRef.current) setError(cause instanceof Error ? cause.message : 'تعذر إتمام العملية');
       return false;
     } finally {
       mutationGuard.current.release();
-      setBusy(false);
+      if (aliveRef.current) setBusy(false);
     }
   };
 
@@ -177,20 +203,32 @@ export default function InstructorSubscription() {
     if (purpose === 'subscription_renewal' && !confirmed) return setError('يجب تأكيد فهم قاعدة إذن التجديد قبل الإرسال.');
     if (Number.isNaN(new Date(paidAt).getTime())) return setError('تاريخ ووقت التحويل غير صالح.');
     if (purpose === 'subscription_renewal' && !window.confirm(`سيُضاف ${money(amount)} إلى رصيدك بعد اعتماد الإدارة، وسيُنشأ إذن واحد لخصم ${formatMinorUnits(chargeMinor)} عند انتهاء الفترة الحالية فقط. هل تريد المتابعة؟`)) return;
+    const idempotencyKey = topupKeyRef.current
+      ?? (typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `topup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
+    topupKeyRef.current = idempotencyKey; // reused across retries so the server dedupes them
     const form = new FormData();
     form.append('purpose_code', purpose); form.append('amount', amount); form.append('method', method);
     form.append('reference_number', reference.trim()); form.append('paid_at', new Date(paidAt).toISOString());
     form.append('notes', notes.trim()); form.append('proof', proof);
     if (purpose === 'subscription_renewal') form.append('renewal_confirmation', 'CONFIRM_MONTHLY_RENEWAL');
-    const submitted = await run(() => submitInstructorTopup(form), 'تم إرسال الإيصال للمراجعة. لن يتغير الرصيد قبل اعتماد الإدارة.');
+    const submitted = await run(() => submitInstructorTopup(form, idempotencyKey), 'تم إرسال الإيصال للمراجعة. لن يتغير الرصيد قبل اعتماد الإدارة.');
     if (!submitted) return; // keep the entered data and proof when the server rejected the submission
+    topupKeyRef.current = null; // definite success: the next submission needs a fresh key
+    if (!aliveRef.current) return;
     setReference(''); setNotes(''); setProof(null); setConfirmed(false);
     const fileInput = document.getElementById('topup-proof') as HTMLInputElement | null; if (fileInput) fileInput.value = '';
   };
 
   const openProof = async (topup: InstructorTopupRequest) => {
-    try { const result = await getOwnTopupProofUrl(topup.id); window.open(result.url, '_blank', 'noopener,noreferrer'); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'تعذر فتح الإيصال'); }
+    try {
+      const result = await getOwnTopupProofUrl(topup.id);
+      window.open(result.url, '_blank', 'noopener,noreferrer');
+    } catch (cause) {
+      if (!aliveRef.current) return;
+      setError(cause instanceof Error ? cause.message : 'تعذر فتح الإيصال');
+    }
   };
 
   return <div className="min-h-screen bg-slate-50" dir="rtl"><Header /><main className="main-content min-h-screen p-4 md:p-8"><div className="mx-auto max-w-6xl space-y-6">
@@ -204,10 +242,10 @@ export default function InstructorSubscription() {
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card><CardContent className="p-5"><CreditCard className="mb-4 h-6 w-6 text-indigo-600" /><p className="text-sm text-slate-500">الخطة الحالية</p><p className="mt-1 text-xl font-bold">{data.subscription?.plan_name || 'لا توجد خطة'}</p><Badge className="mt-3" variant="outline">{statusText[data.subscription?.status || ''] || data.subscription?.status || 'غير مفعّل'}</Badge></CardContent></Card>
         <Card><CardContent className="p-5"><WalletCards className="mb-4 h-6 w-6 text-emerald-600" /><p className="text-sm text-slate-500">رصيد الخدمات المتاح</p><p className="mt-1 text-2xl font-black text-emerald-700">{formatMinorUnits(balanceMinor)}</p><p className="mt-2 text-xs text-slate-500">يبقى كاملًا حتى يحين موعد الخصم.</p></CardContent></Card>
-        <Card><CardContent className="p-5"><CalendarClock className="mb-4 h-6 w-6 text-amber-600" /><p className="text-sm text-slate-500">الخصم القادم</p><p className="mt-1 text-2xl font-black">{formatMinorUnits(chargeMinor)}</p><p className="mt-2 text-xs text-slate-500">موعد الانتهاء: {dateTime(data.subscription?.period_ends_at)}</p></CardContent></Card>
-        <Card><CardContent className="p-5"><AlertCircle className={`mb-4 h-6 w-6 ${shortfallMinor ? 'text-red-600' : 'text-emerald-600'}`} /><p className="text-sm text-slate-500">المبلغ الناقص للتجديد</p><p className={`mt-1 text-2xl font-black ${shortfallMinor ? 'text-red-700' : 'text-emerald-700'}`}>{formatMinorUnits(shortfallMinor)}</p><p className="mt-2 text-xs text-slate-500">لا يوجد خصم جزئي.</p></CardContent></Card>
+        <Card><CardContent className="p-5"><CalendarClock className="mb-4 h-6 w-6 text-amber-600" /><p className="text-sm text-slate-500">الخصم القادم</p><p className="mt-1 text-2xl font-black">{subscriptionKnown ? formatMinorUnits(chargeMinor) : '—'}</p><p className="mt-2 text-xs text-slate-500">{subscriptionKnown ? `موعد الانتهاء: ${dateTime(data.subscription?.period_ends_at)}` : 'لا توجد فترة اشتراك معروضة من الخادم'}</p></CardContent></Card>
+        <Card><CardContent className="p-5"><AlertCircle className={`mb-4 h-6 w-6 ${subscriptionKnown && shortfallMinor ? 'text-red-600' : 'text-emerald-600'}`} /><p className="text-sm text-slate-500">المبلغ الناقص للتجديد</p><p className={`mt-1 text-2xl font-black ${subscriptionKnown && shortfallMinor ? 'text-red-700' : 'text-emerald-700'}`}>{subscriptionKnown ? formatMinorUnits(shortfallMinor) : '—'}</p><p className="mt-2 text-xs text-slate-500">لا يوجد خصم جزئي.</p></CardContent></Card>
       </section>
-      <Card className={data.renewal_intent ? 'border-indigo-300' : ''}><CardHeader><CardTitle>إذن التجديد</CardTitle></CardHeader><CardContent>{data.renewal_intent ? <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center"><div><p className="font-semibold text-indigo-900">يوجد إذن واحد منتظر بقيمة {money(data.renewal_intent.charge_amount)}</p><p className="mt-1 text-sm text-slate-600">سيُستخدم مرة واحدة فقط عند انتهاء الفترة ثم يُغلق. الشحنات الإضافية لا تضيف شهورًا تلقائيًا.</p></div><Button variant="outline" disabled={busy} onClick={() => { if (confirm('إلغاء الإذن لن يسحب أي مبلغ وسيظل رصيدك كاملًا. هل تريد الإلغاء؟')) void run(() => cancelRenewalIntent(data.renewal_intent!.id), 'تم إلغاء إذن التجديد وبقي الرصيد كما هو.'); }}><XCircle className="ml-2 h-4 w-4" />إلغاء الإذن</Button></div> : <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center"><div><p className="font-semibold">لا يوجد إذن تجديد منتظر</p><p className="mt-1 text-sm text-slate-600">إذا كانت الفترة سارية سينتظر النظام موعد انتهائها، وإذا كانت منتهية يبدأ من وقت طلبك.</p></div><Button disabled={busy || !canRenewManually} onClick={() => { if (confirm(`تأكيد إنشاء إذن واحد لخصم ${formatMinorUnits(chargeMinor)}؟`)) void run(requestManualRenewal, 'تم إنشاء إذن التجديد وتنفيذه إذا كان الاشتراك مستحقًا.'); }}>تجديد الآن من الرصيد</Button></div>}</CardContent></Card>
+      <Card className={data.renewal_intent ? 'border-indigo-300' : ''}><CardHeader><CardTitle>إذن التجديد</CardTitle></CardHeader><CardContent>{data.renewal_intent ? <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center"><div><p className="font-semibold text-indigo-900">يوجد إذن واحد منتظر بقيمة {money(data.renewal_intent.charge_amount)}</p><p className="mt-1 text-sm text-slate-600">سيُستخدم مرة واحدة فقط عند انتهاء الفترة ثم يُغلق. الشحنات الإضافية لا تضيف شهورًا تلقائيًا.</p></div><Button variant="outline" disabled={busy} onClick={() => { if (confirm('إلغاء الإذن لن يسحب أي مبلغ وسيظل رصيدك كاملًا. هل تريد الإلغاء؟')) void run(() => cancelRenewalIntent(data.renewal_intent!.id), 'تم إلغاء إذن التجديد وبقي الرصيد كما هو.'); }}><XCircle className="ml-2 h-4 w-4" />إلغاء الإذن</Button></div> : <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center"><div><p className="font-semibold">لا يوجد إذن تجديد منتظر</p><p className="mt-1 text-sm text-slate-600">إذا كانت الفترة سارية سينتظر النظام موعد انتهائها، وإذا كانت منتهية يبدأ من وقت طلبك.</p></div><Button disabled={busy || !canRenewManually || !tenantActive} onClick={() => { if (confirm(`تأكيد إنشاء إذن واحد لخصم ${formatMinorUnits(chargeMinor)}؟`)) void run(requestManualRenewal, 'تم إنشاء إذن التجديد وتنفيذه إذا كان الاشتراك مستحقًا.'); }}>تجديد الآن من الرصيد</Button></div>}</CardContent></Card>
       <div className="grid gap-6 lg:grid-cols-[1.15fr_.85fr]">
         <Card><CardHeader><CardTitle className="flex items-center gap-2"><FileUp className="h-5 w-5 text-indigo-600" />رفع إيصال شحن جديد</CardTitle><p className="text-sm leading-6 text-slate-500">الإدارة تراجع وصول التحويل أولًا. عند الاعتماد يُضاف المبلغ كاملًا إلى رصيد خدماتك.</p></CardHeader><CardContent><form className="space-y-4" onSubmit={submitTopup}>
           <div className="grid gap-4 md:grid-cols-2"><div className="space-y-2"><Label htmlFor="topup-purpose">غرض الدفع</Label><select id="topup-purpose" className="h-10 w-full rounded-md border bg-white px-3" value={purpose} onChange={e => { setPurpose(e.target.value as typeof purpose); setConfirmed(false); }}><option value="subscription_renewal">تجديد الاشتراك الشهري</option><option value="other">أخرى — شحن الرصيد فقط</option></select></div><div className="space-y-2"><Label htmlFor="topup-amount">المبلغ بالجنيه</Label><Input id="topup-amount" type="number" min="0.01" step="0.01" required value={amount} onChange={e => setAmount(e.target.value)} /></div></div>
@@ -219,7 +257,7 @@ export default function InstructorSubscription() {
         </form></CardContent></Card>
         <Card><CardHeader><CardTitle>كيف تعمل العملية؟</CardTitle></CardHeader><CardContent className="space-y-4 text-sm leading-7 text-slate-700">{['سجّل قيمة التحويل ومرجعه وارفع الإيصال؛ لا يتغير الرصيد عند الرفع.', 'مسؤول مخوّل يتأكد من وصول المبلغ؛ الاعتماد لا يمكن تكراره.', 'بعد الاعتماد يظهر المبلغ في رصيد الخدمات.', 'عند الاستحقاق فقط يُخصم السعر كاملًا؛ وإن لم يكفِ الرصيد تبدأ مهلة أربعة أيام.'].map((text, index) => <div key={text} className="rounded-xl bg-slate-100 p-4"><strong>{index + 1}. </strong>{text}</div>)}<Button asChild variant="outline" className="w-full"><Link to="/instructor-wallet">فتح سجل رصيد الخدمات</Link></Button><Button asChild variant="outline" className="w-full"><Link to="/support">التواصل مع الدعم</Link></Button></CardContent></Card>
       </div>
-      <Card><CardHeader><CardTitle>سجل طلبات الشحن</CardTitle><p className="text-sm text-slate-500">كل محاولة محفوظة مستقلًا، بما فيها سبب الرفض ووقت المراجعة.</p></CardHeader><CardContent>{data.topups.length === 0 ? <p className="rounded-xl bg-slate-50 p-8 text-center text-slate-500">لم ترسل أي إيصال بعد.</p> : <div className="overflow-x-auto"><table className="w-full min-w-[850px] text-sm"><thead><tr className="border-b text-right text-slate-500"><th className="p-3">الغرض</th><th className="p-3">المبلغ</th><th className="p-3">التحويل</th><th className="p-3">الحالة</th><th className="p-3">المراجعة</th><th className="p-3">الإيصال</th></tr></thead><tbody>{data.topups.map(item => <tr key={item.id} className="border-b last:border-0"><td className="p-3 font-semibold">{purposeText[item.purpose_code]}</td><td className="p-3">{money(item.amount)}</td><td className="p-3"><div>{methodText[item.method] || item.method}</div><div className="text-xs text-slate-500">{item.reference_number} · {dateTime(item.paid_at)}</div></td><td className="p-3"><Badge variant={item.status === 'verified' ? 'default' : item.status === 'rejected' ? 'destructive' : 'secondary'}>{statusText[item.status] || item.status}</Badge></td><td className="p-3">{item.rejection_reason ? <span className="text-red-700">{item.rejection_reason}</span> : item.reviewed_at ? dateTime(item.reviewed_at) : 'بانتظار الإدارة'}</td><td className="p-3"><Button size="sm" variant="outline" onClick={() => void openProof(item)}>عرض خاص</Button></td></tr>)}</tbody></table></div>}</CardContent></Card>
+      <Card><CardHeader><CardTitle>سجل طلبات الشحن</CardTitle><p className="text-sm text-slate-500">كل محاولة محفوظة مستقلًا، بما فيها سبب الرفض ووقت المراجعة.</p></CardHeader><CardContent>{data.topups.length === 0 ? <p className="rounded-xl bg-slate-50 p-8 text-center text-slate-500">لم ترسل أي إيصال بعد.</p> : <div className="overflow-x-auto"><table className="w-full min-w-[850px] text-sm"><thead><tr className="border-b text-right text-slate-500"><th className="p-3">الغرض</th><th className="p-3">المبلغ</th><th className="p-3">التحويل</th><th className="p-3">الحالة</th><th className="p-3">المراجعة</th><th className="p-3">الإيصال</th></tr></thead><tbody>{data.topups.map(item => <tr key={item.id} className="border-b last:border-0"><td className="p-3 font-semibold">{purposeText[item.purpose_code] || item.purpose_code}</td><td className="p-3">{money(item.amount)}</td><td className="p-3"><div>{methodText[item.method] || item.method}</div><div className="text-xs text-slate-500">{item.reference_number} · {dateTime(item.paid_at)}</div></td><td className="p-3"><Badge variant={item.status === 'verified' ? 'default' : item.status === 'rejected' ? 'destructive' : 'secondary'}>{statusText[item.status] || item.status}</Badge></td><td className="p-3">{item.rejection_reason ? <span className="text-red-700">{item.rejection_reason}</span> : item.reviewed_at ? dateTime(item.reviewed_at) : 'بانتظار الإدارة'}</td><td className="p-3"><Button size="sm" variant="outline" onClick={() => void openProof(item)}>عرض خاص</Button></td></tr>)}</tbody></table></div>}</CardContent></Card>
     </>}
   </div></main></div>;
 }

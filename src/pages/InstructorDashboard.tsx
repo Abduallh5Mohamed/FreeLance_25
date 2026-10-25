@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -13,83 +13,179 @@ import {
   Bell,
   PlayCircle,
   AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import Header from '@/components/Header';
-import { getInstructorStats, getInstructorWalletTransactions, getReceivedRequests, getMyTenantSubscription, type MyTenantSubscription, User } from '@/lib/api';
+import {
+  getInstructorStats,
+  getInstructorWalletTransactions,
+  getReceivedRequests,
+  getMyTenantSubscription,
+  verifyCurrentSession,
+  AUTH_SESSION_CHANGED_EVENT,
+  type MyTenantSubscription,
+  type User,
+} from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
+
+const UNAVAILABLE = '—';
 
 const cardVariants = {
   hidden: { opacity: 0, y: 20 },
   visible: (i: number) => ({ opacity: 1, y: 0, transition: { delay: i * 0.1 } }),
 };
 
+interface DashboardStats {
+  wallet_unavailable: boolean;
+  wallet_balance: number;
+  total_lectures: number | null;
+  total_students: number | null;
+  pending_received_requests: number | null;
+}
+
+const emptyStats = (): DashboardStats => ({
+  wallet_unavailable: true,
+  wallet_balance: 0,
+  total_lectures: null,
+  total_students: null,
+  pending_received_requests: null,
+});
+
 export default function InstructorDashboard() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const isMountedRef = useRef(true);
+  const loadSeqRef = useRef(0);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [stats, setStats] = useState({
-    wallet_balance: 0 as number,
-    total_lectures: 0,
-    total_students: 0,
-    pending_sent_requests: 0,
-    pending_received_requests: 0,
-  });
+  const [stats, setStats] = useState<DashboardStats>(emptyStats);
   const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
+  const [txUnavailable, setTxUnavailable] = useState(false);
   const [pendingRequests, setPendingRequests] = useState<any[]>([]);
+  const [requestsUnavailable, setRequestsUnavailable] = useState(false);
   const [subscription, setSubscription] = useState<MyTenantSubscription | null>(null);
   const [graceSeconds, setGraceSeconds] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [statsError, setStatsError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const userStr = localStorage.getItem('currentUser');
-    if (!userStr) { navigate('/auth'); return; }
+  const resetData = useCallback(() => {
+    setCurrentUser(null);
+    setStats(emptyStats());
+    setRecentTransactions([]);
+    setPendingRequests([]);
+    setSubscription(null);
+    setGraceSeconds(0);
+    setTxUnavailable(false);
+    setRequestsUnavailable(false);
+    setStatsError(null);
+  }, []);
 
-    const user = JSON.parse(userStr) as User;
+  const loadDashboard = useCallback(async () => {
+    const token = ++loadSeqRef.current;
+    const startingToken = localStorage.getItem('authToken') ?? '';
+    const isCurrent = () =>
+      isMountedRef.current
+      && token === loadSeqRef.current
+      && startingToken === (localStorage.getItem('authToken') ?? '');
+
+    resetData();
+    setLoading(true);
+
+    const session = await verifyCurrentSession();
+    if (!isCurrent()) return;
+
+    if (session.state === 'anonymous') {
+      navigate('/auth', { replace: true });
+      return;
+    }
+    if (session.state === 'changed') return;
+    if (session.state !== 'authenticated') {
+      setLoading(false);
+      setStatsError('تعذّر التحقق من الجلسة الآن. حاول مرة أخرى.');
+      return;
+    }
+
+    const user = session.user;
     if (user.role !== 'instructor' && user.role !== 'admin') {
-      navigate('/auth');
       toast({ variant: 'destructive', title: 'غير مسموح', description: 'هذه الصفحة للـ instructors فقط' });
+      navigate('/auth', { replace: true });
       return;
     }
     setCurrentUser(user);
-    loadData(user.id);
-  }, []);
 
-  const loadData = async (id: string) => {
-    try {
-      setLoading(true);
-      const [statsData, txData, reqData, subscriptionData] = await Promise.allSettled([
-        getInstructorStats(id),
-        getInstructorWalletTransactions(id, 1, 5),
-        getReceivedRequests(id),
-        getMyTenantSubscription(),
-      ]);
+    const [statsData, txData, reqData, subscriptionData] = await Promise.allSettled([
+      getInstructorStats(user.id),
+      getInstructorWalletTransactions(user.id, 1, 5),
+      getReceivedRequests(user.id),
+      getMyTenantSubscription(),
+    ]);
+    if (!isCurrent()) return;
 
-      if (statsData.status === 'fulfilled') {
-        const raw = statsData.value;
-        setStats({
-          ...raw,
-          wallet_balance: Number(raw.wallet_balance) || 0,
-          total_lectures: Number(raw.total_lectures) || 0,
-          total_students: Number(raw.total_students) || 0,
-          pending_sent_requests: Number(raw.pending_sent_requests) || 0,
-          pending_received_requests: Number(raw.pending_received_requests) || 0,
-        });
-      }
-      if (txData.status === 'fulfilled')    setRecentTransactions(txData.value.data || []);
-      if (reqData.status === 'fulfilled')   setPendingRequests((reqData.value || []).filter((r: any) => r.status === 'open' || r.status === 'awaiting_requester'));
-      if (subscriptionData.status === 'fulfilled') {
-        setSubscription(subscriptionData.value);
-        setGraceSeconds(Number(subscriptionData.value.grace_seconds_remaining || 0));
-      }
-    } catch (err) {
-      console.error('Dashboard load error:', err);
-    } finally {
-      setLoading(false);
+    if (statsData.status === 'fulfilled') {
+      const raw = statsData.value;
+      const rawWallet = Number((raw as { wallet_balance?: unknown }).wallet_balance);
+      const walletPresent = (raw as { wallet_balance?: unknown }).wallet_balance !== undefined
+        && Number.isFinite(rawWallet)
+        && rawWallet >= 0;
+      const count = (value: unknown): number | null => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+      };
+      setStats({
+        wallet_unavailable: !walletPresent,
+        wallet_balance: walletPresent ? rawWallet : 0,
+        total_lectures: count(raw.total_lectures),
+        total_students: count(raw.total_students),
+        pending_received_requests: count(raw.pending_received_requests),
+      });
+    } else {
+      setStatsError('تعذّر تحميل إحصائيات لوحة التحكم. تحقق من الاتصال وحاول مرة أخرى.');
     }
-  };
+
+    if (txData.status === 'fulfilled') {
+      setRecentTransactions(txData.value.data || []);
+    } else {
+      setTxUnavailable(true);
+    }
+
+    if (reqData.status === 'fulfilled') {
+      setPendingRequests(
+        (reqData.value || []).filter((r: any) => r.status === 'open' || r.status === 'awaiting_requester')
+      );
+    } else {
+      setRequestsUnavailable(true);
+    }
+
+    if (subscriptionData.status === 'fulfilled') {
+      setSubscription(subscriptionData.value);
+      setGraceSeconds(Number(subscriptionData.value.grace_seconds_remaining || 0));
+    }
+
+    setLoading(false);
+  }, [navigate, resetData, toast]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    void loadDashboard();
+
+    const refresh = () => {
+      void loadDashboard();
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (!event.key || event.key === 'authToken' || event.key === 'currentUser') refresh();
+    };
+
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      isMountedRef.current = false;
+      loadSeqRef.current += 1;
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, refresh);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [loadDashboard]);
 
   useEffect(() => {
     if (graceSeconds <= 0) return undefined;
@@ -105,11 +201,12 @@ export default function InstructorDashboard() {
     return `${days} يوم، ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remaining).padStart(2, '0')}`;
   };
 
+  const walletText = stats.wallet_unavailable ? UNAVAILABLE : `${stats.wallet_balance.toFixed(2)} ج.م`;
   const statCards = [
-    { title: 'رصيد المحفظة',        value: `${Number(stats.wallet_balance).toFixed(2)} ج.م`, icon: Wallet,        color: 'from-emerald-500 to-teal-500',   path: '/instructor-wallet'          },
-    { title: 'فيديوهاتي',           value: stats.total_lectures,                      icon: Video,         color: 'from-indigo-500 to-purple-500',  path: '/instructor-lectures'         },
-    { title: 'تسجيل وطلبات الطلاب', value: stats.total_students,                      icon: Users,         color: 'from-blue-500 to-cyan-500',      path: '/instructor-students'         },
-    { title: 'طلبات واردة معلقة',   value: stats.pending_received_requests,            icon: Bell,          color: 'from-orange-500 to-red-500',     path: '/instructor-video-requests'  },
+    { title: 'رصيد المحفظة',        value: walletText, icon: Wallet,        color: 'from-emerald-500 to-teal-500',   path: '/instructor-wallet'          },
+    { title: 'فيديوهاتي',           value: stats.total_lectures === null ? UNAVAILABLE : stats.total_lectures, icon: Video,         color: 'from-indigo-500 to-purple-500',  path: '/instructor-lectures'         },
+    { title: 'تسجيل وطلبات الطلاب', value: stats.total_students === null ? UNAVAILABLE : stats.total_students, icon: Users,         color: 'from-blue-500 to-cyan-500',      path: '/instructor-students'         },
+    { title: 'طلبات واردة معلقة',   value: stats.pending_received_requests === null ? UNAVAILABLE : stats.pending_received_requests, icon: Bell,          color: 'from-orange-500 to-red-500',     path: '/instructor-video-requests'  },
   ];
 
   return (
@@ -132,6 +229,19 @@ export default function InstructorDashboard() {
               <div className="rounded-md bg-amber-100 px-4 py-2 text-center font-mono text-lg font-bold text-amber-900" dir="ltr">{formatCountdown(graceSeconds)}</div>
             </CardContent>
           </Card>
+        )}
+
+        {statsError && (
+          <div role="alert" className="mb-8 flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-red-800 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+              <p className="text-sm">{statsError}</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => void loadDashboard()}>
+              <RefreshCw className="ml-2 h-4 w-4" />
+              إعادة المحاولة
+            </Button>
+          </div>
         )}
 
         {/* Stats grid */}
@@ -195,7 +305,7 @@ export default function InstructorDashboard() {
               {recentTransactions.length === 0 ? (
                 <div className="text-center py-6 text-slate-400">
                   <Wallet className="w-10 h-10 mx-auto mb-2 opacity-30" />
-                  <p className="text-sm">لا توجد معاملات بعد</p>
+                  <p className="text-sm">{txUnavailable ? 'تعذّر تحميل المعاملات' : 'لا توجد معاملات بعد'}</p>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -240,7 +350,7 @@ export default function InstructorDashboard() {
               {pendingRequests.length === 0 ? (
                 <div className="text-center py-6 text-slate-400">
                   <Clock className="w-10 h-10 mx-auto mb-2 opacity-30" />
-                  <p className="text-sm">لا توجد طلبات معلقة</p>
+                  <p className="text-sm">{requestsUnavailable ? 'تعذّر تحميل الطلبات' : 'لا توجد طلبات معلقة'}</p>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -248,6 +358,13 @@ export default function InstructorDashboard() {
                     <div key={req.id} className="p-3 rounded-lg bg-orange-50 border border-orange-100">
                       <p className="font-medium text-sm text-slate-800">{req.requested_title}</p>
                       <p className="text-xs text-slate-500 mt-1">من: {req.requester_name}</p>
+                      {req.status === 'awaiting_requester' ? (
+                        <p className="text-xs text-indigo-600 mt-1 truncate">
+                          بانتظار قرار مقدم الطلب{req.active_offer_title ? ` — العرض: ${req.active_offer_title}` : ''}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-orange-600 mt-1">بانتظار عرضك</p>
+                      )}
                       {req.message && <p className="text-xs text-slate-400 mt-1 truncate">"{req.message}"</p>}
                     </div>
                   ))}

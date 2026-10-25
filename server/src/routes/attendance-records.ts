@@ -126,12 +126,22 @@ interface MarkOutcome {
     outcome: 'created' | 'corrected' | 'unchanged';
 }
 
+/**
+ * A denial returned from INSIDE a transaction callback. Kept as a value (not a
+ * thrown error) so expected denials perform no attendance write and are not
+ * confused with faults. A normal callback return releases its unit locks.
+ */
+type TxDenial = { ok: false; status: number; body: Record<string, unknown> };
+
 export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
     const router = Router();
     const { db } = deps;
-    const runAtomic = deps.transaction
-        ? deps.transaction
-        : <T>(fn: (tx: AttendanceDataAccess) => Promise<T>): Promise<T> => fn(db);
+    // A mutation without a real transaction must fail closed BEFORE any write.
+    // There is deliberately NO autocommit fallback: running a mark/correction
+    // directly on `db` would let the record and its audit commit as separate
+    // autocommit statements, so a missing transaction seam is a hard 503, never
+    // a fake transaction callback over the shared pool.
+    const runAtomic = deps.transaction;
 
     router.use(deps.authenticate);
 
@@ -183,23 +193,78 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
     };
 
     /**
-     * The subset of `studentIds` that are actively enrolled and inside the
-     * session's audience. A single SQL predicate applies tenant, liveness and
-     * the group/branch scope; unknown or out-of-scope ids are simply absent.
+     * Re-validate the canonical session on the CALLER'S transaction with a
+     * LOCKING read. The outer pre-check reads a snapshot that can be stale, so a
+     * session cancelled or reassigned (group/creator) since then must not
+     * authorize this write. `FOR UPDATE` locks the session row.
+     *
+     * Group-dependent grants are evaluated from an explicitly locked, current
+     * group row; a visibility subquery alone does not hold the assignment.
+     * Owner and session-creator grants do not require group membership.
      */
-    const loadEligibleStudentIds = async (
+    const lockSessionForWrite = async (
+        tx: AttendanceDataAccess,
+        scope: StaffScope,
+        sessionId: string,
+    ): Promise<SessionRow | null> => {
+        // Read the canonical session first; a visibility subquery is not a
+        // current, locked proof of group assignment.
+        const row = await tx.queryOne<SessionRow>(
+            `SELECT id, tenant_id, branch_id, group_id, title, audience, timezone, starts_at, ends_at, status, created_by
+             FROM schedule_sessions
+             WHERE id = ? AND tenant_id = ? LIMIT 1 FOR UPDATE`,
+            [sessionId, scope.tenantId],
+        );
+        if (!row || row.tenant_id !== scope.tenantId) return null;
+        // Preserve the existing policy's independent owner/creator grants.
+        if (scope.isOwner || row.created_by === scope.userId) return row;
+        if (!row.group_id) return null;
+        const group = await tx.queryOne<{ id: string; tenant_id: string; instructor_id: string | null }>(
+            'SELECT id, tenant_id, instructor_id FROM `groups` WHERE id = ? AND tenant_id = ? LIMIT 1 FOR UPDATE',
+            [row.group_id, scope.tenantId],
+        );
+        // Evaluate the returned CURRENT row after any lock wait. Locking only
+        // its id and trusting the earlier visibility check would retain a
+        // grant revoked while this transaction was waiting.
+        if (!group || group.id !== row.group_id || group.tenant_id !== scope.tenantId
+            || group.instructor_id !== scope.userId) return null;
+        return row;
+    };
+
+    /**
+     * CURRENT (locking) read of the canonical student eligibility rows on the
+     * caller's transaction.
+     *
+     * A plain SELECT under REPEATABLE READ reads the transaction snapshot, so a
+     * deactivation / un-enrollment / group move committed after the snapshot is
+     * invisible and the write would still proceed. `FOR UPDATE` forces a current
+     * read AND locks the matched rows, so a concurrent eligibility change either
+     * blocks here or is seen before the attendance write/audit. `ORDER BY s.id`
+     * gives a deterministic lock order shared by the single and bulk paths, so
+     * the source requests a consistent ordering; this is not a deadlock-freedom guarantee.
+     *
+     * The exact tenant/active/approval/enrollment predicates and the
+     * group/branch linkage are applied under the lock. A branch-scoped session
+     * joins (and therefore locks) the student's group row; a group-scoped
+     * session locks the student row, which itself carries `group_id`.
+     */
+    const lockEligibleStudentIds = async (
+        tx: AttendanceDataAccess,
         tenantId: string,
-        session: SessionRow,
+        session: Pick<SessionRow, 'group_id' | 'branch_id'>,
         studentIds: string[],
     ): Promise<Set<string>> => {
         if (studentIds.length === 0) return new Set();
         const placeholders = studentIds.map(() => '?').join(',');
-        let sql = `SELECT s.id FROM students s LEFT JOIN \`groups\` g ON g.id = s.group_id
-                   WHERE s.tenant_id=? AND s.is_active=1 AND s.approval_status='approved'
-                     AND (s.enrollment_status IS NULL OR s.enrollment_status='active')
-                     AND (s.enrollment_start_date IS NULL OR s.enrollment_start_date<=UTC_TIMESTAMP())
-                     AND (s.enrollment_end_date IS NULL OR s.enrollment_end_date>UTC_TIMESTAMP())
-                     AND s.id IN (${placeholders})`;
+        let sql = 'SELECT s.id FROM students s';
+        if (session.branch_id && !session.group_id) {
+            sql += ' INNER JOIN `groups` g ON g.id = s.group_id';
+        }
+        sql += ` WHERE s.tenant_id=? AND s.is_active=1 AND s.approval_status='approved'
+                   AND (s.enrollment_status IS NULL OR s.enrollment_status='active')
+                   AND (s.enrollment_start_date IS NULL OR s.enrollment_start_date<=UTC_TIMESTAMP())
+                   AND (s.enrollment_end_date IS NULL OR s.enrollment_end_date>UTC_TIMESTAMP())
+                   AND s.id IN (${placeholders})`;
         const params: unknown[] = [tenantId, ...studentIds];
         if (session.group_id) {
             sql += ' AND s.group_id = ?';
@@ -208,7 +273,8 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
             sql += ' AND g.branch_id = ?';
             params.push(session.branch_id);
         }
-        const rows = await db.query<{ id: string }>(sql, params);
+        sql += ' ORDER BY s.id ASC FOR UPDATE';
+        const rows = await tx.query<{ id: string }>(sql, params);
         return new Set(rows.map((row) => row.id));
     };
 
@@ -249,7 +315,7 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
                  WHERE id=? AND tenant_id=? AND version=?`,
                 [entry.state, entry.reason, scope.userId, entry.reason, existing.id, scope.tenantId, existing.version],
             );
-            if ((updated.affectedRows ?? 0) === 0) throw new AttendanceConflictError('attendance record changed concurrently');
+            if (updated.affectedRows === 0) throw new AttendanceConflictError('attendance record changed concurrently');
             await recordAudit(tx.execute, {
                 actorUserId: scope.userId,
                 tenantId: scope.tenantId,
@@ -340,20 +406,31 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
             const validated = validateMarkInput(req.body);
             if (!validated.ok) return res.status(400).json({ error: validated.error });
 
-            const session = await loadStaffSession(scope, sessionId);
-            if (!session) return res.status(404).json({ error: 'Session not found' });
-            if (session.status === 'cancelled') {
-                return res.status(409).json({ error: 'A cancelled session cannot be marked' });
+            if (typeof runAtomic !== 'function') {
+                return res.status(503).json({ error: 'Attendance marking is temporarily unavailable' });
             }
 
-            const eligible = await loadEligibleStudentIds(scope.tenantId, session, [validated.value.studentId]);
-            if (!eligible.has(validated.value.studentId)) {
-                return res.status(403).json({ error: 'Student is not enrolled in this session' });
-            }
-
-            const outcome = await runAtomic(async (tx) => applyMark(tx, scope, session, validated.value));
-            const status = outcome.outcome === 'created' ? 201 : 200;
-            res.status(status).json({
+            const result = await runAtomic(async (tx): Promise<{ ok: true; outcome: MarkOutcome } | TxDenial> => {
+                // Re-validate the canonical session on THIS transaction with a
+                // locking read: the outer snapshot may be stale, so a session
+                // cancelled or reassigned since then must not authorize a write.
+                const sessionNow = await lockSessionForWrite(tx, scope, sessionId);
+                if (!sessionNow) return { ok: false, status: 404, body: { error: 'Session not found' } };
+                if (sessionNow.status === 'cancelled') {
+                    return { ok: false, status: 409, body: { error: 'A cancelled session cannot be marked' } };
+                }
+                // Current locking read of canonical eligibility: a deactivation,
+                // un-enrollment or group move committed after the pre-check
+                // blocks here or is seen — never silently marked.
+                const eligibleNow = await lockEligibleStudentIds(tx, scope.tenantId, sessionNow, [validated.value.studentId]);
+                if (!eligibleNow.has(validated.value.studentId)) {
+                    return { ok: false, status: 403, body: { error: 'Student is not enrolled in this session' } };
+                }
+                return { ok: true, outcome: await applyMark(tx, scope, sessionNow, validated.value) };
+            });
+            if (!result.ok) return res.status(result.status).json(result.body);
+            const outcome = result.outcome;
+            res.status(outcome.outcome === 'created' ? 201 : 200).json({
                 ...outcome,
                 idempotent: outcome.outcome === 'unchanged',
                 session_id: sessionId,
@@ -382,26 +459,37 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
             const validated = validateBulkInput(req.body);
             if (!validated.ok) return res.status(400).json({ error: validated.error });
 
-            const session = await loadStaffSession(scope, sessionId);
-            if (!session) return res.status(404).json({ error: 'Session not found' });
-            if (session.status === 'cancelled') {
-                return res.status(409).json({ error: 'A cancelled session cannot be marked' });
+            if (typeof runAtomic !== 'function') {
+                return res.status(503).json({ error: 'Attendance marking is temporarily unavailable' });
             }
 
             const studentIds = validated.value.records.map((record) => record.studentId);
-            const eligible = await loadEligibleStudentIds(scope.tenantId, session, studentIds);
-            const ineligible = studentIds.filter((id) => !eligible.has(id));
-            if (ineligible.length > 0) {
-                return res.status(403).json({ error: 'Some students are not enrolled in this session', students: ineligible });
-            }
 
-            const outcomes = await runAtomic(async (tx) => {
-                const results: MarkOutcome[] = [];
-                for (const entry of validated.value.records) {
-                    results.push(await applyMark(tx, scope, session, entry));
+            const result = await runAtomic(async (tx): Promise<{ ok: true; outcomes: MarkOutcome[] } | TxDenial> => {
+                // Re-validate the canonical session on THIS transaction (locking
+                // read); a cancellation/reassignment since the outer snapshot
+                // must not authorize the batch.
+                const sessionNow = await lockSessionForWrite(tx, scope, sessionId);
+                if (!sessionNow) return { ok: false, status: 404, body: { error: 'Session not found' } };
+                if (sessionNow.status === 'cancelled') {
+                    return { ok: false, status: 409, body: { error: 'A cancelled session cannot be marked' } };
                 }
-                return results;
+                // One locking read over the whole batch, deterministic ORDER BY
+                // id; any ineligible student refuses the WHOLE batch (nothing
+                // written, whole transaction rolls back).
+                const eligibleNow = await lockEligibleStudentIds(tx, scope.tenantId, sessionNow, studentIds);
+                const nowIneligible = studentIds.filter((id) => !eligibleNow.has(id));
+                if (nowIneligible.length > 0) {
+                    return { ok: false, status: 403, body: { error: 'Some students are not enrolled in this session', students: nowIneligible } };
+                }
+                const outcomes: MarkOutcome[] = [];
+                for (const entry of validated.value.records) {
+                    outcomes.push(await applyMark(tx, scope, sessionNow, entry));
+                }
+                return { ok: true, outcomes };
             });
+            if (!result.ok) return res.status(result.status).json(result.body);
+            const outcomes = result.outcomes;
 
             const tally = (outcome: MarkOutcome['outcome']): number =>
                 outcomes.filter((result) => result.outcome === outcome).length;
@@ -438,6 +526,10 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
             const validated = validateCorrectionInput(req.body);
             if (!validated.ok) return res.status(400).json({ error: validated.error });
 
+            if (typeof runAtomic !== 'function') {
+                return res.status(503).json({ error: 'Attendance correction is temporarily unavailable' });
+            }
+
             const visibility = buildSessionVisibility(scope, 'ss');
             const existing = await db.queryOne<RecordRow>(
                 `SELECT a.id, a.tenant_id, a.session_id, a.student_id, a.state, a.reason, a.version
@@ -451,7 +543,15 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
                 return res.status(409).json({ error: 'The record already has this state' });
             }
 
-            const result = await runAtomic(async (tx) => {
+            const result = await runAtomic(async (tx): Promise<{ ok: true; changed: boolean } | TxDenial> => {
+                // Revalidate the canonical session on THIS transaction: a
+                // cancellation/reassignment since the outer read must not
+                // authorize a correction either.
+                const sessionNow = await lockSessionForWrite(tx, scope, existing.session_id);
+                if (!sessionNow) return { ok: false, status: 404, body: { error: 'Attendance record not found' } };
+                if (sessionNow.status === 'cancelled') {
+                    return { ok: false, status: 409, body: { error: 'A cancelled session cannot be corrected' } };
+                }
                 const updated = await tx.execute(
                     `UPDATE attendance_records
                      SET state=?, reason=?, corrected_at=UTC_TIMESTAMP(), corrected_by=?, correction_reason=?,
@@ -459,7 +559,7 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
                      WHERE id=? AND tenant_id=? AND version=?`,
                     [validated.value.state, validated.value.reason, scope.userId, validated.value.reason, recordId, scope.tenantId, existing.version],
                 );
-                if ((updated.affectedRows ?? 0) === 0) return false;
+                if (updated.affectedRows === 0) return { ok: true, changed: false };
                 await recordAudit(tx.execute, {
                     actorUserId: scope.userId,
                     tenantId: scope.tenantId,
@@ -470,9 +570,10 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
                     oldValue: snapshotRow(existing),
                     newValue: { state: validated.value.state, reason: validated.value.reason },
                 });
-                return true;
+                return { ok: true, changed: true };
             });
-            if (!result) return res.status(409).json({ error: 'Attendance record changed concurrently' });
+            if (!result.ok) return res.status(result.status).json(result.body);
+            if (!result.changed) return res.status(409).json({ error: 'Attendance record changed concurrently' });
 
             res.json({ id: recordId, state: validated.value.state, reason: validated.value.reason });
         } catch (error) {
@@ -587,7 +688,11 @@ const productionTransaction = async <T>(fn: (tx: AttendanceDataAccess) => Promis
         execute: async (sql: string, params?: unknown[]) => {
             const [result] = await connection.execute(sql, params as never);
             const header = result as { insertId?: number; affectedRows?: number };
-            return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+            const affectedRows = header.affectedRows;
+            if (typeof affectedRows !== 'number' || !Number.isSafeInteger(affectedRows)) {
+                throw new Error('attendance-records transaction execute did not report a usable affected-row count');
+            }
+            return { insertId: typeof header.insertId === 'number' && Number.isSafeInteger(header.insertId) ? header.insertId : 0, affectedRows };
         },
     }));
 };

@@ -1024,9 +1024,13 @@ export default createMaterialsRouter({
                         sql, params,
                     ).then((res) => {
                         const header = res[0] as { insertId?: number; affectedRows?: number };
+                        const affectedRows = header.affectedRows;
+                        if (typeof affectedRows !== 'number' || !Number.isSafeInteger(affectedRows)) {
+                            throw new Error('materials transaction execute did not report a usable affected-row count');
+                        }
                         return {
-                            insertId: header.insertId ?? 0,
-                            affectedRows: header.affectedRows ?? 0,
+                            insertId: typeof header.insertId === 'number' && Number.isSafeInteger(header.insertId) ? header.insertId : 0,
+                            affectedRows,
                         } as Awaited<ReturnType<typeof execute>>;
                     }),
             };

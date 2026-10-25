@@ -150,14 +150,20 @@ export const savePreferences = async (
 ): Promise<NotificationPreferences> => {
   const stored = await fetchPreferences(queryOneFn, userId, userType);
   const merged = mergePreferences(stored ?? defaultPreferences(), patch);
+  const patchFlags = [
+    patch.in_app === undefined ? 0 : 1,
+    patch.email === undefined ? 0 : 1,
+    patch.whatsapp === undefined ? 0 : 1,
+    patch.sms === undefined ? 0 : 1,
+  ];
   await executeFn(
     `INSERT INTO notification_preferences (user_id, user_type, in_app, email, whatsapp, sms)
      VALUES (?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
-       in_app = VALUES(in_app),
-       email = VALUES(email),
-       whatsapp = VALUES(whatsapp),
-       sms = VALUES(sms)`,
+       in_app = IF(?, VALUES(in_app), in_app),
+       email = IF(?, VALUES(email), email),
+       whatsapp = IF(?, VALUES(whatsapp), whatsapp),
+       sms = IF(?, VALUES(sms), sms)`,
     [
       userId,
       userType,
@@ -165,7 +171,12 @@ export const savePreferences = async (
       merged.email ? 1 : 0,
       merged.whatsapp ? 1 : 0,
       merged.sms ? 1 : 0,
+      ...patchFlags,
     ],
   );
-  return merged;
+  // Read the persisted result: another disjoint PATCH may have committed
+  // while this upsert waited. The pre-write merge is not authoritative.
+  const saved = await fetchPreferences(queryOneFn, userId, userType);
+  if (!saved) throw new Error('Notification preferences write could not be confirmed');
+  return saved;
 };

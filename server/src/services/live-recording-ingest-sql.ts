@@ -104,7 +104,9 @@ export interface RecordingIngestSqlConnection {
     queryOne<T = Record<string, unknown>>(sql: string, params?: readonly unknown[]): Promise<T | null>;
     /**
      * `affectedRows` MUST be a number (mysql2 OkPacket). An unreadable count is
-     * reported as 0, never as success: the CAS is the authority.
+     * thrown as `unreadable_affected_rows`, never coerced to 0: 0 is reserved
+     * for a genuine miss, so a driver that stops reporting the count must not
+     * be read as "the fence was lost" (or, worse, as success).
      */
     execute(sql: string, params?: readonly unknown[]): Promise<{ affectedRows?: number; insertId?: number }>;
 }
@@ -143,7 +145,13 @@ export type RecordingIngestSqlErrorCode =
     | 'invalid_input'
     | 'invalid_row'
     | 'unsafe_bigint'
-    | 'invalid_outcome';
+    | 'invalid_outcome'
+    /**
+     * A CAS returned without a usable `affectedRows`. NOT a lost fence: the
+     * write may have landed, so it must not become `claim-held`, `claim-lost`
+     * or a silent `released: false`. Thrown inside the unit.
+     */
+    | 'unreadable_affected_rows';
 
 export class RecordingIngestSqlError extends Error {
     constructor(public readonly code: RecordingIngestSqlErrorCode, message: string) {
@@ -301,10 +309,25 @@ const requireOutcome = (value: unknown): IngestOutcome => {
     return value as IngestOutcome;
 };
 
-const affectedOf = (result: { affectedRows?: number }): number =>
-    typeof result.affectedRows === 'number' && Number.isSafeInteger(result.affectedRows) && result.affectedRows >= 0
-        ? result.affectedRows
-        : 0;
+/**
+ * The affected-row count of a CAS, or a throw.
+ *
+ * `undefined` is not a lost fence. Coercing it to 0 (`?? 0`) reported a
+ * COMMITTED `finalizeIngest` as `claim-lost` with no success audit, and a won
+ * `claimPending` as `claim-held` while the lease had in fact been taken —
+ * leaving the row owned by an attempt that had already given up on it. `0`
+ * stays a genuine miss and keeps its meaning at every call site.
+ */
+const affectedOf = (result: { affectedRows?: number }): number => {
+    const affected = result?.affectedRows;
+    if (typeof affected !== 'number' || !Number.isSafeInteger(affected) || affected < 0) {
+        throw new RecordingIngestSqlError(
+            'unreadable_affected_rows',
+            'the CAS statement did not report a usable affected-row count',
+        );
+    }
+    return affected;
+};
 
 const isDuplicateEntry = (error: unknown): boolean => {
     if (!error || typeof error !== 'object') return false;
@@ -1133,6 +1156,17 @@ const isMissingColumn = (error: unknown): boolean => {
  * The lease CAS that follows is the only thing that can take the row, and it
  * takes it only when no owner holds a live lease.
  *
+ * The row is created UNOWNED — `owner` and `lease_expires_at_ms` are NULL. An
+ * earlier revision inserted the caller's own owner and a live lease, so on a
+ * fresh table the INSERT produced a row the follow-up CAS could never match:
+ * its predicate requires `owner IS NULL OR lease_expires_at_ms IS NULL OR
+ * lease_expires_at_ms <= nowMs`, all false for a row just written with this
+ * owner and a future expiry. The claim then returned `claimed: false` with
+ * reason `'unknown'` on every pass, `runRecordingRecoveryOnce` stopped with
+ * `checkpoint-unavailable`, and no scan ran at all until the self-written lease
+ * expired 60 s later — while misreporting an available table as "no row, no
+ * table, no column".
+ *
  * The re-read is inside the same unit as the CAS, so `claimed: true` is only
  * returned when the row this transaction can see names THIS owner — a 1-row
  * update that the same unit cannot confirm is not a claim.
@@ -1153,9 +1187,9 @@ const claimCheckpoint = async (
                 `INSERT INTO live_recovery_checkpoints
                      (purpose, cursor_occurred_at_ms, cursor_id, owner, lease_expires_at_ms,
                       row_version, sweep_generation, updated_at_ms)
-                 VALUES (?, NULL, NULL, ?, ?, 1, 0, ?)
+                 VALUES (?, NULL, NULL, NULL, NULL, 1, 0, ?)
                  ON DUPLICATE KEY UPDATE purpose = purpose`,
-                [RECOVERY_CHECKPOINT_PURPOSE, owner, leaseExpiresAtMs, nowMs],
+                [RECOVERY_CHECKPOINT_PURPOSE, nowMs],
             );
             const update = await conn.execute(
                 `UPDATE live_recovery_checkpoints

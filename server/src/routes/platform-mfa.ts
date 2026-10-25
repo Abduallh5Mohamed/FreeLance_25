@@ -1,3 +1,4 @@
+import { asyncRouteBoundary } from '../security/async-route-boundary';
 /**
  * M7 O9 — platform MFA routes (enroll / verify / disable / status).
  *
@@ -31,6 +32,9 @@ import { requireAdminPermission } from '../security/admin-permissions';
 import { AuditLogDataAccess, SealedAuditRecordInput } from '../services/audit-log';
 import {
     DEFAULT_STEPUP_MAX_AGE_SECONDS,
+    STEPUP_HEADER,
+    STEPUP_PURPOSE,
+    verifyStepUpToken,
     LOCKOUT_SECONDS,
     MFA_RATE_LIMITS,
     MfaKeyUnavailableError,
@@ -90,9 +94,9 @@ const validateAuditReason = (raw: unknown): { ok: true; value: string } | { ok: 
 
 /** Audit access over one connection; never carries a nested transaction. */
 const auditAccessOf = (db: PlatformMfaDb): AuditLogDataAccess => ({
-    query: db.query,
-    queryOne: db.queryOne,
-    execute: db.execute,
+    query: (sql, params) => db.query(sql, params),
+    queryOne: (sql, params) => db.queryOne(sql, params),
+    execute: (sql, params) => db.execute(sql, params),
 });
 
 export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
@@ -114,22 +118,23 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
     /**
      * Runs a mutation and its audit entry atomically. An explicit seam wins;
      * otherwise a router that owns the SQL store uses `db.transaction` so the
-     * production path is transactional by default. Injected stores (tests)
-     * fall back to running the callback directly.
+     * production path is transactional by default. An injected store must
+     * provide an explicit atomic seam; never downgrade mutations to autocommit.
      */
     const runAtomic = <T>(fn: (tx: PlatformMfaTransaction) => Promise<T>): Promise<T> => {
         if (deps.transaction) return deps.transaction(fn);
         const dbTransaction = deps.db.transaction;
         if (!deps.store && dbTransaction) {
-            return dbTransaction((txDb) => fn({
+            return deps.db.transaction!((txDb) => fn({
                 store: createSqlPlatformMfaStore(txDb),
                 recordAudit: (input) => writeAudit(input, txDb),
             }));
         }
-        return fn({ store, recordAudit: writeAudit });
+        return Promise.reject(new Error('MFA transaction capability unavailable'));
     };
 
-    router.use(deps.authenticate);
+    router.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); res.set('Pragma', 'no-cache'); next(); });
+    router.use(asyncRouteBoundary(deps.authenticate));
 
     const userIdOf = (req: AuthRequest, res: Response): string | null => {
         const user = req.user;
@@ -155,15 +160,15 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
             if (!userId) return;
             const row = await store.findRow(userId);
             if (!row) {
-                res.json({ enrolled: false, status: 'none' });
+                res.json({ enrolled: false, status: 'none', session_bound: Boolean(req.user?.sessionId) });
                 return;
             }
             const status = row.status === 'active' || row.status === 'pending' ? row.status : 'none';
             const lockedUntil = row.locked_until ? new Date(row.locked_until) : null;
             const locked = lockedUntil !== null && !Number.isNaN(lockedUntil.getTime()) && lockedUntil.getTime() > now();
-            res.json({ enrolled: status !== 'none', status, locked, locked_until: locked ? lockedUntil.toISOString() : null });
+            res.json({ enrolled: status !== 'none', status, session_bound: Boolean(req.user?.sessionId), locked, locked_until: locked ? lockedUntil.toISOString() : null });
         } catch (error) {
-            console.error('MFA status failed:', error);
+            console.error('MFA status failed:');
             res.status(503).json({ error: 'MFA status is unavailable' });
         }
     });
@@ -213,7 +218,7 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
                 res.status(503).json({ error: 'MFA encryption is unavailable; enrollment denied' });
                 return;
             }
-            console.error('MFA enrollment failed:', error);
+            console.error('MFA enrollment failed:');
             res.status(500).json({ error: 'Failed to enroll platform MFA' });
         }
     });
@@ -299,6 +304,7 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
             const stepUpToken = await verifier.issueStepUpToken(userId, outcome.verdict.epoch, req.user?.sessionId);
             res.json({
                 step_up_token: stepUpToken,
+                step_up_expires_at_ms: (Number(stepUpToken.split('.')[3]) + DEFAULT_STEPUP_MAX_AGE_SECONDS) * 1000,
                 ...(outcome.recoveryCodes ? { recovery_codes: outcome.recoveryCodes } : {}),
             });
         } catch (error) {
@@ -306,7 +312,7 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
                 res.status(503).json({ error: 'MFA encryption is unavailable; verification denied' });
                 return;
             }
-            console.error('MFA verification failed:', error);
+            console.error('MFA verification failed:');
             res.status(500).json({ error: 'Failed to verify platform MFA' });
         }
     });
@@ -333,13 +339,25 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
                 if (!notThrottled('disable', userId, res)) return;
                 const reason = validateAuditReason(req.body?.reason);
                 if (!reason.ok) return res.status(400).json({ error: reason.error });
-                const existing = await store.findRow(userId);
-                if (!existing || (existing.status !== 'active' && existing.status !== 'pending')) {
-                    return res.status(404).json({ error: 'MFA is not enrolled for this user' });
-                }
                 const disabled = await runAtomic(async (tx) => {
-                    const affected = await tx.store.disable(userId);
+                    const existing = await tx.store.findRow(userId);
+                    if (!existing || existing.user_id !== userId || existing.status !== 'active') return false;
+                    const rawEpoch = existing.stepup_epoch;
+                    if ((typeof rawEpoch !== 'number' && typeof rawEpoch !== 'string')
+                        || (typeof rawEpoch === 'string' && !/^\d+$/.test(rawEpoch))) return false;
+                    const epoch = Number(rawEpoch);
+                    const key = sealKey();
+                    if (!key || !Number.isSafeInteger(epoch) || epoch < 0) return false;
+                    const verdict = verifyStepUpToken(req.headers[STEPUP_HEADER], {
+                        expectedUserId: userId, currentEpoch: epoch, key, nowMs: now(),
+                        maxAgeSeconds: deps.stepUpMaxAgeSeconds ?? DEFAULT_STEPUP_MAX_AGE_SECONDS,
+                        expectedPurpose: STEPUP_PURPOSE, expectedSessionId: req.user?.sessionId,
+                    });
+                    if (!verdict.ok) return false;
+                    // CAS fences a concurrent disable/re-enrollment after this read.
+                    const affected = await tx.store.disable(userId, epoch);
                     if (affected === 0) return false;
+                    if (affected !== 1) throw new Error('Invalid MFA disable row count');
                     await tx.recordAudit({
                         actorUserId: userId,
                         tenantId: null,
@@ -352,10 +370,10 @@ export const createPlatformMfaRouter = (deps: PlatformMfaRouteDeps): Router => {
                     });
                     return true;
                 });
-                if (!disabled) return res.status(404).json({ error: 'MFA is not enrolled for this user' });
+                if (!disabled) return res.status(403).json({ error: 'MFA enrollment changed; verify again', code: 'STEP_UP_ENROLLMENT_CHANGED' });
                 res.json({ disabled: true });
             } catch (error) {
-                console.error('MFA disable failed:', error);
+                console.error('MFA disable failed:');
                 res.status(500).json({ error: 'Failed to disable platform MFA' });
             }
         },

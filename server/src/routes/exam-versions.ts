@@ -315,7 +315,7 @@ const persistAttemptGrade = async (tx: ExamVersionsDataAccess, p: PersistGradePa
             p.autoSubmitted ? 1 : 0, p.attemptId, p.tenantId,
         ],
     );
-    if ((updated.affectedRows ?? 0) === 0) return false;
+    if ((updated.affectedRows) === 0) return false;
     for (const question of grade.questions) {
         await tx.execute(
             `INSERT INTO exam_versioned_answers
@@ -853,7 +853,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
                      WHERE id=? AND exam_id=? AND tenant_id=? AND status='draft'`,
                     [versionId, examId, scope.tenantId],
                 );
-                if ((updated.affectedRows ?? 0) === 0) return false;
+                if ((updated.affectedRows) === 0) return false;
                 for (const row of questions) {
                     if (!row.source_version_id || !row.question_id) continue;
                     await tx.execute(
@@ -1227,7 +1227,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
                         String(attempt.status), Number(attempt.version ?? 0),
                     ],
                 );
-                if ((updated.affectedRows ?? 0) === 0) return false;
+                if ((updated.affectedRows) === 0) return false;
                 for (const question of grade.questions) {
                     await tx.execute(
                         `UPDATE exam_versioned_answers
@@ -1369,7 +1369,11 @@ const productionTransaction = async <T>(fn: (tx: ExamVersionsDataAccess) => Prom
         execute: async (sql: string, params?: unknown[]) => {
             const [result] = await connection.execute(sql, params as never);
             const header = result as { insertId?: number; affectedRows?: number };
-            return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+            const affectedRows = header.affectedRows;
+            if (typeof affectedRows !== 'number' || !Number.isSafeInteger(affectedRows)) {
+                throw new Error('exam-versions transaction execute did not report a usable affected-row count');
+            }
+            return { insertId: typeof header.insertId === 'number' && Number.isSafeInteger(header.insertId) ? header.insertId : 0, affectedRows };
         },
     }));
 };

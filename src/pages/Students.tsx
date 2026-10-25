@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -9,7 +9,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Users, Edit2, Trash2, Search, Phone, Mail } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-import { getStudents, getGrades, getGroups, updateStudent, deleteStudent, deleteUserByStudentId, type Student } from "@/lib/api-http";
+import { getStudents, getGrades, getGroups, updateStudent, deleteStudent, deleteUserByStudentId, type Student, type Grade, type Group } from "@/lib/api-http";
 
 /**
  * Row shape returned by GET /students (server/src/routes/students.ts):
@@ -73,6 +73,8 @@ export interface StudentMutationMessages {
  * click while a request for the same target is in flight reuses it instead of
  * issuing a duplicate request), the list is refreshed only after the server
  * confirms success, and failures are surfaced without mutating local state.
+ * A failed server-authoritative refresh is logged, not reported as a failed
+ * mutation: the server already accepted the change.
  */
 export const createStudentMutationController = (deps: StudentMutationDeps) => {
   const inFlight = new Map<string, Promise<StudentMutationOutcome>>();
@@ -99,7 +101,11 @@ export const createStudentMutationController = (deps: StudentMutationDeps) => {
           deps.notify("error", messages.failureTitle, messages.failureDescription);
           return { ok: false };
         }
-        await deps.refresh();
+        try {
+          await deps.refresh();
+        } catch (refreshError) {
+          console.error('Error refreshing after mutation:', refreshError);
+        }
         deps.notify("success", messages.successTitle, messages.successDescription);
         return { ok: true };
       } catch (error: unknown) {
@@ -135,57 +141,91 @@ const EMPTY_FORM = {
 type ConfirmableDelete = { kind: "student" | "user"; id: string } | null;
 
 const Students = () => {
-  const currentRole = (() => { try { return JSON.parse(localStorage.getItem('currentUser') || '{}').role as string | undefined; } catch { return undefined; } })();
   const [students, setStudents] = useState<StudentListItem[]>([]);
-  const [groups, setGroups] = useState([]);
-  const [grades, setGrades] = useState([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [grades, setGrades] = useState<Grade[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [editingStudent, setEditingStudent] = useState<StudentListItem | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [formData, setFormData] = useState(EMPTY_FORM);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
   const [pendingDelete, setPendingDelete] = useState<ConfirmableDelete>(null);
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
 
+  /** Per-list monotonic sequence numbers: only the latest fetch may commit. */
+  const seqsRef = useRef({ students: 0, groups: 0, grades: 0 });
+  const mountedRef = useRef(true);
+
   useEffect(() => {
-    fetchStudents();
-    fetchGroups();
-    fetchGrades();
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
   }, []);
 
+  const clearLoadError = (key: string) => {
+    setLoadErrors(prev => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const reportLoadError = (key: string, message: string) => {
+    if (mountedRef.current) setLoadErrors(prev => ({ ...prev, [key]: message }));
+  };
+
   const fetchGrades = async () => {
+    const seq = ++seqsRef.current.grades;
+    clearLoadError('grades');
     try {
       const data = await getGrades();
+      if (seq !== seqsRef.current.grades || !mountedRef.current) return;
       setGrades(data || []);
     } catch (error) {
       console.error('Error fetching grades:', error);
-      setLoadError('تعذر تحميل الصفوف الدراسية');
+      if (seq !== seqsRef.current.grades || !mountedRef.current) return;
+      reportLoadError('grades', 'تعذر تحميل الصفوف الدراسية');
     }
   };
 
   const fetchStudents = async () => {
-    setLoadError(null);
+    const seq = ++seqsRef.current.students;
+    clearLoadError('students');
     try {
       const data = await getStudents();
+      if (seq !== seqsRef.current.students || !mountedRef.current) return;
       // Filter for online students only (is_offline = false or 0)
       const onlineStudents = (data || []).filter(student => !isOfflineStudent(student.is_offline));
       setStudents(onlineStudents);
     } catch (error) {
       console.error('Error fetching students:', error);
-      setLoadError('تعذر تحميل قائمة الطلاب');
+      if (seq !== seqsRef.current.students || !mountedRef.current) return;
+      reportLoadError('students', 'تعذر تحميل قائمة الطلاب');
     }
   };
 
   const fetchGroups = async () => {
+    const seq = ++seqsRef.current.groups;
+    clearLoadError('groups');
     try {
       const data = await getGroups();
+      if (seq !== seqsRef.current.groups || !mountedRef.current) return;
       setGroups(data || []);
     } catch (error) {
       console.error('Error fetching groups:', error);
-      setLoadError('تعذر تحميل المجموعات');
+      if (seq !== seqsRef.current.groups || !mountedRef.current) return;
+      reportLoadError('groups', 'تعذر تحميل المجموعات');
     }
   };
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([fetchStudents(), fetchGroups(), fetchGrades()]).finally(() => {
+      if (mountedRef.current) setLoading(false);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const mutations = useMemo(() => createStudentMutationController({
     updateStudent,
@@ -441,12 +481,18 @@ const Students = () => {
             </div>
           </CardHeader>
           <CardContent className="p-4">
-            {loadError && (
+            {Object.values(loadErrors).length > 0 && (
               <div role="alert" className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                {loadError}
+                {Object.values(loadErrors).map((message) => (
+                  <p key={message}>{message}</p>
+                ))}
               </div>
             )}
-            {filteredStudents.length === 0 ? (
+            {loading ? (
+              <div className="text-center py-12 text-muted-foreground">
+                جاري التحميل...
+              </div>
+            ) : filteredStudents.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground">
                 <Users className="w-16 h-16 mx-auto mb-4 opacity-20" />
                 <p className="text-lg font-medium">لا يوجد طلاب أونلاين حالياً</p>

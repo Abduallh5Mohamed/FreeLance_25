@@ -95,8 +95,18 @@ export const createGradebookRouter = (deps: GradebookDeps): Router => {
         if (!user) { res.status(401).json({ error: 'Authentication required' }); return null; }
         if (user.role !== 'student') { res.status(403).json({ error: 'Student access required' }); return null; }
         if (!user.tenantId) { res.status(403).json({ error: 'An active student workspace is required' }); return null; }
+        // The FULL enrollment window, not just `is_active` + `approval_status`:
+        // `attendance-records.ts` and `schedules.ts` both enforce
+        // `enrollment_status` and the start/end dates, and those columns exist.
+        // A student whose enrollment was withdrawn or whose window has passed
+        // used to keep reading `GET /gradebook/me` and `/gradebook/progress`.
         const row = await db.queryOne<{ id: string; tenant_id: string }>(
-            `SELECT id, tenant_id FROM students WHERE user_id=? AND tenant_id=? AND is_active=1 AND approval_status='approved' LIMIT 1`,
+            `SELECT id, tenant_id FROM students
+             WHERE user_id=? AND tenant_id=? AND is_active=1 AND approval_status='approved'
+               AND (enrollment_status IS NULL OR enrollment_status='active')
+               AND (enrollment_start_date IS NULL OR enrollment_start_date<=UTC_TIMESTAMP())
+               AND (enrollment_end_date IS NULL OR enrollment_end_date>UTC_TIMESTAMP())
+             LIMIT 1`,
             [user.id, user.tenantId],
         );
         if (!row) { res.status(404).json({ error: 'Student workspace not found' }); return null; }
@@ -259,7 +269,15 @@ export const createGradebookRouter = (deps: GradebookDeps): Router => {
         try {
             await runAtomic(async (tx) => {
                 if (existing) {
-                    await tx.execute('UPDATE gradebook_policies SET mode=?, passing_score=?, rounding=?, categories=?, updated_at=CURRENT_TIMESTAMP WHERE tenant_id=? AND course_id=?', [v.mode, v.passingScore, v.rounding, JSON.stringify(v.categories), scope.tenantId, courseId]);
+                    const updated = await tx.execute('UPDATE gradebook_policies SET mode=?, passing_score=?, rounding=?, categories=?, updated_at=CURRENT_TIMESTAMP WHERE tenant_id=? AND course_id=?', [v.mode, v.passingScore, v.rounding, JSON.stringify(v.categories), scope.tenantId, courseId]);
+                    // Exactly one row must move. The policy row can disappear
+                    // between `loadPolicy` and this UPDATE; without the check the
+                    // route audited an upsert and answered `{ok:true}` for a
+                    // change that never landed. `undefined` is neither zero nor
+                    // one, so it is refused rather than coerced.
+                    if (typeof updated.affectedRows !== 'number' || !Number.isSafeInteger(updated.affectedRows) || updated.affectedRows !== 1) {
+                        throw new Error('gradebook policy update did not report exactly one affected row');
+                    }
                 } else {
                     await tx.execute('INSERT INTO gradebook_policies (id, tenant_id, course_id, mode, passing_score, rounding, categories, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [randomUUID(), scope.tenantId, courseId, v.mode, v.passingScore, v.rounding, JSON.stringify(v.categories), scope.userId]);
                 }
@@ -340,7 +358,13 @@ export const createGradebookRouter = (deps: GradebookDeps): Router => {
                             'UPDATE gradebook_scores SET score=?, max_score=?, weight=?, recorded_by=?, recorded_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=?',
                             [v.score, v.maxScore, v.weight, scope.userId, linkedId, scope.tenantId],
                         );
-                        if ((updated.affectedRows ?? 0) === 0) {
+                        // A usable count is required: `undefined` is neither zero
+                        // nor one, and coercing it to 0 reported a concurrent
+                        // change for a broken storage layer.
+                        if (typeof updated.affectedRows !== 'number' || !Number.isSafeInteger(updated.affectedRows)) {
+                            throw new Error('gradebook score update did not report a usable affected-row count');
+                        }
+                        if (updated.affectedRows === 0) {
                             outcome = 'unchanged';
                             return;
                         }
@@ -451,7 +475,27 @@ export const createGradebookRouter = (deps: GradebookDeps): Router => {
         const auth = await authorizeCourse(scope, courseId);
         if (auth !== 'ok') { denyCourse(res, auth); return; }
         const policy = await loadPolicy(scope.tenantId, courseId);
-        const scores = await db.query<ScoreRow>('SELECT id, tenant_id, student_enrollment_id, course_id, category_id, item_type, item_id, score, max_score, weight, recorded_at FROM gradebook_scores WHERE tenant_id=? AND course_id=? ORDER BY student_enrollment_id ASC, recorded_at ASC', [scope.tenantId, courseId]);
+        // Bounded read with overflow detection. Like every sibling feed in this
+        // chain (500 staff / 200 student records, 5000 report rows, 500
+        // question-bank export) this caps the working set. But unlike a plain
+        // `LIMIT 5000` — which silently truncates a large course and then
+        // computes FALSE partial grades over the truncated set — we read one row
+        // past the cap and refuse the export when the cap is exceeded. A
+        // partial-score CSV must never be produced: it would understate or
+        // misstate every affected enrollment's grade. This route implements
+        // neither date/category filtering nor paginated export, so the only
+        // honest response is to refuse; the message must not advertise those
+        // unimplemented options.
+        const MAX_EXPORT_ROWS = 5000;
+        const scores = await db.query<ScoreRow>('SELECT id, tenant_id, student_enrollment_id, course_id, category_id, item_type, item_id, score, max_score, weight, recorded_at FROM gradebook_scores WHERE tenant_id=? AND course_id=? ORDER BY student_enrollment_id ASC, recorded_at ASC LIMIT 5001', [scope.tenantId, courseId]);
+        if (scores.length > MAX_EXPORT_ROWS) {
+            // The +1 probe confirms there are more rows than the cap allows.
+            // Refuse rather than emit a partial-grade CSV.
+            return res.status(400).json({
+                error: 'gradebook_export_overflow',
+                message: `This course exceeds the supported gradebook export size; no CSV was generated.`,
+            });
+        }
         const scoresByEnrollment = new Map<string, ScoreRow[]>();
         for (const score of scores) {
             const bucket = scoresByEnrollment.get(score.student_enrollment_id);
@@ -521,7 +565,12 @@ const productionTransaction = async <T>(fn: (tx: GradebookDataAccess) => Promise
         execute: async (sql: string, params?: unknown[]) => {
             const [result] = await connection.execute(sql, params as never);
             const header = result as { insertId?: number; affectedRows?: number };
-            return { insertId: header.insertId ?? 0, affectedRows: header.affectedRows ?? 0 };
+            // No `?? 0`: an absent count is an error the caller must see, not a
+            // definite zero that reads as "nothing changed".
+            return {
+                insertId: typeof header.insertId === 'number' ? header.insertId : undefined,
+                affectedRows: typeof header.affectedRows === 'number' ? header.affectedRows : undefined,
+            };
         },
     }));
 };

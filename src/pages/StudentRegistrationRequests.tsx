@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -178,12 +178,23 @@ export default function StudentRegistrationRequests() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [selectedRequest, setSelectedRequest] = useState<RegistrationRequest | null>(null);
   const [rejectionReason, setRejectionReason] = useState("");
   const [showRejectionDialog, setShowRejectionDialog] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
+
+  /** Sync guards: only the latest fetch may commit and only one decision at a time. */
+  const loadSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+  const decisionInFlightRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     // Check if user is logged in and is admin
@@ -220,23 +231,29 @@ export default function StudentRegistrationRequests() {
   }, []);
 
   const fetchData = async () => {
+    const seq = ++loadSeqRef.current;
     try {
       const data = await loadRegistrationPageData({ getRegistrationRequests, getGrades, getGroups, getCourses });
+
+      if (seq !== loadSeqRef.current || !mountedRef.current) return; // superseded or unmounted
 
       // Show both online and offline requests
       setRequests(data.requests);
       setGrades(data.grades);
       setGroups(data.groups);
       setCourses(data.courses);
+      setLoadError(null);
     } catch (error) {
       console.error('Error fetching data:', error);
+      if (seq !== loadSeqRef.current || !mountedRef.current) return;
+      setLoadError('حدث خطأ أثناء تحميل البيانات');
       toast({
         title: "خطأ",
         description: "حدث خطأ أثناء تحميل البيانات",
         variant: "destructive"
       });
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current && mountedRef.current) setLoading(false);
     }
   };
 
@@ -253,11 +270,13 @@ export default function StudentRegistrationRequests() {
   }), []);
 
   const handleApprove = async (request: RegistrationRequest) => {
-    if (processingId) return; // a decision is already in flight
+    if (decisionInFlightRef.current || loading || loadError) return; // synchronous guard: one decision at a time
+    decisionInFlightRef.current = true;
     setProcessingId(request.id);
     try {
       await decisions.approve(request);
     } finally {
+      decisionInFlightRef.current = false;
       setProcessingId(null);
     }
   };
@@ -272,7 +291,8 @@ export default function StudentRegistrationRequests() {
       return;
     }
 
-    if (processingId) return; // a decision is already in flight
+    if (decisionInFlightRef.current || loading || loadError) return; // synchronous guard: one decision at a time
+    decisionInFlightRef.current = true;
     setProcessingId(selectedRequest.id);
     try {
       const outcome = await decisions.reject(selectedRequest, rejectionReason);
@@ -281,6 +301,7 @@ export default function StudentRegistrationRequests() {
       setRejectionReason("");
       setSelectedRequest(null);
     } finally {
+      decisionInFlightRef.current = false;
       setProcessingId(null);
     }
   };
@@ -367,7 +388,7 @@ export default function StudentRegistrationRequests() {
               onClick={() => handleApprove(request)}
               className="flex-1"
               variant="default"
-              disabled={processingId !== null}
+              disabled={processingId !== null || loading || !!loadError}
             >
               <Check className="mr-2 h-4 w-4" />
               قبول
@@ -379,7 +400,7 @@ export default function StudentRegistrationRequests() {
               }}
               className="flex-1"
               variant="destructive"
-              disabled={processingId !== null}
+              disabled={processingId !== null || loading || !!loadError}
             >
               <X className="mr-2 h-4 w-4" />
               رفض
@@ -442,6 +463,22 @@ export default function StudentRegistrationRequests() {
               </CardDescription>
             </CardHeader>
             <CardContent className="pt-6">
+              {loadError && (
+                <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                  <span>{loadError}</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setLoadError(null);
+                      setLoading(true);
+                      fetchData();
+                    }}
+                  >
+                    إعادة المحاولة
+                  </Button>
+                </div>
+              )}
               <Tabs defaultValue="pending" className="w-full">
                 <TabsList className="grid w-full grid-cols-3">
                   <TabsTrigger value="pending" className="flex items-center gap-2">
@@ -525,7 +562,7 @@ export default function StudentRegistrationRequests() {
                 variant="destructive"
                 onClick={handleReject}
                 className="bg-gradient-to-r from-red-500 to-red-600 hover:shadow-lg"
-                disabled={processingId !== null}
+                disabled={processingId !== null || loading || !!loadError}
               >
                 تأكيد الرفض
               </Button>
