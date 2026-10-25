@@ -68,6 +68,10 @@ function harness(options: {
     const core = createLiveSessionCore({
         store: storeForCore,
         verifyCallbackSignature: () => verified,
+        resolveProviderParticipant: async ({ providerParticipantId }) => {
+            const participant = store.participants.find((row) => row.userId === providerParticipantId);
+            return participant ? { participantId: participant.id, userId: participant.userId } : null;
+        },
         ticketSecret: 'secret' in options ? options.secret : SECRET,
         now: () => clock.nowMs,
         idFactory: () => `id-${++counter}`,

@@ -200,6 +200,7 @@ interface CourseRow {
     is_active: number;
     publication_state: string;
     published_at_epoch: number | null;
+    instructor_id: string;
 }
 
 interface State {
@@ -268,22 +269,22 @@ function makeState(): State {
             {
                 id: COURSE_A1, tenant_id: TENANT_A, name: 'Algebra A', subject: 'Math',
                 description: 'Full algebra course.', grade: 'Grade 9', price: 250,
-                is_active: 1, publication_state: 'draft', published_at_epoch: null,
+                is_active: 1, publication_state: 'draft', published_at_epoch: null, instructor_id: INSTRUCTOR_A,
             },
             {
                 id: COURSE_A2, tenant_id: TENANT_A, name: 'Physics B', subject: 'Physics',
                 description: 'Published already.', grade: 'Grade 10', price: 300,
-                is_active: 1, publication_state: 'published', published_at_epoch: 1793000000,
+                is_active: 1, publication_state: 'published', published_at_epoch: 1793000000, instructor_id: INSTRUCTOR_A,
             },
             {
                 id: COURSE_ARCHIVED, tenant_id: TENANT_A, name: 'Archived Course', subject: 'Math',
                 description: 'Archived.', grade: 'Grade 9', price: 100,
-                is_active: 0, publication_state: 'draft', published_at_epoch: null,
+                is_active: 0, publication_state: 'draft', published_at_epoch: null, instructor_id: INSTRUCTOR_A,
             },
             {
                 id: COURSE_B1, tenant_id: TENANT_B, name: 'English B1', subject: 'English',
                 description: 'Foreign tenant.', grade: 'Grade 9', price: 400,
-                is_active: 1, publication_state: 'draft', published_at_epoch: null,
+                is_active: 1, publication_state: 'draft', published_at_epoch: null, instructor_id: INSTRUCTOR_B,
             },
         ],
         failAcquire: false,
@@ -310,6 +311,11 @@ const MEMBER_LOCK_SELECT =
 
 const COURSE_LOCK_SELECT =
     'SELECT c.id,c.name,c.publication_state,UNIX_TIMESTAMP(c.published_at) AS published_at_epoch FROM courses c WHERE c.id=? AND c.tenant_id=? AND c.is_active=TRUE FOR UPDATE';
+
+const INSTRUCTOR_COURSE_LOCK_SELECT = COURSE_LOCK_SELECT.replace(
+    ' FOR UPDATE',
+    ' AND c.instructor_id=? FOR UPDATE',
+);
 
 const COURSE_PUBLISH_SQL =
     "UPDATE courses SET publication_state='published',published_at=COALESCE(published_at,CURRENT_TIMESTAMP),updated_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=? AND is_active=TRUE";
@@ -392,12 +398,14 @@ function buildHarness(state: State): Harness {
             }], []];
         }
 
-        if (n === COURSE_LOCK_SELECT) {
+        if (n === COURSE_LOCK_SELECT || n === INSTRUCTOR_COURSE_LOCK_SELECT) {
             events.push('course-lock');
             if (state.failCourseLock) throw new Error('course lock failed: internal detail leaked');
             const [courseId, tenantId] = params.map(String);
             const row = courseById(courseId);
-            if (!row || row.is_active !== 1 || row.tenant_id !== tenantId) return [[], []];
+            const instructorId = params.length > 2 ? String(params[2]) : null;
+            if (!row || row.is_active !== 1 || row.tenant_id !== tenantId
+                || (instructorId !== null && row.instructor_id !== instructorId)) return [[], []];
             return [[project(row)], []];
         }
 
@@ -507,6 +515,17 @@ function buildHarness(state: State): Harness {
             calls.push({ sql, params });
             if (n === 'SELECT * FROM courses WHERE id = ?') {
                 return courseById(String(params[0]));
+            }
+            if (n.startsWith('SELECT * FROM courses WHERE courses.id=? AND courses.tenant_id=?')) {
+                const [courseId, tenantId, actorId] = params.map(String);
+                const row = courseById(courseId);
+                if (!row || row.tenant_id !== tenantId) return null;
+                const role = state.memberRoles[actorId]?.[tenantId];
+                return role === 'owner' || (role === 'instructor' && row.instructor_id === actorId) ? row : null;
+            }
+            if (n.startsWith('SELECT t.id FROM tenants t INNER JOIN users u ON u.id=t.owner_user_id')) {
+                const [tenantId, userId] = params.map(String);
+                return tenantId === TENANT_A && userId === OWNER_A ? { id: TENANT_A } : null;
             }
             throw new Error(`Unhandled course queryOne in hermetic fixture: ${n}`);
         },

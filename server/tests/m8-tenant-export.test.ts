@@ -7,6 +7,8 @@ import {
     EXPORT_MANIFEST_VERSION,
     EXPORT_OWNERSHIP_CONTRADICTION,
     EXPORT_OWNERSHIP_OWNED,
+    EXPORT_OWNERSHIP_OWNED_PREDICATE,
+    EXPORT_OWNERSHIP_REQUIRED_COLUMNS,
     EXPORT_SECRET_MIN_BYTES,
     EXPORT_TABLE_PLAN,
     downloadTenantExport,
@@ -17,7 +19,7 @@ import {
     signExportToken,
     verifyExportDownloadToken,
 } from '../src/services/tenant-export';
-import type { ExportManifest, TenantExportDataAccess, TenantExportDeps } from '../src/services/tenant-export';
+import type { ExportManifest, ExportOwnershipPort, TenantExportDataAccess, TenantExportDeps } from '../src/services/tenant-export';
 import { createTenantExportRouter } from '../src/routes/tenant-export';
 import { createAuthenticateToken } from '../src/middleware/auth';
 import { TEST_SECRET, invokeRoute, makeRepository, tokenFor } from './helpers/m2-harness';
@@ -31,6 +33,23 @@ after(() => {
 
 const VALID_SECRET = 't'.repeat(40);
 const NOW = 1_700_000_000_000;
+
+/** Hermetic durable-owner seam for service/route behavior tests. */
+const testOwnership = (): ExportOwnershipPort => ({
+    describe: () => ({
+        ownedPredicate: EXPORT_OWNERSHIP_OWNED_PREDICATE,
+        requiredColumns: [...EXPORT_OWNERSHIP_REQUIRED_COLUMNS],
+    }),
+    claim: async (_executor, input) => ({ epoch: 1, leaseUntilMs: input.leaseUntilMs }),
+    failureStatement: (input) => ({
+        sql: "UPDATE tenant_data_exports SET status = 'failed', error = ? WHERE id = ? AND tenant_id = ? AND status = 'pending'",
+        params: [input.code, input.exportId, input.tenantId],
+    }),
+    releaseStatement: (input) => ({
+        sql: "UPDATE tenant_data_exports SET status = 'failed', error = 'aborted' WHERE id = ? AND tenant_id = ? AND status = 'pending'",
+        params: [input.exportId, input.tenantId],
+    }),
+});
 
 /**
  * A row as the ownership statement returns it: the CASE classification is part
@@ -121,13 +140,20 @@ const makeServiceFixture = (overrides: { secret?: string } = {}): ServiceFixture
                 if (sql.includes("AND status = 'pending' LIMIT 1")) {
                     return (activeJob ? [{ id: activeJob, status: 'pending' }] : []) as unknown as T[];
                 }
-                if (sql.includes('ORDER BY created_at DESC LIMIT 1')) {
+                if (sql.includes('ORDER BY completed_at DESC')) {
                     return (lastCompleted ? [{ created_at: lastCompleted }] : []) as unknown as T[];
                 }
-                const plan = EXPORT_TABLE_PLAN.find((entry) => sql === entry.sql);
+                const plan = EXPORT_TABLE_PLAN.find((entry) =>
+                    sql.includes(`FROM \`${entry.table}\` t`) || sql.includes(`FROM ${entry.table} t`));
                 if (plan) {
                     if (failingTables.has(plan.table)) throw new Error(`table ${plan.table} unavailable`);
-                    return (tableRows[plan.table] ?? []) as unknown as T[];
+                    const rows = tableRows[plan.table] ?? [];
+                    const cursorBound = sql.includes('AND t.id > ?');
+                    const cursor = cursorBound ? String(params[params.length - 2]) : null;
+                    const pageSize = Number(params[params.length - 1]);
+                    return rows
+                        .filter((row) => cursor === null || String(row.id) > cursor)
+                        .slice(0, pageSize) as unknown as T[];
                 }
                 if (sql.includes('FROM tenant_data_exports WHERE id = ?')) {
                     return [] as unknown as T[];
@@ -139,8 +165,8 @@ const makeServiceFixture = (overrides: { secret?: string } = {}): ServiceFixture
                 if (sql.includes("AND status = 'pending' LIMIT 1")) {
                     return (activeJob ? { id: activeJob, status: 'pending' } : null) as T | null;
                 }
-                if (sql.includes("AND status = 'completed'") && sql.includes('ORDER BY created_at DESC LIMIT 1')) {
-                    return (lastCompleted ? { created_at: lastCompleted } : null) as T | null;
+                if (sql.includes("AND status = 'completed'") && sql.includes('ORDER BY completed_at DESC')) {
+                    return (lastCompleted ? { created_at: lastCompleted, completed_at: lastCompleted } : null) as T | null;
                 }
                 return null;
             },
@@ -161,7 +187,9 @@ const makeServiceFixture = (overrides: { secret?: string } = {}): ServiceFixture
         audit: async (input) => { audits.push({ action: input.action, resourceId: input.resourceId, reason: input.reason }); },
         now: () => NOW,
         newId: () => 'exp-fixed',
+        ownership: testOwnership(),
     };
+    deps.db.transaction = async <T>(fn: (tx: TenantExportDataAccess) => Promise<T>): Promise<T> => fn(deps.db);
     return {
         deps,
         storage,
@@ -230,7 +258,7 @@ test('tenant export request inserts a pending job and audits the request', async
     assert.equal(requested.reason, 'Monthly backup');
 });
 
-test('tenant export request recovers a committed pending job when its audit fails', async () => {
+test('tenant export request leaves compensation to the transaction when its audit fails', async () => {
     const fixture = makeServiceFixture();
     fixture.deps.audit = async () => { throw new Error('audit store unavailable'); };
 
@@ -242,13 +270,7 @@ test('tenant export request recovers a committed pending job when its audit fail
     const insert = fixture.executed.find((e) => e.kind === 'execute' && e.sql.includes('INSERT INTO tenant_data_exports'));
     assert.ok(insert, 'the job insert was attempted');
     const recovered = fixture.executed.find((e) => e.kind === 'execute' && e.sql.includes("SET status = 'failed'"));
-    assert.ok(recovered, 'the committed pending row is not left stuck');
-    assert.deepEqual(
-        recovered.params,
-        ['The export request was not audited: audit store unavailable', 'exp-fixed', 'tenant-a'],
-        'the recovery is guarded by the exact job and tenant',
-    );
-    assert.ok(recovered.sql.includes("AND status = 'pending'"));
+    assert.equal(recovered, undefined, 'the failed transaction is rolled back; no wider compensating write is allowed');
     assert.equal(fixture.audits.length, 0, 'no success audit was recorded');
 });
 
@@ -343,7 +365,7 @@ test('processTenantExport writes every table tenant-pinned with a verifiable com
     let totalRows = 0;
     let totalBytes = 0;
     for (const table of manifest.tables) {
-        const body = fixture.storage.get(`tenant-exports/tenant-a/exp-fixed/${table.table}.jsonl`);
+        const body = [...fixture.storage.entries()].find(([key]) => key.endsWith(`/${table.table}.jsonl`))?.[1];
         assert.ok(body !== undefined, `missing storage object for ${table.table}`);
         assert.equal(table.rows, body === '' ? 0 : body.trimEnd().split('\n').length);
         assert.equal(table.bytes, Buffer.byteLength(body as string, 'utf8'));
@@ -359,7 +381,9 @@ test('processTenantExport writes every table tenant-pinned with a verifiable com
 
     const completed = fixture.executed.find((e) => e.kind === 'execute' && e.sql.includes("SET status = 'completed'"));
     assert.ok(completed);
-    assert.ok(completed.sql.includes('WHERE id = ? AND status = \'pending\''));
+    assert.ok(completed.sql.includes("WHERE id = ? AND tenant_id = ? AND status = 'pending'"));
+    assert.ok(completed.sql.includes('export_owner = ? AND owner_epoch = ?'));
+    assert.ok(completed.sql.includes('owner_lease_until_ms > ?'));
     assert.ok(fixture.audits.some((a) => a.action === 'tenant_export.completed'));
 });
 
@@ -374,12 +398,12 @@ test('processTenantExport marks the job failed and audits when a table load fail
 
     const failed = fixture.executed.find((e) => e.kind === 'execute' && e.sql.includes("SET status = 'failed'"));
     assert.ok(failed);
-    assert.ok(failed.params[0] === 'table lectures unavailable');
+    assert.equal(failed.params[0], 'read_failed');
     assert.ok(fixture.audits.some((a) => a.action === 'tenant_export.failed'));
-    assert.ok(!fixture.storage.has('tenant-exports/tenant-a/exp-fixed/manifest.json'), 'no manifest is published on failure');
+    assert.equal([...fixture.storage.keys()].some((key) => key.endsWith('/manifest.json')), false, 'no manifest is published on failure');
 });
 
-test('processTenantExport never publishes an unaudited completion', async () => {
+test('processTenantExport records an owned failure after an unaudited completion rolls back', async () => {
     const fixture = makeServiceFixture();
     fixture.deps.db.queryOne = async <T = Record<string, unknown>>(sql: string): Promise<T | null> => {
         fixture.executed.push({ sql, params: [], kind: 'queryOne' });
@@ -395,9 +419,9 @@ test('processTenantExport never publishes an unaudited completion', async () => 
     const completed = fixture.executed.find((e) => e.kind === 'execute' && e.sql.includes("SET status = 'completed'"));
     assert.ok(completed, 'the guarded completion write was attempted');
     const demoted = fixture.executed.find((e) => e.kind === 'execute' && e.sql.includes("SET status = 'failed'"));
-    assert.ok(demoted, 'the completed row is demoted when its audit cannot be written');
-    assert.ok(demoted.sql.includes("status IN ('pending', 'completed')"));
-    assert.deepEqual(demoted.params.slice(1), ['exp-fixed', 'tenant-a']);
+    assert.ok(demoted, 'the still-owned pending row is settled through the dedicated fenced failure transition');
+    assert.deepEqual(demoted.params, ['audit_failed', 'exp-fixed', 'tenant-a']);
+    assert.ok(fixture.audits.some((a) => a.action === 'tenant_export.failed'));
     assert.ok(!fixture.audits.some((a) => a.action === 'tenant_export.completed'));
 });
 
@@ -488,7 +512,9 @@ const makeOwnershipFixture = (
             ...(options.maxRowsPerTable === undefined ? {} : { maxRowsPerTable: options.maxRowsPerTable }),
             ...(options.maxTotalBytes === undefined ? {} : { maxTotalBytes: options.maxTotalBytes }),
         },
+        ownership: testOwnership(),
     };
+    deps.db.transaction = async <T>(fn: (tx: TenantExportDataAccess) => Promise<T>): Promise<T> => fn(deps.db);
     return {
         deps,
         storage,
@@ -500,7 +526,7 @@ const makeOwnershipFixture = (
 };
 
 const bodyOf = (fixture: OwnershipFixture, table: string): string => {
-    const body = fixture.storage.get(`tenant-exports/tenant-a/exp-fixed/${table}.jsonl`);
+    const body = [...fixture.storage.entries()].find(([key]) => key.endsWith(`/${table}.jsonl`))?.[1];
     assert.ok(body !== undefined, `missing storage object for ${table}`);
     return body as string;
 };
@@ -1262,7 +1288,20 @@ const makeRouteFixture = () => {
         },
         get secret() { return secret; },
         set secret(value: string | undefined) { secret = value; },
+        ownership: testOwnership(),
     };
+    Object.assign(deps.db, {
+        transaction: async <T>(fn: (tx: TenantExportDataAccess) => Promise<T>): Promise<T> => {
+            const snapshot = new Map([...exportJobs.entries()].map(([key, value]) => [key, { ...value }]));
+            try {
+                return await fn(deps.db);
+            } catch (error) {
+                exportJobs.clear();
+                for (const [key, value] of snapshot) exportJobs.set(key, value);
+                throw error;
+            }
+        },
+    });
     // Routes use the system clock unless an injected service clock is available;
     // keep seeded download windows comfortably in the future for this fixture.
     const router: Router = createTenantExportRouter(deps);
@@ -1290,6 +1329,8 @@ const invoke = async (
         if (typeof res.send !== 'function') {
             res.send = (payload: unknown) => res.json(payload);
         }
+        if (typeof res.on !== 'function') res.on = (() => res) as Response['on'];
+        if (typeof res.off !== 'function') res.off = (() => res) as Response['off'];
         return (router as unknown as (r: unknown, s: unknown, n: (error?: unknown) => void) => unknown)(req, res, next);
     }) as unknown as Router;
     return invokeRoute(sendCapableRouter, request as never);
@@ -1370,6 +1411,11 @@ test('tenant export route: database failures surface as 500', async () => {
             query: async () => { throw new Error('database unavailable'); },
             queryOne: async () => { throw new Error('database unavailable'); },
             execute: async () => ({ affectedRows: 1 }),
+            transaction: async (fn) => fn({
+                query: async () => { throw new Error('database unavailable'); },
+                queryOne: async () => { throw new Error('database unavailable'); },
+                execute: async () => ({ affectedRows: 1 }),
+            }),
         },
         authenticate: createAuthenticateToken(makeRepository({
             'owner-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' },
@@ -1382,6 +1428,7 @@ test('tenant export route: database failures surface as 500', async () => {
         tenantOwnerTenantId: async () => true,
         storage: { write: async () => undefined, read: async () => '' },
         secret: VALID_SECRET,
+        ownership: testOwnership(),
     });
     const response = await invoke(fixture.router, { method: 'POST', url: '/', token: OWNER, body: {} });
     assert.equal(response.statusCode, 500);
@@ -1470,7 +1517,7 @@ test('tenant export route: a token for another export of the same tenant cannot 
     assert.ok(!fixture.audits.includes('tenant_export.downloaded'));
 });
 
-test('tenant export route: an audit failure does not leave a stuck pending job or a false success', async () => {
+test('tenant export route: an audit failure rolls back the request without a false success', async () => {
     const fixture = makeRouteFixture();
     const baseExecute = fixture.db.execute;
     fixture.db.execute = async (sql: string, params: unknown[] = []) => {
@@ -1481,9 +1528,8 @@ test('tenant export route: an audit failure does not leave a stuck pending job o
     const response = await invoke(fixture.router, { method: 'POST', url: '/', token: OWNER, body: {} });
     assert.equal(response.statusCode, 500);
     const jobs = [...fixture.jobs.values()].filter((job) => job.tenant_id === 'tenant-a');
-    const recovered = jobs.filter((job) => job.status === 'failed');
-    assert.equal(recovered.length, 1, 'the un-audited request is not left pending');
-    assert.match(String(recovered[0].error), /not audited/);
+    assert.equal(jobs.length, 1, 'only the pre-existing completed export remains after rollback');
+    assert.equal(jobs[0].status, 'completed');
     assert.ok(!fixture.audits.includes('tenant_export.requested'));
 });
 

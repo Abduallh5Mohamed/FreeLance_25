@@ -1057,7 +1057,7 @@ export const createLiveRuntime = (deps: LiveRuntimeDeps): LiveRuntime => {
         // a no-op meter that would fake a measurement. A malformed object is
         // treated exactly like an absent one — composing it could only produce a
         // permanent deferred row.
-        meterStorage: meterPortUsable ? deps.meterStorage : undefined,
+        meterStorage: meterPortUsable ? meterCandidate as RecordingStorageMeterPort : undefined,
         verifyCallbackSignature: deps.verifyRecordingCallbackSignature ?? DENY_ALL_SIGNATURES,
         now,
         idFactory,

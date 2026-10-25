@@ -1021,11 +1021,11 @@ export default createAttendanceRouter({
                     },
                     execute: async (sql: string, params?: unknown[]) => {
                         const [result] = await connection.execute(sql, params as never);
-                        const header = result as { insertId?: number; affectedRows?: number };
+                        const header = result as Awaited<ReturnType<DbModule['execute']>>;
                         if (typeof header.affectedRows !== 'number' || !Number.isSafeInteger(header.affectedRows)) {
                             throw new Error('attendance transaction execute did not report a usable affected-row count');
                         }
-                        return { insertId: header.insertId, affectedRows: header.affectedRows };
+                        return header;
                     },
                 };
                 return fn(tx);

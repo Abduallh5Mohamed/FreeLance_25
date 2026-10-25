@@ -35,6 +35,7 @@ import {
 
 const TENANT = 'tenant-a';
 const OTHER_TENANT = 'tenant-b';
+const HOST = 'user-host';
 const ENDED_AT = 1_000_000;
 
 interface Harness {
@@ -61,6 +62,7 @@ function harness(options: {
         endedAtMs: ENDED_AT,
         provider: 'acme',
         providerRoomId: 'room-1',
+        hostUserId: HOST,
     });
     const library = createInMemoryRecordingLibrary((() => {
         let n = 0;
@@ -151,6 +153,7 @@ test('a verified recording is ingested unpublished with a deny policy and metere
         metering: 'recorded',
         library: 'created',
         visibility: 'unpublished',
+        storageAccounted: true,
     });
 
     assert.equal(h.library.assets.length, 1);
@@ -166,12 +169,11 @@ test('a verified recording is ingested unpublished with a deny policy and metere
     assert.equal(h.meterCalls.length, 1);
     assert.deepEqual(h.meterCalls[0], {
         tenantId: TENANT,
-        // Provider-scoped and legal for the meter's ASSET_ID_RE (no colon):
-        // `rec-<provider>-<sha256(provider NUL recording)[0..32]>`.
-        assetId: 'rec-acme-50508b5e916f4239d7ce79900c6a1659',
+        // The real promoted library asset is charged, never a synthetic id.
+        assetId: 'asset-1',
         bytes: 1_048_576,
-        // Provider-qualified so two providers' `evt-rec-1` cannot share a key.
-        operationId: 'acme:evt-rec-1',
+        // Stable recording-stage identity; callback event ids may legitimately differ.
+        operationId: 'live:storage:tenant-a:acme:rec-1',
     });
 });
 
@@ -200,18 +202,13 @@ test('a metering failure is deferred and never blocks the library write', async 
     const h = harness();
     h.setMeter('error');
     const result = await h.service.ingest(callback());
-    assert.equal(result.status, 'ingested');
-    if (result.status !== 'ingested') throw new Error('expected ingest');
-    assert.equal(result.metering, 'deferred');
-    assert.equal(result.library, 'created');
+    assert.deepEqual(result, { status: 'deferred', reason: 'metering-error' });
     assert.ok(h.store.audits.some((entry) => entry.action === 'live.recording.metering_deferred'));
 
     const thrown = harness();
     thrown.setMeter('throw');
     const second = await thrown.service.ingest(callback());
-    assert.equal(second.status, 'ingested');
-    if (second.status !== 'ingested') throw new Error('expected ingest');
-    assert.equal(second.metering, 'deferred');
+    assert.deepEqual(second, { status: 'deferred', reason: 'metering-error' });
 });
 
 test('an unconfigured meter or library is reported, never faked', async () => {
@@ -226,9 +223,7 @@ test('an unconfigured meter or library is reported, never faked', async () => {
 
     const noMeter = harness({ meter: false });
     const second = await noMeter.service.ingest(callback());
-    assert.equal(second.status, 'ingested');
-    if (second.status !== 'ingested') throw new Error('expected ingest');
-    assert.equal(second.metering, 'unconfigured');
+    assert.deepEqual(second, { status: 'deferred', reason: 'metering-unconfigured' });
     assert.ok(noMeter.store.audits.some((entry) => entry.action === 'live.recording.metering_unconfigured'));
 });
 
@@ -277,6 +272,7 @@ test('a failed library leaves a repairable pending marker that a replay finishes
         endedAtMs: ENDED_AT,
         provider: 'acme',
         providerRoomId: 'room-1',
+        hostUserId: HOST,
     });
     // A library that is down for the first delivery and healthy afterwards.
     const assets: string[] = [];
@@ -285,7 +281,7 @@ test('a failed library leaves a repairable pending marker that a replay finishes
         createRecordingAsset: async () => {
             if (!healthy) throw new Error('library unavailable');
             assets.push('asset-1');
-            return { created: true, assetId: 'asset-1' };
+            return { created: true, assetId: 'asset-1', tenantId: TENANT, ownerUserId: HOST };
         },
     };
     const meterCalls: Array<{ operationId: unknown }> = [];
@@ -332,11 +328,11 @@ test('a failed library leaves a repairable pending marker that a replay finishes
     assert.equal(assets.length, 1);
     assert.equal(store.rows.length, 1, 'the replay reuses the row instead of inserting a second one');
     assert.equal(store.rows[0].outcome, 'ingested');
-    assert.equal(meterCalls.length, 2);
+    assert.equal(meterCalls.length, 1);
     assert.deepEqual(
         meterCalls.map((call) => call.operationId),
-        ['acme:evt-rec-1', 'acme:evt-rec-1'],
-        'the meter sees the same provider-qualified operation id, so the retry is absorbed there too',
+        ['live:storage:tenant-a:acme:rec-1'],
+        'only the successful promotion reaches the meter with the stable recording-stage operation id',
     );
 
     // Once the marker is settled, a third delivery is a real duplicate.

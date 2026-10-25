@@ -2196,9 +2196,10 @@ const runTenantExport = async (
             // state may be recorded for it — see the catch below.
             throw new ExportOwnershipLostError();
         }
+        const claimedGrant = grant;
         // The expiry this attempt currently holds: the value the claim
         // installed, moved only by a renewal that proved a live lease.
-        let leaseUntilMs = grant.leaseUntilMs;
+        let leaseUntilMs = claimedGrant.leaseUntilMs;
         // Resolved INSIDE the guarded region on purpose: an invalid cap must
         // settle the job as failed. Throwing before the transition would leave
         // the row pending and block the tenant behind the one-active rule.
@@ -2220,7 +2221,7 @@ const runTenantExport = async (
                 exportId,
                 tenantId,
                 owner,
-                epoch: grant.epoch,
+                epoch: claimedGrant.epoch,
                 now,
                 leaseUntilMs,
             });
@@ -2263,7 +2264,7 @@ const runTenantExport = async (
             exportId,
             tenantId,
             owner,
-            epoch: grant.epoch,
+            epoch: claimedGrant.epoch,
             now,
             leaseUntilMs,
         });
@@ -2321,7 +2322,7 @@ const runTenantExport = async (
             exportId,
             tenantId,
             owner,
-            epoch: grant.epoch,
+            epoch: claimedGrant.epoch,
             now,
             leaseUntilMs,
         });
@@ -2372,7 +2373,7 @@ const runTenantExport = async (
                         exportId,
                         tenantId,
                         owner,
-                        grant.epoch,
+                        claimedGrant.epoch,
                         completeNowMs,
                     ],
                 );

@@ -1917,6 +1917,7 @@ export function createInMemoryRecordingIngestStore(): InMemoryRecordingIngestSto
                 title: ref.title,
                 state: ref.state,
                 endedAtMs: ref.endedAtMs,
+                hostUserId: ref.hostUserId ?? null,
             });
             roomIndex.set(`${ref.provider}\u0000${ref.providerRoomId}`, ref.id);
         },

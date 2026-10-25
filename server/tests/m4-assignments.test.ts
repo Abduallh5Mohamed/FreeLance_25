@@ -1251,7 +1251,7 @@ test('cancel: an unprovable version or a key-only adapter deletes nothing and re
     assert.deepEqual(unboundRun.body, { id: 'sub-1', status: 'revoked', cancelled: true });
     assert.deepEqual(unbound.destroyed, [], 'an absent object is not deleted');
     assert.deepEqual(unbound.mutableRemovals, [], 'nothing is deleted when the version cannot be proven');
-    assert.ok(unboundRun.errors.some((line) => line.includes('Assignment rejection cleanup pending')),
+    assert.ok(unboundRun.errors.some((line) => line.includes('Assignment cancel cleanup pending')),
         'the pending cleanup is reported to the operator');
 
     // A store that can only delete by key: the production MinIO adapter's shape.

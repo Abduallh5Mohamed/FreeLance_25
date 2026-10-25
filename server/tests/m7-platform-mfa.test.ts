@@ -44,8 +44,10 @@ after(() => {
 });
 
 const TEST_KEY = Buffer.alloc(32, 7);
-const ADMIN_A = tokenFor({ id: 'admin-a', role: 'admin', tv: 0 });
-const ADMIN_B = tokenFor({ id: 'admin-b', role: 'admin', tv: 0 });
+const ADMIN_SESSION_A = '11111111-1111-4111-8111-111111111111';
+const ADMIN_SESSION_B = '22222222-2222-4222-8222-222222222222';
+const ADMIN_A = tokenFor({ id: 'admin-a', role: 'admin', tv: 0, sid: ADMIN_SESSION_A });
+const ADMIN_B = tokenFor({ id: 'admin-b', role: 'admin', tv: 0, sid: ADMIN_SESSION_B });
 const OWNER_A = tokenFor({ id: 'owner-a', role: 'instructor', tv: 0, tenant_id: 'tenant-a' });
 const SECRET32 = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
 const FIXED_NOW = 1_700_000_000_000;
@@ -238,9 +240,9 @@ const makeStore = (): StoreFixture => {
             if (row) row.stepup_epoch += 1;
             return rows.get(String(userId))?.stepup_epoch ?? 1;
         },
-        disable: async (userId) => {
+        disable: async (userId, expectedEpoch) => {
             const row = rows.get(String(userId));
-            if (!row || (row.status !== 'active' && row.status !== 'pending')) return 0;
+            if (!row || (row.status !== 'active' && row.status !== 'pending') || row.stepup_epoch !== expectedEpoch) return 0;
             row.status = 'disabled';
             row.sealed_secret = null;
             row.last_used_step = 0;
@@ -280,6 +282,32 @@ const buildRouter = (store: PlatformMfaStore | undefined, options: BuildOptions 
     const audits: AuditEntry[] = [];
     const state = { failAudit: false };
     let rngState = 0;
+    const repository = makeRepository({
+        'admin-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'admin' },
+        'admin-b': { is_active: 1, token_version: 0, suspension_active: 0, role: 'admin' },
+        'owner-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' },
+    });
+    repository.findLoginSession = async (sessionId, userId) => {
+        const expected = userId === 'admin-a' ? ADMIN_SESSION_A : userId === 'admin-b' ? ADMIN_SESSION_B : null;
+        return expected === sessionId ? {
+            id: sessionId,
+            userId,
+            identitySource: 'users',
+            tokenVersion: 0,
+            issuedAtMs: 1,
+            expiresAtMs: Number.MAX_SAFE_INTEGER,
+            revokedAtMs: null,
+        } : null;
+    };
+    const recordAudit = options.audit ?? (async (input: SealedAuditRecordInput) => {
+        if (state.failAudit) throw new Error('audit sink down');
+        audits.push({
+            action: input.action,
+            actorUserId: input.actorUserId,
+            resourceId: input.resourceId,
+            reason: input.reason ?? null,
+        });
+    });
     const router: Router = createPlatformMfaRouter({
         db: options.db ?? {
             query: async (): Promise<unknown[]> => [],
@@ -287,11 +315,7 @@ const buildRouter = (store: PlatformMfaStore | undefined, options: BuildOptions 
             execute: async (): Promise<{ affectedRows: number }> => ({ affectedRows: 1 }),
         },
         store,
-        authenticate: options.authenticate ?? createAuthenticateToken(makeRepository({
-            'admin-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'admin' },
-            'admin-b': { is_active: 1, token_version: 0, suspension_active: 0, role: 'admin' },
-            'owner-a': { is_active: 1, token_version: 0, suspension_active: 0, role: 'instructor' },
-        })),
+        authenticate: options.authenticate ?? createAuthenticateToken(repository),
         requirePlatformPermission: (permission) => async (req, res, next) => {
             const user = (req as { user?: { id?: string } }).user;
             if (!user) {
@@ -304,14 +328,10 @@ const buildRouter = (store: PlatformMfaStore | undefined, options: BuildOptions 
             if (allowed) return next();
             res.status(403).json({ error: 'Forbidden' });
         },
-        recordAudit: options.audit ?? (async (input) => {
-            if (state.failAudit) throw new Error('audit sink down');
-            audits.push({
-                action: input.action,
-                actorUserId: input.actorUserId,
-                resourceId: input.resourceId,
-                reason: input.reason ?? null,
-            });
+        recordAudit,
+        transaction: store == null ? undefined : async (fn) => fn({
+            store,
+            recordAudit: (input) => recordAudit(input),
         }),
         sealKey: options.sealKey ?? (() => TEST_KEY),
         now: () => FIXED_NOW,
@@ -533,6 +553,7 @@ test('mfa verify: a correct totp code issues a step-up token; the used step cann
     const verified = verifyStepUpToken(token, {
         expectedUserId: 'admin-a', currentEpoch: 1, key: TEST_KEY,
         nowMs: FIXED_NOW, maxAgeSeconds: DEFAULT_STEPUP_MAX_AGE_SECONDS,
+        expectedPurpose: STEPUP_PURPOSE, expectedSessionId: ADMIN_SESSION_A,
     });
     assert.equal(verified.ok, true);
     const replay = await invoke(router, {
@@ -616,7 +637,7 @@ test('sql mfa store: re-enroll and disable purge stored recovery codes', async (
     const db = makeFakeDataAccess(() => []);
     const store = createSqlPlatformMfaStore(db);
     await store.upsertPendingSecret('admin-a', 'sealed-secret');
-    await store.disable('admin-a');
+    await store.disable('admin-a', 1);
     const executed = db.executed;
     const purgeIndexes = executed
         .map((statement, index) => statement.sql.includes('DELETE FROM platform_mfa_recovery_codes') ? index : -1)
@@ -647,7 +668,7 @@ test('mfa lifecycle: disable -> re-enroll -> old recovery code is rejected, new 
     assert.equal((fixture.recoveryHashes.get('admin-a') ?? []).length, 10);
 
     // 2) disable with a fresh step-up token purges those codes
-    const disableToken = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW);
+    const disableToken = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW, { sessionId: ADMIN_SESSION_A });
     const disable = await invoke(router, {
         method: 'POST', url: '/disable', token: ADMIN_A,
         body: { reason: 'offboarding request validated' },
@@ -718,7 +739,7 @@ test('mfa disable: requires the platform permission and a fresh step-up token', 
 test('mfa disable: with a valid step-up token the row is disabled, audited, and old tokens die', async () => {
     const fixture = makeStore();
     seedRow(fixture.rows, 'admin-a', { secret: SECRET32, epoch: 1 });
-    const token = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW);
+    const token = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW, { sessionId: ADMIN_SESSION_A });
     const { router, audits } = buildRouter(fixture.store);
     const response = await invoke(router, {
         method: 'POST', url: '/disable', token: ADMIN_A,
@@ -740,7 +761,7 @@ test('mfa disable: with a valid step-up token the row is disabled, audited, and 
 test('mfa disable: a foreign step-up token is rejected without mutation', async () => {
     const fixture = makeStore();
     seedRow(fixture.rows, 'admin-a', { secret: SECRET32, epoch: 1 });
-    const foreign = signStepUpToken('admin-b', 1, TEST_KEY, FIXED_NOW);
+    const foreign = signStepUpToken('admin-b', 1, TEST_KEY, FIXED_NOW, { sessionId: ADMIN_SESSION_B });
     const { router } = buildRouter(fixture.store);
     const response = await invoke(router, {
         method: 'POST', url: '/disable', token: ADMIN_A,
@@ -751,16 +772,17 @@ test('mfa disable: a foreign step-up token is rejected without mutation', async 
     assert.equal(fixture.rows.get('admin-a')?.status, 'active');
 });
 
-test('mfa disable: an unknown user reaches 404 with no row created', async () => {
+test('mfa disable: an unknown enrollment fails the step-up guard without creating a row', async () => {
     const fixture = makeStore();
-    const token = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW);
+    const token = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW, { sessionId: ADMIN_SESSION_A });
     const { router } = buildRouter(fixture.store);
     const response = await invoke(router, {
         method: 'POST', url: '/disable', token: ADMIN_A,
         body: { reason: 'no enrollment anyway' },
         headers: { 'x-mfa-step-up': token },
     });
-    assert.equal(response.statusCode, 404);
+    assert.equal(response.statusCode, 403);
+    assert.equal((response.body as { code?: string }).code, 'MFA_ENROLLMENT_REQUIRED');
     assert.equal(fixture.rows.size, 0);
 });
 
@@ -1006,9 +1028,9 @@ const sessionAuth = (sessionId: string): RequestHandler => (req, _res, next) => 
 test('mfa disable: a step-up token from another session is rejected', async () => {
     const fixture = makeStore();
     seedRow(fixture.rows, 'admin-a', { secret: SECRET32, epoch: 1 });
-    const foreignSession = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW, { sessionId: 'sess-2' });
-    const bound = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW, { sessionId: 'sess-1' });
-    const { router } = buildRouter(fixture.store, { authenticate: sessionAuth('sess-1') });
+    const foreignSession = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW, { sessionId: ADMIN_SESSION_B });
+    const bound = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW, { sessionId: ADMIN_SESSION_A });
+    const { router } = buildRouter(fixture.store, { authenticate: sessionAuth(ADMIN_SESSION_A) });
     const denied = await invoke(router, {
         method: 'POST', url: '/disable', token: ADMIN_A,
         body: { reason: 'session replay attempt' },
@@ -1045,7 +1067,7 @@ test('mfa disable: a failed audit rolls back the disabled row (production transa
         db,
         audit: async () => { throw new Error('audit sink down'); },
     });
-    const token = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW);
+    const token = signStepUpToken('admin-a', 1, TEST_KEY, FIXED_NOW, { sessionId: ADMIN_SESSION_A });
     const response = await invoke(router, {
         method: 'POST', url: '/disable', token: ADMIN_A,
         body: { reason: 'audit failure on disable' },

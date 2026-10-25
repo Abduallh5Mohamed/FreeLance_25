@@ -764,7 +764,7 @@ test('reservation identifiers follow the CHAR(36) contract bound', async () => {
     assert.equal(store.reservations.size, 0);
 });
 
-test('compensation is an append-only reversal journal, not an edit', async () => {
+test('reservation-managed journals cannot be bypassed by a generic reversal', async () => {
     const store = new TestReservationStore();
     const available = seed(store, TENANT_A, 'merchant_available', 5000n);
     const reserved = seed(store, TENANT_A, 'merchant_reserved', 0n);
@@ -783,17 +783,19 @@ test('compensation is an append-only reversal journal, not an edit', async () =>
     });
     const consumedSnapshot = moneySafeJson(consumed.journal);
 
-    const reversal = await reverseJournal(store, {
-        tenantId: TENANT_A,
-        journalId: consumed.journal.id,
-        idempotencyKey: 'compensation-reversal-1',
-        reason: 'operator compensation',
-    });
+    await assert.rejects(
+        reverseJournal(store, {
+            tenantId: TENANT_A,
+            journalId: consumed.journal.id,
+            idempotencyKey: 'compensation-reversal-1',
+            reason: 'operator compensation',
+        }),
+        (error: unknown) => error instanceof Error
+            && (error as Error & { code?: string }).code === 'reservation_managed_journal',
+    );
 
-    assert.equal(reversal.journal.journalType, 'reversal');
-    assert.equal(reversal.journal.reversalOfJournalId, consumed.journal.id);
-    assert.equal(balanceOf(store, reserved), 2000n);
-    assert.equal(balanceOf(store, receivable), 3000n);
+    assert.equal(balanceOf(store, reserved), 0n);
+    assert.equal(balanceOf(store, receivable), 1000n);
     assert.equal(moneySafeJson(store.journals.get(consumed.journal.id)), consumedSnapshot);
-    assert.equal(store.journals.size, 3);
+    assert.equal(store.journals.size, 2);
 });
