@@ -1,0 +1,20 @@
+const assert = require('node:assert/strict');
+const path = require('node:path');
+const h = require('../server/tests/helpers/m2-course-lessons-harness.ts');
+const isolation = h.createIsolation();
+const modules = h.loadAppModules(isolation,path.resolve(__dirname,'../server/src/routes/tenant-self'));
+process.env.JWT_SECRET = h.TEST_SECRET;
+(async () => {
+  const state = h.makeState();
+  const target = state.lessons.find(l => l.id === h.LESSON_2);
+  const prerequisite = state.lessons.find(l => l.id === h.LESSON_1);
+  prerequisite.display_order = 1;
+  target.display_order = 2;
+  target.prerequisite_lesson_id = h.LESSON_1;
+  const harness = h.buildHarness(state,modules);
+  const res = await h.runChain(harness.chain,h.updateReq(h.LESSON_2,{ display_order: 0 }));
+  assert.equal(res.status,200);
+  assert.equal(res.body.lesson.prerequisite_lesson_id,h.LESSON_1);
+  assert.ok(res.body.lesson.display_order < prerequisite.display_order);
+  console.log('CONFIRMED: position-only PATCH moved target before its retained prerequisite and committed successfully. Fixture-backed production handler; no DB/network.');
+})().catch(error => { console.error(error); process.exitCode=1; });

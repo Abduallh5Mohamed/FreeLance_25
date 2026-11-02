@@ -3,8 +3,10 @@
 Purpose: give a new agent enough verified orientation to start useful work in a
 few minutes without loading the repository's large historical documentation.
 
-Last source audit: **2026-10-25**. Treat status statements as a checkpoint and
-confirm any area you are about to change against current source and `git diff`.
+Last source audit: **2026-10-26** (scoped source/build/tests; no live acceptance).
+Treat status statements as a checkpoint and confirm any area you are about to
+change against current source and tests. The current user instruction forbids
+Git and GitHub use, including read-only commands; inspect files directly.
 
 ## Sixty-second overview
 
@@ -30,13 +32,16 @@ confirm any area you are about to change against current source and `git diff`.
 | Run, build, test or diagnose local startup | [DEVELOPMENT.md](DEVELOPMENT.md) |
 | Change auth, tenant data, SQL, uploads, money or providers | [ENGINEERING_RULES.md](ENGINEERING_RULES.md) |
 | Plan or hand off a bounded implementation | [TASK_PLAYBOOK.md](TASK_PLAYBOOK.md) |
+| Current audit findings and plan gaps | [AUDIT-2026-10-26.md](AUDIT-2026-10-26.md) |
+| Copy a bounded corrective task to WorkBuddy | [WORKBUDDY-NEXT.md](WORKBUDDY-NEXT.md) |
+| Independent review of WorkBuddy's five batches | [SUPERVISOR-REVIEW-2026-10-26.md](SUPERVISOR-REVIEW-2026-10-26.md) |
+| Copy the required follow-up corrections | [WORKBUDDY-CORRECTIONS-2026-10-26.md](WORKBUDDY-CORRECTIONS-2026-10-26.md) |
+| Current OpenCode delegation and 15-minute supervision | [OPENCODE-SUPERVISION-2026-10-26.md](OPENCODE-SUPERVISION-2026-10-26.md) |
 
 ## Fast task-start checklist
 
 ```powershell
-git status --short
-git branch --show-current
-git diff --stat
+rg --files src server/src server/tests
 rg -n "<symbol-or-route>" src server/src server/tests
 ```
 

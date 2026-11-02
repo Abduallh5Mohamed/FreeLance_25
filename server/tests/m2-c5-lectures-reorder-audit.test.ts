@@ -1,3 +1,4 @@
+import './helpers/isolated-io-guard';
 import assert from 'node:assert/strict';
 import test, { before, after } from 'node:test';
 import { quietConsole, restoreConsole } from './helpers/quiet-console';
@@ -100,11 +101,7 @@ const buildLectureRouter = (
     responder: (sql: string, params: unknown[]) => unknown[] | null,
     branchAccess = tenantScopeBranchDeps((_type, _id) => 'tenant-a'),
 ) => {
-    const db = makeFakeDataAccess((sql, params) => {
-        const rows = responder(sql, params);
-        if (process.env.M2_DEBUG) console.error('[reorder-sql]', sql.replace(/\s+/g, ' ').trim(), JSON.stringify(params));
-        return rows;
-    });
+    const db = makeFakeDataAccess((sql, params) => responder(sql, params));
     const repository = lectureReorderFixture();
     const deps = {
         db,
@@ -227,6 +224,10 @@ test('reorder: every lecture is branch-authorized before any order write', async
 
 test('archived lecture cannot be republished or changed through PUT /:id', async () => {
     const { router, executed } = buildLectureRouter((sql) => {
+        // The early guard read that decides 404/410 before any transaction.
+        if (sql.includes('SELECT l.id, l.archived_at')) {
+            return [{ id: 'lecture-archived', archived_at: '2026-10-01 00:00:00' }];
+        }
         if (sql.includes('SELECT l.id, l.instructor_id, l.video_url, l.archived_at')) {
             return [{ id: 'lecture-archived', instructor_id: 'instructor-a', video_url: 'video://old', archived_at: '2026-10-01 00:00:00' }];
         }
@@ -258,6 +259,10 @@ test('lecture archive and its audit are issued through the same transaction data
 
 test('lecture update and its audit are issued through the same transaction data seam', async () => {
     const { router, executed } = buildLectureRouter((sql) => {
+        // The early guard read that decides 404/410 before any transaction.
+        if (sql.includes('SELECT l.id, l.archived_at')) {
+            return [{ id: 'lecture-live', archived_at: null }];
+        }
         if (sql.includes('SELECT l.id, l.instructor_id, l.video_url, l.archived_at')) {
             return [{ id: 'lecture-live', instructor_id: 'instructor-a', video_url: 'video://old', archived_at: null }];
         }

@@ -11,6 +11,7 @@ import {
     buildStudentAnnouncementQuery,
     buildStudentSearchQuery,
     countSearchTokens,
+    escapeLikeToken,
     matchScore,
     normalizeSearchText,
     paginateHits,
@@ -211,18 +212,33 @@ test('buildStudentAnnouncementQuery gates on published status and the viewer aud
 });
 
 test('LIKE metacharacters and hostile input stay escaped bound parameters', () => {
+    // The escape helper is exercised directly on raw metacharacters, so the
+    // literal-match contract is proven independently of query normalization.
+    assert.equal(escapeLikeToken('%_!'), '!%!_!!');
+    assert.equal(escapeLikeToken('50%_off!'), '50!%!_off!!');
+
     const wildcard = staffQuery('courses', null, '50%_off!');
     assert.deepEqual(wildcard.params, ['tenant-a', '%50!%!_off!!%']);
 
-    const hostile = "'; DROP TABLE courses; --";
+    // The builders accept only a query already folded by
+    // normalizeSearchText, so hostile input is normalized before binding.
+    const hostile = normalizeSearchText("'; DROP TABLE courses; --");
     const injected = staffQuery('courses', null, hostile);
     assert.ok(!injected.sql.includes('DROP TABLE'));
+    assert.ok(!injected.sql.includes(hostile), 'the query text is never interpolated into SQL');
     assert.deepEqual(
         injected.params,
-        ['tenant-a', ...hostile.split(' ').map((token) => `%${token}%`)],
+        ['tenant-a', ...hostile.split(' ').map((token) => `%${escapeLikeToken(token)}%`)],
         'the query is bound token by token, never interpolated',
     );
     assert.equal((injected.sql.match(/\?/g) ?? []).length, injected.params.length);
+
+    // A direct caller that skips normalization is refused instead of building
+    // a prefilter that disagrees with the JavaScript matcher.
+    assert.throws(
+        () => staffQuery('courses', null, "'; DROP TABLE courses; --"),
+        /already folded by normalizeSearchText/,
+    );
 });
 
 test('a query that normalizes to nothing loads no candidates', () => {
@@ -840,7 +856,12 @@ test('W1: the production student resolver returns users.id, not the students.id 
     const viewerStatement = dataAccess.executed.find((statement) => statement.sql.includes('FROM students s'));
     assert.ok(viewerStatement, 'the real resolver must read the enrollment row');
     assert.deepEqual(viewerStatement.params, [STUDENT_USERS_ID, STUDENT_TENANT]);
-    assert.ok(viewerStatement.sql.includes('SELECT s.user_id'), 'the resolver projects users.id');
+    assert.match(
+        viewerStatement.sql,
+        /SELECT DISTINCT s\.user_id,\s*s\.tenant_id,\s*grp\.branch_id,\s*grp\.branch_scope/,
+        'the resolver projects the DISTINCT users identity and branch scope',
+    );
+    assert.ok(!/\bSELECT\s+s\.id\b/i.test(viewerStatement.sql), 'the students row id is never projected as identity');
 
     // Drive the real resolver + real service through the real route.
     const router = makeStudentSeamRouter(resolveStudentViewer, dataAccess);
@@ -1045,7 +1066,7 @@ test('W1: unpublished and inactive content is denied for the student at the prod
     assert.equal(lessonBody.total, 1);
 });
 
-test('W1: branch restriction denies other-branch and draft announcements and ignores a forged branch', async () => {
+test('W1: branch restriction denies other-branch and draft announcements and rejects a forged branch selector', async () => {
     const announcements: SeamCatalogRow[] = [
         { entity_id: 'a-1', title: 'Math tenant-wide announcement', tenant_id: STUDENT_TENANT, audience: 'tenant', status: 'published' },
         { entity_id: 'a-2', title: 'Math own-branch announcement', tenant_id: STUDENT_TENANT, audience: 'branch', branch_id: 'br-1', status: 'published' },
@@ -1069,21 +1090,28 @@ test('W1: branch restriction denies other-branch and draft announcements and ign
         'only the tenant-wide row and the row of the viewer own branch survive',
     );
     assert.equal(body.total, 2);
+    // The bound branch is the one proven through the viewer's group, never a
+    // client selector.
+    const boundStatement = dataAccess.executed.find((statement) => statement.sql.includes('FROM announcements a'));
+    assert.ok(boundStatement);
+    assert.deepEqual(boundStatement.params, [STUDENT_TENANT, 'br-1', '%math%']);
 
-    // A forged branch_id in the query string is ignored: the bound branch is
-    // the one proven through the viewer's group.
+    // A client branch_id is not a selector for student search: the route
+    // refuses it with 400 before resolving the viewer or reading candidates.
+    const statementsBeforeForged = dataAccess.executed.length;
     const forged = await invoke(router, {
         method: 'GET',
         url: '/?q=math&kind=announcements&branch_id=br-9',
         token: STUDENT_A,
         query: { q: 'math', kind: 'announcements', branch_id: 'br-9' },
     });
-    assert.equal(forged.statusCode, 200);
-    const forgedStatement = dataAccess.executed.filter((statement) => statement.sql.includes('FROM announcements a')).pop();
-    assert.ok(forgedStatement);
-    assert.deepEqual(forgedStatement.params, [STUDENT_TENANT, 'br-1', '%math%']);
-    const forgedBody = forged.body as { results: Array<{ id: string }> };
-    assert.deepEqual(forgedBody.results.map((hit) => hit.id).sort(), ['a-1', 'a-2']);
+    assert.equal(forged.statusCode, 400);
+    assert.deepEqual(forged.body, { error: 'branch_id is not a client selector for student search' });
+    assert.equal(
+        dataAccess.executed.length,
+        statementsBeforeForged,
+        'a forged branch selector is refused before any candidate read',
+    );
 
     // A viewer whose group proves no branch only receives tenant-wide rows.
     const noBranch = makeStudentSeamDataAccess([{ ...STUDENT_VIEWER_ROW, branch_scope: 'tenant' }], STUDENT_CATALOG, announcements);

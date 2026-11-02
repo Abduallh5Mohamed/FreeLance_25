@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -10,7 +10,8 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { DollarSign, Plus, CreditCard, AlertTriangle, CheckCircle, Search, Upload, X, Eye, Check, XCircle, User, Calendar, Edit2, Trash2, MessageCircle } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/components/ui/use-toast";
-import { getGrades, getGroups, createFee, getFees, getStudentByPhone, getStudentById, getStudents, getSubscriptionRequests, approveSubscriptionRequest, rejectSubscriptionRequest, deleteFee, cleanupApprovedRequestsByMonth } from "@/lib/api-http";
+import { getGrades, getGroups, createFee, updateFee, getFees, getStudentByPhone, getStudentById, getStudents, getSubscriptionRequests, approveSubscriptionRequest, rejectSubscriptionRequest, deleteFee, cleanupApprovedRequestsByMonth } from "@/lib/api-http";
+import { runPaymentFlow } from "@/features/fees/payment-workflow";
 
 const Fees = () => {
   const [fees, setFees] = useState([]);
@@ -48,6 +49,11 @@ const Fees = () => {
     notes: ""
   });
   const [isSearchingStudent, setIsSearchingStudent] = useState(false);
+  // Single-write latch for the payment form: a duplicate submit must never
+  // send a second write while one is on the wire. The ref is the synchronous
+  // guard; the state drives the button's disabled appearance.
+  const paymentLatchRef = useRef(false);
+  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
 
   const [paymentImage, setPaymentImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
@@ -63,7 +69,11 @@ const Fees = () => {
 
   useEffect(() => {
     loadSubscriptionRequests();
-    loadFeesFromDB();
+    // The initial list load is best-effort and must not become an unhandled
+    // rejection; the loader already logs. The payment refresh path DOES observe
+    // the rejection (see loadFeesFromDB and runPaymentFlow), so a confirmed
+    // save with a failed refresh is reported as its own distinct outcome.
+    loadFeesFromDB().catch(() => undefined);
   }, []);
 
   const loadSubscriptionRequests = async () => {
@@ -100,6 +110,10 @@ const Fees = () => {
       setOfflineFees((offlineFeesData || []).map(mapFeeData));
     } catch (error) {
       console.error('Error loading fees:', error);
+      // Propagate so the payment flow can distinguish a confirmed write from
+      // a failed list refresh. Other callers either catch this (approve/delete
+      // handlers) or attach a handler (initial effect); see above.
+      throw error;
     }
   };
 
@@ -256,18 +270,6 @@ const Fees = () => {
   const handleApproveRequest = async (request) => {
     try {
       await approveSubscriptionRequest(request.id);
-
-      // Reload data
-      await loadSubscriptionRequests();
-      await loadFeesFromDB();
-
-      toast({
-        title: "✅ تم قبول الطلب",
-        description: `تم قبول طلب الطالب ${request.student_name} وحفظه في قاعدة البيانات`,
-      });
-
-      setIsViewRequestOpen(false);
-      setSelectedRequest(null);
     } catch (error) {
       console.error('Error approving request:', error);
       toast({
@@ -275,7 +277,30 @@ const Fees = () => {
         description: error instanceof Error ? error.message : "فشل في قبول الطلب",
         variant: "destructive",
       });
+      return;
     }
+
+    // The approval is persisted at this point. Refreshing the lists is a
+    // separate, best-effort step: a failed read must never turn a confirmed
+    // approval into a reported write failure or retry the mutation.
+    let refreshFailed = false;
+    try {
+      await loadSubscriptionRequests();
+      await loadFeesFromDB();
+    } catch (error) {
+      refreshFailed = true;
+      console.error('Error refreshing after approving request:', error);
+    }
+
+    toast({
+      title: "✅ تم قبول الطلب",
+      description: refreshFailed
+        ? `تم قبول طلب الطالب ${request.student_name} لكن تعذر تحديث القائمة؛ ستظهر البيانات عند إعادة التحميل`
+        : `تم قبول طلب الطالب ${request.student_name} وحفظه في قاعدة البيانات`,
+    });
+
+    setIsViewRequestOpen(false);
+    setSelectedRequest(null);
   };
 
   const handleSendWhatsApp = (request) => {
@@ -348,15 +373,6 @@ const Fees = () => {
 
     try {
       await deleteFee(feeId);
-
-      // Reload data
-      await loadFeesFromDB();
-      await loadSubscriptionRequests();
-
-      toast({
-        title: "تم الحذف بنجاح",
-        description: `تم حذف عملية دفع الطالب ${studentName}`,
-      });
     } catch (error) {
       console.error('Error deleting fee:', error);
       toast({
@@ -364,7 +380,27 @@ const Fees = () => {
         description: "فشل في حذف العملية",
         variant: "destructive",
       });
+      return;
     }
+
+    // The deletion is persisted at this point. Refreshing the lists is a
+    // separate, best-effort step: a failed read must never turn a confirmed
+    // deletion into a reported write failure or retry the mutation.
+    let refreshFailed = false;
+    try {
+      await loadFeesFromDB();
+      await loadSubscriptionRequests();
+    } catch (error) {
+      refreshFailed = true;
+      console.error('Error refreshing after deleting fee:', error);
+    }
+
+    toast({
+      title: "تم الحذف بنجاح",
+      description: refreshFailed
+        ? `تم حذف عملية دفع الطالب ${studentName} لكن تعذر تحديث القائمة؛ ستظهر البيانات عند إعادة التحميل`
+        : `تم حذف عملية دفع الطالب ${studentName}`,
+    });
   };
 
   const handleCleanupMonth = async () => {
@@ -473,38 +509,66 @@ const Fees = () => {
   const processPayment = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    // Synchronous duplicate guard: a second click in the same tick is refused
+    // before any await, so only one write can ever be on the wire.
+    if (paymentLatchRef.current) return;
+    paymentLatchRef.current = true;
+    setIsProcessingPayment(true);
+
     try {
       const fee = fees.find(f => f.id === paymentData.feeId);
-      if (!fee) return;
 
-      const newPaidAmount = fee.paidAmount + parseFloat(paymentData.amount);
-
-      // Update fee in database
-      await updateFee(fee.id, {
-        paid_amount: newPaidAmount,
-        status: newPaidAmount >= fee.amount ? 'paid' : 'partial',
-        payment_date: new Date().toISOString().split('T')[0],
-        payment_method: paymentData.paymentMethod,
-        notes: paymentData.notes
+      const outcome = await runPaymentFlow({
+        fee: fee ? { id: fee.id, amount: Number(fee.amount), paidAmount: Number(fee.paidAmount) } : null,
+        amount: paymentData.amount,
+        paymentMethod: paymentData.paymentMethod,
+        notes: paymentData.notes,
+        seams: {
+          updateFee: (id, body) => updateFee(id, body),
+          refresh: () => loadFeesFromDB(),
+          today: () => new Date().toISOString().split('T')[0],
+        },
       });
 
-      toast({
-        title: "تم تسجيل الدفع بنجاح",
-        description: "تم تحديث حالة المصروفات وحفظها في قاعدة البيانات",
-      });
+      if (outcome.kind === 'no-fee') return;
 
-      // Refresh fees list
-      fetchFees();
+      if (outcome.kind === 'invalid-amount') {
+        toast({
+          title: "مبلغ غير صالح",
+          description: "أدخل مبلغًا صحيحًا أكبر من صفر",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (outcome.kind === 'failed') {
+        toast({
+          title: "خطأ",
+          description: "حدث خطأ أثناء معالجة الدفع",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // The payment is persisted: success is reported from the write alone. A
+      // failed list refresh is a separate, lesser outcome.
+      if (outcome.kind === 'saved-refresh-failed') {
+        toast({
+          title: "تم حفظ الدفعة",
+          description: "تم حفظ الدفع لكن تعذر تحديث القائمة؛ ستظهر البيانات عند إعادة التحميل",
+        });
+      } else {
+        toast({
+          title: "تم تسجيل الدفع بنجاح",
+          description: "تم تحديث حالة المصروفات وحفظها في قاعدة البيانات",
+        });
+      }
 
       setIsOpen(false);
       setPaymentData({ feeId: null, amount: "", paymentMethod: "cash", notes: "" });
-    } catch (error) {
-      console.error('Error processing payment:', error);
-      toast({
-        title: "خطأ",
-        description: "حدث خطأ أثناء معالجة الدفع",
-        variant: "destructive",
-      });
+    } finally {
+      paymentLatchRef.current = false;
+      setIsProcessingPayment(false);
     }
   };
 
@@ -949,8 +1013,8 @@ const Fees = () => {
                 />
               </div>
 
-              <Button type="submit" className="w-full">
-                تسجيل الدفعة
+              <Button type="submit" className="w-full" disabled={isProcessingPayment}>
+                {isProcessingPayment ? "جارٍ التسجيل..." : "تسجيل الدفعة"}
               </Button>
             </form>
           </DialogContent>

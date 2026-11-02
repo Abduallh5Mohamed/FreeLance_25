@@ -259,10 +259,12 @@ test("transport: the canonical authenticated GET of the branding envelope", asyn
   assert.equal(env.calls.length, 1, "exactly one request");
   assert.equal(env.calls[0].url, "/api/tenants/me/branding");
   assert.equal(env.calls[0].init.method, undefined, "a read: no explicit method override");
-  const headers = env.calls[0].init.headers as Record<string, string>;
-  assert.equal(headers.Authorization, "Bearer token-canonical");
+  // The transport normalises headers to a `Headers` instance (case-insensitive
+  // on the wire), so the assertion reads through the same API.
+  const headers = new Headers(env.calls[0].init.headers);
+  assert.equal(headers.get("authorization"), "Bearer token-canonical");
   assert.deepEqual(
-    Object.keys(headers).filter((key) => /tenant|scope|workspace|x-/i.test(key)),
+    [...headers.keys()].filter((key) => /tenant|scope|workspace|x-/i.test(key)),
     [],
     "no client tenant selector header",
   );
@@ -277,8 +279,8 @@ test("transport: a missing token fails closed — no Authorization header is sen
 
   await getMyTenantBranding();
 
-  const headers = env.calls[0].init.headers as Record<string, string>;
-  assert.equal(headers.Authorization, undefined);
+  const headers = new Headers(env.calls[0].init.headers);
+  assert.equal(headers.get("authorization"), null);
 });
 
 test("transport: PATCH sends only the fields that were actually set", async (t) => {

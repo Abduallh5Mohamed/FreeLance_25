@@ -201,11 +201,13 @@ test("transport: canonical authenticated GET of the exact profile path", async (
   assert.equal(env.calls.length, 1, "exactly one request");
   assert.equal(env.calls[0].url, "/api/tenants/me/profile");
   assert.equal(env.calls[0].init.method, undefined, "a read: no explicit method override");
-  const headers = env.calls[0].init.headers as Record<string, string>;
-  assert.equal(headers.Authorization, "Bearer token-canonical");
-  assert.equal(headers["Content-Type"], "application/json");
+  // The transport normalises headers to a `Headers` instance (case-insensitive
+  // on the wire), so the assertion reads through the same API.
+  const headers = new Headers(env.calls[0].init.headers);
+  assert.equal(headers.get("authorization"), "Bearer token-canonical");
+  assert.equal(headers.get("content-type"), "application/json");
   assert.deepEqual(
-    Object.keys(headers).filter((key) => /tenant|scope|workspace|x-/i.test(key)),
+    [...headers.keys()].filter((key) => /tenant|scope|workspace|x-/i.test(key)),
     [],
     "no client tenant selector header"
   );
@@ -220,11 +222,11 @@ test("transport: missing token fails closed — no Authorization header is sent"
 
   await assert.rejects(() => getMyTenantProfile(), /Invalid token/);
 
-  const headers = env.calls[0].init.headers as Record<string, string>;
-  assert.equal(headers.Authorization, undefined, "no bearer without a token");
+  const headers = new Headers(env.calls[0].init.headers);
+  assert.equal(headers.get("authorization"), null, "no bearer without a token");
 });
 
-test("transport: the 404 no-authorized-workspace answer arrives as its message only", async (t) => {
+test("transport: the 404 no-authorized-workspace answer arrives as its message plus the numeric status", async (t) => {
   const env = installTransportEnvironment("token-404");
   t.after(env.restore);
   stubFetch(env, () => ({ ok: false, status: 404, body: { error: "Tenant membership not found" } }));
@@ -232,7 +234,9 @@ test("transport: the 404 no-authorized-workspace answer arrives as its message o
   await assert.rejects(() => getMyTenantProfile(), (cause: unknown) => {
     assert.ok(cause instanceof Error);
     assert.equal((cause as Error).message, "Tenant membership not found");
-    assert.equal((cause as Error & { status?: number }).status, undefined, "the transport discards the numeric status");
+    // The transport carries the numeric status so the UI can tell "no
+    // workspace" apart from a server fault; the message is unchanged.
+    assert.equal((cause as Error & { status?: number }).status, 404);
     return true;
   });
 });
@@ -260,7 +264,9 @@ test("transport: the 401 session answers arrive as their documented messages", a
     await assert.rejects(() => getMyTenantProfile(), (cause: unknown) => {
       assert.ok(cause instanceof Error);
       assert.equal((cause as Error).message, message);
-      assert.equal((cause as Error & { code?: string }).code, undefined, "the code field is discarded");
+      // The server code is carried verbatim so the caller can branch on it;
+      // the human-readable message stays exactly the documented one.
+      assert.equal((cause as Error & { code?: string }).code, "TOKEN_EXPIRED");
       return true;
     });
   }

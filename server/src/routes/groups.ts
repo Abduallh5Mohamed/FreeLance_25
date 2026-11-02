@@ -184,6 +184,7 @@ export const createGroupsRouter = (deps: GroupsRouterDeps): Router => {
     };
 
     router.get('/', deps.authenticate, async (req: AuthRequest, res: Response) => {
+        res.set('Cache-Control', 'no-store');
         try {
             const user = req.user;
             if (!user) return res.status(401).json({ error: 'Authentication required' });
@@ -196,11 +197,15 @@ export const createGroupsRouter = (deps: GroupsRouterDeps): Router => {
                     `SELECT g.id, g.name, g.description, g.course_id, g.grade_id, g.max_students, g.current_students, g.is_active, g.schedule_days, g.schedule_time, g.instructor_id, g.branch_id, g.branch_scope FROM \`groups\` g WHERE g.is_active = TRUE AND ${CLASSIFIED_GROUP_SCOPE} ORDER BY g.name`,
                     []
                 );
-                return res.json(groups.map(row => ({ ...row, schedule_days: readDays(row.schedule_days), schedule_time: readTime(row.schedule_time) })));
+                return res.json(groups.map(row => groupDto(row)));
             }
 
             const scope = groupScopeFor(user);
             if (!scope) return res.status(403).json({ error: 'Forbidden' });
+            // A selected tenant that resolves to no active membership leaves no
+            // tenant boundary to read inside: refuse instead of silently
+            // falling back to instructor-only rows from another workspace.
+            if (!user.tenantId) return res.status(404).json({ error: 'Tenant membership not found' });
             const branch = branchVisibility(user);
             const groups = await query<Group>(
                 `SELECT g.id, g.name, g.description, g.course_id, g.grade_id, g.max_students, g.current_students, g.is_active, g.schedule_days, g.schedule_time, g.instructor_id, g.branch_id, g.branch_scope
@@ -209,7 +214,7 @@ export const createGroupsRouter = (deps: GroupsRouterDeps): Router => {
                  ORDER BY g.name`,
                 [...scope.params, ...branch.params]
             );
-            res.json(groups.map(row => ({ ...row, schedule_days: readDays(row.schedule_days), schedule_time: readTime(row.schedule_time) })));
+            res.json(groups.map(row => groupDto(row)));
         } catch (error) {
             console.error('Get groups error:', error);
             res.status(500).json({ error: 'Failed to fetch groups' });
@@ -217,9 +222,15 @@ export const createGroupsRouter = (deps: GroupsRouterDeps): Router => {
     });
 
     router.get('/:id', deps.authenticate, async (req: AuthRequest, res: Response) => {
+        res.set('Cache-Control', 'no-store');
         try {
             const user = req.user;
             if (!user) return res.status(401).json({ error: 'Authentication required' });
+            // A client-supplied id is only a selector: a malformed one can never
+            // match a row, so it is refused before any statement runs.
+            if (!UUID_PATTERN.test(String(req.params.id))) {
+                return res.status(404).json({ error: 'Group not found' });
+            }
 
             let group: Group | null;
             if (user.role === 'admin') {
@@ -233,6 +244,10 @@ export const createGroupsRouter = (deps: GroupsRouterDeps): Router => {
             } else {
                 const scope = groupScopeFor(user);
                 if (!scope) return res.status(403).json({ error: 'Forbidden' });
+                // An unresolved selected tenant leaves no tenant boundary to
+                // read inside: refuse instead of falling back to another
+                // workspace's rows.
+                if (!user.tenantId) return res.status(404).json({ error: 'Tenant membership not found' });
                 group = await queryOne<Group>(
                     `SELECT * FROM \`groups\` g WHERE g.id = ? AND g.is_active = TRUE AND ${scope.sql}`,
                     [req.params.id, ...scope.params]
@@ -241,7 +256,7 @@ export const createGroupsRouter = (deps: GroupsRouterDeps): Router => {
 
             if (!group) return res.status(404).json({ error: 'Group not found' });
             if (!(await enforceGroupBranch(req, res, req.params.id))) return;
-            res.json({ ...group, schedule_days: readDays(group.schedule_days), schedule_time: readTime(group.schedule_time) });
+            res.json(groupDto(group));
         } catch (error) {
             console.error('Get group error:', error);
             res.status(500).json({ error: 'Failed to fetch group' });

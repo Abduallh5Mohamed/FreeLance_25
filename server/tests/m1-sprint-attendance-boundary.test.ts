@@ -22,10 +22,14 @@
  *     production authorization, ownership, input-bound and failure-handling
  *     decisions, not to emulate a database.
  *
- * Every request goes through a real express app on a loopback ephemeral port
- * with the routers mounted exactly as production mounts them; the injected
- * authenticate middleware is the only substitution. No pool is ever created,
- * no .env file is read and no external service is contacted.
+ * Every request is dispatched in-process to the REAL router that production
+ * mounts at the matching `/api/attendance` or `/api/grades` prefix: the router
+ * receives an express-style request/response pair, so the same route matching,
+ * authentication, branch and teaching-permission middleware runs without a
+ * socket. A per-request guard replaces `net.Server.prototype.listen` and
+ * `fetch`, then asserts neither was attempted, so external I/O cannot silently
+ * return. No pool is ever created, no .env file is read and no external service
+ * is contacted.
  */
 import { test } from 'node:test';
 import { quietConsole, restoreConsole } from './helpers/quiet-console';
@@ -33,9 +37,8 @@ import { quietConsole, restoreConsole } from './helpers/quiet-console';
 test.beforeEach(quietConsole);
 test.afterEach(restoreConsole);
 import assert from 'node:assert/strict';
-import type { AddressInfo } from 'node:net';
-import { createServer, type Server } from 'node:http';
-import express from 'express';
+import { Server as NetServer } from 'node:net';
+import type { NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
 import { createAuthenticateToken, createOptionalAuth } from '../src/middleware/auth';
@@ -138,6 +141,13 @@ const runSelect = (sql: string, params: unknown[]): Row[] => {
     if (!studentMatchesScope(student.id, scopeSql, params.slice(1))) return [];
     return [{ id: student.id, group_id: student.group_id }];
   }
+  if (q.includes('SELECT sc.id, sc.group_id FROM students sc WHERE sc.id = ?')) {
+    const scopeSql = q.slice(q.indexOf('SELECT sc.id, sc.group_id FROM students sc'));
+    const student = state.students.find((s) => s.id === params[0] && Boolean(s.is_active));
+    if (!student) return [];
+    if (!studentMatchesScope(student.id, scopeSql, params.slice(1))) return [];
+    return [{ id: student.id, group_id: student.group_id }];
+  }
   if (q.includes('SELECT sc.id FROM students sc WHERE sc.id = ?')) {
     const scopeSql = q.slice(q.indexOf('SELECT sc.id FROM students sc'));
     return studentMatchesScope(String(params[0]), scopeSql, params.slice(1)) ? [{ id: params[0] }] : [];
@@ -186,10 +196,18 @@ const runSelect = (sql: string, params: unknown[]): Row[] => {
       .filter((a) => a.student_id === studentId && day(a.attendance_date) === wantDay && a.id !== exceptId)
       .map((a) => ({ id: a.id }));
   }
-  if (q.includes("FROM attendance WHERE DATE(attendance_date) = ? AND status = 'present'")) {
-    return state.attendance
-      .filter((a) => day(a.attendance_date) === params[0] && a.status === 'present')
-      .map((a) => ({ student_id: a.student_id }));
+  if (q.includes('FROM attendance') && q.includes("status IN ('present','late','excused')")) {
+    const [wantedDay, groupId, tenantId] = params;
+    const recorded = new Set<string>();
+    for (const row of state.attendance) {
+      if (day(row.attendance_date) !== wantedDay) continue;
+      if (!['present', 'late', 'excused'].includes(String(row.status))) continue;
+      const student = state.students.find((s) => s.id === row.student_id);
+      if (!student || student.group_id !== groupId) continue;
+      if (tenantId !== undefined && student.tenant_id !== tenantId) continue;
+      recorded.add(String(row.student_id));
+    }
+    return [...recorded].map((studentId) => ({ student_id: studentId }));
   }
   if (q.includes('SELECT a.*, s.name AS student_name')) {
     const [studentId, wantDay] = params;
@@ -362,6 +380,13 @@ const fakeDb = {
   execute: async (sql: string, params?: unknown[]) => runWrite(sql, params ?? []),
 };
 
+type FakeDb = typeof fakeDb;
+
+/** The duplicate guard runs inside one serialized transaction. */
+const transaction = async <T>(fn: (tx: FakeDb) => Promise<T>): Promise<T> => fn(fakeDb);
+
+const fakeDbWithTransaction = { ...fakeDb, transaction };
+
 const fakeNotify = {
   sendWhatsAppMessage: async (to: string, body: string) => {
     state.notifyCalls.push({ to, body });
@@ -383,17 +408,20 @@ const teachingRepo: TeachingAccessRepository = {
 };
 
 // ---------------------------------------------------------------------------
-// Harness: real express app, real routers, real auth middleware
+// Harness: real routers dispatched in-process with the real auth middleware
 // ---------------------------------------------------------------------------
 
 const authenticate = createAuthenticateToken(principalRepo);
 const optionalAuthenticate = createOptionalAuth(principalRepo);
 
-const buildApp = (): express.Express => {
-  const app = express();
-  app.use(express.json());
-  app.use('/api/attendance', createAttendanceRouter({
-    db: fakeDb as never,
+interface Harness {
+  attendance: ReturnType<typeof createAttendanceRouter>;
+  grades: ReturnType<typeof createGradesRouter>;
+}
+
+const buildRouters = (): Harness => ({
+  attendance: createAttendanceRouter({
+    db: fakeDbWithTransaction as never,
     authenticate,
     optionalAuthenticate,
     notify: fakeNotify,
@@ -406,8 +434,8 @@ const buildApp = (): express.Express => {
       const student = state.students.find((item) => item.id === row.student_id);
       return course?.tenant_id ?? student?.tenant_id ?? null;
     }),
-  }));
-  app.use('/api/grades', createGradesRouter({
+  }),
+  grades: createGradesRouter({
     db: fakeDb as never,
     authenticate,
     optionalAuthenticate,
@@ -416,34 +444,33 @@ const buildApp = (): express.Express => {
       isSuperAdmin: async (userId) => state.platformSuperAdmins.has(userId),
       getAdminPermissions: async () => [] as string[],
     }),
-  }));
-  return app;
-};
-
-interface Harness {
-  base: string;
-  close: () => Promise<void>;
-}
-
-const harness = async (): Promise<Harness> => {
-  const server: Server = createServer(buildApp());
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address() as AddressInfo;
-  return {
-    base: `http://127.0.0.1:${port}`,
-    close: () =>
-      new Promise<void>((resolve, reject) => {
-        server.closeAllConnections?.();
-        server.close((err) => (err ? reject(err) : resolve()));
-      }),
-  };
-};
+  }),
+});
 
 interface ApiResult {
   status: number;
   body: any;
 }
 
+interface CapturedResponse {
+  statusCode?: number;
+  body?: unknown;
+  status(code: number): CapturedResponse;
+  json(payload: unknown): CapturedResponse;
+  set(header: string, value: string): CapturedResponse;
+}
+
+/**
+ * Dispatch the request in-process to the router production mounts at the
+ * matching prefix. Express still performs route matching (including
+ * `req.params`) against the prefix-relative path; the path before any `?` is
+ * normalized to '/' so a mount-root request such as
+ * `/api/attendance?date=...` matches the list route.
+ *
+ * The isolated-suite audit preload denies sockets and fetch. They are replaced
+ * with recorders for the duration of the call so a regression fails as an
+ * explicit assertion rather than an opaque audit error.
+ */
 const api = async (
   h: Harness,
   method: string,
@@ -451,16 +478,87 @@ const api = async (
   token: string | null,
   body?: unknown,
 ): Promise<ApiResult> => {
-  const res = await fetch(`${h.base}${path}`, {
+  const mount = path === '/api/attendance' || path.startsWith('/api/attendance/') || path.startsWith('/api/attendance?')
+    ? { prefix: '/api/attendance', router: h.attendance }
+    : path === '/api/grades' || path.startsWith('/api/grades/') || path.startsWith('/api/grades?')
+      ? { prefix: '/api/grades', router: h.grades }
+      : null;
+  if (!mount) throw new Error(`test path is not mounted: ${path}`);
+
+  const [rawPath, search = ''] = path.slice(mount.prefix.length).split('?');
+  const routePath = rawPath || '/';
+  const query: Record<string, string> = {};
+  for (const [key, value] of new URLSearchParams(search)) query[key] = value;
+
+  const request = {
     method,
+    url: search ? `${routePath}?${search}` : routePath,
+    originalUrl: path,
     headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      'content-type': 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await res.text();
-  return { status: res.status, body: text ? JSON.parse(text) : null };
+    body: body ?? {},
+    query,
+    params: {},
+    ip: '127.0.0.1',
+  } as any;
+
+  let markSettled: () => void = () => {};
+  const settled = new Promise<void>((resolve) => { markSettled = resolve; });
+  const response: CapturedResponse = {
+    status(code: number) {
+      response.statusCode = code;
+      return response;
+    },
+    json(payload: unknown) {
+      if (response.statusCode === undefined) response.statusCode = 200;
+      response.body = payload;
+      markSettled();
+      return response;
+    },
+    set(_header: string, _value: string) {
+      return response;
+    },
+  };
+
+  const netPrototype = NetServer.prototype as unknown as {
+    listen: (...args: unknown[]) => unknown;
+  };
+  const originalListen = netPrototype.listen;
+  const originalFetch = globalThis.fetch;
+  const networkAttempts: string[] = [];
+  netPrototype.listen = function listenGuard(): never {
+    networkAttempts.push('listen');
+    throw new Error('attendance/grades test harness must not open a listener');
+  };
+  globalThis.fetch = (async () => {
+    networkAttempts.push('fetch');
+    throw new Error('attendance/grades test harness must not fetch');
+  }) as typeof fetch;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    (mount.router as unknown as (req: unknown, res: unknown, next: NextFunction) => void)(
+      request,
+      response,
+      () => {},
+    );
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`in-process request did not settle: ${method} ${path}`)),
+        2000,
+      );
+    });
+    await Promise.race([settled, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    netPrototype.listen = originalListen;
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(networkAttempts, [], `${method} ${path} must stay in-process`);
+
+  return { status: response.statusCode ?? 200, body: response.body ?? null };
 };
 
 const sign = (user: { id: string; role: string; tenantId?: string }) =>
@@ -521,12 +619,7 @@ const seedBase = () => {
 const withState = async <T>(seed: () => void, fn: (h: Harness) => Promise<T>): Promise<T> => {
   state = makeState();
   seed();
-  const h = await harness();
-  try {
-    return await fn(h);
-  } finally {
-    await h.close();
-  }
+  return fn(buildRouters());
 };
 
 const instr1 = { id: 'instr-1', role: 'instructor', tenantId: TENANT_A };
@@ -632,25 +725,27 @@ test('an instructor marks attendance for their own student and the row is stored
   });
 });
 
-test('an instructor cannot mark attendance for a same-tenant student of another instructor (403, no insert)', async () => {
+test('an instructor cannot mark attendance for a same-tenant student of another instructor (404, no insert)', async () => {
   await withState(seedBase, async (h) => {
     const res = await api(h, 'POST', '/api/attendance', sign(instr1), {
       student_id: 's-foreign',
       attendance_date: '2026-10-16',
     });
-    assert.equal(res.status, 403);
+    // The router scopes the student resolution itself, so an out-of-scope id
+    // is indistinguishable from a missing one (same as the read boundary).
+    assert.equal(res.status, 404);
     assert.equal(state.executed.some((e) => e.sql.includes('INSERT INTO attendance')), false);
     assert.equal(state.attendance.length, 3);
   });
 });
 
-test('an instructor cannot mark attendance for a student in another tenant (403, no insert)', async () => {
+test('an instructor cannot mark attendance for a student in another tenant (404, no insert)', async () => {
   await withState(seedBase, async (h) => {
     const res = await api(h, 'POST', '/api/attendance', sign(instr1), {
       student_id: 's-other-tenant',
       attendance_date: '2026-10-16',
     });
-    assert.equal(res.status, 403);
+    assert.equal(res.status, 404);
     assert.equal(state.executed.some((e) => e.sql.includes('INSERT INTO attendance')), false);
   });
 });

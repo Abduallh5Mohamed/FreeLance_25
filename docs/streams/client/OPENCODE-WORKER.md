@@ -1,5 +1,15 @@
 # OpenCode implementation worker
 
+CURRENT human2026-10-26: OpenCode may implement the explicitly approved audit
+corrections while Codex supervises. The current task claim's exact allowedPaths
+and instructions govern. The older WorkBuddy-only NEW/correction lane rules below
+do not block these new user-authorized corrections. Preserve the still-active
+WorkBuddy M2-23 claim and do not touch any of its fifteen reserved paths. Never
+run Git or GitHub commands or tools, including read-only status, diff, branch or
+log; inspect files directly. Do not use live DB, providers, deployments, package
+installation or paid model fallback. Report to the MCP queue and stop after one
+task; Codex reviews before another correction is assigned.
+
 CURRENT human180,2026-10-21: you handle ONLY acceptance corrections/rejected prior
 work. WorkBuddy native handles larger NEW implementation on disjoint paths. Codex
 alone supervises every15minutes and starts idle workers, neither worker has a timer.

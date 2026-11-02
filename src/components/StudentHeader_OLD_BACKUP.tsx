@@ -493,7 +493,7 @@ const StudentHeader = () => {
               </DialogContent>
             </Dialog>
 
-            <NotificationBell userId={studentId || ''} userType="student" />
+            <NotificationBell userType="student" />
 
             <Button
               onClick={handleLogout}
@@ -507,7 +507,7 @@ const StudentHeader = () => {
 
           {/* Mobile/Tablet Menu Button - Show below lg (< 1024px) */}
           <div className="flex lg:hidden items-center gap-1.5 flex-shrink-0">
-            <NotificationBell userId={studentId} userType="student" />
+            <NotificationBell userType="student" />
             <Button
               variant="ghost"
               size="icon"

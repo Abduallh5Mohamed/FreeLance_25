@@ -13,6 +13,7 @@
         "seed:m1": "tsx scripts/seed-m1.ts",
         "seed:admin": "node seeds/create-admin.cjs",
         "test": "tsx --test tests/*.test.ts",
+        "test:isolated": "tsx --test tests/helpers/isolated-io-guard.test.ts tests/m1-security-groups-meetings.test.ts tests/m2-group-announcements.test.ts tests/m2-group-announcements-failures.test.ts tests/m2-group-schedules.test.ts tests/m2-group-schedules-failures.test.ts tests/m2-c5-lectures-reorder-audit.test.ts tests/m2-c8-c10-enrollment-lifecycle.test.ts tests/m2-enrollment-session-recheck.test.ts",
         "test:m1:integration": "tsx --test tests/integration/m1-tenant-isolation.test.ts"
     },
     "keywords": [

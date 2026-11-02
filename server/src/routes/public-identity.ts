@@ -33,23 +33,38 @@ export function parsePublicPagination(input: unknown): PublicPagination {
 }
 
 /**
- * C1/C4 public identity + published discovery.
+ * C1/C4 public identity pages.
  *
  * Every projection here is deliberately narrow: only non-private fields are
  * SELECTed (no phone/email/finance/secrets/staff flags), the tenant/teacher is
  * server-resolved (never caller authority), and no unpublished file/video
  * keys/URLs/session tokens are ever returned. Drafts/archived resources are
- * hidden by the is_active / published gates.
+ * hidden by the explicit `publication_state` + `is_active` + active-tenant
+ * gates.
+ *
+ * SCOPE: this router owns the public teacher/center page ONLY. Published-course
+ * discovery (`GET /courses`) is owned EXCLUSIVELY by
+ * `src/routes/public-catalog.ts` (M2-22 contract: `{ courses, next_cursor }`).
+ * The legacy discovery handler that used to live here answered an Array with an
+ * `is_active`-only filter and leaked drafts; it was removed rather than
+ * re-gated, so exactly ONE endpoint serves public course discovery and the
+ * mount order in `src/index.ts` can never resurrect it.
  */
 export const createPublicIdentityRouter = (deps: PublicIdentityDeps = defaultDeps) => {
     const router = Router();
     router.use(optionalAuth);
 
     // Teacher/center public page. The teacher id is their public user uuid; the
-    // center name comes from their active owned tenant. Only published
-    // (is_active) courses are returned, via the same safe projection the
-    // authenticated catalog uses.
+    // center name comes from their active owned tenant. Only EXPLICITLY
+    // PUBLISHED courses are returned, via the same publication + archive +
+    // active-tenant gate the M2-22 public catalog applies: `is_active` alone
+    // leaked drafts, so publication is required here too.
     router.get('/teachers/:id', async (req: AuthRequest, res: Response) => {
+        // Publication can be withdrawn at any time, so a cached teacher page
+        // could serve a course the owner has since unpublished. The page is
+        // therefore never cached: every outcome (including 404 / 500) carries
+        // `no-store`, matching the M2-22 public catalog surface.
+        res.set('Cache-Control', 'no-store');
         try {
             const teacherId = String(req.params.id || '');
             if (!/^[0-9a-fA-F-]{36}$/.test(teacherId)) return res.status(404).json({ error: 'Not found' });
@@ -68,11 +83,10 @@ export const createPublicIdentityRouter = (deps: PublicIdentityDeps = defaultDep
             }>(
                 `SELECT c.id,c.name,c.subject,c.description,c.grade,c.price
                  FROM courses c INNER JOIN tenants ct ON ct.id=c.tenant_id
-                 WHERE c.is_active=1 AND ct.status='active' AND (c.instructor_id=? OR ct.owner_user_id=?)
+                 WHERE c.is_active=1 AND c.publication_state='published' AND ct.status='active' AND (c.instructor_id=? OR ct.owner_user_id=?)
                  ORDER BY c.name LIMIT 100`,
                 [teacherId, teacherId],
             );
-            res.set('Cache-Control', 'public, max-age=60');
             res.json({
                 id: teacher.id,
                 name: teacher.name,
@@ -84,40 +98,13 @@ export const createPublicIdentityRouter = (deps: PublicIdentityDeps = defaultDep
         }
     });
 
-    // Published-course discovery. Server-resolved: every caller (including
-    // anonymous) sees only published (is_active) courses of active tenants. No
-    // private fields, no video/file keys, bounded pagination + filter/search.
-    router.get('/courses', async (req: AuthRequest, res: Response) => {
-        try {
-            const { limit, offset } = parsePublicPagination(req.query);
-            const clauses = [`c.is_active=1`, `t.status='active'`];
-            const params: unknown[] = [];
-            const grade = typeof req.query.grade === 'string' ? req.query.grade.trim() : '';
-            const subject = typeof req.query.subject === 'string' ? req.query.subject.trim() : '';
-            const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 64) : '';
-            if (grade) {
-                clauses.push('c.grade=?');
-                params.push(grade);
-            }
-            if (subject) {
-                clauses.push('c.subject=?');
-                params.push(subject);
-            }
-            if (search) {
-                clauses.push('(c.name LIKE ? OR c.description LIKE ?)');
-                params.push(`%${search}%`, `%${search}%`);
-            }
-            const sql = `SELECT c.id,c.name,c.subject,c.description,c.grade,c.price
-                         FROM courses c INNER JOIN tenants t ON t.id=c.tenant_id
-                         WHERE ${clauses.join(' AND ')} ORDER BY c.name LIMIT ? OFFSET ?`;
-            const courses = await deps.query(sql, [...params, String(limit), String(offset)]);
-            res.set('Cache-Control', 'public, max-age=60');
-            res.json(courses);
-        } catch (error) {
-            console.error('Public course discovery error:', error);
-            res.status(500).json({ error: 'Failed to load courses' });
-        }
-    });
+    // NOTE: `GET /courses` used to be handled here. That handler answered an
+    // Array with an `is_active`-only filter (leaking drafts) and it was mounted
+    // BEFORE the M2-22 catalog router, so it shadowed the canonical
+    // `{ courses, next_cursor }` contract. Published-course discovery now lives
+    // exclusively in `src/routes/public-catalog.ts`; this router deliberately
+    // registers NO course-list route, so the two surfaces can never collide
+    // again regardless of mount order.
 
     return router;
 };

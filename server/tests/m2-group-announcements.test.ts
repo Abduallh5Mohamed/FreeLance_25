@@ -30,12 +30,14 @@
  * Live MySQL row-level locking, real concurrency, real index usage and real HTTP
  * transport are explicitly NOT exercised or claimed.
  */
+import './helpers/isolated-io-guard';
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import path from 'node:path';
 import Module from 'node:module';
 import jwt from 'jsonwebtoken';
 import type { RequestHandler } from 'express';
+import { tenantScopeBranchDeps } from './helpers/tenant-scope-branch-deps';
 
 const TEST_SECRET = 'm2-21-hermetic-jwt-secret-not-a-real-key';
 const originalSecret = process.env.JWT_SECRET;
@@ -122,6 +124,20 @@ const teachingAccessSentinel = {
         }),
 };
 
+/**
+ * Branch-authority seam for the real gate. `resolveResourceBranchAccess`,
+ * `principalFromAuthUser` and `resourceBranchDenial` stay production code: the
+ * router is built with this injected dependency, so the real decision runs on
+ * every request and the production SQL fallback (`getResourceBranchDeps`,
+ * which dynamically imports the real `../db`) is never reached.
+ *
+ * The fixture models the pre-branch tenant model of this suite: every fixture
+ * group is explicitly tenant-level. An id with no fixture row is left to the
+ * route's own exact-resource predicate, which answers the canonical 404 — the
+ * seam never invents or widens authority, and never reaches a real database.
+ */
+const branchDepsHolder: { deps: any } = { deps: null };
+
 interface Intercepted { id: string; exports: unknown }
 const sentinelByPath = new Map<string, Intercepted>();
 
@@ -153,15 +169,37 @@ const restoreInterception = () => { (Module as any)._load = originalLoad; };
 
 let loadError: unknown = null;
 let routeModule: any;
+let authModule: any;
 
 installInterception();
 try {
+    // The real auth middleware is loaded THROUGH the interception so its static
+    // `../security/principal-repository` import binds to the fixture sentinel —
+    // the same instance the route module itself receives.
+    authModule = require('../src/middleware/auth');
     routeModule = require('../src/routes/groups');
 } catch (error) {
     loadError = error;
 } finally {
     restoreInterception();
 }
+
+/**
+ * Builds the real groups router over fully injected seams: the fixture data
+ * access, the real (sentinel-bound) auth middlewares, the fixture-bound
+ * teaching-write guard, a fixture platform-capability answer and the fixture
+ * branch-authority deps. No default export is used, so no production code path
+ * can dynamically import the real `../db`.
+ */
+const buildGroupsRouter = (): RequestHandler =>
+    routeModule.createGroupsRouter({
+        db: dbSentinel,
+        optionalAuthenticate: authModule.optionalAuth,
+        authenticate: authModule.authenticateToken,
+        requireTeachingWrite: teachingAccessSentinel.requireTeachingWrite('groups'),
+        hasVerifiedPlatformCapability: async () => false,
+        branchAccess: branchDepsHolder.deps,
+    }) as RequestHandler;
 
 after(() => {
     if (originalSecret === undefined) delete process.env.JWT_SECRET;
@@ -671,6 +709,17 @@ function buildHarness(state: State): Harness {
     identityHolder.instructorAccounts = state.instructorAccounts;
     identityHolder.memberships = state.memberships;
 
+    // Every fixture group is explicitly tenant-level; the tenant is the one the
+    // group's instructor actively belongs to. An id with no fixture row is left
+    // to the route's own exact-resource predicate (the canonical 404), so the
+    // gate never invents authority and never reaches a real database.
+    branchDepsHolder.deps = tenantScopeBranchDeps((type, id) => {
+        if (type !== 'group') return null;
+        const row = state.groups.find((group) => group.id === id);
+        if (!row) return TENANT_A;
+        return state.memberships[row.instructor_id]?.[0] ?? TENANT_A;
+    });
+
     teachingRepositoryHolder.repo = {
         loadSelectedTenantMembership: async (userId: string, tenantId: string) => {
             const roleKey = state.memberRoles[userId]?.[tenantId];
@@ -689,7 +738,7 @@ function buildHarness(state: State): Harness {
     };
 
     return {
-        chain: [routeModule.default as RequestHandler],
+        chain: [buildGroupsRouter()],
         calls,
         auditRows,
         events,

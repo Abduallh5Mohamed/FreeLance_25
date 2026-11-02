@@ -211,10 +211,10 @@ const withTransport = async <T>(
   }
 };
 
-const headerOf = (init: RequestInit, name: string): string | undefined => {
-  const headers = (init.headers ?? {}) as Record<string, string>;
-  return headers[name];
-};
+// The transport normalises headers to a `Headers` instance, so read through
+// the same case-insensitive API the wire uses.
+const headerOf = (init: RequestInit, name: string): string | null =>
+  new Headers(init.headers).get(name);
 
 // ---------------------------------------------------------------------------
 // Transport: the canonical requests

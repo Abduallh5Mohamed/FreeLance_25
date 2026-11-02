@@ -7,28 +7,7 @@ import { CheckCircle2, XCircle, Clock, ArrowLeft, Phone, Mail } from "lucide-rea
 import { useParams, useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import Header from "@/components/Header";
-import { getExamById, getExamAttempts, getNotAttemptedStudents } from "@/lib/api";
-
-interface ExamAttempt {
-  id: string;
-  student_id: string;
-  student_name: string;
-  student_phone?: string;
-  student_email?: string;
-  started_at: string;
-  completed_at?: string;
-  score?: number;
-  status: string;
-}
-
-interface Student {
-  id: string;
-  name: string;
-  phone?: string;
-  email?: string;
-  grade_id?: string;
-  group_id?: string;
-}
+import { getExamById, getExamAttempts, getNotAttemptedStudents, ExamAttempt, NotAttemptedStudent } from "@/lib/api";
 
 interface Exam {
   id: string;
@@ -47,7 +26,7 @@ const ExamReports = () => {
 
   const [exam, setExam] = useState<Exam | null>(null);
   const [attempted, setAttempted] = useState<ExamAttempt[]>([]);
-  const [notAttempted, setNotAttempted] = useState<Student[]>([]);
+  const [notAttempted, setNotAttempted] = useState<NotAttemptedStudent[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {

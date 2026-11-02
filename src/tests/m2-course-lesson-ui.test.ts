@@ -76,7 +76,9 @@ import {
   COURSE_LESSON_DISPLAY_ORDER_MAX,
   COURSE_LESSON_NO_CHANGES_MESSAGE,
   COURSE_LESSON_ORDER_INVALID_MESSAGE,
+  COURSE_LESSON_PREREQUISITE_INVALID_MESSAGE,
   COURSE_LESSON_RECONCILED_MESSAGE,
+  COURSE_LESSON_RELEASE_INVALID_MESSAGE,
   COURSE_LESSON_REORDER_NO_CHANGES_MESSAGE,
   COURSE_LESSON_SELECTION_INVALID_MESSAGE,
   COURSE_LESSON_TITLE_INVALID_MESSAGE,
@@ -91,6 +93,8 @@ import {
   parseCourseLessonEnvelope,
   parseCourseLessonList,
   parseCourseLessonOrder,
+  parseCourseLessonPrerequisite,
+  parseCourseLessonRelease,
   parseCourseLessonReorderEnvelope,
   parseCourseLessonTitle,
   type CourseLessonApi,
@@ -139,6 +143,10 @@ const lesson = (overrides: Partial<CourseLesson> = {}): CourseLesson => ({
   description: null,
   display_order: 0,
   status: "active",
+  // M2-23 — a lesson created before the release/prerequisite contract carries
+  // exactly these two values: no schedule and no gating edge.
+  release_at: null,
+  prerequisite_lesson_id: null,
   created_at: "2026-10-21T09:00:00.000Z",
   updated_at: "2026-10-21T09:00:00.000Z",
   ...overrides,
@@ -161,7 +169,13 @@ interface Harness {
   createCalls: {
     courseId: string;
     unitId: string;
-    input: { title: string; description?: string | null; display_order?: number };
+    input: {
+      title: string;
+      description?: string | null;
+      display_order?: number;
+      release_at?: string | null;
+      prerequisite_lesson_id?: string | null;
+    };
   }[];
   creates: Deferred<CourseLessonEnvelope>[];
   updateCalls: {
@@ -173,6 +187,8 @@ interface Harness {
       description?: string | null;
       display_order?: number;
       status?: string;
+      release_at?: string | null;
+      prerequisite_lesson_id?: string | null;
     };
   }[];
   updates: Deferred<CourseLessonEnvelope>[];
@@ -348,11 +364,15 @@ test("transport: canonical authenticated GET of one bounded lesson page", async 
   assert.equal(env.calls.length, 1, "exactly one request");
   assert.equal(env.calls[0].url, `${LESSON_PATH}?limit=25`);
   assert.equal(env.calls[0].init.method, undefined, "a read: no method override");
-  const headers = env.calls[0].init.headers as Record<string, string>;
-  assert.equal(headers.Authorization, "Bearer token-lessons");
-  assert.equal(headers["Content-Type"], "application/json");
+  // The canonical transport sends a REAL `Headers` instance, not a plain
+  // object, so the assertion reads it through `Headers` instead of casting it.
+  // The Authorization header itself is still asserted verbatim: the canonical
+  // authenticated request is what makes this a bounded, authorised read.
+  const headers = new Headers(env.calls[0].init.headers);
+  assert.equal(headers.get("Authorization"), "Bearer token-lessons");
+  assert.equal(headers.get("Content-Type"), "application/json");
   assert.deepEqual(
-    Object.keys(headers).filter((key) => /tenant|scope|workspace|x-/i.test(key)),
+    [...headers.keys()].filter((key) => /tenant|scope|workspace|x-/i.test(key)),
     [],
     "no client tenant selector header",
   );
@@ -497,14 +517,25 @@ test("parse: the description keeps an empty string and refuses an oversized text
   assert.equal(parseCourseLessonDescription("x".repeat(COURSE_LESSON_DESCRIPTION_MAX + 1)), null);
 });
 
-test("parse: the exact eight-key DTO of the bound unit is accepted", () => {
+test("parse: the exact ten-key DTO of the bound unit is accepted", () => {
   const parsed = parseCourseLesson(lesson(), UNIT_ID);
   assert.equal(parsed.ok, true);
   if (!parsed.ok) return;
   assert.deepEqual(Object.keys(parsed.lesson).sort(), [
-    "created_at", "description", "display_order", "id", "status", "title", "unit_id", "updated_at",
+    "created_at",
+    "description",
+    "display_order",
+    "id",
+    "prerequisite_lesson_id",
+    "release_at",
+    "status",
+    "title",
+    "unit_id",
+    "updated_at",
   ]);
   assert.equal(parsed.lesson.unit_id, UNIT_ID);
+  assert.equal(parsed.lesson.release_at, null, "no schedule is projected as null");
+  assert.equal(parsed.lesson.prerequisite_lesson_id, null, "no gating edge is projected as null");
 });
 
 test("parse: an extra key, a foreign unit, a bad instant, a bad status and a bad order are refused", () => {
@@ -1579,6 +1610,282 @@ test("reorder: the selection is cleared by a page change and by close", async ()
 });
 
 // ===========================================================================
+// M2-23 — scheduled release and prerequisite progression
+// ===========================================================================
+
+/** A canonical UTC instant, exactly as the server projects it. */
+const RELEASE_ISO = "2026-11-01T09:00:00.000Z";
+
+test("transport: the create body forwards a nullable UTC release and prerequisite", async (t) => {
+  const env = installTransportEnvironment("token-lessons");
+  t.after(env.restore);
+  stubFetch(env, () => ({ ok: true, status: 200, body: writeEnvelope(lesson()) }));
+
+  await createCourseLesson(COURSE_ID, UNIT_ID, {
+    title: "درس مجدول",
+    release_at: RELEASE_ISO,
+    prerequisite_lesson_id: LESSON_ID,
+  });
+
+  const body = JSON.parse(String(env.calls[0].init.body));
+  assert.deepEqual(body, {
+    title: "درس مجدول",
+    release_at: RELEASE_ISO,
+    prerequisite_lesson_id: LESSON_ID,
+  });
+});
+
+test("transport: an explicit null release and prerequisite are sent, not dropped", async (t) => {
+  const env = installTransportEnvironment("token-lessons");
+  t.after(env.restore);
+  stubFetch(env, () => ({ ok: true, status: 200, body: writeEnvelope(lesson()) }));
+
+  await updateCourseLesson(COURSE_ID, UNIT_ID, LESSON_ID, {
+    release_at: null,
+    prerequisite_lesson_id: null,
+  });
+
+  const body = JSON.parse(String(env.calls[0].init.body));
+  assert.deepEqual(body, { release_at: null, prerequisite_lesson_id: null });
+});
+
+test("parse: the release draft accepts only an explicit UTC instant", () => {
+  assert.equal(parseCourseLessonRelease(""), null, "an empty draft is 'no schedule'");
+  assert.equal(parseCourseLessonRelease("   "), null);
+  assert.equal(parseCourseLessonRelease("2026-11-01T09:00:00Z"), RELEASE_ISO);
+  assert.equal(
+    parseCourseLessonRelease("2026-11-01T09:00Z"),
+    "2026-11-01T09:00:00.000Z",
+    "the accepted value is normalised to the canonical projection",
+  );
+  assert.equal(
+    parseCourseLessonRelease("2026-11-01T09:00:00.5Z"),
+    "2026-11-01T09:00:00.500Z",
+  );
+
+  for (const refused of [
+    "2026-11-01 09:00:00Z", // a space instead of the T separator
+    "2026-11-01T09:00:00+02:00", // an offset: the client never invents a zone
+    "2026-11-01T09:00:00", // no zone at all
+    "2026-11-01", // date only
+    "1761987600", // a bare epoch
+    "2026-02-30T00:00:00Z", // an impossible calendar date
+    "2026-11-01T24:00:00Z", // an impossible hour
+    "2026-11-01T09:60:00Z", // an impossible minute
+    "2026-11-01T09:00:00z", // a lower-case zone
+    "2026-11-01T09:00:00.0000Z", // four fractional digits
+    "١٩٩٠-١١-٠١T09:00:00Z", // Arabic-Indic digits
+    "1969-12-31T23:59:59Z", // below the TIMESTAMP range
+    "2038-01-19T03:14:08Z", // above the TIMESTAMP range
+  ]) {
+    assert.equal(parseCourseLessonRelease(refused), undefined, `${refused} is refused`);
+  }
+});
+
+test("parse: the prerequisite draft is a UUID or an explicit clear", () => {
+  assert.equal(parseCourseLessonPrerequisite(""), null);
+  assert.equal(parseCourseLessonPrerequisite("  "), null);
+  assert.equal(parseCourseLessonPrerequisite(LESSON_ID), LESSON_ID);
+  assert.equal(
+    parseCourseLessonPrerequisite(LESSON_ID.toUpperCase()),
+    LESSON_ID,
+    "the identity is canonicalised to lowercase",
+  );
+  for (const refused of ["not-a-uuid", LESSON_ID.slice(1), `${LESSON_ID}0`, "0".repeat(36)]) {
+    assert.equal(parseCourseLessonPrerequisite(refused), undefined, `${refused} is refused`);
+  }
+});
+
+test("parse: a lesson DTO carries the release and prerequisite, and refuses malformed ones", () => {
+  const accepted = parseCourseLesson(
+    lesson({ release_at: RELEASE_ISO, prerequisite_lesson_id: LESSON_ID }),
+    UNIT_ID,
+  );
+  assert.equal(accepted.ok, true);
+  if (accepted.ok) {
+    assert.equal(accepted.lesson.release_at, RELEASE_ISO);
+    assert.equal(accepted.lesson.prerequisite_lesson_id, LESSON_ID);
+  }
+
+  for (const refused of [
+    lesson({ release_at: "2026-11-01T09:00:00Z" }), // not the canonical projection
+    lesson({ release_at: "2026-11-01" }),
+    lesson({ release_at: 1761987600 as unknown as string }),
+    lesson({ prerequisite_lesson_id: "not-a-uuid" }),
+    lesson({ prerequisite_lesson_id: 42 as unknown as string }),
+    // A missing key is as malformed as an extra one.
+    (() => {
+      const row = { ...lesson() } as Record<string, unknown>;
+      delete row.release_at;
+      return row;
+    })(),
+    (() => {
+      const row = { ...lesson() } as Record<string, unknown>;
+      delete row.prerequisite_lesson_id;
+      return row;
+    })(),
+  ]) {
+    assert.equal(parseCourseLesson(refused, UNIT_ID).ok, false, "the body is refused whole");
+  }
+});
+
+test("write: a changed release is sent, and an empty draft clears it", async () => {
+  const harness = createHarness();
+  const controller = createCourseLessonController(COURSE_ID, UNIT_ID, harness.api);
+  try {
+    await openReady(harness, controller, [lesson({ release_at: null })]);
+    controller.openEditForm(LESSON_ID);
+    controller.updateReleaseDraft("2026-11-01T09:00:00Z");
+
+    const scheduled = controller.save();
+    await flush();
+    assert.deepEqual(harness.updateCalls[0].update, { release_at: RELEASE_ISO });
+    harness.updates[0].resolve(writeEnvelope(lesson({ release_at: RELEASE_ISO })));
+    await scheduled;
+    assert.equal(controller.getState().rows[0].release_at, RELEASE_ISO);
+
+    // Clearing is an explicit `null`, never an omitted field.
+    controller.openEditForm(LESSON_ID);
+    controller.updateReleaseDraft("");
+    const cleared = controller.save();
+    await flush();
+    assert.deepEqual(harness.updateCalls[1].update, { release_at: null });
+    harness.updates[1].resolve(writeEnvelope(lesson({ release_at: null })));
+    await cleared;
+    assert.equal(controller.getState().rows[0].release_at, null);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test("write: an unchanged release is a truthful no-op with no request", async () => {
+  const harness = createHarness();
+  const controller = createCourseLessonController(COURSE_ID, UNIT_ID, harness.api);
+  try {
+    await openReady(harness, controller, [lesson({ release_at: RELEASE_ISO })]);
+    controller.openEditForm(LESSON_ID);
+    controller.updateReleaseDraft("2026-11-01T09:00Z");
+    await controller.save();
+
+    assert.equal(harness.updateCalls.length, 0, "the same instant is not a change");
+    assert.equal(controller.getState().form.error, COURSE_LESSON_NO_CHANGES_MESSAGE);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test("write: the prerequisite is compared on its canonical identity", async () => {
+  const harness = createHarness();
+  const controller = createCourseLessonController(COURSE_ID, UNIT_ID, harness.api);
+  const rows = [
+    lesson({ id: LESSON_ID, display_order: 0, title: "أول" }),
+    lesson({ id: OTHER_LESSON_ID, display_order: 1, title: "ثاني" }),
+  ];
+  try {
+    await openReady(harness, controller, rows);
+
+    // Selecting an earlier lesson in ANOTHER CASE sends the canonical id.
+    controller.openEditForm(OTHER_LESSON_ID);
+    controller.updatePrerequisiteDraft(LESSON_ID.toUpperCase());
+    const operation = controller.save();
+    await flush();
+    assert.deepEqual(harness.updateCalls[0].update, { prerequisite_lesson_id: LESSON_ID });
+    harness.updates[0].resolve(
+      writeEnvelope(lesson({ id: OTHER_LESSON_ID, display_order: 1, prerequisite_lesson_id: LESSON_ID })),
+    );
+    await operation;
+    assert.equal(controller.getState().rows[1].prerequisite_lesson_id, LESSON_ID);
+
+    // Re-selecting the SAME lesson in another case is a truthful no-op.
+    controller.openEditForm(OTHER_LESSON_ID);
+    controller.updatePrerequisiteDraft(LESSON_ID.toUpperCase());
+    await controller.save();
+    assert.equal(harness.updateCalls.length, 1, "the same identity in another case is not a change");
+    assert.equal(controller.getState().form.error, COURSE_LESSON_NO_CHANGES_MESSAGE);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test("write: clearing a stored prerequisite sends an explicit null", async () => {
+  const harness = createHarness();
+  const controller = createCourseLessonController(COURSE_ID, UNIT_ID, harness.api);
+  try {
+    await openReady(harness, controller, [
+      lesson({ id: LESSON_ID, display_order: 0 }),
+      lesson({ id: OTHER_LESSON_ID, display_order: 1, prerequisite_lesson_id: LESSON_ID }),
+    ]);
+    controller.openEditForm(OTHER_LESSON_ID);
+    assert.equal(
+      controller.getState().form.prerequisiteDraft,
+      LESSON_ID,
+      "the stored prerequisite is seeded into the form, never silently dropped",
+    );
+    controller.updatePrerequisiteDraft("");
+
+    const operation = controller.save();
+    await flush();
+    assert.deepEqual(harness.updateCalls[0].update, { prerequisite_lesson_id: null });
+    harness.updates[0].resolve(writeEnvelope(lesson({ id: OTHER_LESSON_ID, display_order: 1 })));
+    await operation;
+    assert.equal(controller.getState().rows[1].prerequisite_lesson_id, null);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test("write: an invalid release or prerequisite never reaches the transport", async () => {
+  const harness = createHarness();
+  const controller = createCourseLessonController(COURSE_ID, UNIT_ID, harness.api);
+  try {
+    await openReady(harness, controller);
+
+    controller.openEditForm(LESSON_ID);
+    controller.updateReleaseDraft("2026-11-01T09:00:00+02:00");
+    await controller.save();
+    assert.equal(harness.updateCalls.length, 0);
+    assert.equal(controller.getState().form.error, COURSE_LESSON_RELEASE_INVALID_MESSAGE);
+
+    controller.cancelForm();
+    controller.openEditForm(LESSON_ID);
+    controller.updatePrerequisiteDraft("not-a-uuid");
+    await controller.save();
+    assert.equal(harness.updateCalls.length, 0);
+    assert.equal(controller.getState().form.error, COURSE_LESSON_PREREQUISITE_INVALID_MESSAGE);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test("write: a create sends the release and the prerequisite it was given", async () => {
+  const harness = createHarness();
+  const controller = createCourseLessonController(COURSE_ID, UNIT_ID, harness.api);
+  try {
+    await openReady(harness, controller, [lesson({ id: LESSON_ID, display_order: 0 })]);
+    controller.openCreateForm();
+    controller.updateTitleDraft("درس مجدول");
+    controller.updateOrderDraft("5");
+    controller.updateReleaseDraft("2026-11-01T09:00:00Z");
+    controller.updatePrerequisiteDraft(LESSON_ID);
+
+    const operation = controller.create();
+    await flush();
+    assert.deepEqual(harness.createCalls[0].input, {
+      title: "درس مجدول",
+      display_order: 5,
+      release_at: RELEASE_ISO,
+      prerequisite_lesson_id: LESSON_ID,
+    });
+    harness.creates[0].resolve(writeEnvelope(lesson({ title: "درس مجدول", display_order: 5 })));
+    await flush();
+    harness.lists[1].resolve(listEnvelope([lesson({ id: LESSON_ID, display_order: 0 })]));
+    await operation;
+  } finally {
+    controller.dispose();
+  }
+});
+
+// ===========================================================================
 // The real component, rendered by the real React server renderer
 // ===========================================================================
 
@@ -1602,11 +1909,15 @@ const lessonState = (overrides: Partial<CourseLessonState> = {}): CourseLessonSt
     descriptionDraft: "",
     clearDescription: false,
     orderDraft: "",
+    releaseDraft: "",
+    prerequisiteDraft: "",
     targetId: null,
     targetTitle: null,
     originalTitle: null,
     originalDescription: null,
     originalOrder: null,
+    originalRelease: null,
+    originalPrerequisite: null,
     reorderDrafts: [],
     error: null,
   },
@@ -2153,4 +2464,132 @@ test("parent: the immutable course and unit ids are what the child receives", as
   );
   assert.ok(html.includes("دروس الوحدة «الوحدة الثانية»"));
   assert.equal(html.includes("دروس الوحدة «الوحدة الأولى»"), false);
+});
+
+// ===========================================================================
+// M2-23 — the release and prerequisite controls of the REAL form
+// ===========================================================================
+
+/** The opening tag of the rendered prerequisite `<select>`. */
+const selectOpeningTag = (html: string): string => {
+  const found = html.match(/<select\b[^>]*>/);
+  assert.ok(found, "the prerequisite selector is rendered");
+  return found[0];
+};
+
+/** Every `<option>` of the rendered prerequisite selector, as value/text pairs. */
+const selectOptions = (html: string): { value: string; text: string }[] => {
+  const block = html.match(/<select\b[^>]*>([\s\S]*?)<\/select>/);
+  assert.ok(block, "the prerequisite selector is rendered");
+  const options = block[1].match(/<option\b[^>]*>[\s\S]*?<\/option>/g) || [];
+  return options.map((option) => {
+    const value = /value="([^"]*)"/.exec(option);
+    return {
+      value: value ? value[1] : "",
+      text: option.replace(/<[^>]*>/g, ""),
+    };
+  });
+};
+
+test("component: the open form renders a bound UTC release input and a prerequisite selector", async () => {
+  const html = await renderLessonPanel(lessonState({
+    form: {
+      ...lessonState().form,
+      mode: "create",
+    },
+  }));
+
+  assert.ok(html.includes('for="course-lesson-release"'), "the release label is bound");
+  assert.ok(html.includes('id="course-lesson-release"'));
+  assert.ok(html.includes('dir="ltr"'), "the UTC instant is rendered left to right");
+  assert.ok(html.includes("2026-11-01T09:00:00Z"), "the accepted shape is shown as a placeholder");
+  assert.ok(html.includes('for="course-lesson-prerequisite"'), "the selector label is bound");
+  assert.ok(html.includes('id="course-lesson-prerequisite"'));
+  assert.ok(html.includes("بدون شرط سابق"), "the explicit clear option exists");
+});
+
+test("component: the prerequisite selector offers only strictly earlier active lessons", async () => {
+  const html = await renderLessonPanel(lessonState({
+    rows: [
+      lesson({ id: LESSON_ID, display_order: 0, title: "أول" }),
+      lesson({ id: OTHER_LESSON_ID, display_order: 5, title: "ثاني" }),
+      lesson({ id: lessonIdFor(9), display_order: 9, title: "ثالث" }),
+      lesson({ id: lessonIdFor(8), display_order: 1, title: "مؤرشف", status: "archived" }),
+    ],
+    form: {
+      ...lessonState().form,
+      mode: "edit",
+      targetId: OTHER_LESSON_ID,
+      targetTitle: "ثاني",
+      titleDraft: "ثاني",
+      originalTitle: "ثاني",
+      orderDraft: "5",
+      originalOrder: "5",
+    },
+  }));
+
+  const options = selectOptions(html);
+  assert.deepEqual(
+    options.map((option) => option.value),
+    ["", LESSON_ID],
+    "only the earlier ACTIVE lesson is offered: the target, the later lesson and the archived one are not",
+  );
+  assert.ok(options[1].text.includes("أول"), "the candidate is labelled by its title");
+  assert.ok(options[1].text.includes("الموضع 0"), "the candidate states its position");
+
+  const tag = selectOpeningTag(html);
+  assert.equal(/\sdisabled(?:=|\s|>)/.test(tag), false, "an editable target keeps the selector usable");
+});
+
+test("component: a create with no stated position offers no prerequisite and says why", async () => {
+  const html = await renderLessonPanel(lessonState({
+    rows: [
+      lesson({ id: LESSON_ID, display_order: 0, title: "أول" }),
+      lesson({ id: OTHER_LESSON_ID, display_order: 5, title: "ثاني" }),
+    ],
+    form: {
+      ...lessonState().form,
+      mode: "create",
+      titleDraft: "درس جديد",
+      orderDraft: "",
+    },
+  }));
+
+  const options = selectOptions(html);
+  assert.deepEqual(
+    options.map((option) => option.value),
+    [""],
+    "no lesson is provably earlier than a position the teacher has not stated",
+  );
+  assert.ok(
+    html.includes("حدّد موضع العرض أولًا"),
+    "the form explains why the selector is unavailable instead of offering an edge the server would reject",
+  );
+});
+
+test("component: a stored prerequisite outside the page is still shown and preserved", async () => {
+  const stored = lessonIdFor(7);
+  const html = await renderLessonPanel(lessonState({
+    rows: [lesson({ id: LESSON_ID, display_order: 5, title: "خامس" })],
+    form: {
+      ...lessonState().form,
+      mode: "edit",
+      targetId: LESSON_ID,
+      targetTitle: "خامس",
+      titleDraft: "خامس",
+      originalTitle: "خامس",
+      orderDraft: "5",
+      originalOrder: "5",
+      prerequisiteDraft: stored,
+      originalPrerequisite: stored,
+    },
+  }));
+
+  const options = selectOptions(html);
+  assert.deepEqual(
+    options.map((option) => option.value),
+    ["", stored],
+    "opening the form never silently drops a configuration the teacher did not touch",
+  );
+  assert.ok(options[1].text.includes(stored), "the preserved value is identifiable");
 });

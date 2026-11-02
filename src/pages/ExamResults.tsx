@@ -21,26 +21,8 @@ import {
 } from "@/components/ui/table";
 import { Search, Trophy, TrendingUp, TrendingDown, Minus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { getExamResults, getStudents, getGroups, getGrades, User } from "@/lib/api";
+import { getExamResults, getStudents, getGroups, getGrades, User, ExamResult } from "@/lib/api";
 import Header from "@/components/Header";
-
-interface ExamResult {
-  id: string;
-  exam_id: string;
-  exam_title: string;
-  student_id: string; // user id
-  student_name: string;
-  grade_id?: string | null;
-  group_id?: string | null;
-  grade_name?: string | null;
-  group_name?: string | null;
-  score: number;
-  total_marks: number;
-  passing_marks?: number;
-  status: 'pending' | 'graded' | 'submitted';
-  submitted_at: string;
-  graded_at?: string;
-}
 
 interface Student {
   id: string;

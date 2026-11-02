@@ -21,9 +21,8 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AddressInfo } from 'node:net';
-import { createServer, type Server } from 'node:http';
-import express from 'express';
+import { Server as NetServer } from 'node:net';
+import type { NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
 import { createAuthenticateToken, createOptionalAuth } from '../src/middleware/auth';
@@ -80,12 +79,19 @@ const runSelect = (sql: string, params: unknown[]): Record<string, unknown>[] =>
     state.executed.push({ sql, params });
     const q = sql.replace(/\s+/g, ' ');
 
+    if (q.includes('SELECT sc.id, sc.group_id FROM students sc')) {
+        // Barcode and student-id lookups both resolve the single fixture student.
+        return params[0] === 's-1' || params[0] === 'BC-1'
+            ? [{ id: 's-1', group_id: 'g-1' }]
+            : [];
+    }
     if (q.includes('SELECT sc.id FROM students sc WHERE sc.id = ?')) {
-        // The single fixture student belongs to the fixture instructor.
+        // Scope checks and the transactional row lock read only the id.
         return params[0] === 's-1' ? [{ id: 's-1' }] : [];
     }
-    if (q.includes('SELECT id, group_id FROM students WHERE id = ?')) {
-        return params[0] === 's-1' ? [{ id: 's-1', group_id: 'g-1' }] : [];
+    if (q.includes('SELECT branch_id, branch_scope FROM `groups` WHERE id = ?')) {
+        // The fixture group is tenant-level, so no branch membership is required.
+        return params[0] === 'g-1' ? [{ branch_id: null, branch_scope: 'tenant' }] : [];
     }
     if (q.includes('SELECT id FROM attendance WHERE student_id = ?')) {
         // params: [student_id, day]
@@ -115,14 +121,19 @@ const runWrite = (sql: string, params: unknown[]): { affectedRows: number } => {
     return { affectedRows: 1 };
 };
 
-const fakeDb = {
-    query: async <T>(sql: string, params?: unknown[]) => runSelect(sql, params ?? []) as T[],
-    queryOne: async <T>(sql: string, params?: unknown[]) => {
-        const rows = runSelect(sql, params ?? []);
-        return (rows.length > 0 ? rows[0] : null) as T | null;
-    },
-    execute: async (sql: string, params?: unknown[]) => runWrite(sql, params ?? []),
+const query = async <T>(sql: string, params?: unknown[]) => runSelect(sql, params ?? []) as T[];
+const queryOne = async <T>(sql: string, params?: unknown[]) => {
+    const rows = runSelect(sql, params ?? []);
+    return (rows.length > 0 ? rows[0] : null) as T | null;
 };
+const execute = async (sql: string, params?: unknown[]) => runWrite(sql, params ?? []);
+
+/** The route's duplicate guard runs inside one serialized transaction. */
+const transaction = async <T>(
+    fn: (tx: { query: typeof query; queryOne: typeof queryOne; execute: typeof execute }) => Promise<T>,
+): Promise<T> => fn({ query, queryOne, execute });
+
+const fakeDb = { query, queryOne, execute, transaction };
 
 const principalRepo: PrincipalRepository = {
     findUsersIdentity: async (id) => state.users[id] ?? null,
@@ -130,47 +141,46 @@ const principalRepo: PrincipalRepository = {
     findInstructorAccount: async (id) => state.instructorAccounts[id] ?? null,
     findStudentEnrollments: async () => [],
     findActiveTenantMemberships: async (id) => state.memberships[id] ?? [],
+    findBranchSession: async () => null,
+    isTenantOwner: async () => false,
 };
 
 const authenticate = createAuthenticateToken(principalRepo);
 const optionalAuthenticate = createOptionalAuth(principalRepo);
 
-const buildApp = (now: () => Date): express.Express => {
-    const app = express();
-    app.use(express.json());
-    app.use(
-        '/api/attendance',
-        createAttendanceRouter({
-            db: fakeDb as never,
-            authenticate,
-            optionalAuthenticate,
-            notify: { sendWhatsAppMessage: async () => ({ success: true }) },
-            hasVerifiedPlatformCapability: async () => false,
-            now,
-        }),
-    );
-    return app;
-};
+const API_PREFIX = '/api/attendance';
+
+const buildRouter = (now: () => Date) =>
+    createAttendanceRouter({
+        db: fakeDb as never,
+        authenticate,
+        optionalAuthenticate,
+        notify: { sendWhatsAppMessage: async () => ({ success: true }) },
+        hasVerifiedPlatformCapability: async () => false,
+        now,
+    });
 
 interface Harness {
-    base: string;
-    close: () => Promise<void>;
+    router: ReturnType<typeof createAttendanceRouter>;
 }
 
-const harness = async (now: () => Date): Promise<Harness> => {
-    const server: Server = createServer(buildApp(now));
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const { port } = server.address() as AddressInfo;
-    return {
-        base: `http://127.0.0.1:${port}`,
-        close: () =>
-            new Promise<void>((resolve, reject) => {
-                server.closeAllConnections?.();
-                server.close((err) => (err ? reject(err) : resolve()));
-            }),
-    };
-};
+interface CapturedResponse {
+    statusCode?: number;
+    body?: unknown;
+    status(code: number): CapturedResponse;
+    json(payload: unknown): CapturedResponse;
+    set(header: string, value: string): CapturedResponse;
+}
 
+/**
+ * Invoke the REAL attendance router in-process. Express does not await async
+ * handlers, so the captured response settles when the handler writes JSON; the
+ * bounded wait turns a hanging handler into a test failure, not an open socket.
+ *
+ * The isolated-suite audit preload denies sockets and fetch. They are replaced
+ * with recorders for the duration of the call so a regression fails as an
+ * explicit assertion rather than an opaque audit error.
+ */
 const api = async (
     h: Harness,
     method: string,
@@ -178,16 +188,83 @@ const api = async (
     token: string | null,
     body?: unknown,
 ): Promise<{ status: number; body: any }> => {
-    const res = await fetch(`${h.base}${path}`, {
+    const relative = path.startsWith(API_PREFIX) ? path.slice(API_PREFIX.length) : path;
+    const [rawPath, search = ''] = relative.split('?');
+    // `/api/attendance?date=...` leaves an empty pre-query path; Express needs '/'.
+    const routePath = rawPath || '/';
+    const query: Record<string, string> = {};
+    for (const [key, value] of new URLSearchParams(search)) query[key] = value;
+
+    const request = {
         method,
+        url: search ? `${routePath}?${search}` : routePath,
+        originalUrl: path,
         headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            'content-type': 'application/json',
+            ...(token ? { authorization: `Bearer ${token}` } : {}),
         },
-        body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const text = await res.text();
-    return { status: res.status, body: text ? JSON.parse(text) : null };
+        body: body ?? {},
+        query,
+        params: {},
+        ip: '127.0.0.1',
+    } as any;
+
+    let markSettled: () => void = () => {};
+    const settled = new Promise<void>((resolve) => { markSettled = resolve; });
+    const response: CapturedResponse = {
+        status(code: number) {
+            response.statusCode = code;
+            return response;
+        },
+        json(payload: unknown) {
+            if (response.statusCode === undefined) response.statusCode = 200;
+            response.body = payload;
+            markSettled();
+            return response;
+        },
+        set(_header: string, _value: string) {
+            return response;
+        },
+    };
+
+    const netPrototype = NetServer.prototype as unknown as {
+        listen: (...args: unknown[]) => unknown;
+    };
+    const originalListen = netPrototype.listen;
+    const originalFetch = globalThis.fetch;
+    const networkAttempts: string[] = [];
+    netPrototype.listen = function listenGuard(): never {
+        networkAttempts.push('listen');
+        throw new Error('attendance test harness must not open a listener');
+    };
+    globalThis.fetch = (async () => {
+        networkAttempts.push('fetch');
+        throw new Error('attendance test harness must not fetch');
+    }) as typeof fetch;
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        // Express itself dispatches use() + the matched route (incl. req.params).
+        (h.router as unknown as (req: unknown, res: unknown, next: NextFunction) => void)(
+            request,
+            response,
+            () => {},
+        );
+        const timeout = new Promise<never>((_, reject) => {
+            timer = setTimeout(
+                () => reject(new Error(`in-process request did not settle: ${method} ${path}`)),
+                2000,
+            );
+        });
+        await Promise.race([settled, timeout]);
+    } finally {
+        if (timer) clearTimeout(timer);
+        netPrototype.listen = originalListen;
+        globalThis.fetch = originalFetch;
+    }
+    assert.deepEqual(networkAttempts, [], `${method} ${path} must stay in-process`);
+
+    return { status: response.statusCode ?? 200, body: response.body ?? null };
 };
 
 const sign = (user: { id: string; role: string; tenantId?: string }) =>
@@ -197,12 +274,7 @@ const INSTRUCTOR = { id: 'instr-1', role: 'instructor', tenantId: 'tenant-a' };
 
 const withClock = async (now: Date, fn: (h: Harness) => Promise<void>): Promise<void> => {
     state = makeState();
-    const h = await harness(() => now);
-    try {
-        await fn(h);
-    } finally {
-        await h.close();
-    }
+    await fn({ router: buildRouter(() => now) });
 };
 
 // ---------------------------------------------------------------------------

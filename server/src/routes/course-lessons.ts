@@ -295,6 +295,58 @@ const TIMESTAMP_EPOCH_MAX = 2147483647;
  */
 const PREREQUISITE_CHAIN_MAX = 512;
 
+/**
+ * A defensive bound on the ACTIVE dependents of the lessons a request moves.
+ *
+ * Moving a lesson can invert an edge that some other lesson holds INTO it, so
+ * every dependent of the moved rows has to be proved still-after before the
+ * write commits. A dependent set larger than this bound cannot be proved in one
+ * bounded read, so the request is refused rather than assumed ordered.
+ */
+const PREREQUISITE_DEPENDENTS_MAX = 1000;
+
+/**
+ * ONE ordering definition — the canonical learning-path order.
+ *
+ * The student path (`student-course-access.ts`) reads its lessons with
+ * `ORDER BY u.display_order ASC, u.id ASC, l.display_order ASC, l.id ASC`, so
+ * "earlier" means earlier in THAT traversal: the UNIT first, the lesson second.
+ * Every prerequisite decision in this module is judged against this one order,
+ * which means:
+ *
+ *   * a lesson of an EARLIER unit may gate a lesson of a later unit, because it
+ *     really is read first on the student path;
+ *   * a lesson of a later unit may never gate an earlier one;
+ *   * two lessons of one unit are ordered by `(display_order, id)` exactly as
+ *     the list endpoint and the student path order them.
+ *
+ * Before this definition existed the teaching side compared only
+ * `(display_order, id)` of the lesson, ignoring the unit — so a cross-unit edge
+ * could be accepted that the student path then read in the opposite order.
+ *
+ * The id comparison is the CANONICAL (lowercase) identity. `course_lessons.id`
+ * and `course_units.id` are `CHAR(36)` in a `utf8mb4_unicode_ci` table, so the
+ * declared comparison is case-insensitive; for a uuid, which is hex digits and
+ * dashes only, that is exactly the byte order of the lowercase spelling.
+ */
+interface PathPosition {
+  /** Canonical lesson identity. */
+  lessonId: string;
+  lessonOrder: number;
+  /** Canonical unit identity. */
+  unitId: string;
+  unitOrder: number;
+}
+
+/** Compare two positions under the one learning-path order. */
+const comparePathPositions = (left: PathPosition, right: PathPosition): number => {
+  if (left.unitOrder !== right.unitOrder) return left.unitOrder < right.unitOrder ? -1 : 1;
+  if (left.unitId !== right.unitId) return left.unitId < right.unitId ? -1 : 1;
+  if (left.lessonOrder !== right.lessonOrder) return left.lessonOrder < right.lessonOrder ? -1 : 1;
+  if (left.lessonId !== right.lessonId) return left.lessonId < right.lessonId ? -1 : 1;
+  return 0;
+};
+
 type ReleaseParse = { ok: true; epoch: number | null } | { ok: false };
 
 /**
@@ -507,6 +559,10 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
    * selected tenant. An ARCHIVED unit is still private owner-manageable
    * metadata, so its status is deliberately not filtered here. A foreign,
    * absent or course-mismatched unit produces the identical not-found result.
+   *
+   * `display_order` is read because the unit is the FIRST key of the one
+   * learning-path order, so every prerequisite decision needs the position of
+   * the unit the target lesson lives in.
    */
   const resolveUnit = async (
     connection: CourseLessonConnection,
@@ -515,7 +571,7 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
     lock: boolean
   ): Promise<any | null> => {
     const [rows] = await connection.execute(
-      `SELECT u.id,u.course_id FROM course_units u
+      `SELECT u.id,u.course_id,u.display_order FROM course_units u
        WHERE u.id=? AND u.course_id=?${lock ? ' FOR UPDATE' : ''}`,
       [unitId, courseId]
     );
@@ -608,30 +664,34 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
    *     refused identically;
    *   * it is ACTIVE: an archived lesson is not part of the learning path, so it
    *     can never gate one;
-   *   * it sorts strictly BEFORE the target under the list's own total order
-   *     `(display_order, id)`. This is what makes a cycle unreachable through
-   *     this API: every permitted edge points strictly backwards in one fixed
-   *     total order.
+   *   * its UNIT is ACTIVE: the student path reads only active units, so a
+   *     lesson of an archived unit is not reachable either. Accepting such an
+   *     edge would leave the target permanently locked behind a lesson the
+   *     student can never open;
+   *   * it sorts strictly BEFORE the target under the ONE learning-path order
+   *     `(unit.display_order, unit.id, lesson.display_order, lesson.id)`. This is
+   *     what makes a cycle unreachable through this API: every permitted edge
+   *     points strictly backwards in one fixed total order.
    *
    * The stored chain is then walked (bounded) so an out-of-band cycle is
    * detected and refused instead of extended.
    *
-   * `targetDisplayOrder` is the target's FINAL position, so a patch that moves
-   * the target and sets its prerequisite in the same request is judged against
-   * the position the row will actually have.
+   * `target` is the target's FINAL path position, so a patch that moves the
+   * target and sets its prerequisite in the same request is judged against the
+   * position the row will actually have.
    */
   const resolvePrerequisite = async (
     connection: CourseLessonConnection,
     courseId: string,
-    targetLessonId: string,
-    targetDisplayOrder: number,
+    target: PathPosition,
     prerequisiteId: string
   ): Promise<boolean> => {
-    const targetIdentity = canonicalUuidIdentity(targetLessonId);
+    const targetIdentity = canonicalUuidIdentity(target.lessonId);
     if (canonicalUuidIdentity(prerequisiteId) === targetIdentity) return false;
 
     const [rows] = await connection.execute(
-      `SELECT l.id,l.status,l.display_order,l.prerequisite_lesson_id,u.course_id
+      `SELECT l.id,l.status,l.display_order,l.prerequisite_lesson_id,
+              u.id AS unit_id,u.display_order AS unit_order,u.status AS unit_status,u.course_id
        FROM course_lessons l JOIN course_units u ON u.id=l.unit_id
        WHERE l.id=? LIMIT 1`,
       [prerequisiteId]
@@ -640,14 +700,19 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
     if (!prerequisite) return false;
     if (String(prerequisite.course_id) !== courseId) return false;
     if (String(prerequisite.status) !== 'active') return false;
+    if (String(prerequisite.unit_status) !== 'active') return false;
 
     const order = Number(prerequisite.display_order);
+    const unitOrder = Number(prerequisite.unit_order);
     if (!Number.isInteger(order) || order < 0) return false;
-    const earlier =
-      order < targetDisplayOrder ||
-      (order === targetDisplayOrder &&
-        canonicalUuidIdentity(String(prerequisite.id)) < targetIdentity);
-    if (!earlier) return false;
+    if (!Number.isInteger(unitOrder) || unitOrder < 0) return false;
+    const position: PathPosition = {
+      lessonId: canonicalUuidIdentity(String(prerequisite.id)),
+      lessonOrder: order,
+      unitId: canonicalUuidIdentity(String(prerequisite.unit_id)),
+      unitOrder,
+    };
+    if (comparePathPositions(position, target) >= 0) return false;
 
     const seen = new Set<string>([canonicalUuidIdentity(prerequisiteId)]);
     let cursor: string | null =
@@ -672,6 +737,91 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
         next && next.prerequisite_lesson_id !== null && next.prerequisite_lesson_id !== undefined
           ? String(next.prerequisite_lesson_id)
           : null;
+    }
+    return true;
+  };
+
+  /**
+   * Read the path position of the named lessons in ONE bounded statement.
+   *
+   * A lesson that does not exist is simply absent from the map; the caller
+   * decides what that means instead of receiving a fabricated position.
+   */
+  const readPathPositions = async (
+    connection: CourseLessonConnection,
+    ids: string[]
+  ): Promise<Map<string, PathPosition>> => {
+    const positions = new Map<string, PathPosition>();
+    if (ids.length === 0) return positions;
+    const placeholders = ids.map(() => '?').join(',');
+    const [rows] = await connection.execute(
+      `SELECT l.id,l.display_order,u.id AS unit_id,u.display_order AS unit_order
+       FROM course_lessons l JOIN course_units u ON u.id=l.unit_id
+       WHERE l.id IN (${placeholders})`,
+      ids
+    );
+    for (const row of ((rows as any[]) ?? [])) {
+      const lessonId = canonicalUuidIdentity(String(row.id));
+      positions.set(lessonId, {
+        lessonId,
+        lessonOrder: Number(row.display_order),
+        unitId: canonicalUuidIdentity(String(row.unit_id)),
+        unitOrder: Number(row.unit_order),
+      });
+    }
+    return positions;
+  };
+
+  /**
+   * Prove that every ACTIVE lesson which depends on one of the MOVED lessons
+   * still sorts strictly AFTER it in the FINAL order.
+   *
+   * Only lessons of the SAME unit can be affected. A reorder never changes a
+   * unit's own position, and the unit is the FIRST key of the learning-path
+   * order, so a dependent in an earlier unit stays earlier and a dependent in a
+   * later unit stays later whatever happens inside this unit.
+   *
+   * `finalOrders` maps the canonical id of each MOVED lesson to its final
+   * position. A dependent whose prerequisite did not move is not re-judged: a
+   * pre-existing out-of-band inconsistency must not block an unrelated write.
+   */
+  const proveDependentOrder = async (
+    connection: CourseLessonConnection,
+    unitId: string,
+    unitOrder: number,
+    finalOrders: Map<string, number>
+  ): Promise<boolean> => {
+    const ids = [...finalOrders.keys()];
+    if (ids.length === 0) return true;
+    const placeholders = ids.map(() => '?').join(',');
+    const [rows] = await connection.execute(
+      `SELECT l.id,l.display_order,l.prerequisite_lesson_id
+       FROM course_lessons l
+       WHERE l.unit_id=? AND l.status='active' AND l.prerequisite_lesson_id IN (${placeholders})
+       LIMIT ?`,
+      [unitId, ...ids, PREREQUISITE_DEPENDENTS_MAX + 1]
+    );
+    const dependents = (rows as any[]) ?? [];
+    // An unprovable dependent set is refused rather than assumed ordered.
+    if (dependents.length > PREREQUISITE_DEPENDENTS_MAX) return false;
+    const unitIdentity = canonicalUuidIdentity(unitId);
+    for (const dependent of dependents) {
+      const prerequisiteIdentity = canonicalUuidIdentity(String(dependent.prerequisite_lesson_id));
+      const prerequisiteOrder = finalOrders.get(prerequisiteIdentity);
+      if (prerequisiteOrder === undefined) continue;
+      const prerequisitePosition: PathPosition = {
+        lessonId: prerequisiteIdentity,
+        lessonOrder: prerequisiteOrder,
+        unitId: unitIdentity,
+        unitOrder,
+      };
+      const dependentPosition: PathPosition = {
+        lessonId: canonicalUuidIdentity(String(dependent.id)),
+        lessonOrder: Number(dependent.display_order),
+        unitId: unitIdentity,
+        unitOrder,
+      };
+      if (comparePathPositions(prerequisitePosition, dependentPosition) >= 0) return false;
     }
     return true;
   };
@@ -870,9 +1020,14 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
       if (!unit) return { status: 404, body: { error: 'Course unit not found' }, commit: false };
       const lessonId = randomUUID();
       if (prerequisiteId !== null) {
-        // The target's id and position are already known, so the ordering rule
-        // is judged against the row that is about to exist.
-        const valid = await resolvePrerequisite(connection, courseId, lessonId, displayOrder, prerequisiteId);
+        // The target's id, unit and position are already known, so the ordering
+        // rule is judged against the row that is about to exist.
+        const valid = await resolvePrerequisite(connection, courseId, {
+          lessonId: canonicalUuidIdentity(lessonId),
+          lessonOrder: displayOrder,
+          unitId: canonicalUuidIdentity(unitId),
+          unitOrder: Number(unit.display_order),
+        }, prerequisiteId);
         if (!valid) return { status: 400, body: { error: 'Invalid course lesson prerequisite' }, commit: false };
       }
       // The release instant is written with `FROM_UNIXTIME(?)`, never as a
@@ -943,6 +1098,12 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
    * once. Only the positions of the selected lessons move: no other lesson is
    * renumbered, no other resource order or status is touched and no
    * ordering/normalisation policy is claimed.
+   *
+   * A position is part of the ONE learning-path order, so the batch is proved
+   * not to invert any prerequisite edge BEFORE the first UPDATE: both the edge of
+   * every selected lesson and the dependents that point into a moved lesson are
+   * checked, and an inversion refuses the whole batch with `409`. Nothing is
+   * renumbered silently to work around it.
    *
    * The response carries the canonical DTO of every SELECTED lesson, ordered
    * deterministically by the resulting (display_order, id) — it is not a
@@ -1025,6 +1186,83 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
 
       // Every changed row is written with the SAME bounded statement, in the
       // deterministic id order, and each one carries its own audit event.
+      //
+      // NOTHING is written before the FINAL order is proved not to invert a
+      // prerequisite edge. `display_order` is part of the learning-path order, so
+      // moving a lesson can break an edge in two directions:
+      //   (1) the moved lesson's OWN prerequisite may end up at or after it;
+      //   (2) a lesson that depends on a moved lesson may end up at or before it.
+      // Both are refused as a whole batch instead of committing an order the
+      // student path would then read backwards.
+      if (changed.length > 0) {
+        const unitOrder = Number(unit.display_order);
+        const unitIdentity = canonicalUuidIdentity(unitId);
+        const finalOrders = new Map<string, number>();
+        for (const row of locked) {
+          const identity = canonicalUuidIdentity(String(row.id));
+          const entry = changed.find(item => canonicalUuidIdentity(item.id) === identity);
+          finalOrders.set(identity, entry ? entry.to : Number(row.display_order));
+        }
+        const changedIds = new Set(changed.map(item => canonicalUuidIdentity(item.id)));
+
+        // (1) the edge of every selected lesson whose own position, or whose
+        // prerequisite's position, is part of this batch.
+        const prerequisiteIds = [
+          ...new Set(
+            locked
+              .map(row =>
+                row.prerequisite_lesson_id === null || row.prerequisite_lesson_id === undefined
+                  ? null
+                  : canonicalUuidIdentity(String(row.prerequisite_lesson_id))
+              )
+              .filter((id): id is string => id !== null)
+          ),
+        ];
+        const prerequisitePositions = await readPathPositions(connection, prerequisiteIds);
+        for (const row of locked) {
+          const targetIdentity = canonicalUuidIdentity(String(row.id));
+          const prerequisiteIdentity =
+            row.prerequisite_lesson_id === null || row.prerequisite_lesson_id === undefined
+              ? null
+              : canonicalUuidIdentity(String(row.prerequisite_lesson_id));
+          if (prerequisiteIdentity === null) continue;
+          if (!changedIds.has(targetIdentity) && !changedIds.has(prerequisiteIdentity)) continue;
+          const prerequisitePosition = prerequisitePositions.get(prerequisiteIdentity);
+          if (!prerequisitePosition) {
+            return {
+              status: 409,
+              body: { error: 'Course lesson prerequisite order would be invalidated' },
+              commit: false,
+            };
+          }
+          const targetPosition: PathPosition = {
+            lessonId: targetIdentity,
+            lessonOrder: finalOrders.get(targetIdentity) ?? Number(row.display_order),
+            unitId: unitIdentity,
+            unitOrder,
+          };
+          if (comparePathPositions(prerequisitePosition, targetPosition) >= 0) {
+            return {
+              status: 409,
+              body: { error: 'Course lesson prerequisite order would be invalidated' },
+              commit: false,
+            };
+          }
+        }
+
+        // (2) the dependents of exactly the MOVED lessons.
+        const movedFinalOrders = new Map<string, number>();
+        for (const entry of changed) movedFinalOrders.set(canonicalUuidIdentity(entry.id), entry.to);
+        const dependentsOrdered = await proveDependentOrder(connection, unitId, unitOrder, movedFinalOrders);
+        if (!dependentsOrdered) {
+          return {
+            status: 409,
+            body: { error: 'Course lesson prerequisite order would be invalidated' },
+            commit: false,
+          };
+        }
+      }
+
       for (const entry of changed) {
         const [updateResult] = await connection.execute(
           'UPDATE course_lessons SET display_order=? WHERE id=? AND unit_id=?',
@@ -1086,10 +1324,19 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
    * not-found result and no ownership is disclosed. A change to the current
    * values is a truthful no-op: no UPDATE and no audit event. A reordered
    * lesson only moves its own metadata position: no other lesson is
-   * renumbered and no ordering policy is claimed. The update and its audit
-   * event are committed together, and success is reported only after
-   * `commit()` resolves. `Cache-Control: no-store` is set before the first
-   * await / any denial.
+   * renumbered and no ordering policy is claimed.
+   *
+   * A position is part of the ONE learning-path order, so a write that moves a
+   * lesson must not leave any prerequisite edge pointing forwards: the moved
+   * lesson's own stored prerequisite and the dependents that point INTO the moved
+   * lesson are both re-proved, and an inversion is refused with `409` before
+   * anything is written. Archiving a lesson that an active lesson depends on is
+   * refused for the same reason — the prerequisite would leave the student path
+   * and strand its dependent. Prerequisites are never erased automatically.
+   *
+   * The update and its audit event are committed together, and success is
+   * reported only after `commit()` resolves. `Cache-Control: no-store` is set
+   * before the first await / any denial.
    */
   router.patch('/courses/:courseId/units/:unitId/lessons/:lessonId', async (req: AuthRequest, res: Response) => {
     res.set('Cache-Control', 'no-store');
@@ -1209,17 +1456,80 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
       const finalReleaseEpoch = releaseSupplied ? nextReleaseEpoch : currentReleaseEpoch;
       const finalPrerequisiteId = prerequisiteSupplied ? nextPrerequisiteId : currentPrerequisiteId;
 
-      // The prerequisite is validated against the target's FINAL position, so a
-      // request that moves the lesson and sets its prerequisite at the same time
-      // is judged against the row that will exist. A stored prerequisite that is
-      // being kept unchanged is NOT re-validated: an owner may archive or move an
-      // existing prerequisite without this patch refusing an unrelated edit.
-      if (prerequisiteSupplied && finalPrerequisiteId !== null) {
-        const valid = await resolvePrerequisite(
-          connection, courseId, lessonId, finalDisplayOrder, finalPrerequisiteId
+      const targetPosition: PathPosition = {
+        lessonId: canonicalUuidIdentity(lessonId),
+        lessonOrder: finalDisplayOrder,
+        unitId: canonicalUuidIdentity(unitId),
+        unitOrder: Number(unit.display_order),
+      };
+      const positionChanged = finalDisplayOrder !== currentDisplayOrder;
+
+      // ARCHIVING a lesson that an ACTIVE lesson depends on would take the
+      // prerequisite off every student path (the path reads active lessons only),
+      // so the dependent could never be completed again. The archive is refused
+      // and the edge is NEVER erased automatically: the owner has to clear it
+      // explicitly, which is a visible decision rather than a silent one.
+      if (currentStatus === 'active' && finalStatus === 'archived') {
+        const [dependentRows] = await connection.execute(
+          `SELECT l.id FROM course_lessons l JOIN course_units u ON u.id=l.unit_id
+           WHERE u.course_id=? AND l.prerequisite_lesson_id=? AND l.status='active' LIMIT 1`,
+          [courseId, lessonId]
         );
+        if ((((dependentRows as any[]) ?? [])[0])) {
+          return {
+            status: 409,
+            body: { error: 'Course lesson is a prerequisite of an active lesson' },
+            commit: false,
+          };
+        }
+      }
+
+      // An ASSERTED edge is judged against the target's FINAL position, so a
+      // request that moves the lesson and sets its prerequisite at the same time
+      // is judged against the row that will exist.
+      if (prerequisiteSupplied && finalPrerequisiteId !== null) {
+        const valid = await resolvePrerequisite(connection, courseId, targetPosition, finalPrerequisiteId);
         if (!valid) {
           return { status: 400, body: { error: 'Invalid course lesson prerequisite' }, commit: false };
+        }
+      }
+
+      // A STORED edge is not re-asserted on an unrelated edit, but any write that
+      // MOVES the target — or brings it back onto the path from archived — must
+      // not leave the edge pointing forwards. `display_order` is part of the one
+      // learning-path order, so a position-only patch can invert it on its own.
+      if (
+        !prerequisiteSupplied &&
+        finalStatus === 'active' &&
+        finalPrerequisiteId !== null &&
+        (positionChanged || (currentStatus !== 'active' && finalStatus === 'active'))
+      ) {
+        const positions = await readPathPositions(connection, [finalPrerequisiteId]);
+        const prerequisitePosition = positions.get(canonicalUuidIdentity(finalPrerequisiteId));
+        if (!prerequisitePosition || comparePathPositions(prerequisitePosition, targetPosition) >= 0) {
+          return {
+            status: 409,
+            body: { error: 'Course lesson prerequisite order would be invalidated' },
+            commit: false,
+          };
+        }
+      }
+
+      // Moving a lesson can also invert an edge INTO it from another active
+      // lesson of the same unit.
+      if (positionChanged) {
+        const movedFinalOrders = new Map<string, number>([
+          [canonicalUuidIdentity(lessonId), finalDisplayOrder],
+        ]);
+        const dependentsOrdered = await proveDependentOrder(
+          connection, unitId, Number(unit.display_order), movedFinalOrders
+        );
+        if (!dependentsOrdered) {
+          return {
+            status: 409,
+            body: { error: 'Course lesson prerequisite order would be invalidated' },
+            commit: false,
+          };
         }
       }
 

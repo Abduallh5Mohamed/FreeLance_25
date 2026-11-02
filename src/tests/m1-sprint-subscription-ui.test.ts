@@ -22,6 +22,9 @@ import type { SubscriptionsApi, SubscriptionsControllerHooks } from "../pages/Su
 
 // Inert api-http stub — only the pure helpers below are under test.
 const API_STUB = [
+  "export const AUTH_SESSION_CHANGED_EVENT = 'auth-session-changed';",
+  "export const signOutSession = async () => ({ serverRevoked: false, warning: null, sessionChanged: true });",
+  "export const verifyCurrentSession = async () => ({ state: 'anonymous' });",
   "export const getMyTenantBilling = async () => ({});",
   "export const submitInstructorTopup = async () => ({ id: 'topup', status: 'submitted' });",
   "export const getOwnTopupProofUrl = async () => ({ url: '', expires_in: 0 });",

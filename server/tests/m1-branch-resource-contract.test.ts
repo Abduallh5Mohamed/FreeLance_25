@@ -33,9 +33,16 @@ const BRANCH_B1 = 'branch-b1';
 const USER = 'user-1';
 const OWNER = 'user-owner';
 
+/**
+ * The route treats a client-supplied id as a selector and validates it as a
+ * UUID before any read, so the fixture id is a real UUID. The branch-ownership
+ * semantics under test are unaffected.
+ */
+const GROUP_ID = '11111111-1111-4111-8111-111111111111';
+
 const scope = (overrides: Partial<ResourceBranchScope> = {}): ResourceBranchScope => ({
     resourceType: 'group',
-    resourceId: 'group-1',
+    resourceId: GROUP_ID,
     tenantId: TENANT_A,
     scope: 'branch',
     branchId: BRANCH_A1,
@@ -80,7 +87,7 @@ const principal = (overrides: Record<string, unknown> = {}) => ({
 // ---------------------------------------------------------------------------
 test('branch resource: an active membership is allowed without any caller selector', async () => {
     const decision = await resolveResourceBranchAccess(deps(), principal(), {
-        resourceType: 'group', resourceId: 'group-1',
+        resourceType: 'group', resourceId: GROUP_ID,
     });
     assert.equal(decision.kind, 'allowed');
     assert.equal(decision.kind === 'allowed' && decision.scope, 'branch');
@@ -91,7 +98,7 @@ test('branch resource: deleting the selector cannot bypass the derived branch', 
     // No selector at all, no membership: the resource's own branch still
     // requires authority. This is the original bypass this task closes.
     const decision = await resolveResourceBranchAccess(deps({ membership: null }), principal(), {
-        resourceType: 'group', resourceId: 'group-1',
+        resourceType: 'group', resourceId: GROUP_ID,
     });
     assert.equal(decision.kind, 'denied');
     assert.equal(decision.kind === 'denied' && decision.reason, 'membership-missing');
@@ -99,7 +106,7 @@ test('branch resource: deleting the selector cannot bypass the derived branch', 
 
 test('branch resource: a forged/foreign selector is denied', async () => {
     const decision = await resolveResourceBranchAccess(deps(), principal(), {
-        resourceType: 'group', resourceId: 'group-1', requestedBranchId: BRANCH_A2,
+        resourceType: 'group', resourceId: GROUP_ID, requestedBranchId: BRANCH_A2,
     });
     assert.equal(decision.kind, 'denied');
     assert.equal(decision.kind === 'denied' && decision.reason, 'branch-context-mismatch');
@@ -107,7 +114,7 @@ test('branch resource: a forged/foreign selector is denied', async () => {
 
 test('branch resource: a malformed selector is denied even with a valid membership', async () => {
     const decision = await resolveResourceBranchAccess(deps(), principal(), {
-        resourceType: 'group', resourceId: 'group-1', requestedBranchId: '../etc/passwd',
+        resourceType: 'group', resourceId: GROUP_ID, requestedBranchId: '../etc/passwd',
     });
     assert.equal(decision.kind, 'denied');
     assert.equal(decision.kind === 'denied' && decision.reason, 'malformed-branch-id');
@@ -117,7 +124,7 @@ test('branch resource: same-tenant cross-branch membership is denied', async () 
     const decision = await resolveResourceBranchAccess(
         deps({ membership: { branch_id: BRANCH_A2, user_id: USER, role: 'student', status: 'active', version: 0 } }),
         principal(),
-        { resourceType: 'group', resourceId: 'group-1' },
+        { resourceType: 'group', resourceId: GROUP_ID },
     );
     assert.equal(decision.kind, 'denied');
     assert.equal(decision.kind === 'denied' && decision.reason, 'membership-missing');
@@ -127,7 +134,7 @@ test('branch resource: a revoked membership denies the next request', async () =
     const decision = await resolveResourceBranchAccess(
         deps({ membership: { branch_id: BRANCH_A1, user_id: USER, role: 'student', status: 'revoked', version: 1 } }),
         principal(),
-        { resourceType: 'group', resourceId: 'group-1' },
+        { resourceType: 'group', resourceId: GROUP_ID },
     );
     assert.equal(decision.kind, 'denied');
     assert.equal(decision.kind === 'denied' && decision.reason, 'membership-not-active');
@@ -137,7 +144,7 @@ test('branch resource: a version bump rejects a token minted before it', async (
     const decision = await resolveResourceBranchAccess(
         deps({ membership: { branch_id: BRANCH_A1, user_id: USER, role: 'student', status: 'active', version: 4 } }),
         principal({ scopedBranchId: BRANCH_A1, scopedBranchMembershipVersion: 3 }),
-        { resourceType: 'group', resourceId: 'group-1' },
+        { resourceType: 'group', resourceId: GROUP_ID },
     );
     assert.equal(decision.kind, 'denied');
     assert.equal(decision.kind === 'denied' && decision.reason, 'membership-version-mismatch');
@@ -147,7 +154,7 @@ test('branch resource: a token scoped to another branch is denied', async () => 
     const decision = await resolveResourceBranchAccess(
         deps(),
         principal({ scopedBranchId: BRANCH_A2, scopedBranchMembershipVersion: 0 }),
-        { resourceType: 'group', resourceId: 'group-1' },
+        { resourceType: 'group', resourceId: GROUP_ID },
     );
     assert.equal(decision.kind, 'denied');
     assert.equal(decision.kind === 'denied' && decision.reason, 'branch-context-mismatch');
@@ -155,7 +162,7 @@ test('branch resource: a token scoped to another branch is denied', async () => 
 
 test('branch resource: cross-tenant access is denied', async () => {
     const decision = await resolveResourceBranchAccess(deps(), principal({ tenantId: TENANT_B }), {
-        resourceType: 'group', resourceId: 'group-1',
+        resourceType: 'group', resourceId: GROUP_ID,
     });
     assert.equal(decision.kind, 'denied');
     assert.equal(decision.kind === 'denied' && decision.reason, 'resource-cross-tenant');
@@ -165,7 +172,7 @@ test('branch resource: a suspended branch is denied for members and owners', asy
     const decision = await resolveResourceBranchAccess(
         deps({ branch: { id: BRANCH_A1, tenant_id: TENANT_A, status: 'suspended', version: 1 } }),
         principal({ role: 'instructor' }),
-        { resourceType: 'group', resourceId: 'group-1' },
+        { resourceType: 'group', resourceId: GROUP_ID },
     );
     assert.equal(decision.kind, 'denied');
     assert.equal(decision.kind === 'denied' && decision.reason, 'branch-not-active');
@@ -173,20 +180,20 @@ test('branch resource: a suspended branch is denied for members and owners', asy
 
 test('branch resource: the tenant owner path is explicit and tenant-bound', async () => {
     const allowed = await resolveResourceBranchAccess(deps({ owner: true, membership: null }), principal({ role: 'instructor' }), {
-        resourceType: 'group', resourceId: 'group-1',
+        resourceType: 'group', resourceId: GROUP_ID,
     });
     assert.equal(allowed.kind, 'allowed');
     const crossTenant = await resolveResourceBranchAccess(
         deps({ owner: true, membership: null }),
         principal({ role: 'instructor', tenantId: TENANT_B }),
-        { resourceType: 'group', resourceId: 'group-1' },
+        { resourceType: 'group', resourceId: GROUP_ID },
     );
     assert.equal(crossTenant.kind, 'denied');
 });
 
 test('branch resource: a verified platform operator keeps the narrow platform path', async () => {
     const decision = await resolveResourceBranchAccess(deps({ platform: true, membership: null }), principal({ role: 'admin', tenantId: null }), {
-        resourceType: 'group', resourceId: 'group-1',
+        resourceType: 'group', resourceId: GROUP_ID,
     });
     assert.equal(decision.kind, 'allowed');
     assert.equal(decision.kind === 'allowed' && decision.membershipRole, 'platform');
@@ -222,7 +229,7 @@ test('ambiguous branch ownership is denied and reported, never widened to tenant
         recordAmbiguity: async () => { reported += 1; },
     };
     const decision = await resolveResourceBranchAccess(ambiguousDeps, principal(), {
-        resourceType: 'group', resourceId: 'group-1',
+        resourceType: 'group', resourceId: GROUP_ID,
     });
     assert.equal(decision.kind, 'ambiguous');
     assert.equal(reported, 1);
@@ -232,7 +239,7 @@ test('an unprovable tenant is denied instead of falling back to tenant-wide', as
     const decision = await resolveResourceBranchAccess(
         deps({ resource: scope({ tenantId: null }) }),
         principal(),
-        { resourceType: 'group', resourceId: 'group-1' },
+        { resourceType: 'group', resourceId: GROUP_ID },
     );
     assert.equal(decision.kind, 'denied');
     assert.equal(decision.kind === 'denied' && decision.reason, 'resource-tenant-unprovable');
@@ -249,7 +256,7 @@ test('a missing resource is indistinguishable from an unauthorized one', async (
 test('database failures propagate so the handler fails closed', async () => {
     await assert.rejects(
         resolveResourceBranchAccess(deps({ loadError: new Error('isolated db unavailable') }), principal(), {
-            resourceType: 'group', resourceId: 'group-1',
+            resourceType: 'group', resourceId: GROUP_ID,
         }),
         /isolated db unavailable/,
     );
@@ -278,7 +285,7 @@ const listen = async (app: express.Express): Promise<{ server: Server; base: str
 };
 
 const groupRow = {
-    id: 'group-1', name: 'Group', description: null, course_id: 'course-1', grade_id: null,
+    id: GROUP_ID, name: 'Group', description: null, course_id: 'course-1', grade_id: null,
     max_students: 30, current_students: 0, is_active: 1, schedule_days: null, schedule_time: null,
     instructor_id: USER, branch_id: BRANCH_A1, branch_scope: 'branch',
 };
@@ -310,9 +317,9 @@ const buildGroupsApp = (options: {
     };
     const branchAccess: ResourceBranchDeps = {
         loadResourceScope: async () => options.group === undefined
-            ? scope({ resourceType: 'group', resourceId: 'group-1' })
+            ? scope({ resourceType: 'group', resourceId: GROUP_ID })
             : scope({
-                resourceType: 'group', resourceId: 'group-1',
+                resourceType: 'group', resourceId: GROUP_ID,
                 branchId: options.group.branch_id, scope: options.group.branch_scope === 'branch' ? 'branch' : 'tenant',
             }),
         findBranch: async () => options.branch === null
@@ -343,7 +350,7 @@ test('groups handler: an active branch membership reads the group', async () => 
     const app = buildGroupsApp();
     const { server, base } = await listen(app);
     try {
-        const response = await fetch(`${base}/groups/group-1`, { headers: { 'x-test-user': asUser() } });
+        const response = await fetch(`${base}/groups/${GROUP_ID}`, { headers: { 'x-test-user': asUser() } });
         assert.equal(response.status, 200);
     } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
 });
@@ -352,7 +359,7 @@ test('groups handler: omitting the selector does not bypass a branch-owned group
     const app = buildGroupsApp({ membership: null });
     const { server, base } = await listen(app);
     try {
-        const response = await fetch(`${base}/groups/group-1`, { headers: { 'x-test-user': asUser() } });
+        const response = await fetch(`${base}/groups/${GROUP_ID}`, { headers: { 'x-test-user': asUser() } });
         assert.equal(response.status, 404);
     } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
 });
@@ -361,7 +368,7 @@ test('groups handler: a revoked membership denies the next request', async () =>
     const app = buildGroupsApp({ membership: { status: 'revoked', version: 2 } });
     const { server, base } = await listen(app);
     try {
-        const response = await fetch(`${base}/groups/group-1`, { headers: { 'x-test-user': asUser() } });
+        const response = await fetch(`${base}/groups/${GROUP_ID}`, { headers: { 'x-test-user': asUser() } });
         assert.equal(response.status, 403);
     } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
 });
@@ -370,7 +377,7 @@ test('groups handler: a token minted before a version bump is denied on the next
     const app = buildGroupsApp({ membership: { status: 'active', version: 5 } });
     const { server, base } = await listen(app);
     try {
-        const response = await fetch(`${base}/groups/group-1`, {
+        const response = await fetch(`${base}/groups/${GROUP_ID}`, {
             headers: { 'x-test-user': asUser({ branchId: BRANCH_A1, branchMembershipVersion: 4 }) },
         });
         assert.equal(response.status, 403);
@@ -381,7 +388,7 @@ test('groups handler: a foreign selector is denied', async () => {
     const app = buildGroupsApp();
     const { server, base } = await listen(app);
     try {
-        const response = await fetch(`${base}/groups/group-1`, {
+        const response = await fetch(`${base}/groups/${GROUP_ID}`, {
             method: 'PUT',
             headers: { 'x-test-user': asUser(), 'content-type': 'application/json' },
             body: JSON.stringify({ branch_id: BRANCH_A2 }),
@@ -439,7 +446,7 @@ const branchRepository = (options: {
     findStaffIdentity: async () => null,
     findInstructorAccount: async () => null,
     findStudentEnrollments: async () => [{
-        id: 'enrollment-1', user_id: USER, tenant_id: TENANT_A, instructor_id: 'instructor-1', group_id: 'group-1', grade_id: null,
+        id: 'enrollment-1', user_id: USER, tenant_id: TENANT_A, instructor_id: 'instructor-1', group_id: GROUP_ID, grade_id: null,
     }],
     findActiveTenantMemberships: async () => [{ tenant_id: TENANT_A }],
     findBranchSession: async (branchId: string) => ({

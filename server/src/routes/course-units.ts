@@ -682,6 +682,32 @@ export const createCourseUnitsRouter = (deps: CourseUnitsDeps): Router => {
       const finalName = nextName === null ? currentName : nextName;
       const finalDisplayOrder = nextDisplayOrder === null ? currentDisplayOrder : nextDisplayOrder;
       const finalStatus = nextStatus === null ? currentStatus : nextStatus;
+      // ARCHIVING a unit takes every lesson it holds off the student path (the
+      // path reads active units only). If one of those lessons is the
+      // prerequisite of an ACTIVE lesson elsewhere in the course, that dependent
+      // could never be completed again — the lesson it waits for would no longer
+      // appear anywhere. The archive is refused and the edge is NEVER erased
+      // automatically: the owner has to clear it explicitly.
+      //
+      // This is the ONE statement in this router that reads the M2-23
+      // `course_lessons.prerequisite_lesson_id` column, so unit archival now
+      // requires the additive 20261023_04 migration. On a database without it the
+      // statement fails closed (500) instead of archiving a unit that would strand
+      // a dependent lesson.
+      if (currentStatus === 'active' && finalStatus === 'archived') {
+        const [dependentRows] = await connection.execute(
+          `SELECT d.id FROM course_lessons p
+           JOIN course_units pu ON pu.id=p.unit_id
+           JOIN course_lessons d ON d.prerequisite_lesson_id=p.id AND d.status='active'
+           WHERE pu.course_id=? AND p.unit_id=? AND p.status='active'
+           LIMIT 1`,
+          [courseId, unitId]
+        );
+        if ((((dependentRows as any[]) ?? [])[0])) {
+          await rollbackOrDiscard();
+          return res.status(409).json({ error: 'Course unit contains a prerequisite of an active lesson' });
+        }
+      }
       if (finalName === currentName && finalDisplayOrder === currentDisplayOrder && finalStatus === currentStatus) {
         // Truthful no-op: identical values write and audit nothing.
         const currentDto = courseUnitDto(current);
@@ -692,6 +718,54 @@ export const createCourseUnitsRouter = (deps: CourseUnitsDeps): Router => {
         }
         await rollbackOrDiscard();
         return res.json({ unit: currentDto });
+      }
+      // A unit's display_order is the FIRST key of the student learning-path
+      // order `(unit.display_order, unit.id, lesson.display_order, lesson.id)`,
+      // so moving an ACTIVE unit can invert an ACTIVE prerequisite edge that
+      // crosses the unit boundary even though no lesson row changes:
+      //   * OUTGOING — an active lesson of this unit waits on a lesson of a
+      //     unit that would sort AFTER this unit's FINAL position;
+      //   * INCOMING — an active lesson of an earlier-or-tied unit waits on a
+      //     lesson of this unit.
+      // The comparison uses the FINAL unit position and the unit id as the
+      // tie-breaker, exactly as the student path reads a tie. Reactivating an
+      // archived unit is proved too, because its lessons return to the path.
+      // Both proofs are bounded existence reads (LIMIT 1) that run BEFORE the
+      // UPDATE: an inversion answers 409 with no UPDATE and no audit, and a
+      // database error fails closed through the catch below. A rename-only
+      // edit, a truthful no-op and an archive are not re-judged.
+      const movesUnitPosition =
+        finalStatus === 'active' &&
+        (finalDisplayOrder !== currentDisplayOrder || currentStatus !== 'active');
+      if (movesUnitPosition) {
+        const [outgoingRows] = await connection.execute(
+          `SELECT l.id FROM course_lessons l
+           JOIN course_lessons p ON p.id=l.prerequisite_lesson_id
+           JOIN course_units pu ON pu.id=p.unit_id
+           WHERE l.unit_id=? AND l.status='active'
+             AND p.unit_id<>? AND p.status='active' AND pu.status='active'
+             AND (pu.display_order>? OR (pu.display_order=? AND pu.id>?))
+           LIMIT 1`,
+          [unitId, unitId, finalDisplayOrder, finalDisplayOrder, unitId]
+        );
+        if ((((outgoingRows as any[]) ?? [])[0])) {
+          await rollbackOrDiscard();
+          return res.status(409).json({ error: 'Course unit prerequisite order would be invalidated' });
+        }
+        const [incomingRows] = await connection.execute(
+          `SELECT l.id FROM course_lessons l
+           JOIN course_units lu ON lu.id=l.unit_id
+           JOIN course_lessons p ON p.id=l.prerequisite_lesson_id
+           WHERE p.unit_id=? AND p.status='active'
+             AND l.unit_id<>? AND l.status='active' AND lu.status='active'
+             AND (lu.display_order<? OR (lu.display_order=? AND lu.id<?))
+           LIMIT 1`,
+          [unitId, unitId, finalDisplayOrder, finalDisplayOrder, unitId]
+        );
+        if ((((incomingRows as any[]) ?? [])[0])) {
+          await rollbackOrDiscard();
+          return res.status(409).json({ error: 'Course unit prerequisite order would be invalidated' });
+        }
       }
       const [updateResult] = await connection.execute(
         'UPDATE course_units SET name=?,display_order=?,status=? WHERE id=? AND course_id=?',

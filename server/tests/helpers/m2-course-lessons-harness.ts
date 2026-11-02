@@ -153,6 +153,13 @@ export const ABSENT_COURSE = 'd1000000-0000-4000-8000-000000000000';
 export const UNIT_A1 = 'e1000000-0000-4000-8000-000000000001';
 export const UNIT_A1_ARCHIVED = 'e1000000-0000-4000-8000-000000000002';
 export const UNIT_A2 = 'e1000000-0000-4000-8000-000000000003';
+/**
+ * M2-23 ordering: a SECOND ACTIVE unit of COURSE_A1 whose position is AFTER
+ * `UNIT_A1`. It is deliberately NOT part of `makeState()` — the suites that pin
+ * exact row counts must keep their baseline — so a suite that needs a cross-unit
+ * edge pushes this unit and `LESSON_LATER` onto its own state.
+ */
+export const UNIT_A1_LATER = 'e1000000-0000-4000-8000-000000000004';
 export const UNIT_B1 = 'f1000000-0000-4000-8000-000000000001';
 export const UNIT_C1 = 'f2000000-0000-4000-8000-000000000001';
 export const ABSENT_UNIT = 'f3000000-0000-4000-8000-000000000000';
@@ -161,6 +168,8 @@ export const LESSON_1 = '11110000-0000-4000-8000-000000000001';
 export const LESSON_2 = '11110000-0000-4000-8000-000000000002';
 export const LESSON_3 = '11110000-0000-4000-8000-000000000003';
 export const LESSON_ARCHIVED = '11110000-0000-4000-8000-000000000004';
+/** The single lesson of `UNIT_A1_LATER`; also NOT part of `makeState()`. */
+export const LESSON_LATER = '11110000-0000-4000-8000-000000000005';
 export const LESSON_OTHER_UNIT = '22220000-0000-4000-8000-000000000001';
 export const LESSON_UNIT_B = '33330000-0000-4000-8000-000000000001';
 export const ABSENT_LESSON = '44440000-0000-4000-8000-000000000000';
@@ -265,6 +274,14 @@ export interface State {
   failRollback: boolean;
   failLessonSelect: boolean;
   failReadBack: boolean;
+  /** M2-23: fail the single-lesson prerequisite proof. */
+  failPrerequisiteSelect: boolean;
+  /** M2-23: report more dependents than the handler can prove in one read. */
+  dependentsOverflow: boolean;
+  /** M2-23: fail the dependent proof read. */
+  failDependentSelect: boolean;
+  /** M2-23: fail the single-lesson UPDATE (after the lock, before the audit). */
+  failUpdate: boolean;
   failBatchLock: boolean;
   failBatchRead: boolean;
   /** Fail the Nth reorder UPDATE (1-based) inside a batch. */
@@ -377,6 +394,10 @@ export function makeState(): State {
     failRollback: false,
     failLessonSelect: false,
     failReadBack: false,
+    failPrerequisiteSelect: false,
+    dependentsOverflow: false,
+    failDependentSelect: false,
+    failUpdate: false,
     failBatchLock: false,
     failBatchRead: false,
     failReorderUpdateAt: null,
@@ -400,12 +421,39 @@ export const LESSON_PROJECTION =
 export const OWNER_SELECT =
   'SELECT t.owner_user_id,t.status AS tenant_status,u.is_active AS caller_active FROM tenants t JOIN users u ON u.id=? WHERE t.id=?';
 export const COURSE_SELECT = 'SELECT c.id,c.tenant_id FROM courses c WHERE c.id=? AND c.tenant_id=? AND c.is_active=1';
-export const UNIT_SELECT = 'SELECT u.id,u.course_id FROM course_units u WHERE u.id=? AND u.course_id=?';
+export const UNIT_SELECT = 'SELECT u.id,u.course_id,u.display_order FROM course_units u WHERE u.id=? AND u.course_id=?';
 export const LIST_SQL =
   `SELECT ${LESSON_PROJECTION} FROM course_lessons l WHERE l.unit_id=? AND (l.display_order>? OR (l.display_order=? AND l.id>?)) ` +
   'ORDER BY l.display_order ASC, l.id ASC LIMIT ?';
 export const LESSON_SELECT = `SELECT ${LESSON_PROJECTION} FROM course_lessons l WHERE l.id=? AND l.unit_id=? LIMIT 1`;
 export const LESSON_LOCK_SELECT = `SELECT ${LESSON_PROJECTION} FROM course_lessons l WHERE l.id=? AND l.unit_id=? FOR UPDATE`;
+/**
+ * M2-23 prerequisite proof: one candidate lesson with the course it belongs to
+ * AND its unit's position, so the handler can prove "same course, active lesson,
+ * active unit, sorts earlier under the learning-path order" before writing.
+ */
+export const PREREQUISITE_SELECT =
+  'SELECT l.id,l.status,l.display_order,l.prerequisite_lesson_id, u.id AS unit_id,' +
+  'u.display_order AS unit_order,u.status AS unit_status,u.course_id ' +
+  'FROM course_lessons l JOIN course_units u ON u.id=l.unit_id WHERE l.id=? LIMIT 1';
+/** M2-23 bounded cycle walk: one stored edge per hop. */
+export const CHAIN_SELECT = 'SELECT l.id,l.prerequisite_lesson_id FROM course_lessons l WHERE l.id=? LIMIT 1';
+/** M2-23 path-position read: the order keys of the named lessons. */
+export const PATH_POSITION_PREFIX =
+  'SELECT l.id,l.display_order,u.id AS unit_id,u.display_order AS unit_order ' +
+  'FROM course_lessons l JOIN course_units u ON u.id=l.unit_id WHERE l.id IN (';
+/**
+ * M2-23 dependent proof: the ACTIVE lessons of one unit that point INTO one of
+ * the moved lessons, bounded by the handler's own provable limit.
+ */
+export const DEPENDENT_ORDER_PREFIX =
+  "SELECT l.id,l.display_order,l.prerequisite_lesson_id FROM course_lessons l " +
+  "WHERE l.unit_id=? AND l.status='active' AND l.prerequisite_lesson_id IN (";
+export const DEPENDENT_ORDER_SUFFIX = ' LIMIT ?';
+/** M2-23 archive guard: does an ACTIVE lesson depend on the lesson being archived? */
+export const ARCHIVE_DEPENDENT_SELECT =
+  "SELECT l.id FROM course_lessons l JOIN course_units u ON u.id=l.unit_id " +
+  "WHERE u.course_id=? AND l.prerequisite_lesson_id=? AND l.status='active' LIMIT 1";
 export const BATCH_LOCK_PREFIX = `SELECT ${LESSON_PROJECTION} FROM course_lessons l WHERE l.unit_id=? AND l.id IN (`;
 export const BATCH_LOCK_SUFFIX = ') ORDER BY l.id ASC FOR UPDATE';
 export const BATCH_READ_SUFFIX = ') ORDER BY l.display_order ASC, l.id ASC';
@@ -545,7 +593,7 @@ export function buildHarness(state: State, modules: AppModules): Harness {
       events.push('unit');
       if (state.failUnitSelect) throw new Error('unit lookup failed: internal detail leaked');
       const unit = state.units.find(u => sameStoredId(u.id, params[0]) && sameStoredId(u.course_id, params[1]));
-      return [unit ? [{ id: unit.id, course_id: unit.course_id }] : [], []];
+      return [unit ? [{ id: unit.id, course_id: unit.course_id, display_order: unit.display_order }] : [], []];
     }
 
     if (n === LIST_SQL) {
@@ -573,6 +621,84 @@ export function buildHarness(state: State, modules: AppModules): Harness {
       if (state.failReadBack) return [[], []];
       const row = lessonRow(String(params[0]), String(params[1]));
       return [row ? [projectedRow(row)] : [], []];
+    }
+
+    if (n === PREREQUISITE_SELECT) {
+      events.push('prerequisite');
+      if (state.failPrerequisiteSelect) throw new Error('prerequisite lookup failed: internal detail leaked');
+      const row = state.lessons.find(l => sameStoredId(l.id, String(params[0]))) ?? null;
+      if (!row) return [[], []];
+      const unit = state.units.find(u => sameStoredId(u.id, row.unit_id));
+      if (!unit) return [[], []];
+      return [[{
+        id: row.id,
+        status: row.status,
+        display_order: row.display_order,
+        prerequisite_lesson_id: row.prerequisite_lesson_id ?? null,
+        unit_id: unit.id,
+        unit_order: unit.display_order,
+        unit_status: unit.status,
+        course_id: unit.course_id,
+      }], []];
+    }
+
+    if (n.startsWith(PATH_POSITION_PREFIX) && n.endsWith(')')) {
+      events.push('path_position');
+      if (state.failDependentSelect) throw new Error('path position lookup failed: internal detail leaked');
+      const ids = params.map(String);
+      const rows = state.lessons
+        .filter(l => ids.some(id => sameStoredId(l.id, id)))
+        .map(l => {
+          const unit = state.units.find(u => sameStoredId(u.id, l.unit_id));
+          return unit
+            ? { id: l.id, display_order: l.display_order, unit_id: unit.id, unit_order: unit.display_order }
+            : null;
+        })
+        .filter(Boolean);
+      return [rows, []];
+    }
+
+    if (n.startsWith(DEPENDENT_ORDER_PREFIX) && n.endsWith(DEPENDENT_ORDER_SUFFIX)) {
+      events.push('dependent_order');
+      if (state.failDependentSelect) throw new Error('dependent lookup failed: internal detail leaked');
+      const unitId = String(params[0]);
+      const ids = params.slice(1, -1).map(String);
+      const limit = Number(params[params.length - 1]);
+      if (state.dependentsOverflow) {
+        // One row MORE than the handler's provable bound: the read succeeded but
+        // the set cannot be proved ordered, so the write must be refused.
+        return [Array.from({ length: limit }, (_unused, index) => ({
+          id: `overflow-${index}`, display_order: index, prerequisite_lesson_id: ids[0],
+        })), []];
+      }
+      const rows = state.lessons
+        .filter(l => sameStoredId(l.unit_id, unitId))
+        .filter(l => l.status === 'active')
+        .filter(l => l.prerequisite_lesson_id !== null && l.prerequisite_lesson_id !== undefined)
+        .filter(l => ids.some(id => sameStoredId(l.prerequisite_lesson_id, id)))
+        .sort((x, y) => (x.display_order - y.display_order) || compareStoredIds(x.id, y.id))
+        .slice(0, limit)
+        .map(l => ({ id: l.id, display_order: l.display_order, prerequisite_lesson_id: l.prerequisite_lesson_id }));
+      return [rows, []];
+    }
+
+    if (n === ARCHIVE_DEPENDENT_SELECT) {
+      events.push('archive_dependent');
+      const [courseId, prerequisiteId] = params.map(String);
+      const row = state.lessons.find(l => {
+        if (l.status !== 'active') return false;
+        if (l.prerequisite_lesson_id === null || l.prerequisite_lesson_id === undefined) return false;
+        if (!sameStoredId(l.prerequisite_lesson_id, prerequisiteId)) return false;
+        const unit = state.units.find(u => sameStoredId(u.id, l.unit_id));
+        return !!unit && sameStoredId(unit.course_id, courseId);
+      });
+      return [row ? [{ id: row.id }] : [], []];
+    }
+
+    if (n === CHAIN_SELECT) {
+      events.push('chain');
+      const row = state.lessons.find(l => sameStoredId(l.id, String(params[0]))) ?? null;
+      return [row ? [{ id: row.id, prerequisite_lesson_id: row.prerequisite_lesson_id ?? null }] : [], []];
     }
 
     if (n.startsWith(BATCH_LOCK_PREFIX) && n.endsWith(BATCH_LOCK_SUFFIX)) {
@@ -630,6 +756,7 @@ export function buildHarness(state: State, modules: AppModules): Harness {
 
     if (n === UPDATE_SQL) {
       events.push('update');
+      if (state.failUpdate) throw new Error('UPDATE course_lessons failed: internal detail leaked');
       const [title, description, displayOrder, status, prerequisiteId, id, unitId] = params;
       const affected = state.affectedRowsOverride ?? 1;
       if (affected === 1) {
@@ -639,6 +766,10 @@ export function buildHarness(state: State, modules: AppModules): Harness {
           row.description = description === null || description === undefined ? null : String(description);
           row.display_order = Number(displayOrder);
           row.status = String(status);
+          // The NULL branch of the release column: an explicit clear must
+          // actually clear the fixture, otherwise a "cleared" date would
+          // survive the rollback assertions.
+          row.release_at = null;
           row.prerequisite_lesson_id = prerequisiteId === null || prerequisiteId === undefined ? null : String(prerequisiteId);
           row.updated_at = stamp(10, 0);
         }
@@ -648,6 +779,7 @@ export function buildHarness(state: State, modules: AppModules): Harness {
 
     if (n === UPDATE_SQL_WITH_RELEASE) {
       events.push('update');
+      if (state.failUpdate) throw new Error('UPDATE course_lessons failed: internal detail leaked');
       const [title, description, displayOrder, status, releaseEpoch, prerequisiteId, id, unitId] = params;
       const affected = state.affectedRowsOverride ?? 1;
       if (affected === 1) {

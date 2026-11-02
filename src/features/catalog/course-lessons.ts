@@ -170,6 +170,22 @@ export const COURSE_LESSON_DESCRIPTION_INVALID_MESSAGE =
 export const COURSE_LESSON_ORDER_INVALID_MESSAGE =
   'موضع الدرس يجب أن يكون رقمًا صحيحًا بين 0 و2147483647.';
 
+/** Local validation wording for the optional release instant. */
+export const COURSE_LESSON_RELEASE_INVALID_MESSAGE =
+  'وقت الإتاحة يجب أن يكون لحظة UTC صريحة مثل 2026-11-01T09:00:00Z، أو فارغًا لإلغاء الجدولة.';
+
+/** Local validation wording for the optional prerequisite selector. */
+export const COURSE_LESSON_PREREQUISITE_INVALID_MESSAGE =
+  'الدرس السابق يجب أن يكون درسًا سابقًا في نفس الكورس، أو «بدون» لإلغاء الشرط.';
+
+/** The release schedule is an ACCESS rule, not a publication switch. */
+export const COURSE_LESSON_RELEASE_NOTICE =
+  'وقت الإتاحة يحدّد متى يظهر الدرس للتلميذ، ولا ينشر الكورس ولا يمنح أي صلاحية.';
+
+/** The prerequisite is a PROGRESSION rule, not an enrollment or payment rule. */
+export const COURSE_LESSON_PREREQUISITE_NOTICE =
+  'الدرس السابق يجب أن يكون درسًا نشطًا في نفس الكورس ويأتي قبله في الترتيب، وألا يصنع دورة.';
+
 /** Local wording when the editor holds no change at all. */
 export const COURSE_LESSON_NO_CHANGES_MESSAGE = 'لا توجد تغييرات لحفظها.';
 
@@ -494,12 +510,14 @@ export const COURSE_LESSON_DISPLAY_ORDER_MAX = 2147483647;
 /** The engineering bound on the optional free-text description. */
 export const COURSE_LESSON_DESCRIPTION_MAX = 10000;
 
-/** The exact eight server-projected fields, sorted for an exact key check. */
+/** The exact ten server-projected fields, sorted for an exact key check. */
 const COURSE_LESSON_KEYS = [
   'created_at',
   'description',
   'display_order',
   'id',
+  'prerequisite_lesson_id',
+  'release_at',
   'status',
   'title',
   'unit_id',
@@ -542,6 +560,68 @@ export function parseCourseLessonDescription(raw: string): string | null {
   return raw;
 }
 
+/**
+ * The release draft the teacher typed.
+ *
+ * `''` is an explicit "no schedule" and yields `null`. A non-empty value must be
+ * an EXPLICIT UTC instant: `YYYY-MM-DDTHH:MM[:SS][.sss]Z`. A local wall time, an
+ * offset such as `+02:00`, a date-only value and a bare epoch are all refused,
+ * because converting any of them would mean the client inventing a time zone.
+ * The accepted value is normalised to the canonical `Date#toISOString()` shape
+ * so the transport and the server agree byte for byte.
+ *
+ * Returns `undefined` for an invalid draft (the caller refuses locally), `null`
+ * for "no schedule" and the canonical string otherwise.
+ */
+export function parseCourseLessonRelease(raw: string): string | null | undefined {
+  const text = (raw ?? '').trim();
+  if (text.length === 0) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d{1,3}))?Z$/.exec(text);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = match[6] === undefined ? 0 : Number(match[6]);
+  const millis = match[7] === undefined ? 0 : Number(match[7].padEnd(3, '0'));
+  if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+  if (hour > 23 || minute > 59 || second > 59) return undefined;
+  const utc = Date.UTC(year, month - 1, day, hour, minute, second, millis);
+  const check = new Date(utc);
+  // `Date.UTC` normalises an impossible calendar date (2026-02-30 becomes
+  // 2026-03-02); a normalised value is not the instant the teacher wrote.
+  if (
+    check.getUTCFullYear() !== year ||
+    check.getUTCMonth() !== month - 1 ||
+    check.getUTCDate() !== day
+  ) {
+    return undefined;
+  }
+  // The server's TIMESTAMP column cannot represent an instant outside this
+  // range, so the client refuses it locally instead of sending a value the
+  // server would refuse.
+  const epoch = Math.floor(utc / 1000);
+  if (epoch < 1 || epoch > 2147483647) return undefined;
+  return check.toISOString();
+}
+
+/**
+ * The prerequisite draft the teacher selected.
+ *
+ * `''` is an explicit "no prerequisite" and yields `null`. A non-empty value
+ * must be a UUID and is canonicalised to lowercase, because the declared
+ * collation compares the case variants as one identity.
+ *
+ * Returns `undefined` for an invalid draft.
+ */
+export function parseCourseLessonPrerequisite(raw: string): string | null | undefined {
+  const text = (raw ?? '').trim();
+  if (text.length === 0) return null;
+  if (!UUID_PATTERN.test(text)) return undefined;
+  return text.toLowerCase();
+}
+
 export type CourseLessonParseResult =
   | { readonly ok: true; readonly lesson: CourseLesson }
   | { readonly ok: false };
@@ -571,6 +651,8 @@ export function parseCourseLesson(body: unknown, expectedUnitId: string): Course
   const description = row.description;
   const displayOrder = row.display_order;
   const status = row.status;
+  const releaseAt = row.release_at;
+  const prerequisiteLessonId = row.prerequisite_lesson_id;
   const createdAt = row.created_at;
   const updatedAt = row.updated_at;
   if (!isNonEmptyString(id) || !UUID_PATTERN.test(id)) return { ok: false };
@@ -587,6 +669,16 @@ export function parseCourseLesson(body: unknown, expectedUnitId: string): Course
   if (!Number.isInteger(displayOrder)) return { ok: false };
   if (displayOrder < 0 || displayOrder > COURSE_LESSON_DISPLAY_ORDER_MAX) return { ok: false };
   if (status !== 'active' && status !== 'archived') return { ok: false };
+  // M2-23 — the release instant is a canonical UTC ISO string or exactly null.
+  // A local time, a date-only value or an offset is not the documented
+  // projection and is refused rather than interpreted.
+  if (releaseAt !== null && !isCanonicalInstant(releaseAt)) return { ok: false };
+  // M2-23 — the prerequisite is a lesson id or exactly null.
+  if (prerequisiteLessonId !== null) {
+    if (typeof prerequisiteLessonId !== 'string' || !UUID_PATTERN.test(prerequisiteLessonId)) {
+      return { ok: false };
+    }
+  }
   if (!isCanonicalInstant(createdAt)) return { ok: false };
   if (!isCanonicalInstant(updatedAt)) return { ok: false };
   const keys = Object.keys(row).sort();
@@ -603,6 +695,8 @@ export function parseCourseLesson(body: unknown, expectedUnitId: string): Course
       description: description as string | null,
       display_order: displayOrder,
       status,
+      release_at: releaseAt as string | null,
+      prerequisite_lesson_id: prerequisiteLessonId as string | null,
       created_at: createdAt,
       updated_at: updatedAt,
     },
@@ -758,6 +852,13 @@ export interface CourseLessonFormState {
   clearDescription: boolean;
   /** The user's metadata-position draft, exactly as typed. */
   orderDraft: string;
+  /**
+   * M2-23 — the release instant draft, exactly as typed. Empty means "no
+   * schedule"; a non-empty value must be an explicit UTC instant.
+   */
+  releaseDraft: string;
+  /** M2-23 — the selected prerequisite lesson id, or '' for "none". */
+  prerequisiteDraft: string;
   /** The lesson the edit form is bound to. */
   targetId: string | null;
   /** The lesson title the edit form was opened for (display only). */
@@ -768,6 +869,10 @@ export interface CourseLessonFormState {
   originalDescription: string | null;
   /** The server-confirmed position the edit form was opened with. */
   originalOrder: string | null;
+  /** The server-confirmed release instant the edit form was opened with. */
+  originalRelease: string | null;
+  /** The server-confirmed prerequisite the edit form was opened with. */
+  originalPrerequisite: string | null;
   /** The selected rows and their typed positions, in page order. */
   reorderDrafts: CourseLessonReorderDraft[];
   error: string | null;
@@ -816,11 +921,15 @@ const closedForm = (): CourseLessonFormState => ({
   descriptionDraft: '',
   clearDescription: false,
   orderDraft: '',
+  releaseDraft: '',
+  prerequisiteDraft: '',
   targetId: null,
   targetTitle: null,
   originalTitle: null,
   originalDescription: null,
   originalOrder: null,
+  originalRelease: null,
+  originalPrerequisite: null,
   reorderDrafts: [],
   error: null,
 });
@@ -864,7 +973,13 @@ export interface CourseLessonApi {
   createLesson?: (
     courseId: string,
     unitId: string,
-    input: { title: string; description?: string | null; display_order?: number },
+    input: {
+      title: string;
+      description?: string | null;
+      display_order?: number;
+      release_at?: string | null;
+      prerequisite_lesson_id?: string | null;
+    },
   ) => Promise<CourseLessonEnvelope>;
   /** Accepted M2-B05 owner-only update through the canonical transport. */
   updateLesson?: (
@@ -876,6 +991,8 @@ export interface CourseLessonApi {
       description?: string | null;
       display_order?: number;
       status?: CourseLessonStatus;
+      release_at?: string | null;
+      prerequisite_lesson_id?: string | null;
     },
   ) => Promise<CourseLessonEnvelope>;
   /** Accepted M2-B05 owner-only atomic batch reorder. */
@@ -917,6 +1034,10 @@ export interface CourseLessonController {
   setClearDescription(clear: boolean): void;
   /** Updates the position draft without issuing a request. */
   updateOrderDraft(value: string): void;
+  /** M2-23 — updates the release-instant draft without issuing a request. */
+  updateReleaseDraft(value: string): void;
+  /** M2-23 — updates the prerequisite selector without issuing a request. */
+  updatePrerequisiteDraft(value: string): void;
   /** Closes the form; a late reply can never reopen or mutate it. */
   cancelForm(): void;
   /** Explicit single-flight create (owner-only, server-authoritative). */
@@ -947,7 +1068,13 @@ type ReadMode = 'open' | 'page' | 'refresh' | 'reconcile' | 'post-write';
 type LessonWriteRequest =
   | {
       readonly kind: 'create';
-      readonly body: { title: string; description?: string | null; display_order?: number };
+      readonly body: {
+        title: string;
+        description?: string | null;
+        display_order?: number;
+        release_at?: string | null;
+        prerequisite_lesson_id?: string | null;
+      };
     }
   | {
       readonly kind: 'edit';
@@ -956,6 +1083,8 @@ type LessonWriteRequest =
         title?: string;
         description?: string | null;
         display_order?: number;
+        release_at?: string | null;
+        prerequisite_lesson_id?: string | null;
       };
       /** A position change re-reads the page so the canonical order is shown. */
       readonly refreshAfter: boolean;
@@ -1585,11 +1714,15 @@ export function createCourseLessonController(
         descriptionDraft: '',
         clearDescription: false,
         orderDraft: '',
+        releaseDraft: '',
+        prerequisiteDraft: '',
         targetId: null,
         targetTitle: null,
         originalTitle: null,
         originalDescription: null,
         originalOrder: null,
+        originalRelease: null,
+        originalPrerequisite: null,
         reorderDrafts: [],
         error: null,
       });
@@ -1607,11 +1740,17 @@ export function createCourseLessonController(
         descriptionDraft: row.description ?? '',
         clearDescription: false,
         orderDraft: String(row.display_order),
+        // The stored instant is shown as the canonical UTC string it is, so
+        // the teacher edits the same value the server holds.
+        releaseDraft: row.release_at ?? '',
+        prerequisiteDraft: row.prerequisite_lesson_id ?? '',
         targetId: row.id,
         targetTitle: row.title,
         originalTitle: row.title,
         originalDescription: row.description,
         originalOrder: String(row.display_order),
+        originalRelease: row.release_at,
+        originalPrerequisite: row.prerequisite_lesson_id,
         reorderDrafts: [],
         error: null,
       });
@@ -1640,6 +1779,18 @@ export function createCourseLessonController(
       formGeneration += 1;
       patchForm({ orderDraft: value, error: null });
     },
+    updateReleaseDraft: (value) => {
+      if (disposed) return;
+      if (state.form.mode === 'closed') return;
+      formGeneration += 1;
+      patchForm({ releaseDraft: value, error: null });
+    },
+    updatePrerequisiteDraft: (value) => {
+      if (disposed) return;
+      if (state.form.mode === 'closed') return;
+      formGeneration += 1;
+      patchForm({ prerequisiteDraft: value, error: null });
+    },
     cancelForm: () => {
       if (disposed) return;
       if (state.form.mode === 'closed') return;
@@ -1654,7 +1805,13 @@ export function createCourseLessonController(
         patchForm({ error: COURSE_LESSON_TITLE_INVALID_MESSAGE });
         return Promise.resolve();
       }
-      const body: { title: string; description?: string | null; display_order?: number } = { title };
+      const body: {
+        title: string;
+        description?: string | null;
+        display_order?: number;
+        release_at?: string | null;
+        prerequisite_lesson_id?: string | null;
+      } = { title };
       const rawDescription = state.form.descriptionDraft;
       if (rawDescription.length > 0) {
         const description = parseCourseLessonDescription(rawDescription);
@@ -1673,6 +1830,21 @@ export function createCourseLessonController(
         }
         body.display_order = order;
       }
+      // M2-23 — an empty release draft is "no schedule" and is NOT sent: the
+      // create contract treats an omitted field and an explicit null the same
+      // way, and omitting keeps the request minimal.
+      const release = parseCourseLessonRelease(state.form.releaseDraft);
+      if (release === undefined) {
+        patchForm({ error: COURSE_LESSON_RELEASE_INVALID_MESSAGE });
+        return Promise.resolve();
+      }
+      if (release !== null) body.release_at = release;
+      const prerequisite = parseCourseLessonPrerequisite(state.form.prerequisiteDraft);
+      if (prerequisite === undefined) {
+        patchForm({ error: COURSE_LESSON_PREREQUISITE_INVALID_MESSAGE });
+        return Promise.resolve();
+      }
+      if (prerequisite !== null) body.prerequisite_lesson_id = prerequisite;
       const operation = runWrite({ kind: 'create', body });
       track(operation);
       return operation;
@@ -1685,7 +1857,15 @@ export function createCourseLessonController(
       const originalTitle = state.form.originalTitle ?? '';
       const originalDescription = state.form.originalDescription;
       const originalOrder = state.form.originalOrder ?? '';
-      const body: { title?: string; description?: string | null; display_order?: number } = {};
+      const originalRelease = state.form.originalRelease;
+      const originalPrerequisite = state.form.originalPrerequisite;
+      const body: {
+        title?: string;
+        description?: string | null;
+        display_order?: number;
+        release_at?: string | null;
+        prerequisite_lesson_id?: string | null;
+      } = {};
       const trimmedTitle = state.form.titleDraft.trim();
       const changedTitle = trimmedTitle !== originalTitle;
       if (changedTitle) {
@@ -1723,7 +1903,34 @@ export function createCourseLessonController(
         }
         body.display_order = order;
       }
-      if (!changedTitle && !changedDescription && !changedOrder) {
+      // M2-23 — the release instant is sent only when it CHANGED. An empty
+      // draft is the explicit clear and is sent as `null`. The comparison is on
+      // the NORMALISED instant, so re-typing the same instant in another
+      // accepted shape (`…T09:00Z` vs `…T09:00:00.000Z`) is a truthful no-op
+      // instead of a write the server would report as unchanged.
+      const parsedRelease = parseCourseLessonRelease(state.form.releaseDraft);
+      if (parsedRelease === undefined) {
+        patchForm({ error: COURSE_LESSON_RELEASE_INVALID_MESSAGE });
+        return Promise.resolve();
+      }
+      const changedRelease = parsedRelease !== originalRelease;
+      if (changedRelease) {
+        body.release_at = parsedRelease;
+      }
+      // M2-23 — same rule for the prerequisite. The comparison is on the
+      // canonical (lowercase) identity, so re-selecting the stored lesson in a
+      // different case is a truthful no-op rather than a write.
+      const changedPrerequisite =
+        state.form.prerequisiteDraft.trim().toLowerCase() !== (originalPrerequisite ?? '').toLowerCase();
+      if (changedPrerequisite) {
+        const prerequisite = parseCourseLessonPrerequisite(state.form.prerequisiteDraft);
+        if (prerequisite === undefined) {
+          patchForm({ error: COURSE_LESSON_PREREQUISITE_INVALID_MESSAGE });
+          return Promise.resolve();
+        }
+        body.prerequisite_lesson_id = prerequisite;
+      }
+      if (!changedTitle && !changedDescription && !changedOrder && !changedRelease && !changedPrerequisite) {
         // Nothing changed: no request is sent at all.
         patchForm({ error: COURSE_LESSON_NO_CHANGES_MESSAGE });
         return Promise.resolve();

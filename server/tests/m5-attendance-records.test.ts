@@ -120,7 +120,9 @@ const auditAction = (executed: { sql: string; params: unknown[] }[], action: str
     executed.find((e) => e.sql.includes('INSERT INTO audit_events') && (e.params[3] as string) === action);
 
 const sessionLoad = (sql: string) => sql.includes('FROM schedule_sessions') && sql.includes('WHERE id = ? AND tenant_id = ?');
-const eligibleQuery = (sql: string) => sql.includes('FROM students s LEFT JOIN');
+/** Current locking eligibility read: `SELECT s.id FROM students s ... FOR UPDATE`. */
+const lockingEligibilityQuery = (sql: string) =>
+    sql.includes('SELECT s.id FROM students s') && sql.includes('s.id IN (') && sql.includes('FOR UPDATE');
 const existingQuery = (sql: string) => sql.includes('FROM attendance_records') && sql.includes('student_id=?');
 const inserted = (executed: { sql: string }[]) => executed.some((e) => e.sql.includes('INSERT INTO attendance_records'));
 const updated = (executed: { sql: string }[]) => executed.some((e) => e.sql.includes('UPDATE attendance_records'));
@@ -132,6 +134,49 @@ const sessionRecord = {
 };
 
 const recordRow = { id: 'ar-1', tenant_id: 'tenant-a', session_id: 'se-1', student_id: 'stu-1', state: 'absent', reason: null, version: 1 };
+
+const SESSION_TENANT = 'tenant-a';
+const SESSION_GROUP = 'grp-1';
+const SESSION_BRANCH: string | null = null;
+
+/**
+ * Answer the session load only for the exact canonical row id/tenant. A fake
+ * response can never authorize a foreign session just because the SQL shape
+ * matched.
+ */
+const sessionRows = (
+    sql: string,
+    params: unknown[],
+    row: typeof sessionRecord = sessionRecord,
+): unknown[] | null => {
+    if (!sessionLoad(sql)) return null;
+    return params[0] === row.id && params[1] === row.tenant_id ? [row] : [];
+};
+
+/**
+ * Model the current locking eligibility read. The tenant, group/branch scope and
+ * every requested student id are enforced here, so the fake data cannot grant
+ * eligibility to a wrong tenant, group or student. Only declared students are
+ * returned, in request order (the route applies no fake ordering).
+ */
+const eligibleRows = (
+    sql: string,
+    params: unknown[],
+    allowedIds: readonly string[],
+): unknown[] | null => {
+    if (!lockingEligibilityQuery(sql)) return null;
+    const inList = /s\.id IN \(([^)]*)\)/.exec(sql)?.[1] ?? '';
+    const placeholderCount = (inList.match(/\?/g) ?? []).length;
+    const tenantId = params[0];
+    const requested = params.slice(1, 1 + placeholderCount) as string[];
+    const scopeId = params[1 + placeholderCount];
+    const groupScoped = sql.includes('AND s.group_id = ?');
+    const branchScoped = sql.includes('AND g.branch_id = ?');
+    if (tenantId !== SESSION_TENANT) return [];
+    if (groupScoped && scopeId !== SESSION_GROUP) return [];
+    if (branchScoped && scopeId !== SESSION_BRANCH) return [];
+    return requested.filter((studentId) => allowedIds.includes(studentId)).map((id) => ({ id }));
+};
 
 // --- single mark ---
 test('attendance: anonymous mark is 401 with no data access', async () => {
@@ -168,20 +213,29 @@ test('attendance: a cancelled session cannot be marked (409)', async () => {
 });
 
 test('attendance: a student not enrolled in the session is 403 and no write', async () => {
-    const { router, executed } = buildRouter((sql) => {
-        if (sessionLoad(sql)) return [sessionRecord];
-        if (eligibleQuery(sql)) return [];
+    const { router, executed } = buildRouter((sql, params) => {
+        const session = sessionRows(sql, params);
+        if (session) return session;
+        const eligible = eligibleRows(sql, params, []);
+        if (eligible) return eligible;
         return [];
     });
     const response = await invokeRoute(router, { method: 'POST', url: '/sessions/se-1/records', token: INSTRUCTOR_A, body: { student_id: 'stu-9', state: 'present' } });
     assert.equal(response.statusCode, 403);
+    const eligibility = executed.find((e) => lockingEligibilityQuery(e.sql));
+    assert.ok(eligibility, 'eligibility is read through the current locking query');
+    assert.match(eligibility!.sql, /s\.group_id = \?/);
+    assert.equal(eligibility!.params[0], SESSION_TENANT);
+    assert.equal(eligibility!.params[eligibility!.params.length - 1], SESSION_GROUP);
     assert.equal(inserted(executed), false);
 });
 
 test('attendance: a new mark inserts, audits actor/time/reason and returns 201', async () => {
-    const { router, executed } = buildRouter((sql) => {
-        if (sessionLoad(sql)) return [sessionRecord];
-        if (eligibleQuery(sql)) return [{ id: 'stu-1' }];
+    const { router, executed } = buildRouter((sql, params) => {
+        const session = sessionRows(sql, params);
+        if (session) return session;
+        const eligible = eligibleRows(sql, params, ['stu-1']);
+        if (eligible) return eligible;
         if (existingQuery(sql)) return [];
         return [];
     });
@@ -191,6 +245,10 @@ test('attendance: a new mark inserts, audits actor/time/reason and returns 201',
     });
     assert.equal(response.statusCode, 201);
     assert.equal((response.body as { state?: string }).state, 'present');
+    const eligibility = executed.find((e) => lockingEligibilityQuery(e.sql));
+    assert.ok(eligibility);
+    assert.match(eligibility!.sql, /FOR UPDATE/);
+    assert.equal(eligibility!.params[eligibility!.params.length - 1], SESSION_GROUP);
     const insert = executed.find((e) => e.sql.includes('INSERT INTO attendance_records'));
     assert.ok(insert);
     assert.match(insert!.sql, /marked_at/);
@@ -201,9 +259,11 @@ test('attendance: a new mark inserts, audits actor/time/reason and returns 201',
 });
 
 test('attendance: an identical re-mark is idempotent (200, no write)', async () => {
-    const { router, executed } = buildRouter((sql) => {
-        if (sessionLoad(sql)) return [sessionRecord];
-        if (eligibleQuery(sql)) return [{ id: 'stu-1' }];
+    const { router, executed } = buildRouter((sql, params) => {
+        const session = sessionRows(sql, params);
+        if (session) return session;
+        const eligible = eligibleRows(sql, params, ['stu-1']);
+        if (eligible) return eligible;
         if (existingQuery(sql)) return [{ ...recordRow, state: 'present' }];
         return [];
     });
@@ -218,9 +278,11 @@ test('attendance: an identical re-mark is idempotent (200, no write)', async () 
 });
 
 test('attendance: a changed re-mark becomes an audited correction (before/after)', async () => {
-    const { router, executed } = buildRouter((sql) => {
-        if (sessionLoad(sql)) return [sessionRecord];
-        if (eligibleQuery(sql)) return [{ id: 'stu-1' }];
+    const { router, executed } = buildRouter((sql, params) => {
+        const session = sessionRows(sql, params);
+        if (session) return session;
+        const eligible = eligibleRows(sql, params, ['stu-1']);
+        if (eligible) return eligible;
         if (existingQuery(sql)) return [recordRow];
         return [];
     });
@@ -243,9 +305,11 @@ test('attendance: a changed re-mark becomes an audited correction (before/after)
 test('attendance: a duplicate-key race on the first mark returns the existing row as unchanged (no 500)', async () => {
     let recordLookups = 0;
     let insertAttempts = 0;
-    const db = makeFakeDataAccess((sql) => {
-        if (sessionLoad(sql)) return [{ ...sessionRecord, status: 'scheduled' }];
-        if (eligibleQuery(sql)) return [{ id: 'stu-1' }];
+    const db = makeFakeDataAccess((sql, params) => {
+        const session = sessionRows(sql, params, { ...sessionRecord, status: 'scheduled' });
+        if (session) return session;
+        const eligible = eligibleRows(sql, params, ['stu-1']);
+        if (eligible) return eligible;
         if (existingQuery(sql)) {
             recordLookups += 1;
             return recordLookups === 1 ? [] : [{ ...recordRow, state: 'present' }];
@@ -309,9 +373,11 @@ test('attendance: bulk mark rejects an empty or duplicate payload with 400', asy
 });
 
 test('attendance: bulk mark with an ineligible student writes nothing (403)', async () => {
-    const { router, executed } = buildRouter((sql) => {
-        if (sessionLoad(sql)) return [sessionRecord];
-        if (eligibleQuery(sql)) return [{ id: 'stu-1' }];
+    const { router, executed } = buildRouter((sql, params) => {
+        const session = sessionRows(sql, params);
+        if (session) return session;
+        const eligible = eligibleRows(sql, params, ['stu-1']);
+        if (eligible) return eligible;
         return [];
     });
     const response = await invokeRoute(router, {
@@ -319,6 +385,11 @@ test('attendance: bulk mark with an ineligible student writes nothing (403)', as
         body: { records: [{ student_id: 'stu-1', state: 'present' }, { student_id: 'stu-2', state: 'absent' }] },
     });
     assert.equal(response.statusCode, 403);
+    const eligibility = executed.find((e) => lockingEligibilityQuery(e.sql));
+    assert.ok(eligibility, 'the whole batch is checked with the current locking query');
+    assert.deepEqual(eligibility!.params.slice(1, -1), ['stu-1', 'stu-2']);
+    assert.equal(eligibility!.params[0], SESSION_TENANT);
+    assert.equal(eligibility!.params[eligibility!.params.length - 1], SESSION_GROUP);
     assert.equal(inserted(executed), false);
 });
 
@@ -326,8 +397,10 @@ test('attendance: bulk mark is atomic and reports created/corrected/unchanged', 
     // The existing-record lookup is answered per student: stu-2 is already
     // present (idempotent), stu-3 is already absent (correction), stu-1 is new.
     const db = makeFakeDataAccess((sql, params) => {
-        if (sessionLoad(sql)) return [sessionRecord];
-        if (eligibleQuery(sql)) return [{ id: 'stu-1' }, { id: 'stu-2' }, { id: 'stu-3' }];
+        const session = sessionRows(sql, params);
+        if (session) return session;
+        const eligible = eligibleRows(sql, params, ['stu-1', 'stu-2', 'stu-3']);
+        if (eligible) return eligible;
         if (existingQuery(sql)) {
             const studentId = params[2];
             if (studentId === 'stu-2') return [{ ...recordRow, id: 'ar-2', student_id: 'stu-2', state: 'present' }];
@@ -368,6 +441,12 @@ test('attendance: bulk mark is atomic and reports created/corrected/unchanged', 
 // --- correction endpoint ---
 const correctionLoad = (sql: string) => sql.includes('FROM attendance_records a') && sql.includes('INNER JOIN schedule_sessions ss');
 
+/** The correction lookup only resolves the exact canonical record id/tenant. */
+const correctionRows = (sql: string, params: unknown[], row = recordRow): unknown[] | null => {
+    if (!correctionLoad(sql)) return null;
+    return params[0] === row.id && params[1] === row.tenant_id ? [row] : [];
+};
+
 test('attendance: correction rejects a missing reason and an unknown record', async () => {
     const noReason = buildRouter(() => []);
     assert.equal((await invokeRoute(noReason.router, { method: 'POST', url: '/records/ar-1/correct', token: INSTRUCTOR_A, body: { state: 'present' } })).statusCode, 400);
@@ -382,7 +461,11 @@ test('attendance: a correction to the same state is 409', async () => {
 });
 
 test('attendance: correction is audited with before/after', async () => {
-    const { router, executed } = buildRouter((sql) => (correctionLoad(sql) ? [recordRow] : []));
+    const { router, executed } = buildRouter((sql, params) => {
+        const session = sessionRows(sql, params);
+        if (session) return session;
+        return correctionRows(sql, params) ?? [];
+    });
     const response = await invokeRoute(router, { method: 'POST', url: '/records/ar-1/correct', token: INSTRUCTOR_A, body: { state: 'excused', reason: 'medical note' } });
     assert.equal(response.statusCode, 200);
     assert.equal(updated(executed), true);
@@ -402,6 +485,7 @@ test('attendance: correction is scoped by the session visibility predicate (deny
     assert.ok(load);
     assert.match(load!.sql, /instructor_id = \?/);
     assert.equal(load!.params[1], 'tenant-a');
+    assert.equal(updated(executed), false);
 });
 
 // ---------------------------------------------------------------------------
@@ -440,7 +524,13 @@ const buildBranchBoundRouter = (responder: (sql: string, params: unknown[]) => u
 };
 
 test('attendance: a verified branch membership alone does not widen the staff session load', async () => {
-    const { router, executed } = buildBranchBoundRouter(() => []);
+    const foreignSession = { ...sessionRecord, id: 'se-foreign', created_by: 'instructor-other' };
+    const { router, executed } = buildBranchBoundRouter((sql, params) => {
+        const session = sessionRows(sql, params, foreignSession);
+        if (session) return session;
+        if (sql.includes('FROM `groups`') && sql.includes('FOR UPDATE')) return [];
+        return [];
+    });
     const response = await invokeRoute(router, {
         method: 'POST', url: '/sessions/se-foreign/records', token: BRANCH_BOUND_INSTRUCTOR,
         body: { student_id: 'stu-1', state: 'present' },
@@ -448,15 +538,22 @@ test('attendance: a verified branch membership alone does not widen the staff se
     assert.equal(response.statusCode, 404);
     const load = executed.find((e) => sessionLoad(e.sql));
     assert.ok(load);
-    assert.match(load!.sql, /group_id IN \(SELECT id FROM `groups` WHERE instructor_id = \?\)/);
+    assert.match(load!.sql, /WHERE id = \? AND tenant_id = \? LIMIT 1 FOR UPDATE/);
+    assert.doesNotMatch(load!.sql, /group_id IN/);
     assert.doesNotMatch(load!.sql, /branch_id = \?/);
     assert.equal(load!.params.includes('br-1'), false);
+    const groupLock = executed.find((e) => e.sql.includes('FROM `groups`') && e.sql.includes('FOR UPDATE'));
+    assert.ok(groupLock, 'the exact assigned group is re-read under a lock');
+    assert.deepEqual(groupLock!.params, [SESSION_GROUP, SESSION_TENANT]);
+    assert.equal(inserted(executed), false);
 });
 
 test('attendance: a changed re-mark without a reason is 400 with no writes and no audit', async () => {
-    const { router, executed } = buildRouter((sql) => {
-        if (sessionLoad(sql)) return [sessionRecord];
-        if (eligibleQuery(sql)) return [{ id: 'stu-1' }];
+    const { router, executed } = buildRouter((sql, params) => {
+        const session = sessionRows(sql, params);
+        if (session) return session;
+        const eligible = eligibleRows(sql, params, ['stu-1']);
+        if (eligible) return eligible;
         if (existingQuery(sql)) return [recordRow];
         return [];
     });
@@ -472,9 +569,11 @@ test('attendance: a changed re-mark without a reason is 400 with no writes and n
 
 test('attendance: a blank or whitespace-only reason on a correction is 400 with no writes', async () => {
     for (const reason of [undefined, '', '   ']) {
-        const { router, executed } = buildRouter((sql) => {
-            if (sessionLoad(sql)) return [sessionRecord];
-            if (eligibleQuery(sql)) return [{ id: 'stu-1' }];
+        const { router, executed } = buildRouter((sql, params) => {
+            const session = sessionRows(sql, params);
+            if (session) return session;
+            const eligible = eligibleRows(sql, params, ['stu-1']);
+            if (eligible) return eligible;
             if (existingQuery(sql)) return [recordRow];
             return [];
         });
@@ -487,7 +586,11 @@ test('attendance: a blank or whitespace-only reason on a correction is 400 with 
         assert.equal(auditAction(executed, 'attendance.correct'), undefined);
     }
     // The dedicated correction endpoint denies the same blank/whitespace reason.
-    const { router, executed } = buildRouter((sql) => (correctionLoad(sql) ? [recordRow] : []));
+    const { router, executed } = buildRouter((sql, params) => {
+        const session = sessionRows(sql, params);
+        if (session) return session;
+        return correctionRows(sql, params) ?? [];
+    });
     const direct = await invokeRoute(router, {
         method: 'POST', url: '/records/ar-1/correct', token: INSTRUCTOR_A, body: { state: 'excused', reason: ' \t ' },
     });
@@ -496,9 +599,11 @@ test('attendance: a blank or whitespace-only reason on a correction is 400 with 
 });
 
 test('attendance: a valid correction through the mark path keeps the reason on the row', async () => {
-    const { router, executed } = buildRouter((sql) => {
-        if (sessionLoad(sql)) return [sessionRecord];
-        if (eligibleQuery(sql)) return [{ id: 'stu-1' }];
+    const { router, executed } = buildRouter((sql, params) => {
+        const session = sessionRows(sql, params);
+        if (session) return session;
+        const eligible = eligibleRows(sql, params, ['stu-1']);
+        if (eligible) return eligible;
         if (existingQuery(sql)) return [recordRow];
         return [];
     });
@@ -516,10 +621,14 @@ test('attendance: a valid correction through the mark path keeps the reason on t
 });
 
 test('attendance: a bulk batch containing a reasonless correction is rejected 400 with no writes', async () => {
-    const { router, executed } = buildRouter((sql) => {
-        if (sessionLoad(sql)) return [sessionRecord];
-        if (eligibleQuery(sql)) return [{ id: 'stu-1' }, { id: 'stu-2' }];
-        if (existingQuery(sql)) return [{ ...recordRow, student_id: 'stu-1' }];
+    const { router, executed } = buildRouter((sql, params) => {
+        const session = sessionRows(sql, params);
+        if (session) return session;
+        const eligible = eligibleRows(sql, params, ['stu-1', 'stu-2']);
+        if (eligible) return eligible;
+        if (existingQuery(sql)) {
+            return params[2] === 'stu-1' ? [{ ...recordRow, student_id: 'stu-1' }] : [];
+        }
         return [];
     });
     const response = await invokeRoute(router, {
@@ -565,9 +674,11 @@ test('attendance: a student only ever reads their own records', async () => {
 
 // --- audit failure rolls back ---
 test('attendance: an audit failure fails the mark (500)', async () => {
-    const db = makeFakeDataAccess((sql) => {
-        if (sessionLoad(sql)) return [sessionRecord];
-        if (eligibleQuery(sql)) return [{ id: 'stu-1' }];
+    const db = makeFakeDataAccess((sql, params) => {
+        const session = sessionRows(sql, params);
+        if (session) return session;
+        const eligible = eligibleRows(sql, params, ['stu-1']);
+        if (eligible) return eligible;
         return [];
     });
     const execute = async (sql: string, params?: unknown[]) => {
@@ -592,8 +703,10 @@ test('attendance: an audit failure fails the mark (500)', async () => {
 // --- stale-version corrections through the mark path ---
 const buildStaleVersionRouter = (rows: Record<string, { id: string; state: string }>) => {
     const db = makeFakeDataAccess((sql, params) => {
-        if (sessionLoad(sql)) return [sessionRecord];
-        if (eligibleQuery(sql)) return Object.keys(rows).map((id) => ({ id }));
+        const session = sessionRows(sql, params);
+        if (session) return session;
+        const eligible = eligibleRows(sql, params, Object.keys(rows));
+        if (eligible) return eligible;
         if (existingQuery(sql)) {
             const row = rows[params[2] as string];
             return row ? [{ ...recordRow, id: row.id, student_id: params[2], state: row.state }] : [];
@@ -685,7 +798,8 @@ const emulateStaffRecordList = (pool: Record<string, unknown>[]) => (sql: string
 };
 
 const buildStaffRecordsRouter = (pool: Record<string, unknown>[]) => buildRouter((sql, params) => {
-    if (sessionLoad(sql)) return [sessionRecord];
+    const session = sessionRows(sql, params);
+    if (session) return session;
     return emulateStaffRecordList(pool)(sql, params);
 });
 
@@ -811,7 +925,11 @@ test('attendance: the student /me history rejects an inverted range with 400 and
 });
 
 test('attendance: the correction endpoint writes reason and correction_reason like the mark path', async () => {
-    const { router, executed } = buildRouter((sql) => (correctionLoad(sql) ? [recordRow] : []));
+    const { router, executed } = buildRouter((sql, params) => {
+        const session = sessionRows(sql, params);
+        if (session) return session;
+        return correctionRows(sql, params) ?? [];
+    });
     const response = await invokeRoute(router, {
         method: 'POST', url: '/records/ar-1/correct', token: INSTRUCTOR_A, body: { state: 'excused', reason: 'medical note' },
     });

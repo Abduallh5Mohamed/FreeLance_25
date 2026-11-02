@@ -229,6 +229,23 @@ interface State {
     failReadBack: boolean;
     affectedRowsOverride: number | null;
     malformedEpoch: MalformedEpoch;
+    /**
+     * M2-23: the declared lesson prerequisites of this fixture. Only the archive
+     * guard reads them, and it needs BOTH sides of the edge: the dependent lesson
+     * (`lesson_id`, `unit_id`, `status`) and the prerequisite it points at
+     * (`prerequisite_lesson_id`, `prerequisite_unit_id`, `prerequisite_status`).
+     */
+    prerequisiteEdges: Array<{
+        lesson_id: string;
+        unit_id: string;
+        status: string;
+        prerequisite_lesson_id: string;
+        prerequisite_unit_id: string;
+        prerequisite_status: string;
+    }>;
+    failArchiveDependent: boolean;
+    /** M2-23: force the unit-order prerequisite proof to fail closed. */
+    failOrderProof: boolean;
 }
 
 const identity = (): IdentityRow => ({ is_active: 1, token_version: 0, suspension_active: 0 });
@@ -289,6 +306,10 @@ function makeState(): State {
             { id: UNIT_B1, course_id: COURSE_B1, name: 'Foreign Unit', display_order: 0, status: 'active', created_at: stamp(8, 3), updated_at: stamp(8, 3) },
             { id: UNIT_C1, course_id: COURSE_NULL, name: 'Orphan Unit', display_order: 0, status: 'active', created_at: stamp(8, 4), updated_at: stamp(8, 4) },
         ],
+        // M2-23 prerequisite edges. The unit router never manages lessons, so the
+        // fixture only has to answer "does an ACTIVE lesson depend on a lesson of
+        // this unit?" — the edges are declared by the tests that need them.
+        prerequisiteEdges: [],
         unitClock: 0,
         failAcquire: false,
         failBegin: false,
@@ -303,6 +324,8 @@ function makeState(): State {
         failReadBack: false,
         affectedRowsOverride: null,
         malformedEpoch: 'none',
+        failArchiveDependent: false,
+        failOrderProof: false,
     };
 }
 
@@ -318,6 +341,21 @@ const UNIT_SELECT = 'SELECT u.id,u.course_id,u.name,u.display_order,u.status,UNI
 const UNIT_LOCK_SELECT = 'SELECT u.id,u.course_id,u.name,u.display_order,u.status,UNIX_TIMESTAMP(u.created_at) AS created_at_epoch,UNIX_TIMESTAMP(u.updated_at) AS updated_at_epoch FROM course_units u WHERE u.id=? AND u.course_id=? FOR UPDATE';
 const INSERT_UNIT_SQL = 'INSERT INTO course_units (id,course_id,name,display_order,status) VALUES (?,?,?,?,?)';
 const UPDATE_UNIT_SQL = 'UPDATE course_units SET name=?,display_order=?,status=? WHERE id=? AND course_id=?';
+/**
+ * M2-23 archive guard: is a lesson of this unit the prerequisite of an ACTIVE
+ * lesson of the same course?
+ */
+const ARCHIVE_DEPENDENT_SELECT = "SELECT d.id FROM course_lessons p JOIN course_units pu ON pu.id=p.unit_id JOIN course_lessons d ON d.prerequisite_lesson_id=p.id AND d.status='active' WHERE pu.course_id=? AND p.unit_id=? AND p.status='active' LIMIT 1";
+/**
+ * M2-23 unit-order proof: an active lesson of the moved unit waits on a lesson
+ * of a unit that sorts AFTER the moved unit's FINAL (display_order, id).
+ */
+const UNIT_ORDER_OUTGOING_SELECT = "SELECT l.id FROM course_lessons l JOIN course_lessons p ON p.id=l.prerequisite_lesson_id JOIN course_units pu ON pu.id=p.unit_id WHERE l.unit_id=? AND l.status='active' AND p.unit_id<>? AND p.status='active' AND pu.status='active' AND (pu.display_order>? OR (pu.display_order=? AND pu.id>?)) LIMIT 1";
+/**
+ * M2-23 unit-order proof: an active lesson of an earlier-or-tied unit waits on
+ * a lesson of the moved unit.
+ */
+const UNIT_ORDER_INCOMING_SELECT = "SELECT l.id FROM course_lessons l JOIN course_units lu ON lu.id=l.unit_id JOIN course_lessons p ON p.id=l.prerequisite_lesson_id WHERE p.unit_id=? AND p.status='active' AND l.unit_id<>? AND l.status='active' AND lu.status='active' AND (lu.display_order<? OR (lu.display_order=? AND lu.id<?)) LIMIT 1";
 const AUDIT_SQL = 'INSERT INTO audit_events (id,actor_user_id,tenant_id,action,resource_type,resource_id,old_value,new_value) VALUES (?,?,?,?,?,?,?,?)';
 
 interface Harness {
@@ -438,6 +476,62 @@ function buildHarness(state: State): Harness {
                 created_at: created, updated_at: created,
             });
             return [{ affectedRows: 1, insertId: String(id) }, []];
+        }
+
+        if (n === ARCHIVE_DEPENDENT_SELECT) {
+            events.push('archive_dependent');
+            if (state.failArchiveDependent) throw new Error('archive dependent lookup failed: internal detail leaked');
+            const [courseId, unitId] = params.map(String);
+            // `p` is an ACTIVE lesson of the unit being archived, `d` is an ACTIVE
+            // lesson of the same course that points at it.
+            const dependent = state.prerequisiteEdges.find(edge => {
+                if (edge.status !== 'active') return false;
+                if (edge.prerequisite_status !== 'active') return false;
+                if (edge.prerequisite_unit_id !== unitId) return false;
+                const unit = state.units.find(u => u.id === edge.unit_id);
+                return !!unit && unit.course_id === courseId;
+            });
+            return [dependent ? [{ id: dependent.lesson_id }] : [], []];
+        }
+
+        if (n === UNIT_ORDER_OUTGOING_SELECT) {
+            events.push('order_proof_outgoing');
+            if (state.failOrderProof) throw new Error('unit order proof failed: internal detail leaked');
+            const [unitId, excludedUnitId, finalOrder, tieOrder, tieId] = params;
+            // `l` is an ACTIVE lesson of the moved unit, `p` its ACTIVE
+            // prerequisite in another ACTIVE unit. Invalid when that other unit
+            // sorts after the moved unit's FINAL (display_order, id).
+            const invalid = state.prerequisiteEdges.find(edge => {
+                if (edge.unit_id !== String(unitId)) return false;
+                if (edge.status !== 'active') return false;
+                if (edge.prerequisite_unit_id === String(excludedUnitId)) return false;
+                if (edge.prerequisite_status !== 'active') return false;
+                const prerequisiteUnit = state.units.find(u => u.id === edge.prerequisite_unit_id);
+                if (!prerequisiteUnit || prerequisiteUnit.status !== 'active') return false;
+                return prerequisiteUnit.display_order > Number(finalOrder)
+                    || (prerequisiteUnit.display_order === Number(tieOrder) && prerequisiteUnit.id > String(tieId));
+            });
+            return [invalid ? [{ id: invalid.lesson_id }] : [], []];
+        }
+
+        if (n === UNIT_ORDER_INCOMING_SELECT) {
+            events.push('order_proof_incoming');
+            if (state.failOrderProof) throw new Error('unit order proof failed: internal detail leaked');
+            const [unitId, excludedUnitId, finalOrder, tieOrder, tieId] = params;
+            // `p` is an ACTIVE lesson of the moved unit, `l` an ACTIVE lesson of
+            // another ACTIVE unit that waits on it. Invalid when that dependent
+            // unit sorts before the moved unit's FINAL (display_order, id).
+            const invalid = state.prerequisiteEdges.find(edge => {
+                if (edge.prerequisite_unit_id !== String(unitId)) return false;
+                if (edge.prerequisite_status !== 'active') return false;
+                if (edge.unit_id === String(excludedUnitId)) return false;
+                if (edge.status !== 'active') return false;
+                const dependentUnit = state.units.find(u => u.id === edge.unit_id);
+                if (!dependentUnit || dependentUnit.status !== 'active') return false;
+                return dependentUnit.display_order < Number(finalOrder)
+                    || (dependentUnit.display_order === Number(tieOrder) && dependentUnit.id < String(tieId));
+            });
+            return [invalid ? [{ id: invalid.lesson_id }] : [], []];
         }
 
         if (n === UPDATE_UNIT_SQL) {
@@ -1334,6 +1428,228 @@ test('update: a unit can be archived and reactivated', async () => {
     const reactivatedRes = await runChain(reactivated.chain, updateReq(UNIT_A3, { status: 'active' }));
     assert.equal(reactivatedRes.status, 200);
     assert.equal(reactivatedRes.body.unit.status, 'active');
+});
+
+// ---------------------------------------------------------------------------
+// M2-23 batch 5 — archiving a unit must not strand a dependent lesson (audit E)
+// ---------------------------------------------------------------------------
+//
+// Archiving a unit takes every lesson it holds off the student path, because the
+// path reads active units only. A lesson elsewhere in the course that waits on
+// one of those lessons would then be locked forever, so the archive is refused
+// and the edge is never erased automatically.
+
+/** One declared edge: `lesson_id` (in `unit_id`) waits on a lesson of `UNIT_A1`. */
+const edgeOnUnitA1 = (lessonId: string, dependentUnitId: string, dependentStatus = 'active') => ({
+    lesson_id: lessonId,
+    unit_id: dependentUnitId,
+    status: dependentStatus,
+    prerequisite_lesson_id: 'lesson-source-1',
+    prerequisite_unit_id: UNIT_A1,
+    prerequisite_status: 'active',
+});
+
+test('archive: a unit that holds the prerequisite of an ACTIVE lesson cannot be archived', async () => {
+    const state = makeState();
+    state.prerequisiteEdges.push(edgeOnUnitA1('lesson-dependent-1', UNIT_A2));
+    const harness = buildHarness(state);
+    const res = await runChain(harness.chain, updateReq(UNIT_A1, { status: 'archived' }));
+
+    assert.equal(res.status, 409);
+    assert.deepEqual(res.body, { error: 'Course unit contains a prerequisite of an active lesson' });
+    assert.equal(harness.calls.filter(c => squash(c.sql) === UPDATE_UNIT_SQL).length, 0, 'no UPDATE ran');
+    assert.deepEqual(harness.auditRows, [], 'nothing was audited');
+    assert.equal(state.units.find(u => u.id === UNIT_A1)!.status, 'active', 'the unit stays active');
+});
+
+test('archive: a unit whose only dependents are archived is still archivable', async () => {
+    const state = makeState();
+    state.prerequisiteEdges.push(edgeOnUnitA1('lesson-dependent-2', UNIT_A2, 'archived'));
+    const harness = buildHarness(state);
+    const res = await runChain(harness.chain, updateReq(UNIT_A1, { status: 'archived' }));
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.unit.status, 'archived');
+    assert.equal(harness.auditRows.length, 1);
+});
+
+test('archive: the guard runs only for the active-to-archived transition', async () => {
+    const renamed = buildHarness(makeState());
+    await runChain(renamed.chain, updateReq(UNIT_A1, { name: 'Foundations' }));
+    assert.equal(renamed.events.includes('archive_dependent'), false, 'a rename reads no prerequisite edge');
+
+    const reactivated = buildHarness(makeState());
+    await runChain(reactivated.chain, updateReq(UNIT_A3, { status: 'active' }));
+    assert.equal(reactivated.events.includes('archive_dependent'), false, 'a reactivation reads no prerequisite edge');
+});
+
+test('archive: a failed dependent proof rolls back and archives nothing', async () => {
+    const state = makeState();
+    state.failArchiveDependent = true;
+    const harness = buildHarness(state);
+    const res = await runChain(harness.chain, updateReq(UNIT_A1, { status: 'archived' }));
+
+    assert.equal(res.status, 500);
+    assert.equal(harness.calls.filter(c => squash(c.sql) === UPDATE_UNIT_SQL).length, 0);
+    assert.deepEqual(harness.auditRows, []);
+    assert.equal(state.units.find(u => u.id === UNIT_A1)!.status, 'active');
+});
+
+// ---------------------------------------------------------------------------
+// M2-23 batch 5 — moving a unit must not invert a cross-unit prerequisite edge
+// ---------------------------------------------------------------------------
+//
+// The student path order is `(unit.display_order, unit.id, lesson.display_order,
+// lesson.id)`. Because the unit comes FIRST, moving an ACTIVE unit can invert an
+// ACTIVE prerequisite edge that crosses the unit boundary even though no lesson
+// row changes. The proof is bounded and runs BEFORE the UPDATE.
+
+/** One declared edge: a lesson of `unit_id` waits on a lesson of `UNIT_A2`. */
+const edgeOnUnitA2 = (lessonId: string, dependentUnitId: string, dependentStatus = 'active') => ({
+    lesson_id: lessonId,
+    unit_id: dependentUnitId,
+    status: dependentStatus,
+    prerequisite_lesson_id: 'lesson-source-a2',
+    prerequisite_unit_id: UNIT_A2,
+    prerequisite_status: 'active',
+});
+
+test('reorder: a prerequisite unit that stays before its dependent unit is accepted', async () => {
+    const state = makeState();
+    state.units.find(u => u.id === UNIT_A1)!.display_order = 0;
+    state.units.find(u => u.id === UNIT_A2)!.display_order = 5;
+    // The dependent lesson is in UNIT_A2 and waits on a lesson of UNIT_A1.
+    state.prerequisiteEdges.push(edgeOnUnitA1('lesson-dependent-valid', UNIT_A2));
+    const harness = buildHarness(state);
+    const res = await runChain(harness.chain, updateReq(UNIT_A1, { display_order: 1 }));
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.unit.display_order, 1);
+    assert.equal(harness.calls.filter(c => squash(c.sql) === UPDATE_UNIT_SQL).length, 1);
+    assert.equal(harness.auditRows.length, 1);
+    assert.equal(harness.events.includes('order_proof_incoming'), true);
+    assert.equal(harness.events.includes('commit'), true);
+    assert.equal(harness.events.includes('rollback'), false);
+});
+
+test('reorder: moving a prerequisite unit after its dependent unit answers 409 and writes nothing', async () => {
+    const state = makeState();
+    state.units.find(u => u.id === UNIT_A1)!.display_order = 0;
+    state.units.find(u => u.id === UNIT_A2)!.display_order = 5;
+    state.prerequisiteEdges.push(edgeOnUnitA1('lesson-dependent-invalid', UNIT_A2));
+    const harness = buildHarness(state);
+    const res = await runChain(harness.chain, updateReq(UNIT_A1, { display_order: 10 }));
+
+    assert.equal(res.status, 409);
+    assert.deepEqual(res.body, { error: 'Course unit prerequisite order would be invalidated' });
+    assert.equal(harness.calls.filter(c => squash(c.sql) === UPDATE_UNIT_SQL).length, 0, 'no UPDATE ran');
+    assert.deepEqual(harness.auditRows, [], 'nothing was audited');
+    assert.equal(harness.events.includes('order_proof_incoming'), true);
+    assert.equal(harness.events.includes('commit'), false, 'no commit may follow a rejection');
+    assert.equal(harness.events.includes('rollback'), true);
+    assert.equal(harness.releaseCount(), 1);
+    assert.equal(state.units.find(u => u.id === UNIT_A1)!.display_order, 0, 'the unit keeps its position');
+});
+
+test('reorder: moving a dependent unit before its prerequisite unit answers 409 and writes nothing', async () => {
+    const state = makeState();
+    state.units.find(u => u.id === UNIT_A1)!.display_order = 5;
+    state.units.find(u => u.id === UNIT_A2)!.display_order = 10;
+    // The dependent lesson is in UNIT_A2 and waits on a lesson of UNIT_A1.
+    state.prerequisiteEdges.push(edgeOnUnitA1('lesson-dependent-out', UNIT_A2));
+    const harness = buildHarness(state);
+    const res = await runChain(harness.chain, updateReq(UNIT_A2, { display_order: 0 }));
+
+    assert.equal(res.status, 409);
+    assert.deepEqual(res.body, { error: 'Course unit prerequisite order would be invalidated' });
+    assert.equal(harness.calls.filter(c => squash(c.sql) === UPDATE_UNIT_SQL).length, 0);
+    assert.deepEqual(harness.auditRows, []);
+    assert.equal(harness.events.includes('order_proof_outgoing'), true);
+    assert.equal(harness.events.includes('commit'), false);
+    assert.equal(harness.events.includes('rollback'), true);
+    assert.equal(state.units.find(u => u.id === UNIT_A2)!.display_order, 10);
+});
+
+test('reorder: an equal display_order tie is judged by the unit id', async () => {
+    // UNIT_A1 = …0001 sorts before UNIT_A2 = …0002 on an equal display_order.
+    // Moving UNIT_A1 into a tie with UNIT_A2 puts the dependent (UNIT_A1)
+    // before its prerequisite (UNIT_A2): refused.
+    const invalidState = makeState();
+    invalidState.units.find(u => u.id === UNIT_A1)!.display_order = 5;
+    invalidState.units.find(u => u.id === UNIT_A2)!.display_order = 1;
+    invalidState.prerequisiteEdges.push(edgeOnUnitA2('lesson-dependent-tie', UNIT_A1));
+    const invalidHarness = buildHarness(invalidState);
+    const invalidRes = await runChain(invalidHarness.chain, updateReq(UNIT_A1, { display_order: 1 }));
+
+    assert.equal(invalidRes.status, 409);
+    assert.equal(invalidHarness.calls.filter(c => squash(c.sql) === UPDATE_UNIT_SQL).length, 0);
+    assert.deepEqual(invalidHarness.auditRows, []);
+
+    // The mirrored tie keeps the prerequisite (UNIT_A1) before the dependent
+    // (UNIT_A2) and is accepted.
+    const validState = makeState();
+    validState.units.find(u => u.id === UNIT_A1)!.display_order = 1;
+    validState.units.find(u => u.id === UNIT_A2)!.display_order = 5;
+    validState.prerequisiteEdges.push(edgeOnUnitA1('lesson-dependent-tie-ok', UNIT_A2));
+    const validHarness = buildHarness(validState);
+    const validRes = await runChain(validHarness.chain, updateReq(UNIT_A2, { display_order: 1 }));
+
+    assert.equal(validRes.status, 200);
+    assert.equal(validRes.body.unit.display_order, 1);
+    assert.equal(validHarness.auditRows.length, 1);
+});
+
+test('reorder: an unrelated edit does not re-assert a pre-existing inverted edge', async () => {
+    const state = makeState();
+    state.units.find(u => u.id === UNIT_A1)!.display_order = 10;
+    state.units.find(u => u.id === UNIT_A2)!.display_order = 0;
+    state.prerequisiteEdges.push(edgeOnUnitA1('lesson-dependent-stale', UNIT_A2));
+    const harness = buildHarness(state);
+    const res = await runChain(harness.chain, updateReq(UNIT_A1, { name: 'Renamed' }));
+
+    assert.equal(res.status, 200);
+    assert.equal(harness.events.includes('order_proof_outgoing'), false);
+    assert.equal(harness.events.includes('order_proof_incoming'), false);
+    assert.equal(harness.auditRows.length, 1);
+});
+
+test('reorder: reactivating a unit re-proves its cross-unit edges', async () => {
+    const state = makeState();
+    state.units.find(u => u.id === UNIT_A1)!.display_order = 5;
+    state.units.find(u => u.id === UNIT_A3)!.display_order = 10;
+    state.prerequisiteEdges.push({
+        lesson_id: 'lesson-dependent-reactivate',
+        unit_id: UNIT_A1,
+        status: 'active',
+        prerequisite_lesson_id: 'lesson-source-a3',
+        prerequisite_unit_id: UNIT_A3,
+        prerequisite_status: 'active',
+    });
+    const harness = buildHarness(state);
+    const res = await runChain(harness.chain, updateReq(UNIT_A3, { status: 'active' }));
+
+    assert.equal(res.status, 409);
+    assert.equal(harness.calls.filter(c => squash(c.sql) === UPDATE_UNIT_SQL).length, 0);
+    assert.deepEqual(harness.auditRows, []);
+    assert.equal(state.units.find(u => u.id === UNIT_A3)!.status, 'archived');
+});
+
+test('reorder: a failed order proof fails closed and rolls back before the UPDATE', async () => {
+    const state = makeState();
+    state.units.find(u => u.id === UNIT_A1)!.display_order = 0;
+    state.units.find(u => u.id === UNIT_A2)!.display_order = 5;
+    state.prerequisiteEdges.push(edgeOnUnitA1('lesson-dependent-fail', UNIT_A2));
+    state.failOrderProof = true;
+    const harness = buildHarness(state);
+    const res = await withSilencedErrors(() => runChain(harness.chain, updateReq(UNIT_A1, { display_order: 1 })));
+
+    assert.equal(res.status, 500);
+    assert.equal(harness.calls.filter(c => squash(c.sql) === UPDATE_UNIT_SQL).length, 0);
+    assert.deepEqual(harness.auditRows, []);
+    assert.equal(harness.events.includes('commit'), false);
+    assert.equal(harness.events.includes('rollback'), true);
+    assert.equal(harness.releaseCount(), 1);
+    assert.equal(state.units.find(u => u.id === UNIT_A1)!.display_order, 0);
 });
 
 test('update: an identical update is a truthful no-op with no UPDATE and no audit', async () => {

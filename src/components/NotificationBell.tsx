@@ -51,7 +51,10 @@ const requestNotificationPermission = async () => {
 const showBrowserNotification = (title: string, body: string, onClick?: () => void) => {
   if (Notification.permission === "granted") {
     try {
-      const notification = new Notification(title, {
+      // `renotify` and `vibrate` are part of the Notification API but are
+      // missing from the TypeScript DOM lib in this toolchain; both options
+      // are declared here rather than suppressed, so they stay type-checked.
+      const options: NotificationOptions & { renotify?: boolean; vibrate?: number[] } = {
         body,
         icon: "/favicon.ico",
         badge: "/favicon.ico",
@@ -59,7 +62,8 @@ const showBrowserNotification = (title: string, body: string, onClick?: () => vo
         renotify: true,
         vibrate: [200, 100, 200],
         silent: false,
-      });
+      };
+      const notification = new Notification(title, options);
 
       notification.onclick = () => {
         window.focus();

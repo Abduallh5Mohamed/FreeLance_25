@@ -433,6 +433,30 @@ const makeCapturingDb = (rows: (sql: string) => unknown[]): { db: ParentViewsDat
     return { db, executed };
 };
 
+const assertLiveEnrollmentAuthority = (statement: CapturedStatement, alias: string, viaExists: boolean): void => {
+    const sql = statement.sql.replace(/\s+/g, ' ');
+    if (viaExists) {
+        assert.ok(
+            sql.includes(`EXISTS (SELECT 1 FROM students ${alias} WHERE ${alias}.id = ? AND ${alias}.tenant_id = ?`),
+            `expected a live-enrollment EXISTS on ${alias} bound to the token enrollment and tenant`,
+        );
+    } else {
+        assert.ok(
+            sql.includes(`WHERE ${alias}.id = ? AND ${alias}.tenant_id = ?`),
+            `expected ${alias}.id and ${alias}.tenant_id to be bound directly`,
+        );
+    }
+    for (const predicate of [
+        `${alias}.is_active = TRUE`,
+        `(${alias}.approval_status IS NULL OR ${alias}.approval_status = 'approved')`,
+        `(${alias}.enrollment_status IS NULL OR ${alias}.enrollment_status = 'active')`,
+        `(${alias}.enrollment_start_date IS NULL OR ${alias}.enrollment_start_date <= UTC_TIMESTAMP())`,
+        `(${alias}.enrollment_end_date IS NULL OR ${alias}.enrollment_end_date > UTC_TIMESTAMP())`,
+    ]) {
+        assert.ok(sql.includes(predicate), `expected the live-enrollment predicate ${predicate}`);
+    }
+};
+
 test('sql store: every read is tenant + enrollment scoped and issues no write', async () => {
     const { db, executed } = makeCapturingDb(() => []);
     const store = createSqlParentViewsStore(db);
@@ -456,23 +480,27 @@ test('sql store: every read is tenant + enrollment scoped and issues no write', 
     for (const forbidden of ['password', 'guardian', 'parent_phone', 'phone', 'email', 'address', 'note']) {
         assert.ok(!child.sql.toLowerCase().includes(forbidden), `child projection must not select ${forbidden}`);
     }
+    assertLiveEnrollmentAuthority(child, 's', false);
 
     const progress = find('FROM courses c');
     assert.ok(progress.sql.includes('c.tenant_id = ?'));
     assert.ok(progress.sql.includes('sc.student_id = ?'));
     assert.ok(progress.sql.includes('is_published = 1'));
     assert.ok(progress.sql.includes('archived_at IS NULL'));
-    assert.deepEqual(progress.params, [ENROLLMENT, TENANT, ENROLLMENT]);
+    assert.deepEqual(progress.params, [ENROLLMENT, TENANT, ENROLLMENT, ENROLLMENT, TENANT]);
+    assertLiveEnrollmentAuthority(progress, 'ls', true);
 
     const attendance = find('FROM attendance_records a');
     assert.ok(attendance.sql.includes('a.tenant_id = ?') && attendance.sql.includes('a.student_id = ?'));
     assert.ok(attendance.sql.includes('LIMIT 200'));
-    assert.deepEqual(attendance.params, [TENANT, ENROLLMENT]);
+    assert.deepEqual(attendance.params, [TENANT, ENROLLMENT, ENROLLMENT, TENANT]);
+    assertLiveEnrollmentAuthority(attendance, 'ls', true);
 
     const grades = find('FROM gradebook_scores gs');
     assert.ok(grades.sql.includes('gs.tenant_id = ?'));
     assert.ok(grades.sql.includes('c.tenant_id = ?'));
-    assert.deepEqual(grades.params, [TENANT, TENANT, ENROLLMENT]);
+    assert.deepEqual(grades.params, [TENANT, TENANT, ENROLLMENT, ENROLLMENT, TENANT]);
+    assertLiveEnrollmentAuthority(grades, 'ls', true);
 });
 
 test('sql store: published-only progress and coercion of nullable aggregates', async () => {

@@ -51,6 +51,9 @@ const ASSET_STUB_URL = "data:text/javascript,export default 'stub-asset'";
 // tests inject contract-accurate fakes into the exported page functions, so an
 // inert stub is enough to load the pages.
 const API_HTTP_STUB_URL = "data:text/javascript," + encodeURIComponent([
+  "export const AUTH_SESSION_CHANGED_EVENT = 'auth-session-changed';",
+  "export const signOutSession = async () => ({ serverRevoked: false, warning: null, sessionChanged: true });",
+  "export const verifyCurrentSession = async () => ({ state: 'anonymous' });",
   "export const getCourses = async () => [];",
   "export const getGrades = async () => [];",
   "export const getGroups = async () => [];",

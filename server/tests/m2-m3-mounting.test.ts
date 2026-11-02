@@ -13,7 +13,7 @@ import { createExamVersionsRouter } from '../src/routes/exam-versions';
 import { createGradebookRouter } from '../src/routes/gradebook';
 import { createSchedulesRouter } from '../src/routes/schedules';
 import { createAttendanceRecordsRouter } from '../src/routes/attendance-records';
-import { createTenantBrandingRouter } from '../src/routes/tenant-branding';
+import { createLegacyTenantBrandingRouter } from '../src/routes/tenant-branding';
 import { createTenantDomainsRouter } from '../src/routes/tenant-domains';
 import { createAnnouncementsRouter } from '../src/routes/announcements';
 import { createStudentImportRouter } from '../src/routes/student-import';
@@ -28,10 +28,10 @@ import { invokeRoute } from './helpers/m2-harness';
  * M2/M3 mounting contract.
  *
  * Two independent, hermetic layers:
- *  1. STATIC — server/src/index.ts is read as text and asserted to mount every
+ *  1. STATIC â€” server/src/index.ts is read as text and asserted to mount every
  *     new router (in the expected variable) after the shared /api guard chain,
  *     with no path colliding with another mount.
- *  2. RUNTIME DENIAL — each real mount path is exercised anonymously through a
+ *  2. RUNTIME DENIAL â€” each real mount path is exercised anonymously through a
  *     throwaway Express router that applies the SAME guard chain and mounts the
  *     router factories over a tripwire data access. A 401/403 with a zero
  *     storage-call count proves no anonymous request reaches storage.
@@ -73,6 +73,40 @@ const EXCLUDED_MOUNTS: ReadonlyArray<readonly [string, string]> = [
 ];
 
 const MOUNT_RE = /app\.use\(\s*'(\/api[^']*)'\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/g;
+
+/**
+ * The ONLY verified shared mount path.
+ *
+ * `publicCatalogRoutes` (M2-22) and `publicIdentityRoutes` (C1/C4) are both
+ * mounted on `/api/public`, but they own DISJOINT concrete child paths:
+ * publicCatalogRoutes answers `GET /courses` with the M2-22 envelope and
+ * publicIdentityRoutes registers no course-list route at all (teacher/center
+ * pages only). Mount order is load-bearing and proven in
+ * `m2-public-catalog-composition.test.ts`.
+ *
+ * This allow-list is intentionally narrow: it permits exactly these two
+ * variables on exactly this path. Any other duplicate or prefix collision
+ * remains a hard failure, and a test below pins that no third router may share
+ * the path.
+ */
+const VERIFIED_SHARED_MOUNTS: ReadonlyArray<readonly [string, string]> = [
+    ['/api/public', 'publicCatalogRoutes'],
+    ['/api/public', 'publicIdentityRoutes'],
+];
+
+function isVerifiedSharedMountPair(
+    left: { path: string; variable: string },
+    right: { path: string; variable: string },
+): boolean {
+    if (left.path !== right.path) return false;
+    const expectedVariables = VERIFIED_SHARED_MOUNTS
+        .filter(([mountPath]) => mountPath === left.path)
+        .map(([, variable]) => variable);
+    if (expectedVariables.length < 2) return false;
+    const actualVariables = new Set([left.variable, right.variable]);
+    if (actualVariables.size !== expectedVariables.length) return false;
+    return expectedVariables.every((variable) => actualVariables.has(variable));
+}
 
 function parseMounts(source: string): Array<{ path: string; variable: string; index: number }> {
     const mounts: Array<{ path: string; variable: string; index: number }> = [];
@@ -149,12 +183,30 @@ test('mounting: no new path collides with an existing mount (segment-aware)', ()
             const collides = mounts[i].path === mounts[j].path
                 || isSegmentPrefix(left, right)
                 || isSegmentPrefix(right, left);
-            assert.ok(
-                !collides,
+            if (!collides) continue;
+            // The single verified disjoint composition on /api/public is
+            // allowed; every other duplicate or prefix collision still fails.
+            if (isVerifiedSharedMountPair(mounts[i], mounts[j])) continue;
+            assert.fail(
                 `mount path collision between ${mounts[i].path} and ${mounts[j].path}`,
             );
         }
     }
+
+    // Only the verified pair may ever share a mount path. A third router on
+    // /api/public (or any other duplicate) would fail this assertion.
+    const publicMounts = mounts.filter((mount) => mount.path === '/api/public');
+    assert.deepEqual(
+        publicMounts.map((mount) => mount.variable).sort(),
+        ['publicCatalogRoutes', 'publicIdentityRoutes'],
+        'only the verified publicCatalog/publicIdentity pair may share /api/public',
+    );
+    const catalogIndex = publicMounts.find((mount) => mount.variable === 'publicCatalogRoutes')?.index;
+    const identityIndex = publicMounts.find((mount) => mount.variable === 'publicIdentityRoutes')?.index;
+    assert.ok(
+        catalogIndex !== undefined && identityIndex !== undefined && catalogIndex < identityIndex,
+        'publicCatalogRoutes must mount before publicIdentityRoutes so it owns GET /courses',
+    );
 
     // A new mount must not be shadowed by (or shadow) an existing one.
     for (const mount of mounts) {
@@ -215,7 +267,14 @@ function buildGuardedSurface(): GuardedSurface {
     router.use(optionalAuth, enforceTenantAuthorityBoundary, enforceStudentWorkspaceBoundary);
 
     router.use('/api/content', createContentAccessRouter({ db, authenticate: authenticateToken }));
-    router.use('/api/tenant/branding', createTenantBrandingRouter({ db, authenticate: authenticateToken }));
+    // Production mounts the DEFAULT legacy branding router at this prefix; the
+    // named localized factory is mounted inside tenant-self at
+    // /api/tenants/me/branding, a different surface. Mirror the real one.
+    router.use('/api/tenant/branding', createLegacyTenantBrandingRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
     router.use('/api/tenant/domains', createTenantDomainsRouter({ db, authenticate: authenticateToken }));
     router.use('/api/announcements', createAnnouncementsRouter({
         db,
@@ -373,7 +432,7 @@ async function invokeAnonymousGet(router: Router, url: string): Promise<ProbeRes
 /**
  * A primary-server-shaped surface: the exact guard chain, every mounted
  * teaching router (certificates excluded per the 2026-10-19 human decision)
- * and — mirroring server/src/index.ts — the terminal 404 handler. Tripwire
+ * and â€” mirroring server/src/index.ts â€” the terminal 404 handler. Tripwire
  * storage proves the excluded paths never reach any handler before the 404.
  */
 function buildPrimaryServerSurface(): { router: Router; storageCalls: () => number } {
@@ -382,7 +441,14 @@ function buildPrimaryServerSurface(): { router: Router; storageCalls: () => numb
     router.use(optionalAuth, enforceTenantAuthorityBoundary, enforceStudentWorkspaceBoundary);
 
     router.use('/api/content', createContentAccessRouter({ db, authenticate: authenticateToken }));
-    router.use('/api/tenant/branding', createTenantBrandingRouter({ db, authenticate: authenticateToken }));
+    // Production mounts the DEFAULT legacy branding router at this prefix; the
+    // named localized factory is mounted inside tenant-self at
+    // /api/tenants/me/branding, a different surface. Mirror the real one.
+    router.use('/api/tenant/branding', createLegacyTenantBrandingRouter({
+        db,
+        authenticate: authenticateToken,
+        loadActiveTenantAuthority: authorityTripwire,
+    }));
     router.use('/api/tenant/domains', createTenantDomainsRouter({ db, authenticate: authenticateToken }));
     router.use('/api/announcements', createAnnouncementsRouter({
         db,
@@ -676,8 +742,8 @@ test('mounting (M7): platform flags, audit logs and moderation deny an anonymous
  *
  * `/api/search` and `/api/tenant-exports` sit behind the shared `/api` guard
  * chain. The observability router (`/metrics`, `/healthz`, `/readyz`) is wired
- * by `mountObservability(app, deps)` at the APPLICATION ROOT — deliberately
- * outside `/api` — so the probes answer without authentication while the
+ * by `mountObservability(app, deps)` at the APPLICATION ROOT â€” deliberately
+ * outside `/api` â€” so the probes answer without authentication while the
  * metrics scrape stays gated by the dedicated `METRICS_TOKEN`.
  */
 const M8_MOUNTS: ReadonlyArray<readonly [string, string]> = [

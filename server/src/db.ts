@@ -89,20 +89,35 @@ export const withTransaction = async <T>(
     fn: (connection: mysql.PoolConnection) => Promise<T>,
 ): Promise<T> => {
     const connection = await getPool().getConnection();
+    // A COMMIT that rejected leaves the outcome AMBIGUOUS: the write may or may
+    // not have landed on the server. A rollback that succeeds afterwards does
+    // not resolve that ambiguity — the COMMIT may have been received before
+    // the acknowledgement was lost — so the connection must be DESTROYED and
+    // never released back to the pool. No success is reported and no automatic
+    // retry or compensation is attempted; the caller decides what an uncertain
+    // write means. (Repository rule: "Destroy connections with unknown
+    // transaction state"; audit 2026-10-26 finding B.)
+    let commitAttempted = false;
     let reusable = true;
     try {
         // BEGIN can reject too: cleanup must cover admission as well as work.
         await connection.beginTransaction();
         const result = await fn(connection);
+        commitAttempted = true;
         await connection.commit();
         return result;
     } catch (error) {
+        // An ambiguous COMMIT is the one outcome that can never be recycled,
+        // even when the rollback that follows it succeeds.
+        if (commitAttempted) reusable = false;
         try {
             await connection.rollback();
         } catch {
             // Never return a connection with unknown transaction state to the
             // pool, and never replace the callback/commit error with cleanup.
             reusable = false;
+        }
+        if (!reusable) {
             try { connection.destroy(); } catch { /* retain the original failure */ }
         }
         // A rejected COMMIT remains ambiguous. No retry or compensation here.

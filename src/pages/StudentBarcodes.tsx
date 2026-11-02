@@ -96,7 +96,7 @@ export default function StudentBarcodes() {
       console.log('Groups loaded:', groupsData?.length);
       // Debug: count students missing guardian phone
       try {
-        const missingGuardianCount = (studentsData || []).filter(s => !(s.guardian_phone || s.parent_phone)).length;
+        const missingGuardianCount = (studentsData || []).filter(s => !s.guardian_phone).length;
         console.log(`Students missing guardian_phone: ${missingGuardianCount}`);
       } catch (e) {
         console.log('Could not compute missing guardian_phone count', e);

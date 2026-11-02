@@ -1,3 +1,4 @@
+import './helpers/isolated-io-guard';
 import assert from 'node:assert/strict';
 import test, { before, after } from 'node:test';
 import { quietConsole, restoreConsole } from './helpers/quiet-console';

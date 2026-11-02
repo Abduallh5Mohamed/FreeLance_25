@@ -46,6 +46,9 @@ const API_STUB = [
 ].join("\n");
 
 const API_HTTP_STUB = [
+  "export const AUTH_SESSION_CHANGED_EVENT = 'auth-session-changed';",
+  "export const signOutSession = async () => ({ serverRevoked: false, warning: null, sessionChanged: true });",
+  "export const verifyCurrentSession = async () => ({ state: 'anonymous' });",
   "export const getGrades = async () => [];",
   "export const getGroups = async () => [];",
   "export const createSubscriptionRequest = async () => ({});",

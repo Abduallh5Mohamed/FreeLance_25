@@ -39,6 +39,9 @@ console.error = (...args: unknown[]) => {
 // tests inject their own contract-accurate fakes into the exported page
 // functions, so an inert stub is enough to load the pages.
 const API_HTTP_STUB_SOURCE = [
+  "export const AUTH_SESSION_CHANGED_EVENT = 'auth-session-changed';",
+  "export const signOutSession = async () => ({ serverRevoked: false, warning: null, sessionChanged: true });",
+  "export const verifyCurrentSession = async () => ({ state: 'anonymous' });",
   "export const getStudents = async () => [];",
   "export const createStudent = async () => '';",
   "export const updateStudent = async () => true;",

@@ -1001,7 +1001,7 @@ export const updateCourseUnit = (
  */
 export type CourseLessonStatus = 'active' | 'archived';
 
-/** The explicit eight-field lesson DTO the server projects (never a row spread). */
+/** The explicit ten-field lesson DTO the server projects (never a row spread). */
 export interface CourseLesson {
     id: string;
     unit_id: string;
@@ -1009,6 +1009,14 @@ export interface CourseLesson {
     description: string | null;
     display_order: number;
     status: CourseLessonStatus;
+    /**
+     * M2-23 — the configured release instant as a canonical UTC ISO string, or
+     * `null` when the lesson has NO schedule (released as soon as it is
+     * active). The transport never sends a local time: the server refuses one.
+     */
+    release_at: string | null;
+    /** M2-23 — the single optional earlier lesson that gates this one. */
+    prerequisite_lesson_id: string | null;
     created_at: string;
     updated_at: string;
 }
@@ -1073,13 +1081,29 @@ export const listCourseLessons = (
 export const createCourseLesson = (
     courseId: string,
     unitId: string,
-    input: { title: string; description?: string | null; display_order?: number },
+    input: {
+        title: string;
+        description?: string | null;
+        display_order?: number;
+        /** M2-23 — a canonical UTC ISO instant, or `null` for "no schedule". */
+        release_at?: string | null;
+        /** M2-23 — an earlier active lesson of the same course, or `null`. */
+        prerequisite_lesson_id?: string | null;
+    },
 ) => {
-    const body: { title: string; description?: string | null; display_order?: number } = {
+    const body: {
+        title: string;
+        description?: string | null;
+        display_order?: number;
+        release_at?: string | null;
+        prerequisite_lesson_id?: string | null;
+    } = {
         title: input.title,
     };
     if (input.description !== undefined) body.description = input.description;
     if (input.display_order !== undefined) body.display_order = input.display_order;
+    if (input.release_at !== undefined) body.release_at = input.release_at;
+    if (input.prerequisite_lesson_id !== undefined) body.prerequisite_lesson_id = input.prerequisite_lesson_id;
     return request<CourseLessonEnvelope>(courseLessonCollectionPath(courseId, unitId), {
         method: 'POST',
         body: JSON.stringify(body),
@@ -1103,6 +1127,10 @@ export const updateCourseLesson = (
         description?: string | null;
         display_order?: number;
         status?: CourseLessonStatus;
+        /** M2-23 — `null` clears the schedule; a string sets it. */
+        release_at?: string | null;
+        /** M2-23 — `null` clears the prerequisite; a string sets it. */
+        prerequisite_lesson_id?: string | null;
     },
 ) => {
     const body: {
@@ -1110,11 +1138,15 @@ export const updateCourseLesson = (
         description?: string | null;
         display_order?: number;
         status?: CourseLessonStatus;
+        release_at?: string | null;
+        prerequisite_lesson_id?: string | null;
     } = {};
     if (update.title !== undefined) body.title = update.title;
     if (update.description !== undefined) body.description = update.description;
     if (update.display_order !== undefined) body.display_order = update.display_order;
     if (update.status !== undefined) body.status = update.status;
+    if (update.release_at !== undefined) body.release_at = update.release_at;
+    if (update.prerequisite_lesson_id !== undefined) body.prerequisite_lesson_id = update.prerequisite_lesson_id;
     return request<CourseLessonEnvelope>(
         `${courseLessonCollectionPath(courseId, unitId)}/${encodeURIComponent(lessonId)}`,
         { method: 'PATCH', body: JSON.stringify(body) },
@@ -1140,6 +1172,100 @@ export const reorderCourseLessons = (
         { method: 'POST', body: JSON.stringify(body) },
     );
 };
+
+/**
+ * M2-23 — server-authoritative student learning path through
+ * `GET|POST /api/student-course-access/...`
+ * (server/src/routes/student-course-access.ts; contract
+ * docs/streams/server/M2-B15-CONTRACT.md).
+ *
+ * Additive only: the same authenticated `request`, no client tenant/student/
+ * enrollment selector in any header, query or body. Every access decision —
+ * enrollment, publication, release instant and prerequisite completion — is the
+ * SERVER's; nothing here decides whether a lesson is unlocked.
+ */
+export type StudentLessonLockReason = 'not_released' | 'prerequisite_incomplete';
+
+/** One enrolled, published, active course of the selected workspace. */
+export interface StudentCourseSummary {
+    course_id: string;
+    name: string;
+    subject: string | null;
+    grade: string | null;
+}
+
+export interface StudentCourseListEnvelope {
+    courses: StudentCourseSummary[];
+    truncated: boolean;
+}
+
+/**
+ * One lesson of the learning path.
+ *
+ * `description` is `null` whenever the lesson is locked — the server withholds
+ * the private wording of a lesson the student may not read yet, so a locked
+ * description is never merely hidden by the renderer.
+ */
+export interface StudentLesson {
+    lesson_id: string;
+    title: string;
+    display_order: number;
+    release_at: string | null;
+    prerequisite_lesson_id: string | null;
+    accessible: boolean;
+    lock_reason: StudentLessonLockReason | null;
+    completed: boolean;
+    completed_at: string | null;
+    description: string | null;
+}
+
+export interface StudentUnit {
+    unit_id: string;
+    name: string;
+    display_order: number;
+    lessons: StudentLesson[];
+}
+
+export interface StudentLearningPathEnvelope {
+    course: StudentCourseSummary;
+    units: StudentUnit[];
+    truncated: boolean;
+}
+
+/** The canonical completion record: one lesson and the SERVER's instant. */
+export interface StudentCompletion {
+    lesson_id: string;
+    completed_at: string;
+}
+
+export interface StudentCompletionEnvelope {
+    completion: StudentCompletion;
+}
+
+const studentCourseAccessPath = '/student-course-access';
+
+/** The courses this enrollment may open (bounded, published, active). */
+export const listStudentCourses = () =>
+    request<StudentCourseListEnvelope>(`${studentCourseAccessPath}/courses`);
+
+/** The fixed learning path of ONE course, with the server's access decisions. */
+export const getStudentLearningPath = (courseId: string) =>
+    request<StudentLearningPathEnvelope>(
+        `${studentCourseAccessPath}/courses/${encodeURIComponent(courseId)}`,
+    );
+
+/**
+ * Marks one currently accessible lesson complete.
+ *
+ * The body is an EMPTY object: completion is a fact with no attributes, so no
+ * instant, lesson, student or enrollment is ever stated by the client. A retry
+ * returns the ORIGINAL server instant.
+ */
+export const completeStudentLesson = (courseId: string, lessonId: string) =>
+    request<StudentCompletionEnvelope>(
+        `${studentCourseAccessPath}/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/completion`,
+        { method: 'POST', body: '{}' },
+    );
 
 /**
  * M2-12 — private tenant branding metadata (owner-only) through the M2-B06
@@ -1471,7 +1597,10 @@ export interface InstructorBillingData {
 }
 
 export const getMyTenantBilling = () => request<InstructorBillingData>('/tenants/me/billing');
-export const submitInstructorTopup = (data: FormData, idempotencyKey = crypto.randomUUID()) =>
+// The server contract for this route bounds the Idempotency-Key to 8..120
+// characters of any text (see tenant-self topup validation), so the key is a
+// plain string; the UUID default is a convenience, not a constraint.
+export const submitInstructorTopup = (data: FormData, idempotencyKey: string = crypto.randomUUID()) =>
     request<{ id: string; status: string; duplicate?: boolean }>('/tenants/me/topups', {
         method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: data,
     });
@@ -2725,28 +2854,86 @@ export const submitExamAttempt = async (
     });
 };
 
+/**
+ * `GET /exams/:examId/attempts` row — the server SELECTs the full
+ * `exam_attempts` row (`ea.*`) joined with the student's name/phone/email.
+ * The `answers` column is deliberately `unknown`: it is server-owned JSON the
+ * report surface never reads, and it is not re-interpreted here.
+ */
+export interface ExamAttempt {
+    id: string;
+    exam_id: string;
+    student_id: string;
+    started_at: string;
+    completed_at: string | null;
+    score: number | null;
+    status: 'in_progress' | 'completed' | 'abandoned';
+    answers: unknown;
+    created_at: string;
+    student_name: string;
+    student_phone: string | null;
+    student_email: string | null;
+}
+
+/**
+ * `GET /exams/:examId/not-attempted` row — the bounded projection of students
+ * with no attempt for the exam: exactly the six selected columns, contact
+ * fields nullable as stored.
+ */
+export interface NotAttemptedStudent {
+    id: string;
+    name: string;
+    phone: string | null;
+    email: string | null;
+    grade_id?: string | null;
+    group_id?: string | null;
+}
+
+/**
+ * `GET /exam-results` row — mirrors the server projection field for field,
+ * including the graded/pending/submitted status union and the nullable
+ * grade/group labels.
+ */
+export interface ExamResult {
+    id: string;
+    exam_id: string;
+    exam_title: string;
+    student_id: string;
+    student_name: string;
+    grade_id?: string | null;
+    group_id?: string | null;
+    grade_name?: string | null;
+    group_name?: string | null;
+    score: number;
+    total_marks: number;
+    passing_marks?: number;
+    status: 'pending' | 'graded' | 'submitted';
+    submitted_at: string;
+    graded_at?: string;
+}
+
 // Get exam attempts (admin)
-export const getExamAttempts = async (examId: string) => {
-    return await request(`/exams/${examId}/attempts`);
+export const getExamAttempts = async (examId: string): Promise<ExamAttempt[]> => {
+    return request<ExamAttempt[]>(`/exams/${examId}/attempts`);
 };
 
 // Get students who haven't attempted exam (admin)
-export const getNotAttemptedStudents = async (examId: string) => {
-    return await request(`/exams/${examId}/not-attempted`);
+export const getNotAttemptedStudents = async (examId: string): Promise<NotAttemptedStudent[]> => {
+    return request<NotAttemptedStudent[]>(`/exams/${examId}/not-attempted`);
 };
 
 // Get exam results (admin/teacher)
-export const getExamResults = async (examId?: string, studentId?: string) => {
+export const getExamResults = async (examId?: string, studentId?: string): Promise<ExamResult[]> => {
     const params = new URLSearchParams();
     if (examId) params.append('exam_id', examId);
     if (studentId) params.append('student_id', studentId);
     const queryString = params.toString() ? `?${params.toString()}` : '';
-    return await request(`/exam-results${queryString}`);
+    return request<ExamResult[]>(`/exam-results${queryString}`);
 };
 
 // Get exam results for a specific student
-export const getStudentExamResults = async (studentId: string) => {
-    return await request(`/exam-results/student/${studentId}`);
+export const getStudentExamResults = async (studentId: string): Promise<ExamResult[]> => {
+    return request<ExamResult[]>(`/exam-results/student/${studentId}`);
 };
 
 // ====================================

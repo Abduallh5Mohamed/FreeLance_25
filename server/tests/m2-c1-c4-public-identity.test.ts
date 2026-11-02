@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { Router } from 'express';
 import { createPublicIdentityRouter, parsePublicPagination } from '../src/routes/public-identity';
 import { makeFakeDataAccess, invokeRoute } from './helpers/m2-harness';
 
@@ -33,7 +34,7 @@ test('pagination: accepts stringified numbers', () => {
 });
 
 // ---------------------------------------------------------------------------
-// C1/C4 public identity + published discovery (safe projection, server-resolved)
+// C1/C4 public identity pages (safe projection, server-resolved)
 // ---------------------------------------------------------------------------
 
 const VALID_UUID = 'aaaaaaaa-1111-2222-3333-444444444444';
@@ -46,9 +47,28 @@ const buildPublicRouter = (responder: (sql: string, params: unknown[]) => unknow
 const isTeacherUserQuery = (sql: string) => sql.includes("u.role IN ('instructor','teacher')");
 const isTeacherTenantQuery = (sql: string) => sql.includes('SELECT t.id, t.business_name FROM tenants t');
 const isTeacherCoursesQuery = (sql: string) => sql.includes('FROM courses c INNER JOIN tenants ct ON ct.id=c.tenant_id');
-const isDiscoveryQuery = (sql: string) => sql.includes('INNER JOIN tenants t ON t.id=c.tenant_id');
 
 const SAFE_COURSE = { id: 'c1', name: 'Math', subject: 'Mathematics', description: 'd', grade: 'G1', price: 10 };
+const DRAFT_COURSE = { id: 'c2', name: 'Secret Draft', subject: 'Physics', description: 'd', grade: 'G2', price: 99 };
+
+test('routes: the identity router registers ONLY the teacher page, never a course list', () => {
+    // The legacy `/courses` discovery handler lived here and shadowed the
+    // M2-22 catalog router (array body, is_active-only filter, leaked drafts).
+    // It was removed; this pins that the surface can never come back by
+    // accident and collide with `public-catalog.ts` again.
+    const { router } = buildPublicRouter(() => []);
+    const registered = ((router as Router).stack as any[])
+        .filter((layer) => layer.route)
+        .flatMap((layer) => (layer.route.stack as any[]).map(() => ({
+            method: String(Object.keys(layer.route.methods)[0]).toLowerCase(),
+            path: String(layer.route.path),
+        })));
+    assert.deepEqual(
+        registered.map((entry) => `${entry.method} ${entry.path}`),
+        ['get /teachers/:id'],
+        'exactly one public identity route may exist',
+    );
+});
 
 test('public: a non-uuid teacher id is 404 (no enumeration)', async () => {
     const { router } = buildPublicRouter(() => []);
@@ -80,6 +100,56 @@ test('public: teacher page returns only non-private fields (no phone/email/secre
     const courseSql = executed.find((e) => isTeacherCoursesQuery(e.sql))!;
     assert.ok(courseSql.sql.includes("ct.status='active'"), 'teacher page hides courses from suspended tenants');
     assert.ok(courseSql.sql.includes('(c.instructor_id=? OR ct.owner_user_id=?)'), 'course ownership stays scoped to this teacher or their tenant');
+});
+
+test('public: teacher page requires explicit publication — the draft gate is in the SQL', async () => {
+    // `is_active` alone leaked drafts: a course that was never published is
+    // still `is_active=1`. The publication gate must be pinned in the emitted
+    // statement, exactly like the M2-22 public catalog does.
+    const { router, executed } = buildPublicRouter((sql) => {
+        if (isTeacherUserQuery(sql)) return [{ id: VALID_UUID, name: 'Teacher A' }];
+        if (isTeacherTenantQuery(sql)) return [{ id: 'tenant-a', business_name: 'Center A' }];
+        if (isTeacherCoursesQuery(sql)) return [SAFE_COURSE];
+        return [];
+    });
+    const response = await invokeRoute(router, { method: 'GET', url: `/teachers/${VALID_UUID}` });
+    assert.equal(response.statusCode, 200);
+    const courseSql = executed.find((e) => isTeacherCoursesQuery(e.sql))!;
+    assert.ok(
+        courseSql.sql.includes("c.publication_state='published'"),
+        'the teacher page must pin the explicit publication state, not rely on is_active',
+    );
+});
+
+test('public: teacher page hides draft courses at row level (fixture models the MySQL gate)', async () => {
+    // The fixture models what MySQL does with the emitted WHERE clause: a row
+    // is visible only when the statement pins publication, active and an active
+    // tenant. If the publication gate is dropped from the route, the draft row
+    // becomes visible here and this test fails — the leak cannot pass silently.
+    const { router } = buildPublicRouter((sql) => {
+        if (isTeacherUserQuery(sql)) return [{ id: VALID_UUID, name: 'Teacher A' }];
+        if (isTeacherTenantQuery(sql)) return [{ id: 'tenant-a', business_name: 'Center A' }];
+        if (isTeacherCoursesQuery(sql)) {
+            const published = sql.includes("c.publication_state='published'");
+            const active = sql.includes('c.is_active=1');
+            const activeTenant = sql.includes("ct.status='active'");
+            const rows = [SAFE_COURSE, DRAFT_COURSE];
+            // The draft is `is_active=1` but `publication_state='draft'`; the
+            // published row satisfies every gate.
+            return published && active && activeTenant
+                ? rows.filter((row) => row.id === SAFE_COURSE.id)
+                : rows;
+        }
+        return [];
+    });
+    const response = await invokeRoute(router, { method: 'GET', url: `/teachers/${VALID_UUID}` });
+    assert.equal(response.statusCode, 200);
+    const courses = response.body as { published_courses: Array<{ id: string; name: string }> };
+    assert.deepEqual(
+        courses.published_courses.map((row) => row.id),
+        [SAFE_COURSE.id],
+        'a never-published draft must never reach the public teacher page',
+    );
 });
 
 test('public: teacher without an active center still resolves with center null', async () => {
@@ -119,76 +189,69 @@ test('public: teacher page database failures return a generic 500 at each lookup
     }
 });
 
-test('public: course discovery returns only a safe projection and never private columns', async () => {
-    const { router, executed } = buildPublicRouter((sql) => {
-        if (isDiscoveryQuery(sql)) return [SAFE_COURSE, { ...SAFE_COURSE, id: 'c2', name: 'Physics' }];
-        return [];
-    });
-    const response = await invokeRoute(router, { method: 'GET', url: '/courses' });
-    assert.equal(response.statusCode, 200);
-    const courses = response.body as Array<Record<string, unknown>>;
-    assert.equal(courses.length, 2);
-    for (const course of courses) {
-        assert.equal('video_url' in course, false);
-        assert.equal('file_url' in course, false);
-        assert.equal('phone' in course, false);
-        assert.equal('secret' in course, false);
-    }
-    const discoverySql = executed.find((e) => isDiscoveryQuery(e.sql))!;
-    assert.ok(!/video_url|file_url|phone|email|secret|l\.\*/i.test(discoverySql.sql), 'discovery projection is private-free');
-});
+// ---------------------------------------------------------------------------
+// Correction A — the public teacher page must NEVER be cached.
+//
+// Publication can be withdrawn at any time, so a cached page could keep a
+// course the owner has since unpublished. Every outcome (200 / 404 / 500) must
+// carry `Cache-Control: no-store`, and a subsequent request after withdrawal
+// must not serve the stale course.
+// ---------------------------------------------------------------------------
 
-test('public: discovery honors grade/subject/search filters in SQL', async () => {
-    const { router, executed } = buildPublicRouter((sql) => {
-        if (isDiscoveryQuery(sql)) return [SAFE_COURSE];
-        return [];
-    });
-    const response = await invokeRoute(router, { method: 'GET', url: '/courses', query: { grade: 'G1', subject: 'Mathematics', search: 'Math' } });
-    assert.equal(response.statusCode, 200);
-    const discoverySql = executed.find((e) => isDiscoveryQuery(e.sql))!;
-    assert.ok(discoverySql.sql.includes('c.grade=?'), 'grade filter bound');
-    assert.ok(discoverySql.sql.includes('c.subject=?'), 'subject filter bound');
-    assert.ok(discoverySql.sql.includes('c.name LIKE ? OR c.description LIKE ?'), 'search filter bound');
-    assert.deepEqual(discoverySql.params.slice(0, 3), ['G1', 'Mathematics', '%Math%']);
-});
-
-test('public: discovery only publishes active tenant courses (drafts hidden by the is_active gate)', async () => {
-    // The fixture returns only is_active rows; the gate (c.is_active=1 AND
-    // t.status='active') is asserted in the emitted SQL so the hiding is
-    // enforced server-side, not just by fixture luck.
-    const { router, executed } = buildPublicRouter((sql) => {
-        if (isDiscoveryQuery(sql)) return [SAFE_COURSE];
-        return [];
-    });
-    const response = await invokeRoute(router, { method: 'GET', url: '/courses' });
-    assert.equal(response.statusCode, 200);
-    assert.equal((response.body as unknown[]).length, 1);
-    const discoverySql = executed.find((e) => isDiscoveryQuery(e.sql))!;
-    assert.ok(discoverySql.sql.includes('c.is_active=1'), 'is_active gate present');
-    assert.ok(discoverySql.sql.includes("t.status='active'"), 'active tenant gate present');
-});
-
-test('public: discovery sets a public, short-TTL cache header', async () => {
+test('public: teacher page sets Cache-Control: no-store on success', async () => {
     const { router } = buildPublicRouter((sql) => {
-        if (isDiscoveryQuery(sql)) return [SAFE_COURSE];
+        if (isTeacherUserQuery(sql)) return [{ id: VALID_UUID, name: 'Teacher A' }];
+        if (isTeacherTenantQuery(sql)) return [{ id: 'tenant-a', business_name: 'Center A' }];
+        if (isTeacherCoursesQuery(sql)) return [SAFE_COURSE];
         return [];
     });
-    const response = await invokeRoute(router, { method: 'GET', url: '/courses' });
+    const response = await invokeRoute(router, { method: 'GET', url: `/teachers/${VALID_UUID}` });
     assert.equal(response.statusCode, 200);
-    assert.equal(response.headers?.['cache-control'], 'public, max-age=60');
+    assert.equal((response.headers as Record<string, string>)['cache-control'], 'no-store');
 });
 
-test('public: discovery pagination is bounded and forwarded to SQL LIMIT/OFFSET', async () => {
-    const { router, executed } = buildPublicRouter((sql) => {
-        if (isDiscoveryQuery(sql)) return [SAFE_COURSE];
+test('public: teacher page sets Cache-Control: no-store on failure (404 / 500)', async () => {
+    // A malformed id is refused before any lookup — the refusal must still be
+    // no-store so a previously good page can never be served for it.
+    const okRouter = buildPublicRouter(() => []).router;
+    const notFound = await invokeRoute(okRouter, { method: 'GET', url: '/teachers/not-a-uuid' });
+    assert.equal(notFound.statusCode, 404);
+    assert.equal((notFound.headers as Record<string, string>)['cache-control'], 'no-store');
+
+    // A database failure returns 500 — also no-store.
+    const db = makeFakeDataAccess((sql) => {
+        if (isTeacherUserQuery(sql)) throw new Error('private database connection details');
         return [];
     });
-    const response = await invokeRoute(router, { method: 'GET', url: '/courses', query: { limit: '7', page: '2' } });
-    assert.equal(response.statusCode, 200);
-    const discoverySql = executed.find((e) => isDiscoveryQuery(e.sql))!;
-    assert.ok(discoverySql.sql.includes('LIMIT ? OFFSET ?'), 'pagination clause present');
-    // limit 7, page 2 -> offset 7
-    const limitIdx = discoverySql.params.indexOf('7');
-    assert.ok(limitIdx >= 0);
-    assert.equal(discoverySql.params[limitIdx + 1], '7', 'offset = (page-1)*limit = 7');
+    const router = createPublicIdentityRouter({ query: db.query, queryOne: db.queryOne });
+    const errorResponse = await invokeRoute(router, { method: 'GET', url: `/teachers/${VALID_UUID}` });
+    assert.equal(errorResponse.statusCode, 500);
+    assert.equal((errorResponse.headers as Record<string, string>)['cache-control'], 'no-store');
+});
+
+test('public: withdrawing publication removes the course from the page (no stale cache)', async () => {
+    // A page cached with max-age could keep a withdrawn course visible. With
+    // no-store the very next request re-reads the same course row and must now
+    // hide it because its publication_state is no longer 'published'.
+    let published = true;
+    const { router } = buildPublicRouter((sql) => {
+        if (isTeacherUserQuery(sql)) return [{ id: VALID_UUID, name: 'Teacher A' }];
+        if (isTeacherTenantQuery(sql)) return [{ id: 'tenant-a', business_name: 'Center A' }];
+        if (isTeacherCoursesQuery(sql)) return published ? [SAFE_COURSE] : [];
+        return [];
+    });
+    const before = await invokeRoute(router, { method: 'GET', url: `/teachers/${VALID_UUID}` });
+    assert.equal(before.statusCode, 200);
+    assert.equal(((before.body as { published_courses: unknown[] }).published_courses).length, 1);
+    assert.equal((before.headers as Record<string, string>)['cache-control'], 'no-store');
+
+    published = false; // owner withdraws publication
+    const after = await invokeRoute(router, { method: 'GET', url: `/teachers/${VALID_UUID}` });
+    assert.equal(after.statusCode, 200);
+    assert.equal(
+        ((after.body as { published_courses: unknown[] }).published_courses).length,
+        0,
+        'a withdrawn course must immediately disappear from the public page',
+    );
+    assert.equal((after.headers as Record<string, string>)['cache-control'], 'no-store');
 });

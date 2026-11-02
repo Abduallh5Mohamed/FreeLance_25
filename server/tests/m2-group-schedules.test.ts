@@ -29,12 +29,14 @@
  * Live MySQL row-level locking, real concurrency, real index usage and real
  * HTTP transport are explicitly NOT exercised or claimed.
  */
+import './helpers/isolated-io-guard';
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import path from 'node:path';
 import Module from 'node:module';
 import jwt from 'jsonwebtoken';
 import type { RequestHandler, Router } from 'express';
+import { tenantScopeBranchDeps } from './helpers/tenant-scope-branch-deps';
 
 const TEST_SECRET = 'm2-19-hermetic-jwt-secret-not-a-real-key';
 const originalSecret = process.env.JWT_SECRET;
@@ -159,15 +161,51 @@ const restoreInterception = () => { (Module as any)._load = originalLoad; };
 
 let loadError: unknown = null;
 let routeModule: any;
+let authModule: any;
 
 installInterception();
 try {
+    // The real auth middleware is loaded THROUGH the interception so its static
+    // `../security/principal-repository` import binds to the fixture sentinel —
+    // the same instance the route module itself receives.
+    authModule = require('../src/middleware/auth');
     routeModule = require('../src/routes/groups');
 } catch (error) {
     loadError = error;
 } finally {
     restoreInterception();
 }
+
+/**
+ * Branch-authority seam for the real gate. `resolveResourceBranchAccess`,
+ * `principalFromAuthUser` and `resourceBranchDenial` stay production code: the
+ * router is built with this injected dependency, so the real decision runs on
+ * every request and the production SQL fallback (`getResourceBranchDeps`,
+ * which dynamically imports the real `../db`) is never reached.
+ *
+ * The fixture models the pre-branch tenant model of this suite: every fixture
+ * group is explicitly tenant-level. An id with no fixture row is left to the
+ * route's own exact-resource predicate, which answers the canonical 404 — the
+ * seam never invents or widens authority, and never reaches a real database.
+ */
+const branchDepsHolder: { deps: any } = { deps: null };
+
+/**
+ * Builds the real groups router over fully injected seams: the fixture data
+ * access, the real (sentinel-bound) auth middlewares, the fixture-bound
+ * teaching-write guard, a fixture platform-capability answer and the fixture
+ * branch-authority deps. No default export is used, so no production code path
+ * can dynamically import the real `../db`.
+ */
+const buildGroupsRouter = (): Router =>
+    routeModule.createGroupsRouter({
+        db: dbSentinel,
+        optionalAuthenticate: authModule.optionalAuth,
+        authenticate: authModule.authenticateToken,
+        requireTeachingWrite: teachingAccessSentinel.requireTeachingWrite('groups'),
+        hasVerifiedPlatformCapability: async () => false,
+        branchAccess: branchDepsHolder.deps,
+    });
 
 after(() => {
     if (originalSecret === undefined) delete process.env.JWT_SECRET;
@@ -219,6 +257,9 @@ interface GroupRow {
     is_active: number;
     schedule_days: unknown;
     schedule_time: unknown;
+    /** M2-19 classification: every fixture row is explicitly tenant-level. */
+    branch_id: string | null;
+    branch_scope: string | null;
 }
 
 interface State {
@@ -296,30 +337,35 @@ function makeState(): State {
                 max_students: 25, current_students: 7, is_active: 1,
                 schedule_days: ['mon', 'sat', 'sat', 'funday'],
                 schedule_time: '18:30:00',
+                branch_id: null, branch_scope: 'tenant',
             },
             {
                 id: GROUP_A2, name: 'Geometry B', description: null,
                 course_id: null, grade_id: null, instructor_id: INSTRUCTOR_A,
                 max_students: 30, current_students: 0, is_active: 1,
                 schedule_days: null, schedule_time: null,
+                branch_id: null, branch_scope: 'tenant',
             },
             {
                 id: GROUP_A3, name: 'Other Instructor', description: null,
                 course_id: null, grade_id: null, instructor_id: INSTRUCTOR_A2,
                 max_students: 30, current_students: 0, is_active: 1,
                 schedule_days: ['sun'], schedule_time: '09:00:00',
+                branch_id: null, branch_scope: 'tenant',
             },
             {
                 id: GROUP_B1, name: 'Foreign Group', description: null,
                 course_id: null, grade_id: null, instructor_id: INSTRUCTOR_B,
                 max_students: 30, current_students: 0, is_active: 1,
                 schedule_days: ['fri'], schedule_time: '20:00:00',
+                branch_id: null, branch_scope: 'tenant',
             },
             {
                 id: GROUP_ARCHIVED, name: 'Archived Group', description: null,
                 course_id: null, grade_id: null, instructor_id: INSTRUCTOR_A,
                 max_students: 30, current_students: 0, is_active: 0,
                 schedule_days: ['tue'], schedule_time: '07:15:00',
+                branch_id: null, branch_scope: 'tenant',
             },
         ],
         courses: [
@@ -345,24 +391,46 @@ function makeState(): State {
 
 interface Call { sql: string; params: any[] }
 
-const COLUMNS =
+/** The ten projection columns the transactional group lock selects. */
+const LOCK_COLUMNS =
     'g.id,g.name,g.description,g.course_id,g.grade_id,g.max_students,g.current_students,g.is_active,g.schedule_days,g.schedule_time';
-const SELECT_PREFIX = `SELECT ${COLUMNS} FROM \`groups\` g WHERE `;
+/**
+ * The list projection adds the M2-19 classification columns. The route writes
+ * this list inline with ", " separators, so the fixture must match it exactly.
+ */
+const LIST_COLUMNS =
+    'g.id, g.name, g.description, g.course_id, g.grade_id, g.max_students, g.current_students, g.is_active, g.schedule_days, g.schedule_time, g.instructor_id, g.branch_id, g.branch_scope';
+const SELECT_PREFIX = `SELECT ${LIST_COLUMNS} FROM \`groups\` g WHERE g.is_active = TRUE AND `;
+const LIST_SUFFIX = ' ORDER BY g.name';
 const GROUP_LOCK_PREFIX =
-    `SELECT ${COLUMNS} FROM \`groups\` g JOIN tenant_memberships tm ON tm.user_id=g.instructor_id AND tm.tenant_id=? AND tm.status='active' WHERE g.id=?`;
+    `SELECT ${LOCK_COLUMNS} FROM \`groups\` g ` +
+    'JOIN tenant_memberships tm ON tm.user_id=g.instructor_id AND tm.tenant_id=? AND tm.status=\'active\' ' +
+    'WHERE g.id=?';
+const DETAIL_PREFIX = 'SELECT * FROM `groups` g WHERE g.id = ? AND g.is_active = TRUE AND ';
 
 const COURSE_SELECT = 'SELECT id FROM courses WHERE id=? AND tenant_id=? AND is_active=TRUE';
 const GRADE_SELECT = 'SELECT id FROM grades WHERE id=?';
 const OWNERSHIP_SELECT_PREFIX = 'SELECT g.id FROM `groups` g WHERE g.id=? AND ';
-const DELETE_SQL = 'DELETE FROM `groups` WHERE id = ?';
+const DELETE_SQL = 'DELETE g FROM `groups` g WHERE g.id = ? AND ';
 const MEMBER_LOCK_SELECT =
     'SELECT m.role_key,u.is_active AS caller_active,t.status AS tenant_status FROM tenant_memberships m JOIN users u ON u.id=m.user_id JOIN tenants t ON t.id=m.tenant_id WHERE m.user_id=? AND m.tenant_id=? AND m.status=\'active\' LIMIT 1 FOR UPDATE';
 const GROUP_UPDATE_SQL =
     'UPDATE `groups` SET name=?,description=?,course_id=?,grade_id=?,max_students=?,is_active=?,schedule_days=?,schedule_time=?,updated_at=CURRENT_TIMESTAMP WHERE id=?';
 const GROUP_INSERT_SQL =
-    'INSERT INTO `groups` (id,name,description,course_id,grade_id,instructor_id,max_students,is_active,schedule_days,schedule_time) VALUES (?,?,?,?,?,?,?,?,?,?)';
+    'INSERT INTO `groups` (id,name,description,course_id,grade_id,instructor_id,max_students,is_active,schedule_days,schedule_time,branch_id,branch_scope) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)';
 const AUDIT_SQL =
     'INSERT INTO audit_events (id,actor_user_id,tenant_id,action,resource_type,resource_id,old_value,new_value) VALUES (?,?,?,?,?,?,?,?)';
+
+/**
+ * The M2-19 classification predicate the list route appends: a row is listable
+ * only when its classification is internally consistent. The fixture has no
+ * branch-owned row and no branch membership, so a branch-scoped row would be
+ * invisible here exactly as the production EXISTS clauses make it.
+ */
+const isClassified = (row: GroupRow): boolean =>
+    (row.branch_scope === 'tenant' && row.branch_id === null) ||
+    (row.branch_scope === 'branch' && row.branch_id !== null);
+const isBranchVisible = (row: GroupRow): boolean => row.branch_scope !== 'branch';
 
 const TENANT_PREDICATE =
     "g.instructor_id IN (SELECT user_id FROM tenant_memberships WHERE tenant_id=? AND status='active')";
@@ -416,6 +484,7 @@ function buildHarness(state: State): Harness {
         const { tenantId, scopeId } = readPredicate(where, params);
         return state.groups.filter((row) =>
             row.is_active === 1 &&
+            isClassified(row) && isBranchVisible(row) &&
             (tenantId === null || hasActiveMembership(row.instructor_id, tenantId)) &&
             (scopeId === null || row.instructor_id === scopeId));
     };
@@ -463,7 +532,7 @@ function buildHarness(state: State): Harness {
         if (n === GROUP_INSERT_SQL) {
             events.push('insert');
             if (state.failInsert) throw new Error('insert into groups failed: internal detail leaked');
-            const [id, name, description, courseId, gradeId, instructorId, maxStudents, isActive, days, time] = params;
+            const [id, name, description, courseId, gradeId, instructorId, maxStudents, isActive, days, time, branchId, branchScope] = params;
             pendingInsert = {
                 id: String(id),
                 name: String(name),
@@ -476,6 +545,8 @@ function buildHarness(state: State): Harness {
                 is_active: Number(isActive),
                 schedule_days: days,
                 schedule_time: time,
+                branch_id: branchId === null ? null : String(branchId),
+                branch_scope: String(branchScope),
             };
             return [{ affectedRows: 1 }, []];
         }
@@ -562,8 +633,8 @@ function buildHarness(state: State): Harness {
         query: async (sql: string, params: any[]) => {
             const n = squash(sql);
             calls.push({ sql, params });
-            if (n.startsWith(SELECT_PREFIX) && n.endsWith('ORDER BY g.name')) {
-                const where = n.slice(SELECT_PREFIX.length, n.length - ' ORDER BY g.name'.length);
+            if (n.startsWith(SELECT_PREFIX) && n.endsWith(LIST_SUFFIX)) {
+                const where = n.slice(SELECT_PREFIX.length, n.length - LIST_SUFFIX.length);
                 return selectGroups(where, params)
                     .slice()
                     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -587,10 +658,11 @@ function buildHarness(state: State): Harness {
                 return row ? { id: row.id } : null;
             }
 
-            if (n.startsWith(SELECT_PREFIX) && n.includes('g.id=? AND ')) {
-                const where = n.slice(SELECT_PREFIX.length, n.length - ' LIMIT 1'.length);
-                const scopedWhere = where.replace('g.id=? AND ', '');
-                const matches = selectGroups(scopedWhere, params.slice(1));
+            // Detail read: `SELECT * FROM groups g WHERE g.id = ? AND g.is_active = TRUE AND <scope>`
+            // (no LIMIT — the route relies on the scope predicate for uniqueness).
+            if (n.startsWith(DETAIL_PREFIX) && !n.endsWith(' LIMIT 1')) {
+                const where = n.slice(DETAIL_PREFIX.length);
+                const matches = selectGroups(where, params.slice(1));
                 const wanted = String(params[0]);
                 return matches.find((row) => row.id === wanted) ?? null;
             }
@@ -607,10 +679,15 @@ function buildHarness(state: State): Harness {
         execute: async (sql: string, params: any[]) => {
             const n = squash(sql);
             calls.push({ sql, params });
-            if (n === DELETE_SQL) {
+            // The delete is scoped by the SAME predicate the route appends, so a
+            // foreign or other-instructor group is zero affected rows (a 404),
+            // never a silent deletion.
+            if (n.startsWith(DELETE_SQL)) {
                 const id = String(params[0]);
+                const where = n.slice(DELETE_SQL.length);
+                const matches = selectGroups(where, params.slice(1));
                 const index = state.groups.findIndex((row) => row.id === id);
-                if (index < 0) return { affectedRows: 0 };
+                if (index < 0 || !matches.some((row) => row.id === id)) return { affectedRows: 0 };
                 state.groups.splice(index, 1);
                 return { affectedRows: 1 };
             }
@@ -621,6 +698,17 @@ function buildHarness(state: State): Harness {
     identityHolder.users = state.users;
     identityHolder.instructorAccounts = state.instructorAccounts;
     identityHolder.memberships = state.memberships;
+
+    // Every fixture group is explicitly tenant-level; the tenant is the one the
+    // group's instructor actively belongs to. An id with no fixture row is left
+    // to the route's own exact-resource predicate (the canonical 404), so the
+    // gate never invents authority and never reaches a real database.
+    branchDepsHolder.deps = tenantScopeBranchDeps((type, id) => {
+        if (type !== 'group') return null;
+        const row = state.groups.find((group) => group.id === id);
+        if (!row) return TENANT_A;
+        return state.memberships[row.instructor_id]?.[0] ?? TENANT_A;
+    });
 
     /**
      * The entitlement guard's repository seam: the real middleware and the
@@ -644,7 +732,7 @@ function buildHarness(state: State): Harness {
     };
 
     return {
-        chain: [routeModule.default as Router],
+        chain: [buildGroupsRouter() as Router],
         calls,
         auditRows,
         events,

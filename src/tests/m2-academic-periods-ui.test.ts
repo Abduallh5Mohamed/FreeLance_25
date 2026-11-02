@@ -209,11 +209,13 @@ test("transport: the list GET is the canonical bounded, selector-free request", 
   assert.equal(env.calls.length, 1, "exactly one request");
   assert.equal(env.calls[0].url, "/api/tenants/me/academic-periods?limit=25&offset=0&archived=false");
   assert.equal(env.calls[0].init.method, undefined, "a read: no explicit method override");
-  const headers = env.calls[0].init.headers as Record<string, string>;
-  assert.equal(headers.Authorization, "Bearer token-canonical");
-  assert.equal(headers["Content-Type"], "application/json");
+  // The transport normalises headers to a `Headers` instance (case-insensitive
+  // on the wire), so the assertion reads through the same API.
+  const headers = new Headers(env.calls[0].init.headers);
+  assert.equal(headers.get("authorization"), "Bearer token-canonical");
+  assert.equal(headers.get("content-type"), "application/json");
   assert.deepEqual(
-    Object.keys(headers).filter((key) => /tenant|scope|workspace|x-/i.test(key)),
+    [...headers.keys()].filter((key) => /tenant|scope|workspace|x-/i.test(key)),
     [],
     "no client tenant selector header",
   );
@@ -238,8 +240,8 @@ test("transport: a missing token sends no Authorization header", async (t) => {
 
   await listMyAcademicPeriods();
 
-  const headers = env.calls[0].init.headers as Record<string, string>;
-  assert.equal(headers.Authorization, undefined);
+  const headers = new Headers(env.calls[0].init.headers);
+  assert.equal(headers.get("authorization"), null);
 });
 
 test("transport: the create body is exactly the three strict fields", async (t) => {

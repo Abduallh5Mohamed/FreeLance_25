@@ -90,8 +90,8 @@ test('reorder: the owner atomically sets the positions of the selected lessons',
     assert.equal(res.headers['Cache-Control'], 'no-store');
 
     assert.deepEqual(harness.events,
-        ['begin', 'owner', 'course', 'unit', 'batch_lock', 'reorder_update', 'audit', 'reorder_update', 'audit', 'batch_read', 'commit', 'release'],
-        'one transaction: lock parents, lock the selection in id order, write and audit each change, read back, commit');
+        ['begin', 'owner', 'course', 'unit', 'batch_lock', 'dependent_order', 'reorder_update', 'audit', 'reorder_update', 'audit', 'batch_read', 'commit', 'release'],
+        'one transaction: lock parents, lock the selection in id order, prove the final order, write and audit each change, read back, commit');
     assert.equal(squash(harness.calls[0].sql), `${OWNER_SELECT} FOR UPDATE`);
     assert.equal(squash(harness.calls[1].sql), `${COURSE_SELECT} FOR UPDATE`);
     assert.equal(squash(harness.calls[2].sql), `${UNIT_SELECT} FOR UPDATE`);

@@ -31,9 +31,15 @@ const TENANT_A = 'tenant-a';
 const BRANCH_A1 = 'branch-a1';
 const USER = 'user-1';
 const OWNER = 'owner-1';
+/**
+ * The route treats a client-supplied id as a selector and validates it as a
+ * UUID before any read, so the fixture id is a real UUID. The classification
+ * under test (legacy `unassigned`) is unaffected.
+ */
+const GROUP_ID = '11111111-1111-4111-8111-111111111111';
 
 const groupRow = (overrides: Record<string, unknown> = {}) => ({
-    id: 'group-legacy', name: 'Group', description: null, course_id: 'course-1', grade_id: null,
+    id: GROUP_ID, name: 'Group', description: null, course_id: 'course-1', grade_id: null,
     max_students: 30, current_students: 0, is_active: 1, schedule_days: null, schedule_time: null,
     instructor_id: OWNER, branch_id: null, branch_scope: 'unassigned', tenant_id: TENANT_A, ...overrides,
 });
@@ -63,7 +69,7 @@ const resolveWithDb = (
         id: USER, role: 'instructor', tenantId: TENANT_A, branchId: null, branchMembershipVersion: null,
         ...principalOverrides,
     } as any);
-    return resolveResourceBranchAccess(deps, principal, { resourceType: 'group', resourceId: 'group-legacy' });
+    return resolveResourceBranchAccess(deps, principal, { resourceType: 'group', resourceId: GROUP_ID });
 };
 
 test('FIX1: legacy unassigned group resolves to ambiguous, never tenant', async () => {
@@ -123,7 +129,7 @@ test('FIX1: a DB failure propagates so the handler fails closed', async () => {
         resolveResourceBranchAccess(
             deps,
             principalFromAuthUser({ id: USER, role: 'instructor', tenantId: TENANT_A } as any),
-            { resourceType: 'group', resourceId: 'group-legacy' },
+            { resourceType: 'group', resourceId: GROUP_ID },
         ),
         /isolated db unavailable/,
     );
@@ -186,7 +192,7 @@ const buildGroupsApp = (group: Record<string, unknown>, branchAccess: ResourceBr
 test('FIX1 handler: legacy unassigned group read is denied (403, no tenant fallback)', async () => {
     const branchAccess: ResourceBranchDeps = {
         loadResourceScope: async () => ({
-            resourceType: 'group', resourceId: 'group-legacy', tenantId: TENANT_A,
+            resourceType: 'group', resourceId: GROUP_ID, tenantId: TENANT_A,
             scope: 'ambiguous', branchId: null, legacyUnclassified: true, ambiguityReason: 'legacy-unclassified',
         }),
         findBranch: async () => ({ id: BRANCH_A1, tenant_id: TENANT_A, status: 'active', version: 0 }),
@@ -197,7 +203,7 @@ test('FIX1 handler: legacy unassigned group read is denied (403, no tenant fallb
     const app = buildGroupsApp(groupRow({ branch_scope: 'unassigned' }), branchAccess);
     const { server, base } = await listen(app);
     try {
-        const res = await fetch(`${base}/groups/group-legacy`, { headers: { 'x-test-user': asUser() } });
+        const res = await fetch(`${base}/groups/${GROUP_ID}`, { headers: { 'x-test-user': asUser() } });
         assert.equal(res.status, 403);
     } finally { await close(server); }
 });
@@ -205,7 +211,7 @@ test('FIX1 handler: legacy unassigned group read is denied (403, no tenant fallb
 test('FIX1 handler: explicit tenant group read is allowed (200 positive control)', async () => {
     const branchAccess: ResourceBranchDeps = {
         loadResourceScope: async () => ({
-            resourceType: 'group', resourceId: 'group-legacy', tenantId: TENANT_A,
+            resourceType: 'group', resourceId: GROUP_ID, tenantId: TENANT_A,
             scope: 'tenant', branchId: null,
         }),
         findBranch: async () => null,
@@ -216,7 +222,7 @@ test('FIX1 handler: explicit tenant group read is allowed (200 positive control)
     const app = buildGroupsApp(groupRow({ branch_scope: 'tenant' }), branchAccess);
     const { server, base } = await listen(app);
     try {
-        const res = await fetch(`${base}/groups/group-legacy`, { headers: { 'x-test-user': asUser() } });
+        const res = await fetch(`${base}/groups/${GROUP_ID}`, { headers: { 'x-test-user': asUser() } });
         assert.equal(res.status, 200);
     } finally { await close(server); }
 });
@@ -224,7 +230,7 @@ test('FIX1 handler: explicit tenant group read is allowed (200 positive control)
 test('FIX1 handler: tenant owner reading an unclassified group is still denied (403)', async () => {
     const branchAccess: ResourceBranchDeps = {
         loadResourceScope: async () => ({
-            resourceType: 'group', resourceId: 'group-legacy', tenantId: TENANT_A,
+            resourceType: 'group', resourceId: GROUP_ID, tenantId: TENANT_A,
             scope: 'ambiguous', branchId: null, legacyUnclassified: true, ambiguityReason: 'legacy-unclassified',
         }),
         findBranch: async () => ({ id: BRANCH_A1, tenant_id: TENANT_A, status: 'active', version: 0 }),
@@ -235,7 +241,7 @@ test('FIX1 handler: tenant owner reading an unclassified group is still denied (
     const app = buildGroupsApp(groupRow({ branch_scope: 'unassigned' }), branchAccess);
     const { server, base } = await listen(app);
     try {
-        const res = await fetch(`${base}/groups/group-legacy`, {
+        const res = await fetch(`${base}/groups/${GROUP_ID}`, {
             headers: { 'x-test-user': asUser({ id: OWNER, role: 'instructor' }) },
         });
         // Owner of the tenant does NOT get a bypass to read unclassified contents.

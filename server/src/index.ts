@@ -10,6 +10,7 @@ import { setupSocketIO } from './services/socket';
 import studentEnrollmentRoutes, { cleanupEnrollmentPrivacyData } from './routes/student-enrollment';
 import branchesRoutes from './routes/branches';
 import contentAccessRoutes from './routes/content-access';
+import studentCourseAccessRoutes from './routes/student-course-access';
 import questionBankRoutes from './routes/question-bank';
 import assignmentsRoutes from './routes/assignments';
 import tenantBrandingRoutes from './routes/tenant-branding';
@@ -232,7 +233,6 @@ app.use('/api/groups', groupsRoutes);
 app.use('/api/grades', gradesRoutes);
 app.use('/api/students', studentsRoutes);
 app.use('/api/courses', coursesRoutes);
-app.use('/api/public', publicIdentityRoutes);
 // M2-22 — anonymous read-only published-course discovery. Mounted under the
 // same `/api` boundary as every other route, so `optionalAuth`, the tenant
 // authority boundary and the student workspace boundary all still run: an
@@ -240,7 +240,18 @@ app.use('/api/public', publicIdentityRoutes);
 // access, a client-supplied tenant selector is refused, and a student without a
 // selected workspace is refused. The router itself consults no principal and
 // answers byte-identical results to an anonymous caller.
+//
+// ORDER IS DELIBERATE AND LOAD-BEARING: this router is mounted BEFORE
+// publicIdentityRoutes so `GET /api/public/courses` can only ever resolve to
+// the M2-22 contract (`{ courses, next_cursor }`, explicit publication gate).
+// The legacy discovery handler that previously shadowed it here was removed
+// from public-identity.ts; this order is defense in depth so a future
+// `/courses` route added to the identity router can never win the collision
+// again. See server/tests/m2-public-catalog-composition.test.ts.
 app.use('/api/public', publicCatalogRoutes);
+// C1/C4 public identity pages (teacher/center). Registers NO course-list
+// route; every course it projects is gated by explicit publication.
+app.use('/api/public', publicIdentityRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/exams', examsRoutes);
 app.use('/api/exam-results', examResultsRoutes);
@@ -283,6 +294,12 @@ app.use('/api/branches', branchesRoutes);
 // supplied credential is resolved to a verified principal before any handler
 // and an anonymous caller is denied at the router's own authenticate step.
 app.use('/api/content', contentAccessRoutes);
+// M2-23 — server-authoritative student learning path. A separate router so the
+// owner-only teaching catalog (`/api/tenants/me/catalog`) is never widened by
+// it. Mounted under the same `/api` guards as every other route, so
+// `optionalAuth`, the tenant authority boundary and the student workspace
+// boundary all still run before the router's own student-only gate.
+app.use('/api/student-course-access', studentCourseAccessRoutes);
 app.use('/api/tenant/branding', tenantBrandingRoutes);
 app.use('/api/tenant/domains', tenantDomainsRoutes);
 app.use('/api/announcements', announcementsRoutes);

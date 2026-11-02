@@ -55,6 +55,7 @@ import {
   listCourseLessons,
   reorderCourseLessons,
   updateCourseLesson,
+  type CourseLesson,
 } from '@/lib/api-http';
 import { subscribeSessionChange } from '@/lib/session-events';
 import {
@@ -63,6 +64,8 @@ import {
   COURSE_LESSON_DUPLICATE_CREATE_WARNING,
   COURSE_LESSON_METADATA_NOTICE,
   COURSE_LESSON_PAGING_NOTICE,
+  COURSE_LESSON_PREREQUISITE_NOTICE,
+  COURSE_LESSON_RELEASE_NOTICE,
   createCourseLessonController,
   readCourseSessionPrincipal,
   type CourseLessonController,
@@ -87,11 +90,15 @@ const CLOSED_FORM: CourseLessonFormState = {
   descriptionDraft: '',
   clearDescription: false,
   orderDraft: '',
+  releaseDraft: '',
+  prerequisiteDraft: '',
   targetId: null,
   targetTitle: null,
   originalTitle: null,
   originalDescription: null,
   originalOrder: null,
+  originalRelease: null,
+  originalPrerequisite: null,
   reorderDrafts: [],
   error: null,
 };
@@ -118,6 +125,39 @@ const PHASE_TEXT: Record<CourseLessonState['phase'], string> = {
   'missing-course': 'الكورس غير موجود أو غير متاح في مساحة العمل هذه.',
   'missing-unit': 'الوحدة غير موجودة أو لم تعد متاحة في هذا الكورس.',
 };
+
+/**
+ * M2-23 — the lessons this form may offer as a PREREQUISITE.
+ *
+ * The server accepts a prerequisite only when it is active, belongs to the same
+ * course, is not the target, and sorts STRICTLY BEFORE the target under
+ * `(display_order, id)`. This function applies the same rule to the rows the
+ * teacher can actually see, so the selector never proposes an edge the server
+ * will reject. It is a convenience, never the authority: the server revalidates
+ * every edge against the lesson's FINAL position, and a rejection is shown as
+ * the server's own message.
+ *
+ * Two cases cannot be PROVEN from the browser, and neither is guessed:
+ *  - a lesson being CREATED with no explicit position is stored at position 0,
+ *    and the tie against another position-0 lesson is broken by an id the
+ *    browser cannot know yet — so no candidate is offered until the teacher
+ *    states the position;
+ *  - a candidate at exactly the target's position is earlier only when its id
+ *    sorts first, which is knowable only when the target already exists.
+ */
+function earlierPrerequisiteCandidates(
+  rows: CourseLesson[],
+  targetId: string | null,
+  targetOrder: number | null,
+): CourseLesson[] {
+  if (targetOrder === null) return [];
+  return rows.filter((row) => {
+    if (row.status !== 'active') return false;
+    if (targetId !== null && row.id === targetId) return false;
+    if (row.display_order !== targetOrder) return row.display_order < targetOrder;
+    return targetId !== null && row.id < targetId;
+  });
+}
 
 export default function CourseLessonManager({
   courseId,
@@ -176,6 +216,32 @@ export default function CourseLessonManager({
   const uncertain = mutation.status === 'uncertain';
   const selectionFull = selectedIds.length >= COURSE_LESSON_REORDER_LIMIT;
   const selectedSet = new Set(selectedIds);
+
+  // M2-23 — the position the lesson will actually occupy when the form is
+  // submitted: the typed position when it parses (a patch may move the lesson
+  // AND set a prerequisite in one request), otherwise the stored position of
+  // the edited lesson, otherwise nothing (a create with no stated position).
+  const targetOrder = (() => {
+    if (form.mode === 'closed') return null;
+    const raw = form.orderDraft.trim();
+    if (raw.length > 0 && /^\d+$/.test(raw)) {
+      const parsed = Number(raw);
+      if (Number.isSafeInteger(parsed) && parsed >= 0) return parsed;
+    }
+    if (form.mode === 'edit' && form.targetId) {
+      const target = rows.find((row) => row.id === form.targetId);
+      if (target) return target.display_order;
+    }
+    return null;
+  })();
+  const earlierCandidates = earlierPrerequisiteCandidates(
+    rows,
+    form.mode === 'edit' ? form.targetId : null,
+    targetOrder,
+  );
+  // A create with no stated position has no provable earlier lesson: the select
+  // says so instead of offering an edge the server would reject.
+  const prerequisiteUnavailable = form.mode === 'create' && targetOrder === null;
 
   return (
     <section
@@ -488,6 +554,75 @@ export default function CourseLessonManager({
                   className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 disabled:bg-slate-100"
                 />
                 <p className="text-xs text-slate-500 mt-1">{COURSE_LESSON_METADATA_NOTICE}</p>
+              </div>
+
+              <div>
+                <label htmlFor="course-lesson-release" className="block text-sm font-medium text-slate-700">
+                  وقت الإتاحة (UTC، اختياري)
+                </label>
+                <input
+                  id="course-lesson-release"
+                  type="text"
+                  dir="ltr"
+                  placeholder="2026-11-01T09:00:00Z"
+                  disabled={busy}
+                  value={form.releaseDraft}
+                  onChange={(event) =>
+                    controllerRef.current?.updateReleaseDraft(event.target.value)
+                  }
+                  aria-describedby="course-lesson-release-notice"
+                  className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 disabled:bg-slate-100"
+                />
+                <p id="course-lesson-release-notice" className="text-xs text-slate-500 mt-1">
+                  {COURSE_LESSON_RELEASE_NOTICE} اتركه فارغًا لإلغاء الجدولة.
+                </p>
+              </div>
+
+              <div>
+                <label htmlFor="course-lesson-prerequisite" className="block text-sm font-medium text-slate-700">
+                  الدرس السابق (اختياري)
+                </label>
+                <select
+                  id="course-lesson-prerequisite"
+                  disabled={busy || prerequisiteUnavailable}
+                  value={form.prerequisiteDraft}
+                  onChange={(event) =>
+                    controllerRef.current?.updatePrerequisiteDraft(event.target.value)
+                  }
+                  aria-describedby="course-lesson-prerequisite-notice"
+                  className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 disabled:bg-slate-100"
+                >
+                  <option value="">بدون شرط سابق</option>
+                  {/*
+                    Only lessons of the CURRENT page that are strictly earlier
+                    than the edited lesson are offered. The server revalidates
+                    the rule, so this list is a convenience, never the authority.
+                  */}
+                  {earlierCandidates.map((candidate) => (
+                    <option key={candidate.id} value={candidate.id}>
+                      {`${candidate.title} — الموضع ${candidate.display_order}`}
+                    </option>
+                  ))}
+                  {/*
+                    A stored prerequisite that is not on the current page is
+                    still shown, so opening the form never silently drops a
+                    configuration the teacher did not touch.
+                  */}
+                  {form.prerequisiteDraft &&
+                  !earlierCandidates.some((candidate) => candidate.id === form.prerequisiteDraft) ? (
+                    <option value={form.prerequisiteDraft}>
+                      {`الدرس السابق المحفوظ (${form.prerequisiteDraft})`}
+                    </option>
+                  ) : null}
+                </select>
+                <p id="course-lesson-prerequisite-notice" className="text-xs text-slate-500 mt-1">
+                  {COURSE_LESSON_PREREQUISITE_NOTICE}
+                </p>
+                {prerequisiteUnavailable ? (
+                  <p className="text-xs text-amber-700 mt-1">
+                    حدّد موضع العرض أولًا ليصبح اختيار درس سابق ممكنًا؛ الخادم يقارن المواضع.
+                  </p>
+                ) : null}
               </div>
 
               {form.mode === 'create' ? (

@@ -81,6 +81,21 @@ const installSessionEnvironment = (initial: Record<string, string> = {}) => {
                 return ({ ok: true, status: 200, json: async () => body }) as unknown as Response;
             }) as typeof fetch;
         },
+        /**
+         * URL-aware responder. A space switch performs a select request AND a
+         * verified identity read with the candidate bearer, so each endpoint
+         * needs its own truthful body. An unmatched URL is a fixture bug and
+         * fails loudly instead of silently reusing another endpoint's answer.
+         */
+        setFetchRoutes: (routes: Array<{ match: RegExp; body: unknown }>) => {
+            globalThis.fetch = (async (input, init) => {
+                fetchCalls.push({ input, init });
+                const url = String(input);
+                const route = routes.find((candidate) => candidate.match.test(url));
+                if (!route) throw new Error(`unexpected fetch in this test: ${url}`);
+                return ({ ok: true, status: 200, json: async () => route.body }) as unknown as Response;
+            }) as typeof fetch;
+        },
         restore: () => {
             (globalThis as unknown as { localStorage: unknown }).localStorage = realLocalStorage ?? undefined;
             globalThis.fetch = realFetch;
@@ -254,7 +269,24 @@ test("selectStudentSpace notifies the token rotation after its complete mutation
                 student: localStorage.getItem("currentStudent"),
             });
         });
-        env.setFetchResponse({ token: "tok-rotated", tenant_id: "t-1", student_enrollment_id: "e-1" });
+        env.setFetchRoutes([
+            {
+                match: /\/student-enrollment\/spaces\/e-1\/select$/,
+                body: { token: "tok-rotated", tenant_id: "t-1", student_enrollment_id: "e-1" },
+            },
+            {
+                // The verified identity read the switch performs with the
+                // candidate bearer before the browser identity is replaced.
+                match: /\/students\/me$/,
+                body: {
+                    id: "e-1",
+                    tenant_id: "t-1",
+                    name: "Student One",
+                    business_name: "Academy One",
+                    is_active: true,
+                },
+            },
+        ]);
 
         const result = await selectStudentSpace("e-1");
 
