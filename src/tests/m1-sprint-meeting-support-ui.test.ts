@@ -51,6 +51,14 @@ const API_STUB = [
 ].join("\n");
 
 const API_HTTP_STUB = [
+  "export const getAssignedSupportTickets = async () => ({ tickets: [], next_cursor: null });",
+  "export const getSupportAssignment = async () => ({});",
+  "export const getSupportAssignmentCandidates = async () => ({ candidates: [], next_cursor: null });",
+  "export const assignSupportTicket = async () => ({});",
+  "export const reconcileSupportAssignment = async () => ({});",
+  "export const getSupportPrivateNotes = async () => ({ notes: [], next_cursor: null });",
+  "export const addSupportPrivateNote = async () => ({});",
+  "export const reconcileSupportPrivateNote = async () => ({});",
   "export const AUTH_SESSION_CHANGED_EVENT = 'auth-session-changed';",
   "export const signOutSession = async () => ({ serverRevoked: false, warning: null, sessionChanged: true });",
   "export const verifyCurrentSession = async () => ({ state: 'anonymous' });",

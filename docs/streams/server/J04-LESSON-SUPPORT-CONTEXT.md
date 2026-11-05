@@ -36,4 +36,6 @@ Draft-target changes dispose the prior create/context controller; ticket selecti
 
 ## Remaining gates
 
+Follow-up: [private support notes](J04-SUPPORT-PRIVATE-NOTES.md) were subsequently implemented locally in BUILD-13, with a separate unapplied table migration. Assignment and staff mapping remain open; the following paragraph preserves the original checkpoint.
+
 Actual schema application and MySQL locking/check/query-plan evidence remain unverified. Platform-support assignment/transfer, private notes, response-time policy, teacher-owner context creation, parent/attempt/transfer contexts and staff identity mapping are separate work. This is not an automatic teacher inbox or a financial/provider action.

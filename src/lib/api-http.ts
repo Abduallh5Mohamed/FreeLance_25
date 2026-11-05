@@ -7,6 +7,9 @@ import { notifySessionChange } from './session-events';
 import { parseSupportReplyPage } from '../features/support/reply-page';
 import { parseSupportTicketWrite, parseSupportReplyWrite } from '../features/support/write-result';
 import { parseLessonSupportContext, parseSupportContextEnvelope } from '../features/support/lesson-context';
+import {parsePrivateNotePage,parsePrivateNoteAck} from '../features/support/private-notes';
+import {parseAssignmentSnapshot,parseAssignmentAck,parseCandidatePage,type AssignmentInput} from '../features/support/assignment';
+import {parseAssignedPage} from '../features/support/assigned-queue';
 
 // Get API base URL from environment or use relative path
 const getApiBaseUrl = (): string => {
@@ -1063,8 +1066,8 @@ const courseLessonCollectionPath = (courseId: string, unitId: string): string =>
 /** Owner-only material preparation; no delivery URLs or client tenant selector. */
 const lessonContentsPath = (courseId: string, unitId: string, lessonId: string) =>
     `${courseLessonCollectionPath(courseId, unitId)}/${encodeURIComponent(lessonId)}/contents`;
-export const listLessonContents = (courseId: string, unitId: string, lessonId: string) =>
-    request<unknown>(lessonContentsPath(courseId, unitId, lessonId));
+export const listLessonContents = (courseId: string, unitId: string, lessonId: string, signal?:AbortSignal) =>
+    request<unknown>(lessonContentsPath(courseId, unitId, lessonId),{signal});
 /** Student projection is separate from owner references and carries no locator. */
 export const listStudentLessonContents = (courseId: string, lessonId: string) =>
     request<unknown>(`/student-course-access/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/contents`);
@@ -1114,6 +1117,11 @@ export const attachLessonMaterial = (courseId: string, unitId: string, lessonId:
         body: JSON.stringify({ material_id: input.material_id, display_order: input.display_order }) });
 export const detachLessonMaterial = (courseId: string, unitId: string, lessonId: string, contentId: string) =>
     request<unknown>(`${lessonContentsPath(courseId, unitId, lessonId)}/${encodeURIComponent(contentId)}`, { method: 'DELETE' });
+const lessonVideosPath=(courseId:string,unitId:string,lessonId:string)=>`${courseLessonCollectionPath(courseId,unitId)}/${encodeURIComponent(lessonId)}/videos`;
+export const listLessonVideos=(courseId:string,unitId:string,lessonId:string,signal?:AbortSignal)=>request<unknown>(lessonVideosPath(courseId,unitId,lessonId),{signal});
+export const listLessonVideoOptions=(courseId:string,unitId:string,lessonId:string,cursor:string|null,signal?:AbortSignal)=>request<unknown>(`${lessonVideosPath(courseId,unitId,lessonId)}/available-videos${cursor?`?cursor=${encodeURIComponent(cursor)}`:''}`,{signal});
+export const attachLessonVideo=(courseId:string,unitId:string,lessonId:string,input:{video_id:string;display_order:number},signal?:AbortSignal)=>request<unknown>(lessonVideosPath(courseId,unitId,lessonId),{method:'POST',body:JSON.stringify({video_id:input.video_id,display_order:input.display_order}),signal});
+export const detachLessonVideo=(courseId:string,unitId:string,lessonId:string,contentId:string,signal?:AbortSignal)=>request<unknown>(`${lessonVideosPath(courseId,unitId,lessonId)}/${encodeURIComponent(contentId)}`,{method:'DELETE',signal});
 const ownerMaterialFilePath = (courseId: string, unitId: string, lessonId: string, contentId: string) =>
     `${lessonContentsPath(courseId, unitId, lessonId)}/${encodeURIComponent(contentId)}/file`;
 export const getOwnerMaterialFileStatus = (courseId: string, unitId: string, lessonId: string, contentId: string, signal?: AbortSignal) =>
@@ -4165,6 +4173,24 @@ export const getLessonSupportContext = async (courseId:string,lessonId:string,si
 };
 export const getSupportTicketContext = async (ticketId:string,signal?:AbortSignal) =>
     parseSupportContextEnvelope(await request<unknown>(`/support-tickets/${encodeURIComponent(ticketId)}/context`,{signal}));
+const privateNotesPath=(ticketId:string)=>`/support-tickets/${encodeURIComponent(ticketId)}/private-notes`;
+const assignmentPath=(ticketId:string)=>`/support-tickets/${encodeURIComponent(ticketId)}/assignment`;
+export const getAssignedSupportTickets=async(after:string|null=null,signal?:AbortSignal)=>parseAssignedPage(await request<unknown>(`/support-tickets/assigned${after?`?after=${encodeURIComponent(after)}`:''}`,{signal}));
+export const getSupportAssignment=async(ticketId:string,signal?:AbortSignal)=>parseAssignmentSnapshot(await request<unknown>(assignmentPath(ticketId),{signal}),ticketId);
+export const getSupportAssignmentCandidates=async(ticketId:string,after:string|null=null,signal?:AbortSignal)=>parseCandidatePage(await request<unknown>(`${assignmentPath(ticketId)}/candidates${after?`?after=${encodeURIComponent(after)}`:''}`,{signal}));
+export const assignSupportTicket=async(ticketId:string,input:AssignmentInput,key:string,signal?:AbortSignal)=>{
+    const ack=parseAssignmentAck(await request<unknown>(assignmentPath(ticketId),{method:'POST',headers:{'Idempotency-Key':key},body:JSON.stringify({assigned_to:input.assigned_to,expected_version:input.expected_version}),signal}),ticketId);
+    if(ack.assignment.assigned_to?.toLowerCase()!==input.assigned_to?.toLowerCase()||ack.assignment.version!==input.expected_version+(ack.changed?1:0))throw Error('Assignment acknowledgement mismatch');return ack;
+};
+export const reconcileSupportAssignment=async(ticketId:string,key:string,signal?:AbortSignal)=>parseAssignmentAck(await request<unknown>(`${assignmentPath(ticketId)}/attempts/${encodeURIComponent(key)}`,{signal}),ticketId);
+export const getSupportPrivateNotes=async(ticketId:string,before:string|null=null,signal?:AbortSignal)=>
+    parsePrivateNotePage(await request<unknown>(`${privateNotesPath(ticketId)}${before?`?before=${encodeURIComponent(before)}`:''}`,{signal}),ticketId);
+export const addSupportPrivateNote=async(ticketId:string,body:string,requestId:string,signal?:AbortSignal)=>{
+    const ack=parsePrivateNoteAck(await request<unknown>(privateNotesPath(ticketId),{method:'POST',headers:{'Idempotency-Key':requestId},body:JSON.stringify({body}),signal}),ticketId);
+    if(ack.note.body!==body.trim())throw Error('Private note acknowledgement mismatch');return ack;
+};
+export const reconcileSupportPrivateNote=async(ticketId:string,requestId:string,signal?:AbortSignal)=>
+    parsePrivateNoteAck(await request<unknown>(`${privateNotesPath(ticketId)}/attempts/${encodeURIComponent(requestId)}`,{signal}),ticketId);
 export const reconcileSupportTicket = async (requestId: string, signal?: AbortSignal) =>
     parseSupportTicketWrite(await request<unknown>(`/support-tickets/attempts/create/${encodeURIComponent(requestId)}`, { signal }));
 export const reconcileSupportReply = async (ticketId: string, requestId: string, signal?: AbortSignal) =>

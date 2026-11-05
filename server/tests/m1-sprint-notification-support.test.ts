@@ -47,6 +47,11 @@ interface FakeState {
   notifications: Row[];
   tickets: Row[];
   replies: Row[];
+  privateNotes: Row[];
+  privateNotesSchema: boolean;
+  assignmentSchema: boolean;
+  assignedIndex: boolean;
+  assignmentAttempts: Row[];
   audits: Row[];
   /** Active platform permission grants (admin_role_permissions view). */
   permissions: Record<string, string[]>;
@@ -61,6 +66,11 @@ const makeState = (): FakeState => ({
   notifications: [],
   tickets: [],
   replies: [],
+  privateNotes: [],
+  privateNotesSchema: false,
+  assignmentSchema: false,
+  assignedIndex: true,
+  assignmentAttempts: [],
   audits: [],
   permissions: {},
   superAdmins: new Set<string>(),
@@ -80,6 +90,35 @@ const interpolateLimit = (rows: Row[], sql: string): Row[] => rows.slice(0, limi
 const runSelect = (sql: string, params: unknown[]): Row[] => {
   state.executed.push({ sql, params });
   if (!isAuthLookup(sql) && state.failWith) throw state.failWith;
+  if(sql.includes("INDEX_NAME='idx_support_assignee_id'"))return state.assignedIndex?['assigned_to','id'].map((column_name,index)=>({column_name,seq_in_index:index+1})):[];
+  if(sql.includes('FROM support_tickets t WHERE t.assigned_to=?')){
+    assert.match(sql,/ORDER BY t.id ASC LIMIT 26/);
+    return state.tickets.filter(row=>row.assigned_to===params[0]&&(params.length===1||String(row.id)>String(params[1]))).sort((a,b)=>String(a.id).localeCompare(String(b.id))).slice(0,26)
+      .map(row=>({id:row.id,ticket_number:row.ticket_number,category:row.category,subject:row.subject,status:row.status,priority:row.priority,created_at_epoch:Date.parse(String(row.created_at))/1000,updated_at_epoch:Date.parse(String(row.updated_at))/1000}));
+  }
+  if(sql.startsWith('SELECT users.id,users.name')){
+    assert.match(sql,/users.is_active=1/);assert.match(sql,/users.suspended_until > UTC_TIMESTAMP\(\)/);assert.match(sql,/rp.permission_key='support.read'/);assert.match(sql,/LIMIT 26/);
+    return state.users.filter(row=>Number(row.is_active)===1&&!(row.suspended_until&&Date.parse(String(row.suspended_until))>Date.now())
+      &&(state.superAdmins.has(String(row.id))||(state.permissions[String(row.id)]??[]).includes('support.read'))&&(!params.length||String(row.id)>String(params[0])))
+      .sort((a,b)=>String(a.id).localeCompare(String(b.id))).slice(0,26).map(row=>({id:row.id,name:row.name}));
+  }
+  if(sql.includes("TABLE_NAME='support_assignment_attempts'")){
+    if(!state.assignmentSchema)return [];
+    return sql.includes('information_schema.TABLES')?[{engine:'InnoDB'}]:[{column_name:'id',seq_in_index:1}];
+  }
+  if(sql.includes('information_schema.COLUMNS')&&sql.includes("'support_assignment_attempts'"))return state.assignmentSchema?[
+    ...['assigned_to','assignment_version'].map(column_name=>({table_name:'support_tickets',column_name})),
+    ...['id','ticket_id','actor_user_id','assigned_to','expected_version','result_version','changed'].map(column_name=>({table_name:'support_assignment_attempts',column_name})),
+  ]:[];
+  if(sql.startsWith('SELECT id,assigned_to,assignment_version'))return state.tickets.filter(row=>row.id===params[0]).map(row=>({id:row.id,assigned_to:row.assigned_to??null,assignment_version:row.assignment_version??0}));
+  if(sql.startsWith('SELECT id,ticket_id,actor_user_id,assigned_to'))return state.assignmentAttempts.filter(row=>row.id===params[0]&&row.ticket_id===params[1]).map(row=>({...row}));
+  if(sql.includes("TABLE_NAME='support_ticket_private_notes'")){
+    if(!state.privateNotesSchema)return [];
+    if(sql.includes('information_schema.TABLES'))return [{engine:'InnoDB'}];
+    if(sql.includes('information_schema.COLUMNS'))return ['id','ticket_id','author_user_id','body','created_at'].map(column_name=>({column_name}));
+    if(sql.includes("INDEX_NAME='PRIMARY'"))return [{column_name:'id',seq_in_index:1}];
+    return ['ticket_id','created_at','id'].map((column_name,index)=>({column_name,seq_in_index:index+1}));
+  }
   if(sql.includes('information_schema.TABLES'))return ['users','support_tickets','support_ticket_replies','audit_events','admin_user_roles','admin_role_permissions'].map(table_name=>({table_name,engine:'InnoDB'}));
   if(sql.includes('information_schema.STATISTICS'))return ['users','support_tickets','support_ticket_replies','audit_events'].map(table_name=>({table_name,column_name:'id',seq_in_index:1}));
   if(sql.includes('information_schema.COLUMNS'))return [];
@@ -144,7 +183,7 @@ const runSelect = (sql: string, params: unknown[]): Row[] => {
     const rows = state.tickets
       .filter((t) => t.user_id === userId)
       .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
-    return interpolateLimit(rows, sql);
+    return interpolateLimit(rows, sql).map(row=>({id:row.id,ticket_number:row.ticket_number,category:row.category,subject:row.subject,status:row.status,priority:row.priority,created_at:row.created_at,updated_at:row.updated_at}));
   }
   if (sql.includes('u.name AS user_name') && sql.includes('FROM support_tickets t')) {
     // ticket detail projection (WHERE t.id = ?) or the admin queue listing
@@ -169,6 +208,13 @@ const runSelect = (sql: string, params: unknown[]): Row[] => {
   }
 
   // --- support ticket replies ------------------------------------------------
+  if(sql.includes('FROM support_ticket_private_notes n')){
+    const project=(row:Row)=>({id:row.id,ticket_id:row.ticket_id,author_id:row.author_user_id,author_name:state.users.find(user=>user.id===row.author_user_id)?.name??'',body:row.body,created_at_epoch:Date.parse(String(row.created_at))/1000});
+    if(sql.includes('WHERE n.id=?'))return state.privateNotes.filter(row=>row.id===params[0]&&row.ticket_id===params[1]).map(project);
+    const anchored=sql.includes('support_ticket_private_notes anchor'),ticketId=params[anchored?1:0],anchor=anchored?state.privateNotes.find(row=>row.id===params[0]&&row.ticket_id===ticketId):null;
+    return state.privateNotes.filter(row=>row.ticket_id===ticketId&&(!anchored||anchor&&(String(row.created_at)<String(anchor.created_at)||row.created_at===anchor.created_at&&String(row.id)<String(anchor.id))))
+      .sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at))||String(b.id).localeCompare(String(a.id))).slice(0,101).map(project);
+  }
   if (sql.includes('FROM support_ticket_replies')) {
     if(sql.startsWith('SELECT id,ticket_id,sender_id,body')){const row=state.replies.find(row=>row.id===params[0]);return row?[{...row}]:[];}
     if (sql.startsWith('SELECT id FROM support_ticket_replies WHERE ticket_id')) {
@@ -211,6 +257,18 @@ const isAuthLookup = (sql: string): boolean =>
 const runWrite = (sql: string, params: unknown[]): { affectedRows: number; insertId: number } => {
   state.executed.push({ sql, params });
   if (state.failWith) throw state.failWith;
+  if(sql.startsWith('UPDATE support_tickets SET assigned_to=')){
+    const row=state.tickets.find(row=>row.id===params[2]&&(row.assignment_version??0)===params[3]);if(!row)return {affectedRows:0,insertId:0};
+    Object.assign(row,{assigned_to:params[0],assignment_version:params[1]});return {affectedRows:1,insertId:0};
+  }
+  if(sql.startsWith('INSERT INTO support_assignment_attempts')){
+    if(state.assignmentAttempts.some(row=>row.id===params[0]))throw Object.assign(Error('duplicate'),{code:'ER_DUP_ENTRY'});
+    state.assignmentAttempts.push({id:params[0],ticket_id:params[1],actor_user_id:params[2],assigned_to:params[3],expected_version:params[4],result_version:params[5],changed:params[6]});return {affectedRows:1,insertId:0};
+  }
+  if(sql.includes('INSERT INTO support_ticket_private_notes')){
+    if(state.privateNotes.some(row=>row.id===params[0]))throw Object.assign(Error('duplicate'),{code:'ER_DUP_ENTRY'});
+    state.privateNotes.push({id:params[0],ticket_id:params[1],author_user_id:params[2],body:params[3],created_at:'2026-11-05T10:00:00Z'});return{affectedRows:1,insertId:0};
+  }
   if(sql.includes('INSERT INTO audit_events')){state.audits.push({params});return {affectedRows:1,insertId:0};}
 
   if (sql.includes('UPDATE notifications SET is_read = TRUE WHERE id = ? AND user_id = ?')) {
@@ -305,8 +363,8 @@ const fakePool = {
   query: async (sql: string, params?: unknown[]) =>
     [runSelect(sql, params ?? []), []] as const,
   getConnection: async () => {
-    let before: {tickets:Row[];replies:Row[];audits:Row[]}|null=null;
-    return {...fakePool,beginTransaction:async()=>{before=structuredClone({tickets:state.tickets,replies:state.replies,audits:state.audits});},
+    let before: {tickets:Row[];replies:Row[];privateNotes:Row[];audits:Row[];assignmentAttempts:Row[]}|null=null;
+    return {...fakePool,beginTransaction:async()=>{before=structuredClone({tickets:state.tickets,replies:state.replies,privateNotes:state.privateNotes,audits:state.audits,assignmentAttempts:state.assignmentAttempts});},
       commit:async()=>{},rollback:async()=>{if(before)Object.assign(state,before);},destroy:()=>{}};
   },
   release: () => undefined,
@@ -631,6 +689,116 @@ test('ticket context is scoped and a client body cannot supply its missing works
     const request={category:'technical',subject:'Synthetic lesson issue',description:'Synthetic support description',tenant_id:'tenant-a',student_enrollment_id:'foreign',context:{kind:'catalog_lesson',course_id:'b1000000-0000-4000-8000-000000000001',lesson_id:'c1000000-0000-4000-8000-000000000001'}};
     assert.equal((await api(h,'POST','/api/support-tickets',sign(userA),request)).status,403);
     assert.equal(state.tickets.length,2);
+  });
+});
+test('assignment routes require current support authority and actual schema, without exposing state to owners',async()=>{
+  await withState(seedTickets,async h=>{
+    const base='/api/support-tickets/ticket-a/assignment',key='a1000000-0000-4000-8000-000000000001';
+    for(const token of [sign(userA),sign({...userA,role:'admin'})]){
+      assert.equal((await api(h,'GET',base,token)).status,404);
+      assert.equal((await api(h,'POST',base,token,{assigned_to:'admin-support',expected_version:0})).status,404);
+      assert.equal((await api(h,'GET',`${base}/attempts/${key}`,token)).status,404);
+    }
+    assert.equal((await api(h,'GET',base,sign(supportAdmin))).body.code,'SUPPORT_ASSIGNMENT_UNAVAILABLE');
+    assert.equal((await api(h,'GET',base,null)).status,401);
+    assert.equal(state.assignmentAttempts.length,0);assert.ok(!state.executed.some(row=>row.sql.startsWith('SELECT id,assigned_to')));
+  });
+});
+test('assignment mounted routes claim, transfer, reject stale decisions and recover historical receipts privately',async()=>{
+  await withState(seedTickets,async h=>{
+    state.assignmentSchema=true;state.superAdmins.add('super-1');
+    const base='/api/support-tickets/ticket-a/assignment',token=sign(supportAdmin),key='a1000000-0000-4000-8000-000000000001',headers={'Idempotency-Key':key};
+    const original=structuredClone(state.tickets[0]);
+    const before=await api(h,'GET',base,token);assert.deepEqual(before.body,{assignment:{ticket_id:'ticket-a',assigned_to:null,version:0},assignee:null});
+    const first=await api(h,'POST',base,token,{assigned_to:'admin-support',expected_version:0},headers);assert.equal(first.status,201);
+    assert.deepEqual(first.body,{assignment:{ticket_id:'ticket-a',assigned_to:'admin-support',version:1},changed:true,unchanged:false});
+    assert.equal((await api(h,'POST',base,token,{assigned_to:'admin-support',expected_version:0},headers)).body.unchanged,true);
+    const secondHeaders={'Idempotency-Key':'a1000000-0000-4000-8000-000000000002'};
+    assert.equal((await api(h,'POST',base,token,{assigned_to:'super-1',expected_version:0},secondHeaders)).body.code,'SUPPORT_ASSIGNMENT_STALE');
+    assert.equal((await api(h,'POST',base,token,{assigned_to:'super-1',expected_version:1},secondHeaders)).status,201);
+    assert.equal((await api(h,'GET',base,token)).body.assignee.name,'name-super-1');
+    const writes=state.audits.length;
+    assert.equal((await api(h,'GET',`${base}/attempts/${key}`,token)).body.assignment.assigned_to,'admin-support');
+    assert.equal((await api(h,'GET',`${base}/attempts/${key}`,sign(superAdmin))).body.code,'SUPPORT_ATTEMPT_NOT_FOUND');
+    assert.equal(state.audits.length,writes);assert.equal(state.assignmentAttempts.length,2);
+    assert.deepEqual({...state.tickets[0],assigned_to:original.assigned_to,assignment_version:undefined},{...original,assignment_version:undefined});
+    for(const path of ['/api/support-tickets/ticket-a','/api/support-tickets/mine']){
+      const response=await api(h,'GET',path,sign(userA));assert.ok(!JSON.stringify(response.body).includes('assigned_to'));assert.ok(!JSON.stringify(response.body).includes('assignment_version'));
+    }
+    state.superAdmins.delete('super-1');assert.equal((await api(h,'GET',base,token)).body.assignee,null);
+    delete state.permissions['admin-support'];assert.equal((await api(h,'GET',base,token)).status,404);
+    assert.equal((await api(h,'GET',`${base}/attempts/${key}`,token)).status,404);
+  });
+});
+test('assignment HTTP paths reject extra selectors and every success/error is no-store',async()=>{
+  await withState(seedTickets,async h=>{
+    state.assignmentSchema=true;
+    const base='/api/support-tickets/ticket-a/assignment';
+    for(const [path,token,status] of [[base,sign(supportAdmin),200],[base,sign(userA),404],[base,null,401],[`${base}?tenant_id=forged`,sign(supportAdmin),400],[`${base}/attempts/bad`,sign(supportAdmin),400]] as const){
+      const response=await fetch(`${h.base}${path}`,{headers:token?{Authorization:`Bearer ${token}`}:{}});assert.equal(response.status,status);assert.equal(response.headers.get('cache-control'),'no-store');await response.arrayBuffer();
+    }
+    assert.equal((await api(h,'POST',base,sign(supportAdmin),{assigned_to:null,expected_version:0,tenant_id:'forged'})).status,400);
+    assert.equal((await api(h,'POST',`${base}?target=forged`,sign(supportAdmin),{assigned_to:null,expected_version:0})).status,400);
+  });
+});
+test('assignment candidate route exposes only eligible identities to verified support and refuses caller selectors',async()=>{
+  await withState(seedTickets,async h=>{
+    state.assignmentSchema=true;state.superAdmins.add('super-1');
+    const path='/api/support-tickets/ticket-a/assignment/candidates';
+    assert.equal((await api(h,'GET',path,sign(userA))).status,404);assert.equal((await api(h,'GET',path,null)).status,401);
+    const result=await api(h,'GET',path,sign(supportAdmin));assert.deepEqual(result.body,{candidates:[{id:'admin-support',name:'name-admin-support'},{id:'super-1',name:'name-super-1'}],next_cursor:null});
+    assert.equal((await api(h,'GET',`${path}?after=admin-support`,sign(supportAdmin))).body.candidates.length,1);
+    assert.equal((await api(h,'GET',`${path}?after=a&after=b`,sign(supportAdmin))).status,400);
+    assert.equal((await api(h,'GET',`${path}?tenant_id=forged`,sign(supportAdmin))).status,400);
+    state.users.find(row=>row.id==='super-1')!.is_active=0;assert.equal((await api(h,'GET',path,sign(supportAdmin))).body.candidates.length,1);
+    const response=await fetch(`${h.base}${path}`,{headers:{Authorization:`Bearer ${sign(supportAdmin)}`}});assert.equal(response.headers.get('cache-control'),'no-store');await response.arrayBuffer();
+  });
+});
+test('assigned route takes identity only from the server and removes transferred tickets on refreshed reads',async()=>{
+  await withState(seedTickets,async h=>{
+    state.assignmentSchema=true;const path='/api/support-tickets/assigned',token=sign(supportAdmin);
+    assert.equal((await api(h,'GET',path,sign(userA))).status,404);assert.equal((await api(h,'GET',path,null)).status,401);
+    state.tickets[0].assigned_to='admin-support';state.tickets[1].assigned_to='super-1';
+    const first=await api(h,'GET',path,token);assert.equal(first.status,200);assert.deepEqual(first.body.tickets.map((row:Row)=>row.id),['ticket-a']);assert.equal(first.body.next_cursor,null);
+    assert.deepEqual(Object.keys(first.body.tickets[0]),['id','ticket_number','category','subject','status','priority','created_at','updated_at']);
+    const transferred=await api(h,'POST','/api/support-tickets/ticket-a/assignment',token,{assigned_to:null,expected_version:0});assert.equal(transferred.status,201);
+    assert.deepEqual((await api(h,'GET',path,token)).body,{tickets:[],next_cursor:null});
+    assert.equal((await api(h,'GET',`${path}?assigned_to=super-1`,token)).status,400);assert.equal((await api(h,'GET',`${path}?after=a&after=b`,token)).status,400);
+    state.assignedIndex=false;assert.equal((await api(h,'GET',path,token)).body.code,'SUPPORT_ASSIGNED_UNAVAILABLE');state.assignedIndex=true;
+    const response=await fetch(`${h.base}${path}`,{headers:{Authorization:`Bearer ${token}`}});assert.equal(response.headers.get('cache-control'),'no-store');await response.arrayBuffer();
+    delete state.permissions['admin-support'];assert.equal((await api(h,'GET',path,token)).status,404);
+  });
+});
+
+test('private-note routes deny requesters and role-only callers, and fail closed before schema readiness',async()=>{
+  await withState(seedTickets,async h=>{
+    const base='/api/support-tickets/ticket-a/private-notes',key='a1000000-0000-4000-8000-000000000001';
+    for(const token of [sign(userA),sign({...userA,role:'admin'})]){
+      assert.equal((await api(h,'GET',base,token)).status,404);
+      assert.equal((await api(h,'POST',base,token,{body:'PRIVATE-NOTE-SYNTHETIC'})).status,404);
+      assert.equal((await api(h,'GET',`${base}/attempts/${key}`,token)).status,404);
+    }
+    assert.equal((await api(h,'GET',base,sign(supportAdmin))).status,503);
+    assert.equal(state.privateNotes.length,0);assert.ok(!state.executed.some(row=>row.sql.includes('FROM support_ticket_private_notes n')));
+    assert.equal((await api(h,'GET',base,null)).status,401);
+  });
+});
+test('verified private notes never enter public detail, reply history, queue or generic attempt responses',async()=>{
+  await withState(seedTickets,async h=>{
+    state.privateNotesSchema=true;const body='PRIVATE-NOTE-SYNTHETIC',key='a1000000-0000-4000-8000-000000000001',headers={'Idempotency-Key':key},base='/api/support-tickets/ticket-a/private-notes';
+    const previous=structuredClone(state.tickets[0]);
+    const created=await api(h,'POST',base,sign(supportAdmin),{body},headers);assert.equal(created.status,201);
+    const repeat=await api(h,'POST',base,sign(supportAdmin),{body},headers);assert.equal(repeat.status,200);assert.equal(repeat.body.unchanged,true);
+    assert.deepEqual(state.tickets[0],previous);assert.equal(state.privateNotes.length,1);assert.equal(state.replies.length,1);assert.ok(!JSON.stringify(state.audits).includes(body));
+    const receipt=await api(h,'GET',`${base}/attempts/${key}`,sign(supportAdmin));assert.equal(receipt.body.note.body,body);
+    assert.equal((await api(h,'GET',base,sign(supportAdmin))).body.notes.length,1);
+    const start=state.executed.length;
+    for(const [path,token] of [['/api/support-tickets/ticket-a',sign(userA)],['/api/support-tickets/ticket-a',sign(supportAdmin)],['/api/support-tickets/mine',sign(userA)],['/api/support-tickets',sign(supportAdmin)],['/api/support-tickets/ticket-a/replies?before=reply-a-1',sign(userA)], [`/api/support-tickets/attempts/reply/${key}`,sign(supportAdmin)]]){
+      const response=await api(h,'GET',path,token);assert.ok(!JSON.stringify(response.body).includes(body));
+    }
+    assert.ok(!state.executed.slice(start).some(row=>row.sql.includes('FROM support_ticket_private_notes n')));
+    delete state.permissions['admin-support'];assert.equal((await api(h,'GET',base,sign(supportAdmin))).status,404);
+    assert.equal((await api(h,'GET',`${base}/attempts/${key}`,sign(supportAdmin))).status,404);
   });
 });
 

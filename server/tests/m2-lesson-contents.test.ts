@@ -10,7 +10,7 @@ const course = id(1), unit = id(2), lesson = id(3), material = id(4);
 type Binding = { id: string; lesson_id: string; material_id: string; display_order: number };
 function fixture() {
   const f = { bindings: [] as Binding[], audit: [] as any[], calls: [] as string[], events: [] as string[],
-    owner: true, activeCourse: true, unit: true, lesson: true, schema: true,
+    owner: true, activeCourse: true, unit: true, lesson: true, schema: true,videoSchema:false,videos:[] as Array<{id:string;video_id:string;display_order:number}>,
     sources: [{ id: material, course_id: course, title: 'ملف الشرح', material_type: 'pdf', file_url: 'private-secret', is_published: 0 }],
     failAudit: false, failCommit: false, failRollback: false, acquired: 0 };
   let snapshot: Binding[] = [], auditSnapshot = 0;
@@ -18,6 +18,14 @@ function fixture() {
     beginTransaction: async () => { f.events.push('begin'); snapshot = structuredClone(f.bindings); auditSnapshot = f.audit.length; },
     execute: async (sql: string, p: any[] = []): Promise<[any, any]> => {
       const s = squash(sql); f.calls.push(s);
+      if(s.includes("TABLE_NAME='videos'")&&s.includes('information_schema.STATISTICS'))return [[{column_name:'id',seq_in_index:1}],[]];
+      if(s.includes("TABLE_NAME='course_lesson_videos'")){
+        if(!f.videoSchema)return [[],[]];
+        if(s.includes('information_schema.COLUMNS'))return [['id','lesson_id','video_id','display_order'].map(column_name=>({column_name})),[]];
+        return [[...(['PRIMARY','uq_lesson_videos_source','uq_lesson_videos_order'] as const).flatMap(index_name=>(index_name==='PRIMARY'?['id']:index_name==='uq_lesson_videos_source'?['lesson_id','video_id']:['lesson_id','display_order']).map((column_name,n)=>({index_name,column_name,seq_in_index:n+1,non_unique:0})))],[]];
+      }
+      if(s.includes('information_schema.TABLES'))return [['course_lesson_videos','videos','course_lesson_contents','course_lessons','course_units','courses','tenants','users','audit_events','lectures','course_materials'].map(table_name=>({table_name,engine:'InnoDB'})),[]];
+      if(s.startsWith('SELECT id,video_id,display_order'))return [f.videos,[]];
       if (s.includes('FROM tenants t JOIN users')) return [[{ owner_user_id: f.owner ? 'owner' : 'other', tenant_status: 'active', caller_active: 1 }], []];
       if (s.includes('FROM courses c')) return [f.activeCourse && p[0] === course ? [{ id: course }] : [], []];
       if (s.includes('FROM course_units u')) return [f.unit && p[0] === unit && p[1] === course ? [{ id: unit }] : [], []];
@@ -104,6 +112,15 @@ test('billing-only and missing scope do not acquire a connection', async () => {
   assert.equal((await request('GET', {}, '', { id: 'owner', tenantId: 'tenant', billingOnly: true })).status, 403);
   assert.equal((await request('GET', {}, '', {})).status, 404); assert.equal(f.acquired, 0);
 });
+test('material attach shares video positions and the combined twenty-reference ceiling without changing the material DTO',async()=>{
+  const {f,request}=fixture();f.videoSchema=true;
+  f.videos=[{id:id(80),video_id:id(81),display_order:3}];
+  assert.equal((await request('POST',{material_id:material,display_order:3})).status,409);assert.equal(f.audit.length,0);
+  assert.equal((await request('POST',{material_id:material,display_order:4})).status,201);
+  f.videos=Array.from({length:20},(_,n)=>({id:id(100+n),video_id:id(200+n),display_order:n+10}));
+  assert.equal((await request('POST',{material_id:material,display_order:4})).status,409);
+  f.bindings=[];assert.equal((await request('POST',{material_id:material,display_order:0})).status,409);
+});
 test('foreign course material and unknown material both return 404 without writes', async () => {
   for (const foreign of [true, false]) {
     const { f, request } = fixture(); f.sources = foreign ? [{ ...f.sources[0], course_id: id(99) }] : [];
@@ -145,11 +162,11 @@ test('real tenant-self mounting and authentication reach owner guard for every c
   const isolation = createIsolation(); const previous = process.env.JWT_SECRET; process.env.JWT_SECRET = TEST_SECRET;
   try {
     const modules = loadAppModules(isolation, path.join(__dirname, '../src/routes/tenant-self'));
-    for (const method of ['GET', 'POST', 'DELETE']) {
+    for (const resource of ['contents','videos']) for (const method of ['GET', 'POST', 'DELETE']) {
       const h = buildHarness(makeState(), modules);
-      const pathName = `/catalog/courses/${COURSE_A1}/units/${UNIT_A1}/lessons/${LESSON_1}/contents${method === 'DELETE' ? '/' + id(9) : ''}`;
+      const pathName = `/catalog/courses/${COURSE_A1}/units/${UNIT_A1}/lessons/${LESSON_1}/${resource}${method === 'DELETE' ? '/' + id(9) : ''}`;
       const r = await runChain(h.chain, makeReq({ method, pathName, token: sign(INSTRUCTOR_A, 'instructor'),
-        body: method === 'POST' ? { material_id: material, display_order: 0 } : {} }));
+        body: method === 'POST' ? { [resource==='videos'?'video_id':'material_id']: material, display_order: 0 } : {} }));
       assert.equal(r.status, 403); assert.equal(h.connectionCount(), 1);
       assert.equal(h.auditRows.length, 0); assert.equal(h.commitCount(), 0);
       assert.equal(r.headers['Cache-Control'], 'no-store');

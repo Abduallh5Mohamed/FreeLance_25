@@ -10,6 +10,7 @@ import { query, queryOne, execute } from '../db';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import { createNotification } from '../utils/notifications';
+import {parseCatalogVideoContext} from './catalog-video-session';
 
 // ═══════════════════════════════════════
 // VIOLATION SCORING WEIGHTS
@@ -66,6 +67,7 @@ interface VideoSession {
     offerId?: string;
     studentEnrollmentId?: string;
     tenantId?: string;
+    catalogContext?: import('./catalog-video-session').CatalogVideoContext;
     segmentRequests: number[];
     manifestRequests: number[];
     keyRequests: number[];
@@ -121,15 +123,21 @@ export async function createVideoSession(params: {
     offerId?: string;
     studentEnrollmentId?: string;
     tenantId?: string;
+    catalogContext?: import('./catalog-video-session').CatalogVideoContext;
 }, persistence: VideoSessionPersistence = defaultSessionPersistence): Promise<{ sessionId: string; watermarkSeed: string }> {
     const { userId, videoId, ip, userAgent, fingerprint, screenRes, previewOnly = false,
         offerId, studentEnrollmentId, tenantId } = params;
+    const catalogContext=params.catalogContext===undefined?undefined:parseCatalogVideoContext(params.catalogContext);
 
     // Device binding is mandatory: a session without the full binding set
     // cannot be watermarked or revoked per-device, so it fails closed here
     // even if a caller skipped the route-level validation.
     if (!ip || !userAgent || !fingerprint || !screenRes) {
         throw new Error('device_binding_required');
+    }
+    if(catalogContext!==undefined){
+        const checked=parseCatalogVideoContext(catalogContext);
+        if(previewOnly||checked.userId!==userId||checked.tenantId!==tenantId||checked.enrollmentId!==studentEnrollmentId)throw Error('Invalid catalog session binding');
     }
 
     // Kill existing session for this user
@@ -157,6 +165,7 @@ export async function createVideoSession(params: {
         offerId,
         studentEnrollmentId,
         tenantId,
+        ...(catalogContext?{catalogContext:Object.freeze({...catalogContext})}:{}),
         segmentRequests: [],
         manifestRequests: [],
         keyRequests: [],
@@ -176,21 +185,23 @@ export async function createVideoSession(params: {
             [userId]
         );
         const inserted = await persistence.execute(
-            `INSERT INTO video_sessions 
+            catalogContext ? `INSERT INTO video_sessions
+             (id, user_id, video_id, ip_address, user_agent, fingerprint, screen_resolution, watermark_seed, is_active, created_at, catalog_context)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), ?)` : `INSERT INTO video_sessions 
              (id, user_id, video_id, ip_address, user_agent, fingerprint, screen_resolution, watermark_seed, is_active, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
-            [sessionId, userId, videoId, ip, userAgent, fingerprint, screenRes, watermarkSeed]
+            [sessionId, userId, videoId, ip, userAgent, fingerprint, screenRes, watermarkSeed,...(catalogContext?[JSON.stringify(catalogContext)]:[])]
         );
         // A usable count is REQUIRED. Skipping the check when `affectedRows` is
         // absent published a cache-only session — the exact failure the
         // surrounding comment says must not happen — and `Number(affected)`
         // coerced rather than validated.
         const affected = (inserted as { affectedRows?: unknown } | null | undefined)?.affectedRows;
-        if (typeof affected !== 'number' || !Number.isSafeInteger(affected) || affected < 1) {
+        if (typeof affected !== 'number' || !Number.isSafeInteger(affected) || affected < 1 || catalogContext&&affected!==1) {
             throw new Error('video_sessions insert did not report exactly one affected row');
         }
     } catch (e) {
-        console.error('[Security] Failed to persist session:', e);
+        console.error('[Security] Failed to persist session:', catalogContext?'catalog session persistence unavailable':e);
         // Nothing was published: no activeSessions entry, no userSessionMap
         // entry. The caller must treat creation as failed and issue no token.
         throw new VideoSessionPersistenceError();

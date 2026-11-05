@@ -1,5 +1,7 @@
 # J02 — owner-only lesson material preparation
 
+BUILD-17 follow-up (2026-11-06): [explicit owner lesson-video preparation](J02-LESSON-VIDEO-PREPARATION.md) adds a typed relation to existing same-course/same-tenant videos, not provider-neutral assets or legacy URL pointers. When the new relation is present and verified, material POST and video POST share the lesson lock, a combined 20-reference limit and one order namespace. Existing material DTOs/UI and student material/PDF APIs remain their material-only subset. Missing new table preserves prior material behavior; partial new schema blocks attachment. The following original checkpoint describes BUILD-02/03 history.
+
 Implemented locally 2026-11-03 following the owner's request to continue the
 business plan. This is the first bounded binding slice, not student delivery or
 whole-J02 acceptance. BUILD-03 also supplies the owner UI and bounded selector

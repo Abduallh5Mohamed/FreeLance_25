@@ -7,7 +7,11 @@
  * - HLS key delivery via signed session
  */
 import { Router, Request, Response, RequestHandler } from 'express';
-import { query, queryOne, execute } from '../db';
+import { query, queryOne, execute, getPool } from '../db';
+import {
+    createCatalogPlaybackAuthority, parseCatalogVideoSelectors,
+    type CatalogPlaybackAuthority, type CatalogVideoContext, type CatalogSessionView,
+} from '../services/catalog-video-session';
 import { v4 as uuidv4 } from 'uuid';
 import {
     AuthRequest,
@@ -52,6 +56,9 @@ import {
 
 const router = Router();
 const VIDEO_TERMS_VERSION = 'video-security-v1';
+const productionCatalogAuthority = createCatalogPlaybackAuthority({
+    getConnection: () => getPool().getConnection(), now: Date.now, termsVersion: VIDEO_TERMS_VERSION,
+});
 
 /**
  * Platform capability key for cross-tenant video security administration.
@@ -167,6 +174,15 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
 
         // The SAME authorization is rechecked on every heartbeat, with the
         // scope captured when the session was created (server-derived).
+        let catalogAllowed = false;
+        try {
+            catalogAllowed = session.catalogContext ? await productionCatalogAuthority.check(session) : !await productionCatalogAuthority.hasBindings(session.videoId);
+        }
+        catch { /* deny missing authority/schema */ }
+        if (!catalogAllowed) {
+            await killSession(sessionId, 'catalog_access_revoked');
+            return res.status(403).json({ error: 'Video access was revoked', code: 'CATALOG_PLAYBACK_DENIED' });
+        }
         const stillAllowed = session.previewOnly
             ? await evaluatePreviewOffer(session.offerId, session.videoId, session.userId, queryOne)
             : await checkVideoAccess(session.userId, session.videoId, {
@@ -830,6 +846,7 @@ export const evaluateSessionEntitlement = async (
  * ========================================================================= */
 
 export interface SecureVideoDeliveryDeps {
+    catalog?: CatalogPlaybackAuthority;
     authenticate: RequestHandler;
     queryOne: <T = unknown>(sql: string, params?: unknown[]) => Promise<T | null>;
     execute: (sql: string, params?: unknown[]) => Promise<unknown>;
@@ -870,6 +887,7 @@ export interface SecureVideoDeliveryDeps {
  */
 export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): Router {
     const router = Router();
+    router.use((_req,res,next)=>{res.set('Cache-Control','no-store');next();});
     const {
         queryOne, execute, getActiveSession, createVideoSession, killSession, isUserSuspended,
         generateVideoSessionToken, verifyVideoSessionToken, getClientIp, hashValue, recordViolation,
@@ -943,12 +961,13 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
     };
 
     const deliveryEntitlement = async (
-        session: { sessionId: string; userId: string; videoId: string; previewOnly: boolean; tenantId?: string; studentEnrollmentId?: string },
+        session: CatalogSessionView,
         videoId: string,
     ): Promise<SessionEntitlementDecision> => {
         let association: VideoLessonAssociation;
         try {
-            association = await deps.resolveVideoLesson(videoId);
+            if(!await catalogSessionAllowed(session))return {required:true,allowed:false,reason:'store-unavailable',needsRenewal:false};
+            association = session.catalogContext?{kind:'unique',lessonId:session.catalogContext.lessonId}:await deps.resolveVideoLesson(videoId);
         } catch {
             // An unreadable parent chain is a fail-closed delivery error, not a
             // reason to fall back to the token alone.
@@ -972,6 +991,21 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
         );
     };
 
+    const catalogSessionAllowed = async (session: CatalogSessionView): Promise<boolean> => {
+        try {
+            return session.catalogContext ? !!deps.catalog && await deps.catalog.check(session) : !deps.catalog || !await deps.catalog.hasBindings(session.videoId);
+        }
+        catch {
+            return false;
+        }
+    };
+    const rejectCatalogDelivery = async (res: Response, session: CatalogSessionView) => {
+        try {
+            await killSession(session.sessionId, 'catalog_access_revoked');
+        }
+        catch { /* a kill-store outage never permits media or delays the denial */ }
+        return res.status(403).json({ error: 'Video access was revoked', code: 'CATALOG_PLAYBACK_DENIED' });
+    };
     const denyDeliveryEntitlement = async (
         res: Response,
         sessionId: string,
@@ -1031,7 +1065,41 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
     router.post('/session', deps.authenticate, async (req: AuthRequest, res: Response) => {
         try {
             const userId = req.user!.id;
-            const { videoId, fingerprint, screenRes } = req.body;
+            const { fingerprint, screenRes } = req.body;
+            let videoId = req.body?.videoId;
+            let catalogContext: CatalogVideoContext | undefined;
+            if (Object.prototype.hasOwnProperty.call(req.body ?? {}, 'catalog')) {
+                if (Object.keys(req.body).some(key => !['catalog', 'fingerprint', 'screenRes'].includes(key)) || Object.keys(req.query ?? {}).length || typeof fingerprint !== 'string' || !fingerprint.trim() || fingerprint.length > 256 || typeof screenRes !== 'string' || !screenRes.trim() || screenRes.length > 64)
+                    return res.status(400).json({ error: 'Invalid catalog session request' });
+                let selectors;
+                try {
+                    selectors = parseCatalogVideoSelectors(req.body.catalog);
+                }
+                catch {
+                    return res.status(400).json({ error: 'Invalid catalog selectors' });
+                }
+                if (!deps.catalog)
+                    return res.status(503).json({ error: 'Catalog playback unavailable', code: 'CATALOG_PLAYBACK_UNAVAILABLE' });
+                try {
+                    const resolved = await deps.catalog.resolve(req.user!, selectors);
+                    if (!resolved)
+                        return res.status(404).json({ error: 'Lesson video not found' });
+                    videoId = resolved.videoId;
+                    catalogContext = resolved.context;
+                }
+                catch {
+                    return res.status(503).json({ error: 'Catalog playback unavailable', code: 'CATALOG_PLAYBACK_UNAVAILABLE' });
+                }
+            }
+            else if (deps.catalog && typeof videoId === 'string' && videoId) {
+                try {
+                    if (await deps.catalog.hasBindings(videoId))
+                        return res.status(403).json({ error: 'Catalog lesson context required', code: 'CATALOG_CONTEXT_REQUIRED' });
+                }
+                catch {
+                    return res.status(503).json({ error: 'Playback unavailable', code: 'CATALOG_PLAYBACK_UNAVAILABLE' });
+                }
+            }
             const offerId: string | undefined = req.body?.offerId ? String(req.body.offerId) : undefined;
 
             if (!videoId || !fingerprint || !screenRes) {
@@ -1061,22 +1129,20 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
             const ip = getClientIp(req);
             const userAgent = req.headers['user-agent'] || '';
 
-            // Verify the video exists and is playable. There is deliberately NO
-            // early tenant-only filter: the requesting tenant and the asset owner
-            // are separate facts, and an exact verified license (a purchased
-            // lecture or an approved exchange) is the only grant allowed to cross
-            // that boundary. Access itself is decided below from server-side rows.
+            // Catalog references require their explicit course/tenant source.
+            // The legacy branch retains cross-tenant exact-license support;
+            // authorization for both branches is still decided below.
             const video = await queryOne<{
                 id: string;
                 is_encrypted: boolean | number;
                 hls_key: string | null;
                 original_key: string | null;
             }>(
-                `SELECT v.*, c.name as course_name
+                catalogContext?`SELECT v.id,v.is_encrypted,v.hls_key,v.original_key FROM videos v WHERE v.id=? AND v.course_id=? AND v.tenant_id=? AND v.status='ready' LIMIT 1`:`SELECT v.*, c.name as course_name
                  FROM videos v
                  LEFT JOIN courses c ON v.course_id = c.id
                  WHERE v.id = ? AND v.status = 'ready'`,
-                [videoId]
+                catalogContext?[videoId,catalogContext.courseId,catalogContext.tenantId]:[videoId]
             );
 
             // Authorize the session with the SAME production access policy, using
@@ -1107,7 +1173,7 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
             // The entitlement is bound to ONE server-resolved lecture. A video
             // reachable from several lectures/materials, or whose parent rows
             // disagree, has no unique lesson to bind; deny instead of choosing.
-            const association = await deps.resolveVideoLesson(videoId);
+            const association:VideoLessonAssociation = catalogContext?{kind:'unique',lessonId:catalogContext.lessonId}:await deps.resolveVideoLesson(videoId);
             if (!previewOnly && association.kind === 'ambiguous') {
                 return res.status(403).json({
                     error: 'No access to this video',
@@ -1132,6 +1198,7 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
                     offerId: previewOnly ? offerId : undefined,
                     studentEnrollmentId: req.user?.studentEnrollmentId,
                     tenantId: req.user?.tenantId,
+                    ...(catalogContext?{catalogContext}:{}),
                 });
             } catch (error) {
                 console.error('[SecureVideo] Session persistence failed:', error);
@@ -1141,6 +1208,7 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
                 });
             }
             const { sessionId, watermarkSeed } = created;
+            if(catalogContext&&!await catalogSessionAllowed({sessionId,userId,videoId,tenantId:req.user?.tenantId,studentEnrollmentId:req.user?.studentEnrollmentId,previewOnly:false,catalogContext}))return rejectCatalogDelivery(res,{sessionId,userId,videoId,previewOnly:false,catalogContext});
 
             // Generate short-lived token
             const sessionToken = generateVideoSessionToken({
@@ -1219,6 +1287,8 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
                 }
             } catch (e) { /* ignore */ }
 
+            const restrictions=await getUserVideoRestrictions(userId);
+            if(catalogContext&&!await catalogSessionAllowed({sessionId,userId,videoId,tenantId:req.user?.tenantId,studentEnrollmentId:req.user?.studentEnrollmentId,previewOnly:false,catalogContext}))return rejectCatalogDelivery(res,{sessionId,userId,videoId,previewOnly:false,catalogContext});
             res.json({
                 sessionId,
                 sessionToken,
@@ -1226,7 +1296,7 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
                 thumbnailUrl,
                 tokenExpiresIn: 60,
                 refreshInterval: 40,
-                restrictions: await getUserVideoRestrictions(userId),
+                restrictions,
                 watermark: {
                     seed: watermarkSeed,
                     studentName,
@@ -1261,6 +1331,10 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
             if (!session || session.userId !== userId) {
                 return res.status(401).json({ error: 'session_invalid', message: 'Session expired or killed' });
             }
+            if(session.catalogContext){
+                const context=session.catalogContext;
+                if(req.user?.sessionId!==context.loginSessionId||req.user?.tenantId!==context.tenantId||req.user?.studentEnrollmentId!==context.enrollmentId||Number(req.user?.tokenVersion??0)!==context.tokenVersion||(req.user?.branchId??null)!==context.branchId||(req.user?.branchId?req.user.branchMembershipVersion??null:null)!==context.branchMembershipVersion||!await catalogSessionAllowed(session))return rejectCatalogDelivery(res,session);
+            }else if(!await catalogSessionAllowed(session))return rejectCatalogDelivery(res,session);
             if (fingerprint !== session.fingerprint || screenRes !== session.screenRes) {
                 await recordViolation({ sessionId, userId, videoId: session.videoId, violationType: 'token_reuse',
                     details: 'Device fingerprint or screen binding changed during refresh', ip: getClientIp(req), userAgent: req.headers['user-agent'] || '' });
@@ -1297,7 +1371,7 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
             // The server-owned entitlement is rechecked on every refresh, so a
             // revoked record or a newly ambiguous parent chain ends the session
             // before a fresh token is minted.
-            const association = await deps.resolveVideoLesson(session.videoId);
+            const association:VideoLessonAssociation = session.catalogContext?{kind:'unique',lessonId:session.catalogContext.lessonId}:await deps.resolveVideoLesson(session.videoId);
             const entitlement = await evaluateSessionEntitlement(
                 {
                     sessionId,
@@ -1375,7 +1449,7 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
                 is_encrypted: boolean | number;
                 hls_key: string | null;
                 original_key: string | null;
-            }>('SELECT * FROM videos WHERE id = ?', [session.videoId]);
+            }>(session.catalogContext?'SELECT id,is_encrypted,hls_key,original_key FROM videos WHERE id=? AND tenant_id=? AND status=\'ready\' LIMIT 1':'SELECT * FROM videos WHERE id = ?', session.catalogContext?[session.videoId,session.catalogContext.tenantId]:[session.videoId]);
             if (video) {
                 if (video.is_encrypted && video.hls_key && video.hls_key !== video.original_key) {
                     const manifestPath = session.previewOnly ? 'preview/playlist.m3u8' : 'playlist.m3u8';
@@ -1383,12 +1457,14 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
                 }
             }
 
+            const restrictions=await getUserVideoRestrictions(userId);
+            if(!await catalogSessionAllowed(session))return rejectCatalogDelivery(res,session);
             res.json({
                 sessionToken,
                 streamUrl,
                 tokenExpiresIn: 60,
                 refreshInterval: 40,
-                restrictions: await getUserVideoRestrictions(userId)
+                restrictions
             });
 
         } catch (error) {
@@ -1426,6 +1502,7 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
         if (!/^(?:preview\/)?(?:[A-Za-z0-9_-]+\/)?playlist\.m3u8$/.test(relativePath)) return res.status(400).json({ error: 'Invalid manifest path' });
         try {
             const body = (await getObjectBuffer(BUCKETS.HLS, `${videoId}/${relativePath}`)).toString('utf8');
+            if(!await catalogSessionAllowed(auth.session!)){delivery.release();return rejectCatalogDelivery(res,auth.session!);}
             const baseDir = relativePath.includes('/') ? relativePath.slice(0, relativePath.lastIndexOf('/') + 1) : '';
             const sessionQuery = `sid=${encodeURIComponent(auth.sessionId)}&token=${encodeURIComponent(auth.token)}`;
             const rewritten = body.split(/\r?\n/).map(line => {
@@ -1475,6 +1552,7 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
         if (!/^(?:preview\/)?[A-Za-z0-9_-]+\/segment_\d+\.ts$/.test(relativePath)) return res.status(400).json({ error: 'Invalid media path' });
         try {
             const stream = await getObjectStream(BUCKETS.HLS, `${videoId}/${relativePath}`);
+            if(!await catalogSessionAllowed(auth.session!)){(stream as NodeJS.ReadableStream&{destroy?:()=>void}).destroy?.();delivery.release();return rejectCatalogDelivery(res,auth.session!);}
             res.set({ 'Content-Type': 'video/mp2t', 'Cache-Control': 'private, no-store', 'Accept-Ranges': 'none' });
             let released = false;
             const release = () => { if (!released) { released = true; delivery.release(); } };
@@ -1540,6 +1618,7 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
             }
 
             const keyBuffer = Buffer.from(video.encryption_key, 'hex');
+            if(!await catalogSessionAllowed(session)){delivery.release();return rejectCatalogDelivery(res,session);}
 
             res.set({
                 'Content-Type': 'application/octet-stream',
@@ -1566,6 +1645,7 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
  * ========================================================================= */
 
 const productionDeliveryDeps: SecureVideoDeliveryDeps = {
+    catalog:productionCatalogAuthority,
     authenticate: authenticateToken,
     queryOne: <T = unknown>(sql: string, params?: unknown[]) => queryOne<T>(sql, params),
     execute: (sql: string, params?: unknown[]) => execute(sql, params),

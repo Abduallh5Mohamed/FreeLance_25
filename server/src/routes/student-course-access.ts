@@ -57,6 +57,7 @@ import { listStudentLessonMaterials } from '../services/student-lesson-materials
 import { createMaterialFileDeliveryService, type MaterialFileDeliveryConfig } from '../services/material-file-delivery';
 import { verifyStudentEnrollment, resolveStudentCourse, proveStudentLesson } from '../services/student-lesson-access';
 import { supportContextSchema, proveLessonSupportContext } from '../services/support-lesson-context';
+import {listStudentLessonVideos} from '../services/student-lesson-videos';
 
 /**
  * Minimal transactional connection seam, structurally identical to the
@@ -676,6 +677,14 @@ export const createStudentCourseAccessRouter = (deps: StudentCourseAccessDeps): 
       const proof=await proveLessonSupportContext(connection,scope,{kind:'catalog_lesson',course_id:courseId,lesson_id:lessonId});
       return proof.ok?{status:200,body:{context:proof.context},commit:false}:proof;
     });
+  });
+
+  router.get('/courses/:courseId/lessons/:lessonId/videos',async(req:AuthRequest,res:Response)=>{
+    res.set('Cache-Control','no-store');
+    if(suppliedSelector(req)!==null||Object.keys(req.query??{}).length||req.body&&(typeof req.body!=='object'||Array.isArray(req.body)||Object.keys(req.body).length))return res.status(400).json({error:'Invalid lesson videos request'});
+    const scope=requireStudentScope(req,res);if(!scope)return;
+    const {courseId,lessonId}=req.params;if(!UUID_PATTERN.test(courseId)||!UUID_PATTERN.test(lessonId))return res.status(404).json({error:'Lesson not found'});
+    return runInTransaction('Failed to load lesson videos',res,connection=>listStudentLessonVideos(connection,scope,courseId,lessonId,req.user!));
   });
 
   // J02/J03: explicit lesson expansion; never widens the strict learning-path DTO.

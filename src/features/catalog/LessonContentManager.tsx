@@ -57,6 +57,7 @@ export function LessonContentEditor({ courseId, unitId, lessonId }: Binding) {
   return <section dir="rtl" aria-label="مواد الدرس" className="mt-3 space-y-3 rounded-lg border border-indigo-200 bg-indigo-50/40 p-3">
     <p className="text-sm font-medium">مواد الدرس{state.phase === 'ready' ? ` — ${state.contents.length} من 20` : ''}</p>
     <p className="text-xs text-slate-600">جهّز الدرس بمواد موجودة من نفس الكورس. الربط لا ينشر المادة ولا يفتحها للطالب تلقائيًا.</p>
+    <p className="text-xs text-slate-600">المواضع وحد ٢٠ محتوى مشتركان مع مراجع فيديوهات الدرس إن وجدت؛ الخادم يتحقق عند الحفظ.</p>
     <div aria-live="polite" className="space-y-1 text-sm">
       {state.busy ? <p>جارٍ تنفيذ العملية…</p> : null}
       {state.notice ? <p className="text-emerald-700">{state.notice}</p> : null}

@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from 'crypto';
 import type { CourseLessonConnection } from '../routes/course-lessons';
 import { ACTIVE_SUSPENSION_PREDICATE_SQL } from '../security/suspension-predicate';
 import {parseLessonContextInput,supportContextSchema,storedLessonContext,proveLessonSupportContext,type StoredLessonContext} from './support-lesson-context';
+import {verifyPrivateNotesSchema,findPrivateNote,listPrivateNotes,privateNoteDto} from './support-private-notes';
+import {supportAssignmentSchema,assignmentState,assignmentReceipt} from './support-assignment';
 
 type Actor = { id: string; tokenVersion?: number; identitySource?: 'users' | 'staff'; role?:string;tenantId?:string;studentEnrollmentId?:string };
 type Result = { status: number; body: any };
@@ -19,7 +21,7 @@ const replyDto = (row: any) => ({ id:row.id,body:row.body,created_at:row.created
 
 // UUIDv8 namespace: stable per actor/operation/key. The random request key is
 // not an authority token; every replay still proves live user/ticket access.
-export function supportWriteId(actorId: string, operation: 'create' | 'reply', requestId: string) {
+export function supportWriteId(actorId: string, operation: 'create' | 'reply' | 'note' | 'assign', requestId: string) {
   const bytes = createHash('sha256').update(JSON.stringify(['tabweb-support-v1',actorId,operation,requestId.toLowerCase()])).digest().subarray(0,16);
   bytes[6] = (bytes[6] & 15) | 128; bytes[8] = (bytes[8] & 63) | 128;
   const hex=bytes.toString('hex');return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
@@ -54,23 +56,168 @@ export function createSupportWriteService(deps: { getConnection(): Promise<Cours
       return {status:503,body:{error:'Support write unavailable; retry the same request',code:'SUPPORT_WRITE_UNAVAILABLE'}};
     } finally {if(connection){try{if(destroyed)connection.destroy();else connection.release();}catch{/* retain outcome */}}}
   };
-  const authorizeTicket=async(connection:CourseLessonConnection,actor:Actor,ticketId:string)=>{
-    const [tickets]=await connection.execute(`SELECT ${ticketFields} FROM support_tickets WHERE id=? LIMIT 1 FOR UPDATE`,[ticketId]);
-    const ticket=(tickets as any[])[0];if(!ticket)stop(404,'Support ticket not found','SUPPORT_TICKET_NOT_FOUND');
+  const platformSupport=async(connection:CourseLessonConnection,actor:Actor)=>{
     const [grants]=await connection.execute(`SELECT ur.user_id,rp.permission_key FROM admin_user_roles ur
       LEFT JOIN admin_role_permissions rp ON rp.role_code=ur.role_code AND rp.permission_key='support.read'
       WHERE ur.user_id=? AND (ur.role_code='super_admin' OR rp.permission_key='support.read') LIMIT 101 FOR UPDATE`,[actor.id]);
     if((grants as any[]).length>100)stop(503,'Support authorization unavailable','SUPPORT_WRITE_UNAVAILABLE');
-    const admin=(grants as any[]).length>0;
+    return (grants as any[]).length>0;
+  };
+  const authorizeTicket=async(connection:CourseLessonConnection,actor:Actor,ticketId:string)=>{
+    const [tickets]=await connection.execute(`SELECT ${ticketFields} FROM support_tickets WHERE id=? LIMIT 1 FOR UPDATE`,[ticketId]);
+    const ticket=(tickets as any[])[0];if(!ticket)stop(404,'Support ticket not found','SUPPORT_TICKET_NOT_FOUND');
+    const admin=await platformSupport(connection,actor);
     if(ticket.user_id!==actor.id&&!admin)stop(404,'Support ticket not found','SUPPORT_TICKET_NOT_FOUND');
     return {ticket,admin};
   };
-  const audit=async(connection:CourseLessonConnection,actor:Actor,action:string,ticketId:string,oldStatus:string|null,newStatus:string,replyId?:string,context?:StoredLessonContext)=>{
+  const audit=async(connection:CourseLessonConnection,actor:Actor,action:string,ticketId:string,oldStatus:string|null,newStatus:string,replyId?:string,context?:StoredLessonContext,noteId?:string)=>{
     const [result]=await connection.execute(`INSERT INTO audit_events (id,actor_user_id,tenant_id,action,resource_type,resource_id,old_value,new_value)
-      VALUES (?,?,NULL,?,'support_ticket',?,?,?)`,[randomUUID(),actor.id,action,ticketId,oldStatus===null?null:JSON.stringify({status:oldStatus}),JSON.stringify({status:newStatus,...(replyId?{reply_id:replyId}:{}),...(context?{context:{kind:context.kind,course_id:context.course_id,lesson_id:context.lesson_id}}:{})})]);
+      VALUES (?,?,NULL,?,'support_ticket',?,?,?)`,[randomUUID(),actor.id,action,ticketId,oldStatus===null?null:JSON.stringify({status:oldStatus}),JSON.stringify({status:newStatus,...(replyId?{reply_id:replyId}:{}),...(context?{context:{kind:context.kind,course_id:context.course_id,lesson_id:context.lesson_id}}:{}),...(noteId?{note_id:noteId}:{})})]);
     if(Number(result.affectedRows)!==1)throw Error('Support audit not recorded');
   };
+  const authorizeNotes=async(connection:CourseLessonConnection,actor:Actor,ticketId:string)=>{
+    const {ticket,admin}=await authorizeTicket(connection,actor,ticketId);
+    if(!admin)stop(404,'Private support notes not found','SUPPORT_NOTES_NOT_FOUND');
+    if(!await verifyPrivateNotesSchema(connection))stop(503,'Private support notes unavailable','SUPPORT_NOTES_UNAVAILABLE');
+    return ticket;
+  };
+  const authorizeAssignment=async(connection:CourseLessonConnection,actor:Actor,ticketId:string)=>{
+    const {ticket,admin}=await authorizeTicket(connection,actor,ticketId);
+    if(!admin)stop(404,'Support assignment not found','SUPPORT_ASSIGNMENT_NOT_FOUND');
+    if(!await supportAssignmentSchema(connection))stop(503,'Support assignment unavailable','SUPPORT_ASSIGNMENT_UNAVAILABLE');
+    return ticket;
+  };
+  const proveAssignee=async(connection:CourseLessonConnection,id:string)=>{
+    const [users]=await connection.execute(`SELECT id,name,is_active,${ACTIVE_SUSPENSION_PREDICATE_SQL} AS suspension_active FROM users WHERE id=? LIMIT 1 FOR UPDATE`,[id]);
+    const user=(users as any[])[0];
+    if(!user||Number(user.is_active)!==1||Number(user.suspension_active)!==0)return null;
+    const [grants]=await connection.execute(`SELECT ur.user_id,rp.permission_key FROM admin_user_roles ur
+      LEFT JOIN admin_role_permissions rp ON rp.role_code=ur.role_code AND rp.permission_key='support.read'
+      WHERE ur.user_id=? AND (ur.role_code='super_admin' OR rp.permission_key='support.read') LIMIT 101 FOR UPDATE`,[user.id]);
+    if((grants as any[]).length>100)stop(503,'Support authorization unavailable','SUPPORT_WRITE_UNAVAILABLE');
+    if(!(grants as any[]).length)return null;
+    if(typeof user.id!=='string'||!user.id||user.id.length>36||typeof user.name!=='string'||user.name.length>255)throw Error('Invalid support assignee');
+    return {id:user.id,name:user.name};
+  };
   return {
+    async assigned(actor:Actor,after?:unknown):Promise<Result>{
+      if(after!==undefined&&(typeof after!=='string'||!/^[a-zA-Z0-9-]{1,36}$/.test(after)))return {status:400,body:{error:'Invalid assigned queue cursor',code:'SUPPORT_ASSIGNED_INPUT'}};
+      return run(actor,async(connection,actor)=>{
+        if(!await platformSupport(connection,actor))stop(404,'Assigned support queue not found','SUPPORT_ASSIGNED_NOT_FOUND');
+        if(!await supportAssignmentSchema(connection))stop(503,'Assigned support queue unavailable','SUPPORT_ASSIGNED_UNAVAILABLE');
+        const [index]=await connection.execute(`SELECT COLUMN_NAME AS column_name,SEQ_IN_INDEX AS seq_in_index FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='support_tickets' AND INDEX_NAME='idx_support_assignee_id' ORDER BY SEQ_IN_INDEX LIMIT 3`);
+        if((index as any[]).length!==2||!['assigned_to','id'].every((name,n)=>(index as any[])[n].column_name===name&&Number((index as any[])[n].seq_in_index)===n+1))stop(503,'Assigned support queue unavailable','SUPPORT_ASSIGNED_UNAVAILABLE');
+        const [rows]=await connection.execute(`SELECT t.id,t.ticket_number,t.category,t.subject,t.status,t.priority,
+          UNIX_TIMESTAMP(t.created_at) AS created_at_epoch,UNIX_TIMESTAMP(t.updated_at) AS updated_at_epoch
+          FROM support_tickets t WHERE t.assigned_to=? ${after===undefined?'':'AND t.id>?'} ORDER BY t.id ASC LIMIT 26`,after===undefined?[actor.id]:[actor.id,after]);
+        const instant=(value:unknown)=>{if(!(typeof value==='number'||typeof value==='string'&&/^\d+(?:\.\d+)?$/.test(value))||!Number.isFinite(Number(value))||Number(value)<=0)throw Error('Invalid assigned ticket instant');return new Date(Number(value)*1000).toISOString();};
+        const tickets=(rows as any[]).slice(0,25).map(row=>{
+          if(typeof row.id!=='string'||!/^[a-zA-Z0-9-]{1,36}$/.test(row.id)||typeof row.ticket_number!=='string'||row.ticket_number.length>32||typeof row.subject!=='string'||row.subject.length>200||!categories.has(row.category)||!statuses.has(row.status)||!['low','normal','high','urgent'].includes(row.priority))throw Error('Invalid assigned ticket');
+          return {id:row.id,ticket_number:row.ticket_number,category:row.category,subject:row.subject,status:row.status,priority:row.priority,created_at:instant(row.created_at_epoch),updated_at:instant(row.updated_at_epoch)};
+        });
+        return {status:200,body:{tickets,next_cursor:(rows as any[]).length>25?tickets[24].id:null},write:false};
+      });
+    },
+    async assignmentCandidates(actor:Actor,ticketId:string,after?:unknown):Promise<Result>{
+      if(after!==undefined&&(typeof after!=='string'||!/^[a-zA-Z0-9-]{1,36}$/.test(after)))return {status:400,body:{error:'Invalid recipient cursor',code:'SUPPORT_ASSIGNMENT_INPUT'}};
+      return run(actor,async(connection,actor)=>{
+        await authorizeAssignment(connection,actor,ticketId);
+        const [rows]=await connection.execute(`SELECT users.id,users.name FROM users
+          WHERE users.is_active=1 AND NOT ${ACTIVE_SUSPENSION_PREDICATE_SQL.replace(/suspended_until/g,'users.suspended_until')}
+          ${after===undefined?'':'AND users.id>?'}
+          AND EXISTS (SELECT 1 FROM admin_user_roles ur WHERE ur.user_id=users.id AND (ur.role_code='super_admin'
+            OR EXISTS (SELECT 1 FROM admin_role_permissions rp WHERE rp.role_code=ur.role_code AND rp.permission_key='support.read')))
+          ORDER BY users.id ASC LIMIT 26`,after===undefined?[]:[after]);
+        const candidates=(rows as any[]).slice(0,25).map(row=>{
+          if(typeof row.id!=='string'||!/^[a-zA-Z0-9-]{1,36}$/.test(row.id)||typeof row.name!=='string'||row.name.length>255)throw Error('Invalid recipient');
+          return {id:row.id as string,name:row.name as string};
+        });
+        return {status:200,body:{candidates,next_cursor:(rows as any[]).length>25?candidates[24].id:null},write:false};
+      });
+    },
+    async assignment(actor:Actor,ticketId:string):Promise<Result>{
+      return run(actor,async(connection,actor)=>{
+        const ticket=await authorizeAssignment(connection,actor,ticketId),assignment=await assignmentState(connection,ticket.id);
+        const person=assignment.assigned_to?await proveAssignee(connection,assignment.assigned_to):null;
+        return {status:200,body:{assignment,assignee:person},write:false};
+      });
+    },
+    async assign(actor:Actor,ticketId:string,requestId:unknown,input:any):Promise<Result>{
+      if(typeof requestId!=='string'||!uuid.test(requestId))return {status:400,body:{error:'UUID Idempotency-Key required',code:'SUPPORT_REQUEST_KEY'}};
+      if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).length!==2||!Object.prototype.hasOwnProperty.call(input,'assigned_to')||!Object.prototype.hasOwnProperty.call(input,'expected_version')
+        ||!(input.assigned_to===null||typeof input.assigned_to==='string'&&/^[a-zA-Z0-9-]{1,36}$/.test(input.assigned_to))
+        ||!Number.isSafeInteger(input.expected_version)||input.expected_version<0||input.expected_version>=2147483647)
+        return {status:400,body:{error:'Invalid support assignment',code:'SUPPORT_ASSIGNMENT_INPUT'}};
+      return run(actor,async(connection,actor)=>{
+        const ticket=await authorizeAssignment(connection,actor,ticketId),id=supportWriteId(actor.id,'assign',requestId);
+        const prior=await assignmentReceipt(connection,id,ticket.id);
+        if(prior){
+          if(prior.actor_id!==actor.id||prior.expected_version!==input.expected_version||prior.assignment.assigned_to?.toLowerCase()!==input.assigned_to?.toLowerCase())stop(409,'Assignment key already used with different data','SUPPORT_WRITE_CONFLICT');
+          return {status:200,body:{assignment:prior.assignment,changed:prior.changed,unchanged:true},write:false};
+        }
+        const current=await assignmentState(connection,ticket.id);
+        if(current.version!==input.expected_version)stop(409,'Assignment changed; refresh before a new decision','SUPPORT_ASSIGNMENT_STALE');
+        if(ticket.status==='closed')stop(409,'Closed ticket assignment cannot change','SUPPORT_TICKET_CLOSED');
+        const person=input.assigned_to===null?null:await proveAssignee(connection,input.assigned_to);
+        if(input.assigned_to!==null&&!person)stop(409,'Assignee is not currently eligible','SUPPORT_ASSIGNEE_UNAVAILABLE');
+        const target=person?.id??null,changed=current.assigned_to!==target,version=current.version+(changed?1:0);
+        if(changed){
+          const [update]=await connection.execute('UPDATE support_tickets SET assigned_to=?,assignment_version=?,updated_at=updated_at WHERE id=? AND assignment_version=?',[target,version,ticket.id,current.version]);
+          if(Number(update.affectedRows)!==1)throw Error('Support assignment write failed');
+        }
+        const [receipt]=await connection.execute('INSERT INTO support_assignment_attempts (id,ticket_id,actor_user_id,assigned_to,expected_version,result_version,changed) VALUES (?,?,?,?,?,?,?)',[id,ticket.id,actor.id,target,current.version,version,changed?1:0]);
+        if(Number(receipt.affectedRows)!==1)throw Error('Support assignment receipt failed');
+        const [auditResult]=await connection.execute(`INSERT INTO audit_events (id,actor_user_id,tenant_id,action,resource_type,resource_id,old_value,new_value)
+          VALUES (?,?,NULL,?,'support_ticket',?,?,?)`,[randomUUID(),actor.id,'support_ticket.assign',ticket.id,JSON.stringify(current),JSON.stringify({ticket_id:ticket.id,assigned_to:target,version,attempt_id:id})]);
+        if(Number(auditResult.affectedRows)!==1)throw Error('Support assignment audit failed');
+        return {status:201,body:{assignment:{ticket_id:ticket.id,assigned_to:target,version},changed,unchanged:false},write:true};
+      });
+    },
+    async reconcileAssignment(actor:Actor,ticketId:string,requestId:unknown):Promise<Result>{
+      if(typeof requestId!=='string'||!uuid.test(requestId))return {status:400,body:{error:'Invalid assignment attempt',code:'SUPPORT_REQUEST_KEY'}};
+      return run(actor,async(connection,actor)=>{
+        const ticket=await authorizeAssignment(connection,actor,ticketId),receipt=await assignmentReceipt(connection,supportWriteId(actor.id,'assign',requestId),ticket.id);
+        if(!receipt||receipt.actor_id!==actor.id)return stop(404,'No confirmed assignment attempt found','SUPPORT_ATTEMPT_NOT_FOUND');
+        return {status:200,body:{assignment:receipt.assignment,changed:receipt.changed,unchanged:true},write:false};
+      });
+    },
+    async privateNotes(actor:Actor,ticketId:string,before?:unknown):Promise<Result>{
+      if(before!==undefined&&(typeof before!=='string'||!uuid.test(before)))return {status:400,body:{error:'Invalid private note cursor',code:'SUPPORT_NOTES_CURSOR'}};
+      return run(actor,async(connection,actor)=>{
+        const ticket=await authorizeNotes(connection,actor,ticketId);
+        if(before!==undefined){
+          const anchor=await findPrivateNote(connection,before as string,ticket.id);
+          if(!anchor||anchor.ticket_id!==ticket.id)stop(400,'Invalid private note cursor','SUPPORT_NOTES_CURSOR');
+        }
+        return {status:200,body:await listPrivateNotes(connection,ticket.id,before as string|undefined),write:false};
+      });
+    },
+    async addPrivateNote(actor:Actor,ticketId:string,requestId:unknown,input:any):Promise<Result>{
+      if(typeof requestId!=='string'||!uuid.test(requestId))return {status:400,body:{error:'UUID Idempotency-Key required',code:'SUPPORT_REQUEST_KEY'}};
+      const body=text(input?.body);
+      if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).length!==1||!body||body.length>10000)return {status:400,body:{error:'Invalid private note body',code:'SUPPORT_INPUT'}};
+      return run(actor,async(connection,actor)=>{
+        const ticket=await authorizeNotes(connection,actor,ticketId),id=supportWriteId(actor.id,'note',requestId);
+        const previous=await findPrivateNote(connection,id,ticket.id,true);
+        if(previous){
+          if(previous.ticket_id!==ticket.id||previous.author_id!==actor.id||previous.body!==body)stop(409,'Request key already used with different private note','SUPPORT_WRITE_CONFLICT');
+          return {status:200,body:{note:privateNoteDto(previous),unchanged:true},write:false};
+        }
+        const [insert]=await connection.execute('INSERT INTO support_ticket_private_notes (id,ticket_id,author_user_id,body) VALUES (?,?,?,?)',[id,ticket.id,actor.id,body]);
+        if(Number(insert.affectedRows)!==1)throw Error('Private note insert failed');
+        await audit(connection,actor,'support_ticket.note',ticket.id,ticket.status,ticket.status,undefined,undefined,id);
+        const row=await findPrivateNote(connection,id,ticket.id);if(!row)throw Error('Private note missing');
+        return {status:201,body:{note:privateNoteDto(row),unchanged:false},write:true};
+      });
+    },
+    async reconcilePrivateNote(actor:Actor,ticketId:string,requestId:unknown):Promise<Result>{
+      if(typeof requestId!=='string'||!uuid.test(requestId))return {status:400,body:{error:'Invalid private note request',code:'SUPPORT_REQUEST_KEY'}};
+      return run(actor,async(connection,actor)=>{
+        const ticket=await authorizeNotes(connection,actor,ticketId),row=await findPrivateNote(connection,supportWriteId(actor.id,'note',requestId),ticket.id);
+        if(!row||row.ticket_id!==ticket.id||row.author_id!==actor.id)stop(404,'No confirmed private note attempt found','SUPPORT_ATTEMPT_NOT_FOUND');
+        return {status:200,body:{note:privateNoteDto(row),unchanged:true},write:false};
+      });
+    },
     async context(actor:Actor,ticketId:string):Promise<Result>{
       return run(actor,async(connection,actor)=>{
         const {ticket,admin}=await authorizeTicket(connection,actor,ticketId);

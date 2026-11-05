@@ -44,6 +44,8 @@ Requests have a 60-second browser wait deadline and lifecycle cancellation. A br
 
 ## Limits and remaining gates
 
+Follow-up: [BUILD-12 lesson context](J04-LESSON-SUPPORT-CONTEXT.md) and [BUILD-13 private notes](J04-SUPPORT-PRIVATE-NOTES.md) extend this contract locally. Notes use the separate `note` operation namespace without changing existing create/reply identities. Remaining-work statements below record the original BUILD-11 checkpoint.
+
 Deduplication persists while the immutable support resource remains stored. A future hard-delete, body-edit or retention policy needs a tombstone/replay contract before implementation; this slice adds none. No server delete endpoint was introduced. Keys do not prevent a user intentionally creating two different requests with two different UUIDs. Concurrent retries can still wait on existing database locks; production query plans, lock wait policy and load were not measured.
 
 No live database/schema/provider was contacted. Runtime mounting is real in code, but actual schema/constraints and driver concurrency remain production acceptance gates. Classification, scoped assignment/transfer, private support notes, response-time policy and staff identity mapping remain open. Billing-category support messages never mutate balances or trigger payments.

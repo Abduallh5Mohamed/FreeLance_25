@@ -54,6 +54,23 @@ const {
 
 const SECRET = 'w3-hermetic-playback-secret-0123456789';
 const BASE_MS = 1_700_000_000_000;
+const catalogPersistenceContext=(userId:string):import('../src/services/catalog-video-session').CatalogVideoContext=>({courseId:'a1000000-0000-4000-8000-000000000002',lessonId:'a1000000-0000-4000-8000-000000000003',contentId:'a1000000-0000-4000-8000-000000000004',userId,tenantId:'tenant-1',enrollmentId:'enroll-1',loginSessionId:'a1000000-0000-4000-8000-000000000001',tokenVersion:0,branchId:null,branchMembershipVersion:null,sourceFingerprint:'a'.repeat(64)});
+test('catalog session persistence commits context in its original insert before publishing the immutable cache binding',async()=>{
+    const userId='catalog-durable-student',context=catalogPersistenceContext(userId),calls:Array<{sql:string;params:unknown[]}>=[];
+    let insertedId='',finish!:(value:{affectedRows:number})=>void;
+    const pending=new Promise<{affectedRows:number}>(resolve=>{finish=resolve;});
+    const creating=createVideoSession({userId,videoId:'video-1',ip:'10.0.0.1',userAgent:'hermetic-agent',fingerprint:'fp',screenRes:'1920x1080',tenantId:'tenant-1',studentEnrollmentId:'enroll-1',catalogContext:context},{execute:async(sql,params=[])=>{calls.push({sql,params});if(sql.includes('INSERT INTO video_sessions')){insertedId=String(params[0]);return pending;}return {affectedRows:1};}});
+    await new Promise(resolve=>setTimeout(resolve,0));assert.ok(insertedId);assert.equal(getActiveSession(insertedId),null);assert.equal(getUserActiveSessionId(userId),null);
+    context.lessonId='a1000000-0000-4000-8000-000000000099';finish({affectedRows:1});const created=await creating;
+    const inserted=calls.find(row=>row.sql.includes('INSERT INTO video_sessions'))!;assert.match(inserted.sql,/catalog_context/);const saved=JSON.parse(String(inserted.params.at(-1)));
+    assert.equal(saved.lessonId,'a1000000-0000-4000-8000-000000000003');assert.equal(getActiveSession(created.sessionId)?.catalogContext?.lessonId,saved.lessonId);assert.equal(Object.isFrozen(getActiveSession(created.sessionId)?.catalogContext),true);
+});
+test('catalog session lost insert acknowledgement or invalid context never becomes a cache-only grant',async()=>{
+    const userId='catalog-unknown-student';let attempted='';
+    await assert.rejects(createVideoSession({userId,videoId:'video-1',ip:'10.0.0.1',userAgent:'hermetic-agent',fingerprint:'fp',screenRes:'1920x1080',tenantId:'tenant-1',studentEnrollmentId:'enroll-1',catalogContext:catalogPersistenceContext(userId)},{execute:async(sql,params=[])=>{if(sql.includes('INSERT INTO video_sessions')){attempted=String(params[0]);throw Error('synthetic lost acknowledgement');}return {affectedRows:1};}}),VideoSessionPersistenceError);
+    assert.ok(attempted);assert.equal(getActiveSession(attempted),null);assert.equal(getUserActiveSessionId(userId),null);
+    let calls=0;await assert.rejects(createVideoSession({userId:'different-user',videoId:'video-1',ip:'10.0.0.1',userAgent:'hermetic-agent',fingerprint:'fp',screenRes:'1920x1080',tenantId:'tenant-1',studentEnrollmentId:'enroll-1',catalogContext:catalogPersistenceContext(userId)},{execute:async()=>{calls++;return {affectedRows:1};}}));assert.equal(calls,0);
+});
 
 interface SlotState {
     id: string;

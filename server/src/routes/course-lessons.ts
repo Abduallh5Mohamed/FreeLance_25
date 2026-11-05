@@ -35,6 +35,7 @@ import { Router, Response } from 'express';
 import type { AuthRequest } from '../middleware/auth';
 import { collectMaterialPdf, createMaterialFileIngestionService, type MaterialFileIngestionConfig } from '../services/material-file-ingestion';
 import { MATERIAL_PDF_MAX_BYTES } from '../services/material-file-delivery';
+import {lessonVideoSchema,lessonVideoPositions,lessonMaterialPositions,eligibleLessonVideo} from '../services/lesson-videos';
 
 /**
  * Minimal transactional connection seam, structurally identical to the
@@ -650,7 +651,7 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
         console.error(`${label} error before transaction start:`, error);
       }
       return res.status(500).json({ error: label,
-        ...(commitAttempted && label === 'Failed to manage lesson contents' ? { code: 'PERSISTENCE_UNCERTAIN' } : {}) });
+        ...(commitAttempted && ['Failed to manage lesson contents','Failed to manage lesson videos'].includes(label) ? { code: 'PERSISTENCE_UNCERTAIN' } : {}) });
     } finally {
       if (connection) {
         if (disposal === 'destroy') {
@@ -1708,10 +1709,15 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
           );
           const source = (sources as any[])[0];
           if (!source) return { status: 404, body: { error: 'Material not found' }, commit: false };
+          const videoSchema=await lessonVideoSchema(connection);
+          if(videoSchema==='invalid')return {status:503,body:{error:'Lesson videos schema unavailable',code:'LESSON_VIDEOS_UNAVAILABLE'},commit:false};
+          const videoPositions=videoSchema==='ready'?await lessonVideoPositions(connection,lessonId):[];
+          if(contents.length+videoPositions.length>contentLimit||contents.some(row=>videoPositions.some(video=>video.display_order===Number(row.display_order))))return {status:409,body:{error:'Mixed lesson contents require repair'},commit:false};
           const existing = contents.find(row => canonicalUuidIdentity(String(row.material_id)) === canonicalUuidIdentity(body.material_id));
           if (existing && Number(existing.display_order) === body.display_order) {
             return { status: 200, body: { content: dto(existing), unchanged: true }, commit: false };
           }
+          if(contents.length+videoPositions.length>=contentLimit||videoPositions.some(row=>row.display_order===body.display_order))return {status:409,body:{error:'Material, video position or shared lesson content limit conflicts'},commit:false};
           if (existing || contents.some(row => Number(row.display_order) === body.display_order) || contents.length >= contentLimit) {
             return { status: 409, body: { error: 'Material, position or lesson content limit conflicts' }, commit: false };
           }
@@ -1740,6 +1746,77 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
         if (Number(auditResult.affectedRows) !== 1) throw new Error('Unexpected lesson content audit result');
         return { status: method === 'post' ? 201 : 200,
           body: method === 'post' ? { content: dto(affected), unchanged: false } : { detached: true, content_id: String(affected.id) }, commit: true };
+      });
+    });
+  }
+
+  // Owner-only preparation of explicit catalog video references. This never
+  // changes legacy parents, grants playback, or marks either progress ledger.
+  const videosPath='/courses/:courseId/units/:unitId/lessons/:lessonId/videos';
+  for(const operation of ['list','sources','attach','detach'] as const){
+    const method=operation==='attach'?'post':operation==='detach'?'delete':'get';
+    router[method](videosPath+(operation==='sources'?'/available-videos':operation==='detach'?'/:contentId':''),async(req:AuthRequest,res:Response)=>{
+      res.set('Cache-Control','no-store');if(denyBillingOnly(req,res))return;
+      const {courseId,unitId,lessonId,contentId}=req.params,cursor=req.query.cursor,body=req.body;
+      if(![courseId,unitId,lessonId,...(operation==='detach'?[contentId]:[])].every(id=>typeof id==='string'&&UUID_PATTERN.test(id)))return res.status(400).json({error:'Invalid lesson video path'});
+      if(operation==='sources'?Object.keys(req.query).some(key=>key!=='cursor')||cursor!==undefined&&(typeof cursor!=='string'||!UUID_PATTERN.test(cursor)):Object.keys(req.query).length>0)return res.status(400).json({error:'Unexpected lesson video query'});
+      if(method==='post'?(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==2||!Object.prototype.hasOwnProperty.call(body,'video_id')||!Object.prototype.hasOwnProperty.call(body,'display_order')||typeof body.video_id!=='string'||!UUID_PATTERN.test(body.video_id)||!Number.isInteger(body.display_order)||body.display_order<0||body.display_order>DISPLAY_ORDER_MAX):body&&Object.keys(body).length)return res.status(400).json({error:'Expected video_id and integer display_order only'});
+      const userId=req.user?.id,tenantId=req.user?.tenantId;
+      if(!userId||!tenantId)return res.status(404).json({error:'Tenant membership not found'});
+      return runInTransaction('Failed to manage lesson videos',res,async connection=>{
+        const lock=method!=='get';
+        if(!await verifyTenantOwner(connection,userId,tenantId,lock))return {status:403,body:{error:'Forbidden'},commit:false};
+        if(!await resolveCourse(connection,courseId,tenantId,lock)||!await resolveUnit(connection,unitId,courseId,lock))return {status:404,body:{error:'Lesson not found'},commit:false};
+        const [lessons]=await connection.execute(`SELECT l.id FROM course_lessons l WHERE l.id=? AND l.unit_id=?${lock?' FOR UPDATE':''}`,[lessonId,unitId]);
+        if(!(lessons as any[])[0])return {status:404,body:{error:'Lesson not found'},commit:false};
+        if(await lessonVideoSchema(connection)!=='ready')return {status:503,body:{error:'Lesson videos schema unavailable',code:'LESSON_VIDEOS_UNAVAILABLE'},commit:false};
+        if(operation==='sources'){
+          const [sources]=await connection.execute(`SELECT v.id,v.title FROM videos v WHERE v.course_id=? AND v.tenant_id=? AND v.id>? AND v.status='ready'
+            AND v.lecture_id IS NULL AND v.material_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM lectures l WHERE l.video_url=CONCAT('video://',v.id))
+            AND NOT EXISTS (SELECT 1 FROM course_materials m WHERE m.material_type='video' AND m.file_url=CONCAT('video://',v.id))
+            ORDER BY v.id ASC LIMIT 26`,[courseId,tenantId,cursor??'']);
+          const rows=(sources as any[]).slice(0,25);
+          if(rows.some(row=>typeof row.id!=='string'||!UUID_PATTERN.test(row.id)||typeof row.title!=='string'||row.title.length>255))throw Error('Invalid video source projection');
+          return {status:200,body:{videos:rows.map(row=>({video_id:row.id,title:row.title})),next_cursor:(sources as any[]).length>25?rows[24].id:null},commit:false};
+        }
+        const videos=await lessonVideoPositions(connection,lessonId);
+        if(operation==='detach'){
+          const item=videos.find(row=>canonicalUuidIdentity(row.id)===canonicalUuidIdentity(contentId));
+          if(!item)return {status:404,body:{error:'Lesson video not found'},commit:false};
+          const [deleted]=await connection.execute('DELETE FROM course_lesson_videos WHERE id=? AND lesson_id=?',[item.id,lessonId]);
+          if(Number(deleted.affectedRows)!==1)throw Error('Video detach failed');
+          const value=JSON.stringify({lesson_id:lessonId,video_id:item.video_id,display_order:item.display_order});
+          const [audit]=await connection.execute(`INSERT INTO audit_events (id,actor_user_id,tenant_id,action,resource_type,resource_id,old_value,new_value) VALUES (?,?,?,?,?,?,?,?)`,[randomUUID(),userId,tenantId,'course_lesson_video.detach','course_lesson_video',item.id,value,null]);
+          if(Number(audit.affectedRows)!==1)throw Error('Video detach audit failed');
+          return {status:200,body:{detached:true,content_id:item.id},commit:true};
+        }
+        const materials=await lessonMaterialPositions(connection,lessonId);
+        if(videos.length+materials.length>contentLimit||videos.some(video=>materials.some(material=>material.display_order===video.display_order)))return {status:409,body:{error:'Mixed lesson contents require repair'},commit:false};
+        if(operation==='list'){
+          const [rows]=await connection.execute(`SELECT b.id,b.video_id,b.display_order,v.id AS source_id,v.title,v.status
+            FROM course_lesson_videos b LEFT JOIN videos v ON v.id=b.video_id AND v.course_id=? AND v.tenant_id=?
+            WHERE b.lesson_id=? ORDER BY b.display_order,b.id LIMIT 21`,[courseId,tenantId,lessonId]);
+          if((rows as any[]).length!==videos.length)throw Error('Invalid video binding projection');
+          const contents=(rows as any[]).map(row=>{
+            if(row.source_id&&(typeof row.title!=='string'||row.title.length>255||!['uploading','processing','ready','failed'].includes(row.status)))throw Error('Invalid video metadata');
+            return {content_id:row.id,video_id:row.video_id,display_order:row.display_order,title:row.source_id?row.title:null,video_status:row.source_id?row.status:'unavailable'};
+          });
+          return {status:200,body:{videos:contents},commit:false};
+        }
+        const source=await eligibleLessonVideo(connection,body.video_id,courseId,tenantId);
+        if(!source)return {status:404,body:{error:'Video not found'},commit:false};
+        const existing=videos.find(row=>canonicalUuidIdentity(row.video_id)===canonicalUuidIdentity(source.video_id));
+        const dto=(content_id:string)=>({content_id,video_id:source.video_id,title:source.title,video_status:'ready',display_order:body.display_order});
+        if(existing&&existing.display_order===body.display_order)return {status:200,body:{content:dto(existing.id),unchanged:true},commit:false};
+        if(existing||videos.length+materials.length>=contentLimit||[...videos,...materials].some(row=>row.display_order===body.display_order))return {status:409,body:{error:'Video, position or shared lesson content limit conflicts'},commit:false};
+        const id=randomUUID();
+        const [insert]=await connection.execute('INSERT INTO course_lesson_videos (id,lesson_id,video_id,display_order) VALUES (?,?,?,?)',[id,lessonId,source.video_id,body.display_order]);
+        if(Number(insert.affectedRows)!==1)throw Error('Video attach failed');
+        const value=JSON.stringify({lesson_id:lessonId,video_id:source.video_id,display_order:body.display_order});
+        const [audit]=await connection.execute(`INSERT INTO audit_events (id,actor_user_id,tenant_id,action,resource_type,resource_id,old_value,new_value) VALUES (?,?,?,?,?,?,?,?)`,[randomUUID(),userId,tenantId,'course_lesson_video.attach','course_lesson_video',id,null,value]);
+        if(Number(audit.affectedRows)!==1)throw Error('Video attach audit failed');
+        return {status:201,body:{content:dto(id),unchanged:false},commit:true};
       });
     });
   }

@@ -59,6 +59,7 @@ import {
 } from '@/lib/api-http';
 import { subscribeSessionChange } from '@/lib/session-events';
 import { LessonContentManager } from './LessonContentManager';
+import {LessonVideoManager} from './LessonVideoManager';
 import {
   COURSE_LESSON_ARCHIVE_NOTICE,
   COURSE_LESSON_DESCRIPTION_MAX,
@@ -471,6 +472,7 @@ export default function CourseLessonManager({
                       </Button>
                     </div>
                     <LessonContentManager courseId={courseId} unitId={unitId} lessonId={row.id} />
+                    <LessonVideoManager courseId={courseId} unitId={unitId} lessonId={row.id}/>
                   </li>
                 );
               })}

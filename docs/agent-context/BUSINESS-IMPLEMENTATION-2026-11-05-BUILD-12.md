@@ -2,6 +2,8 @@
 
 Local J04 continuation after [BUILD-11](BUSINESS-IMPLEMENTATION-2026-11-05-BUILD-11.md). Contract: [lesson support context](../streams/server/J04-LESSON-SUPPORT-CONTEXT.md).
 
+Follow-up: [BUILD-13](BUSINESS-IMPLEMENTATION-2026-11-05-BUILD-13.md) implements separate internal platform-support notes locally. The remaining-work list below records the BUILD-12 checkpoint, not the latest note status.
+
 ## Result
 
 An accessible lesson on the real student learning path now opens a support draft for that lesson. Preflight verifies its current scope. Creation repeats that proof and stores server-derived references atomically with ticket/audit. Support displays current verified course/lesson names separately from the message; expiry/withdrawal or a student's workspace switch withholds the context. Invalid/unavailable context never silently changes into a generic request; that needs an explicit user choice. Ordinary support still works when context columns are absent.

@@ -1989,7 +1989,9 @@ test('wiring: secure-video session creation carries no early tenant-only filter'
     const secureVideo = src('routes/secure-video.ts');
     // The lookup is resource-only; the verified policy decides access, so an
     // exact cross-tenant license is no longer pre-rejected by tenant.
-    assert.doesNotMatch(secureVideo, /AND v\.tenant_id=\?/);
+    const legacyLookup=secureVideo.match(/`SELECT v\.\*, c\.name as course_name[\s\S]*?WHERE v\.id = \? AND v\.status = 'ready'`/);
+    assert.ok(legacyLookup,'legacy license lookup remains resource-only');
+    assert.doesNotMatch(legacyLookup[0], /AND v\.tenant_id=\?/);
     assert.match(secureVideo, /evaluateSessionAccess\(video, \{/);
     assert.match(secureVideo, /scope: \{\s*tenantId: req\.user\?\.tenantId,\s*studentEnrollmentId: req\.user\?\.studentEnrollmentId,/);
 });
@@ -2135,6 +2137,7 @@ interface TestSession {
     offerId?: string;
     studentEnrollmentId?: string;
     tenantId?: string;
+    catalogContext?: import('../src/services/catalog-video-session').CatalogVideoContext;
     segmentRequests: number[];
     manifestRequests: number[];
     keyRequests: number[];
@@ -2224,6 +2227,9 @@ const makeEntitlementRecord = (overrides: Partial<PlaybackEntitlementRecord> = {
 });
 
 interface DeliveryHarnessOptions {
+    catalog?: import('../src/services/catalog-video-session').CatalogPlaybackAuthority;
+    afterProvider?:()=>void;
+    consent?:boolean;
     session?: TestSession | null;
     tokenValid?: boolean;
     hasVideoAccess?: boolean;
@@ -2334,6 +2340,7 @@ const makeDeliveryHarness = (options: DeliveryHarnessOptions = {}) => {
     }
 
     const deps: import('../src/routes/secure-video').SecureVideoDeliveryDeps = {
+        catalog:options.catalog,
         authenticate: (req, _res, next) => {
             (req as { user?: unknown }).user = {
                 id: 'student-1',
@@ -2342,6 +2349,7 @@ const makeDeliveryHarness = (options: DeliveryHarnessOptions = {}) => {
                 role: 'student',
                 tenantId: 'tenant-1',
                 studentEnrollmentId: 'enroll-1',
+                sessionId:'a1000000-0000-4000-8000-000000000001',tokenVersion:0,
             };
             next();
         },
@@ -2349,7 +2357,9 @@ const makeDeliveryHarness = (options: DeliveryHarnessOptions = {}) => {
             const durable = durableSessions.queryOne(sql, params ?? []);
             if (durable !== undefined) return durable as T | null;
             const normalized = sql.replace(/\s+/g, ' ');
-            if (/FROM video_security_consents/.test(normalized)) return { id: 'consent-1' } as T;
+            if (/FROM video_security_consents/.test(normalized)) return options.consent===false?null:{ id: 'consent-1' } as T;
+            if(/SELECT v.id,v.is_encrypted,v.hls_key,v.original_key/.test(normalized))return {id:'video-1',is_encrypted:1,hls_key:'hls/key',original_key:'orig/key'} as T;
+            if(/SELECT id,is_encrypted,hls_key,original_key/.test(normalized))return {id:'video-1',is_encrypted:1,hls_key:'hls/key',original_key:'orig/key'} as T;
             if (/SELECT v\.\*/.test(normalized) && /FROM videos v/.test(normalized)) {
                 return { id: 'video-1', is_encrypted: 1, hls_key: 'hls/key', original_key: 'orig/key' } as T;
             }
@@ -2363,6 +2373,7 @@ const makeDeliveryHarness = (options: DeliveryHarnessOptions = {}) => {
                 return { is_encrypted: 1, hls_key: 'hls/key', original_key: 'orig/key' } as T;
             }
             if (/SELECT encryption_key, is_encrypted/.test(normalized)) {
+                options.afterProvider?.();
                 return { is_encrypted: 1, encryption_key: '00112233' } as T;
             }
             return null;
@@ -2371,6 +2382,7 @@ const makeDeliveryHarness = (options: DeliveryHarnessOptions = {}) => {
         getActiveSession: () => session,
         createVideoSession: async (params) => {
             created.push({ ...params });
+            if(session&&params.catalogContext)session.catalogContext=params.catalogContext;
             // The durable write the real `createVideoSession` performs before it
             // publishes anything; delivery later reads this row back.
             durableSessions.insert({ sessionId: 'sess-1', userId: params.userId, videoId: params.videoId });
@@ -2396,10 +2408,8 @@ const makeDeliveryHarness = (options: DeliveryHarnessOptions = {}) => {
         getThumbnailUrl: async () => 'thumbnail.jpg',
         getUserVideoRestrictions: async () => ({ qualityCap: null, fullscreenAllowed: true, riskScore: 0 }),
         inspectDeliveryRequest: () => ({ allowed: true, release: () => undefined }),
-        getObjectBuffer: async () => Buffer.from(
-            '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n#EXTINF:4,\n480p/segment_0.ts\n',
-        ),
-        getObjectStream: async () => Readable.from([Buffer.from('segment-bytes')]),
+        getObjectBuffer: async () => {options.afterProvider?.();return Buffer.from('#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n#EXTINF:4,\n480p/segment_0.ts\n');},
+        getObjectStream: async () => {options.afterProvider?.();return Readable.from([Buffer.from('segment-bytes')]);},
         hasVideoAccess: async () => options.hasVideoAccess ?? true,
         hasPreviewOffer: async () => false,
         resolveBranch: async () => (options.branchAllowed === false
@@ -2424,6 +2434,57 @@ const makeDeliveryHarness = (options: DeliveryHarnessOptions = {}) => {
 
 const mediaQuery = (extra: Record<string, string> = {}) => ({
     sid: 'sess-1', token: 'session-token', ...extra,
+});
+
+const catalogContextFixture=():import('../src/services/catalog-video-session').CatalogVideoContext=>({courseId:'a1000000-0000-4000-8000-000000000002',lessonId:'a1000000-0000-4000-8000-000000000003',contentId:'a1000000-0000-4000-8000-000000000004',userId:'student-1',tenantId:'tenant-1',enrollmentId:'enroll-1',loginSessionId:'a1000000-0000-4000-8000-000000000001',tokenVersion:0,branchId:null,branchMembershipVersion:null,sourceFingerprint:'a'.repeat(64)});
+function catalogAuthorityFixture(){
+    let allowed=true,hasBinding=true;const context=catalogContextFixture(),calls:string[]=[];
+    const authority:import('../src/services/catalog-video-session').CatalogPlaybackAuthority={resolve:async(_principal,selectors)=>{calls.push('resolve');assert.equal(selectors.content_id,context.contentId);return allowed?{videoId:'video-1',context}:null;},check:async()=>{calls.push('check');return allowed;},hasBindings:async()=>{calls.push('bindings');return hasBinding;}};
+    return {authority,context,calls,deny:()=>{allowed=false;},unbound:()=>{hasBinding=false;}};
+}
+test('catalog session uses only resolved video/context and binds the existing entitlement to the catalog lesson',async()=>{
+    const c=catalogAuthorityFixture(),h=makeDeliveryHarness({catalog:c.authority,association:{kind:'ambiguous',lessonId:null,reason:'legacy-parent-not-catalog'}});
+    const result=await invokeDelivery(h.router,{method:'POST',path:'/session',body:{catalog:{course_id:c.context.courseId,lesson_id:c.context.lessonId,content_id:c.context.contentId},fingerprint:'fp-1',screenRes:'1920x1080'}});
+    assert.equal(result.status,200);assert.equal(h.created.length,1);assert.equal(h.created[0].videoId,'video-1');assert.deepEqual(h.created[0].catalogContext,c.context);assert.equal(h.entitlement.issued[0].lessonId,c.context.lessonId);assert.equal(result.headers['cache-control'],'no-store');
+    assert.ok(!JSON.stringify(result.body).includes('sourceFingerprint'));assert.ok(c.calls.filter(value=>value==='check').length>=2);
+});
+test('catalog session rejects caller source overrides, unsupported authority and missing consent without creating a grant',async()=>{
+    const c=catalogAuthorityFixture(),catalog={course_id:c.context.courseId,lesson_id:c.context.lessonId,content_id:c.context.contentId};
+    for(const body of [{catalog,videoId:'forged',fingerprint:'fp-1',screenRes:'1920x1080'},{catalog:{...catalog,tenant_id:'forged'},fingerprint:'fp-1',screenRes:'1920x1080'},{catalog,fingerprint:[],screenRes:'1920x1080'}]){
+        const h=makeDeliveryHarness({catalog:c.authority});assert.equal((await invokeDelivery(h.router,{method:'POST',path:'/session',body})).status,400);assert.equal(h.created.length,0);
+    }
+    const unsupported=makeDeliveryHarness();assert.equal((await invokeDelivery(unsupported.router,{method:'POST',path:'/session',body:{catalog,fingerprint:'fp-1',screenRes:'1920x1080'}})).status,503);
+    const consent=makeDeliveryHarness({catalog:c.authority,consent:false});assert.equal((await invokeDelivery(consent.router,{method:'POST',path:'/session',body:{catalog,fingerprint:'fp-1',screenRes:'1920x1080'}})).status,428);assert.equal(consent.created.length,0);
+    c.deny();const revoked=makeDeliveryHarness({catalog:c.authority});assert.equal((await invokeDelivery(revoked.router,{method:'POST',path:'/session',body:{catalog,fingerprint:'fp-1',screenRes:'1920x1080'}})).status,404);assert.equal(revoked.created.length,0);
+});
+test('catalog-bound video cannot start or continue a generic legacy session, including preview fallback',async()=>{
+    const c=catalogAuthorityFixture();
+    const issue=makeDeliveryHarness({catalog:c.authority});assert.equal((await invokeDelivery(issue.router,{method:'POST',path:'/session',body:{videoId:'video-1',fingerprint:'fp-1',screenRes:'1920x1080'}})).body?.code,'CATALOG_CONTEXT_REQUIRED');assert.equal(issue.created.length,0);
+    for(const request of [{method:'GET' as const,path:'/manifest/video-1/playlist.m3u8',query:mediaQuery()},{method:'GET' as const,path:'/media/video-1',query:mediaQuery({path:'480p/segment_0.ts'})},{method:'GET' as const,path:'/key/video-1',query:mediaQuery()},{method:'POST' as const,path:'/refresh-token',body:{sessionId:'sess-1',fingerprint:'fp-1',screenRes:'1920x1080'}}]){
+        const h=makeDeliveryHarness({catalog:c.authority,records:[makeEntitlementRecord()]});const result=await invokeDelivery(h.router,request);assert.equal(result.status,403);assert.equal(result.chunks.length,0);
+    }
+    const preview=makeDeliveryHarness({catalog:c.authority,session:makeTestSession({previewOnly:true})});assert.equal((await invokeDelivery(preview.router,{method:'GET',path:'/manifest/video-1/preview/playlist.m3u8',query:mediaQuery()})).status,403);
+});
+test('catalog delivery retains token/device, durable liveness and entitlement requirements, with no legacy parent inference',async()=>{
+    const c=catalogAuthorityFixture(),session=makeTestSession({catalogContext:c.context});
+    const h=makeDeliveryHarness({catalog:c.authority,session,records:[makeEntitlementRecord({lessonId:c.context.lessonId})],association:{kind:'ambiguous',lessonId:null,reason:'legacy-only'}});
+    assert.equal((await invokeDelivery(h.router,{method:'GET',path:'/manifest/video-1/playlist.m3u8',query:mediaQuery()})).status,200);
+    assert.equal((await invokeDelivery(h.router,{method:'GET',path:'/media/video-1',query:mediaQuery({path:'480p/segment_0.ts'})})).text,'segment-bytes');
+    assert.equal((await invokeDelivery(h.router,{method:'GET',path:'/key/video-1',query:mediaQuery()})).status,200);
+    const missing=makeDeliveryHarness({catalog:c.authority,session,records:[]});assert.equal((await invokeDelivery(missing.router,{method:'GET',path:'/key/video-1',query:mediaQuery()})).status,403);
+    const durable=makeDeliveryHarness({catalog:c.authority,session,records:[makeEntitlementRecord({lessonId:c.context.lessonId})],durableSession:'missing'});assert.equal((await invokeDelivery(durable.router,{method:'GET',path:'/key/video-1',query:mediaQuery()})).status,401);
+    const wrongDevice=makeDeliveryHarness({catalog:c.authority,session,tokenValid:false});assert.equal((await invokeDelivery(wrongDevice.router,{method:'GET',path:'/key/video-1',query:mediaQuery()})).status,401);
+});
+for(const path of ['manifest','media','key'] as const)test(`catalog ${path} rechecks proof after provider acquisition and sends no bytes after source withdrawal`,async()=>{
+    const c=catalogAuthorityFixture(),h=makeDeliveryHarness({catalog:c.authority,session:makeTestSession({catalogContext:c.context}),records:[makeEntitlementRecord({lessonId:c.context.lessonId})],afterProvider:c.deny});
+    const result=await invokeDelivery(h.router,{method:'GET',path:path==='manifest'?'/manifest/video-1/playlist.m3u8':path==='key'?'/key/video-1':'/media/video-1',query:mediaQuery(path==='media'?{path:'480p/segment_0.ts'}:{})});
+    assert.equal(result.status,403);assert.equal(result.chunks.length,0);assert.equal(result.body?.code,'CATALOG_PLAYBACK_DENIED');assert.ok(h.kills.some(row=>row.reason==='catalog_access_revoked'));
+});
+test('catalog refresh preserves its fixed scope and fails closed when its fresh proof is withdrawn',async()=>{
+    const c=catalogAuthorityFixture(),session=makeTestSession({catalogContext:c.context}),h=makeDeliveryHarness({catalog:c.authority,session,records:[makeEntitlementRecord({lessonId:c.context.lessonId})]});
+    const request={method:'POST' as const,path:'/refresh-token',body:{sessionId:'sess-1',fingerprint:'fp-1',screenRes:'1920x1080'}};
+    assert.equal((await invokeDelivery(h.router,request)).status,200);c.deny();assert.equal((await invokeDelivery(h.router,request)).status,403);
+    const changed=catalogAuthorityFixture();const wrong=makeDeliveryHarness({catalog:changed.authority,session:makeTestSession({catalogContext:{...changed.context,enrollmentId:'foreign'}})});assert.equal((await invokeDelivery(wrong.router,request)).status,403);
 });
 
 test('entitlement delivery: an unauthenticated manifest request is denied before any read', async () => {

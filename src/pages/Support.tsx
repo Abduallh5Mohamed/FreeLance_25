@@ -16,6 +16,10 @@ import { subscribeSessionChange } from "@/lib/session-events";
 import { parseSupportReplyPage, type SupportReplyPage } from "@/features/support/reply-page";
 import { createSupportAttempt, type SupportAttemptState } from "@/features/support/write-attempt";
 import {parseSupportDraftTarget,createSupportContextController,initialSupportContextState,type SupportContextState} from '@/features/support/lesson-context';
+import {readSupportSessionIdentity as supportSessionIdentity} from '@/features/support/session';
+import {SupportPrivateNotes} from '@/features/support/SupportPrivateNotes';
+import {SupportAssignment} from '@/features/support/SupportAssignment';
+import {SupportAssignedQueue} from '@/features/support/SupportAssignedQueue';
 import {
   createSupportTicket,
   reconcileSupportTicket,
@@ -223,12 +227,6 @@ const statusStyle: Record<SupportStatus, string> = {
 
 interface CurrentUser { id: string; role: string; name?: string; admin_permissions?: string[] }
 
-const supportSessionIdentity = () => {
-  try {
-    if (!localStorage.getItem('authToken')) return null;
-    return JSON.stringify(['authToken','currentUser','currentStudent','currentStudentSpace','student_session','offlineStudentSession'].map(key => localStorage.getItem(key)));
-  } catch { return null; }
-};
 const idleAttempt = (): SupportAttemptState => ({ busy:false,uncertain:false,locked:false,error:null,blocked:false });
 type TicketInput = {category:SupportCategory;subject:string;description:string;context?:{kind:'catalog_lesson';course_id:string;lesson_id:string}};
 type CreateAttempt = ReturnType<typeof createSupportAttempt<TicketInput,Awaited<ReturnType<typeof createSupportTicket>>>>;
@@ -263,6 +261,12 @@ export default function Support() {
   const sessionAlive = useRef(true);
   const principal = useRef(supportSessionIdentity());
   const sameSession = () => sessionAlive.current && !!principal.current && principal.current === supportSessionIdentity();
+  const [assignmentActivity,setAssignmentActivity]=useState(0),[assignmentRevision,setAssignmentRevision]=useState(0);
+  const assignmentActivityChanged=useCallback((busy:boolean)=>{
+    if(!sameSession())return;
+    setAssignmentActivity(value=>Math.max(0,value+(busy?1:-1)));
+    if(!busy)setAssignmentRevision(value=>value+1);
+  },[]);
   const [loading, setLoading] = useState(true);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(()=>wantsLessonContext&&draftTarget.kind==='lesson');
@@ -489,6 +493,7 @@ export default function Support() {
             <Button type="button" size="sm" variant="outline" disabled={submitting||createAttemptState.uncertain} onClick={()=>setGeneralFor(location.search)}>متابعة بطلب دعم عام</Button>
           </section>:null}
 
+          {isAdmin&&!sessionEnded?<SupportAssignedQueue busyAssignment={assignmentActivity>0} revision={assignmentRevision} onOpen={openTicket}/>:null}
           <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
             <Card className="overflow-hidden">
               <CardHeader className="border-b"><CardTitle className="text-lg">{isAdmin ? "قائمة الانتظار" : "طلباتي"}</CardTitle></CardHeader>
@@ -548,6 +553,8 @@ export default function Support() {
                       {isAdmin && selected.status !== "resolved" && selected.status !== "closed" && <Button size="sm" variant="outline" onClick={() => changeStatus("resolved")} disabled={submitting}>تم الحل</Button>}
                       {selected.status !== "closed" && <Button size="sm" variant="ghost" onClick={() => changeStatus("closed")} disabled={submitting}>إغلاق التذكرة</Button>}
                     </div>
+                    {isAdmin&&currentUser?.id?<SupportAssignment key={`assignment/${selected.id}`} ticketId={selected.id} accountId={currentUser.id} closed={selected.status==='closed'} onActivity={assignmentActivityChanged}/>:null}
+                    {isAdmin&&currentUser?.id?<SupportPrivateNotes key={selected.id} ticketId={selected.id} accountId={currentUser.id}/>:null}
                   </div>
                 </div>
               )}

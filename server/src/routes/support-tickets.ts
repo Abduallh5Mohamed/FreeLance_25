@@ -63,6 +63,46 @@ async function replyPage(ticketId: string, before?: string) {
 
 router.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 router.use(authenticateToken);
+router.get('/assigned',async(req:AuthRequest,res:Response)=>{
+  if(!req.user)return res.status(401).json({error:'Unauthorized'});
+  if(Object.keys(req.query).some(key=>key!=='after'))return res.status(400).json({error:'Unexpected assigned queue selector'});
+  const result=await writes.assigned(req.user,req.query.after);return res.status(result.status).json(result.body);
+});
+router.get('/:id/assignment/candidates',async(req:AuthRequest,res:Response)=>{
+  if(!req.user)return res.status(401).json({error:'Unauthorized'});
+  if(Object.keys(req.query).some(key=>key!=='after'))return res.status(400).json({error:'Unexpected recipient selector'});
+  const result=await writes.assignmentCandidates(req.user,req.params.id,req.query.after);return res.status(result.status).json(result.body);
+});
+router.get('/:id/assignment',async(req:AuthRequest,res:Response)=>{
+  if(!req.user)return res.status(401).json({error:'Unauthorized'});
+  if(Object.keys(req.query).length)return res.status(400).json({error:'Unexpected assignment selector'});
+  const result=await writes.assignment(req.user,req.params.id);return res.status(result.status).json(result.body);
+});
+router.post('/:id/assignment',async(req:AuthRequest,res:Response)=>{
+  if(!req.user)return res.status(401).json({error:'Unauthorized'});
+  if(Object.keys(req.query).length)return res.status(400).json({error:'Unexpected assignment selector'});
+  const result=await writes.assign(req.user,req.params.id,req.headers['idempotency-key'],req.body);return res.status(result.status).json(result.body);
+});
+router.get('/:id/assignment/attempts/:requestId',async(req:AuthRequest,res:Response)=>{
+  if(!req.user)return res.status(401).json({error:'Unauthorized'});
+  if(Object.keys(req.query).length)return res.status(400).json({error:'Unexpected assignment selector'});
+  const result=await writes.reconcileAssignment(req.user,req.params.id,req.params.requestId);return res.status(result.status).json(result.body);
+});
+router.get('/:id/private-notes',async(req:AuthRequest,res:Response)=>{
+  if(!req.user)return res.status(401).json({error:'Unauthorized'});
+  if(Object.keys(req.query).some(key=>key!=='before'))return res.status(400).json({error:'Unexpected private note selector'});
+  const result=await writes.privateNotes(req.user,req.params.id,req.query.before);return res.status(result.status).json(result.body);
+});
+router.post('/:id/private-notes',async(req:AuthRequest,res:Response)=>{
+  if(!req.user)return res.status(401).json({error:'Unauthorized'});
+  if(Object.keys(req.query).length)return res.status(400).json({error:'Unexpected private note selector'});
+  const result=await writes.addPrivateNote(req.user,req.params.id,req.headers['idempotency-key'],req.body);return res.status(result.status).json(result.body);
+});
+router.get('/:id/private-notes/attempts/:requestId',async(req:AuthRequest,res:Response)=>{
+  if(!req.user)return res.status(401).json({error:'Unauthorized'});
+  if(Object.keys(req.query).length)return res.status(400).json({error:'Unexpected private note selector'});
+  const result=await writes.reconcilePrivateNote(req.user,req.params.id,req.params.requestId);return res.status(result.status).json(result.body);
+});
 
 router.post('/', async (req: AuthRequest, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });

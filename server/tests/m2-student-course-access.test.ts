@@ -153,6 +153,7 @@ interface CompletionRow { id: string; student_enrollment_id: string; lesson_id: 
 
 interface State {
     supportContextSchema?: boolean;
+    lessonVideoFixture?: {schema:boolean;group:any;bindings:any[]};
     lessonMaterialFixture?: { schema: boolean; groupId: string | null; bindings: any[]; links: any[]; fileRecord?: any; fileRows?: any[]; fileSchema?: boolean };
     tenants: Array<{ id: string; status: string }>;
     enrollments: EnrollmentRow[];
@@ -345,6 +346,17 @@ function buildHarness(state: State, materialFileDelivery?: MaterialFileDeliveryC
     const dispatch = (sql: string, params: any[]): [any, any] => {
         const n = squash(sql);
         calls.push({ sql, params });
+        if(state.lessonVideoFixture){
+            const f=state.lessonVideoFixture;
+            if(n.startsWith('SELECT id,is_active,token_version'))return [[{id:STUDENT_USER,is_active:1,token_version:0,suspension_active:0}],[]];
+            if(n.includes("TABLE_NAME='course_lesson_videos'")&&n.includes('information_schema.COLUMNS'))return [f.schema?['id','lesson_id','video_id','display_order'].map(column_name=>({column_name})):[],[]];
+            if(n.includes('information_schema.TABLES'))return [['course_lesson_videos','videos','course_lesson_contents','course_lessons','course_units','courses','tenants','users','audit_events','lectures','course_materials','students','student_courses','course_lesson_completions','groups','branches','branch_memberships'].map(table_name=>({table_name,engine:'InnoDB'})),[]];
+            if(n.includes("TABLE_NAME='videos'")&&n.includes('information_schema.STATISTICS'))return [[{column_name:'id',seq_in_index:1}],[]];
+            if(n.includes("TABLE_NAME='course_lesson_videos'")&&n.includes('information_schema.STATISTICS'))return [['PRIMARY','uq_lesson_videos_source','uq_lesson_videos_order'].flatMap(index_name=>(index_name==='PRIMARY'?['id']:index_name==='uq_lesson_videos_source'?['lesson_id','video_id']:['lesson_id','display_order']).map((column_name,n)=>({index_name,column_name,seq_in_index:n+1,non_unique:0}))),[]];
+            if(n.startsWith('SELECT g.id,g.course_id'))return [f.group?[f.group]:[],[]];
+            if(n.startsWith('SELECT b.id AS content_id,b.video_id')){assert.deepEqual(params,[COURSE_A1,TENANT_A,LESSON_1]);return [f.bindings,[]];}
+            if(n.startsWith('SELECT id,display_order FROM course_lesson_contents'))return [[],[]];
+        }
         if(n.includes("TABLE_NAME='support_tickets'"))return [state.supportContextSchema?['context_kind','context_tenant_id','context_enrollment_id','context_course_id','context_lesson_id'].map(column_name=>({column_name})):[],[]];
         if(n.includes('information_schema.TABLES'))return [['students','tenants','student_courses','courses','course_units','course_lessons','course_lesson_completions'].map(table_name=>({table_name,engine:'InnoDB'})),[]];
         if (state.lessonMaterialFixture) {
@@ -746,6 +758,7 @@ test('mount: the router exposes the path/completion routes and the private stude
         'GET /courses/:courseId/lessons/:lessonId/contents',
         'GET /courses/:courseId/lessons/:lessonId/contents/:contentId/file',
         'GET /courses/:courseId/lessons/:lessonId/support-context',
+        'GET /courses/:courseId/lessons/:lessonId/videos',
         'POST /courses/:courseId/lessons/:lessonId/completion',
     ]);
 });
@@ -1514,6 +1527,27 @@ const materialId = '71000000-0000-4000-8000-000000000001';
 const contentId = '72000000-0000-4000-8000-000000000001';
 const groupId = '73000000-0000-4000-8000-000000000001';
 const branchId = '74000000-0000-4000-8000-000000000001';
+function catalogVideoState(){
+    const state=makeState();
+    state.lessonVideoFixture={schema:true,group:{id:groupId,course_id:COURSE_A1,tenant_id:TENANT_A,branch_id:null,branch_scope:'tenant',instructor_id:INSTRUCTOR},
+      bindings:[{content_id:contentId,video_id:materialId,display_order:0,source_id:materialId,title:'Verified catalog video',status:'ready',is_encrypted:1,hls_key:'private-hls-key',original_key:'private-original-key'}]};
+    return state as State&{lessonVideoFixture:NonNullable<State['lessonVideoFixture']>};
+}
+test('student video actual route is authenticated, fixed/no-store and produces no token, write or legacy access',async()=>{
+    const state=catalogVideoState(),h=buildHarness(state),pathName=`/courses/${COURSE_A1}/lessons/${LESSON_1}/videos`;
+    const result=await runChain(h.chain,makeReq({token:studentToken(),pathName}));assert.equal(result.status,200);
+    assert.deepEqual(result.body,{lesson_id:LESSON_1,videos:[{content_id:contentId,title:'Verified catalog video',display_order:0,playback_status:'unconfigured'}]});assert.equal(result.headers['Cache-Control'],'no-store');
+    assert.equal(h.commitCount(),0);assert.ok(!JSON.stringify(result.body).includes('private-'));assert.ok(!JSON.stringify(result.body).includes('video_id'));assert.ok(!h.calls.some(call=>/^(INSERT|UPDATE|DELETE)/.test(squash(call.sql))));
+    state.lessonVideoFixture.bindings=[];assert.deepEqual((await runChain(h.chain,makeReq({token:studentToken(),pathName}))).body.videos,[]);
+    state.lessonVideoFixture.group=null;assert.equal((await runChain(h.chain,makeReq({token:studentToken(),pathName}))).status,404);
+});
+test('student video route refuses caller authority selectors and unavailable schema without inventing an empty list',async()=>{
+    const state=catalogVideoState(),h=buildHarness(state),pathName=`/courses/${COURSE_A1}/lessons/${LESSON_1}/videos`;
+    for(const query of [{tenant_id:TENANT_B},{student_enrollment_id:ENROLLMENT_1},{branch_id:branchId},{video_id:materialId},{limit:1000}])assert.equal((await runChain(h.chain,makeReq({token:studentToken(),pathName,query}))).status,400);
+    assert.equal(h.connectionCount(),0);
+    assert.equal((await runChain(h.chain,makeReq({pathName}))).status,401);
+    state.lessonVideoFixture.schema=false;const missing=await runChain(h.chain,makeReq({token:studentToken(),pathName}));assert.equal(missing.status,503);assert.equal(missing.body.code,'CATALOG_VIDEO_UNAVAILABLE');assert.equal(missing.headers['Cache-Control'],'no-store');
+});
 function materialState() {
     const state = makeState();
     state.lessonMaterialFixture = { schema: true, groupId,

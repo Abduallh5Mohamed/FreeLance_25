@@ -5,6 +5,7 @@ export function createSupportAttempt<P,T>(deps:{
   readKey():string|null;saveKey(key:string):void;clearKey():void;makeKey():string;readIdentity():string|null;
   send(payload:P,key:string,signal:AbortSignal):Promise<T>;reconcile(key:string,signal:AbortSignal):Promise<T>;timeoutMs?:number;
   onDenied?:()=>void;
+  isDefinitiveRejection?:(error:unknown)=>boolean;
 }){
   let key:string|null=null,payloadSignature:string|null=null,ended=false,epoch=0,active:AbortController|null=null;
   let state:SupportAttemptState={busy:false,uncertain:false,locked:false,error:null,blocked:false};
@@ -37,6 +38,11 @@ export function createSupportAttempt<P,T>(deps:{
       catch{set({uncertain:false,blocked:true,error:'تم تأكيد الحفظ، لكن تعذّر تنظيف معرّف المحاولة محليًا. أعد فتح الصفحة قبل طلب جديد.'});}
       return result;
     }catch(error){
+      if(current(ticket)&&payload!==undefined&&deps.isDefinitiveRejection?.(error)){
+        try{deps.clearKey();key=null;payloadSignature=null;set({uncertain:false,locked:false,error:'لم يُنفذ القرار لأن الحالة أو صلاحية المسؤول تغيّرت. حدّث البيانات قبل قرار جديد.'});}
+        catch{set({uncertain:false,locked:false,blocked:true,error:'لم يُنفذ القرار، وتعذّر تنظيف معرّف المحاولة. أعد فتح اللوحة بعد إتاحة تخزين الجلسة.'});}
+        return null;
+      }
       if(current(ticket)&&error&&typeof error==='object'&&'status'in error&&typeof error.status==='number'
         &&[401,403,404].includes(error.status)&&!('code'in error&&error.code==='SUPPORT_ATTEMPT_NOT_FOUND')){
         invalidate();deps.onDenied?.();return null;
