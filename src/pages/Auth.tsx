@@ -1,38 +1,34 @@
+import { AcademyBrand } from "@/components/AcademyBrand";
 import { useEffect, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
-import { GraduationCap, LogIn, UserPlus, Sparkles, Lock, Mail, User, Phone as PhoneIcon, BookOpen, Users } from "lucide-react";
-import { useNavigate, Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { ArrowLeft, Eye, EyeOff, Users, UserRound, Phone, LockKeyhole } from "lucide-react";
 import { AUTH_SESSION_CHANGED_EVENT, signIn } from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast";
-import tabwebAcademyLogo from "@/assets/Tabweb_Academy_Logo.png";
-import logBackground from "@/assets/Log_Background.jpg";
-import { motion, AnimatePresence } from "framer-motion";
-import { FloatingParticles } from "@/components/FloatingParticles";
-import { GlassmorphicCard } from "@/components/GlassmorphicCard";
+import "./academy-auth.css";
+import { AuthTab } from "./AuthTab";
 
 const Auth = () => {
   const [isLogin, setIsLogin] = useState(true);
+  const [role, setRole] = useState<"student" | "teacher">("teacher");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState(""); // Optional, now for registration only
-  const [guardianPhone, setGuardianPhone] = useState(""); // رقم ولي الأمر
-  const [grade, setGrade] = useState("");
-  const [gradeId, setGradeId] = useState("");
-  const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
-  const [selectedGroup, setSelectedGroup] = useState("");
+  const [visible, setVisible] = useState(false);
+  const [field, setField] = useState("");
+  const [target, setTarget] = useState<{x: number; y: number} | null>(null);
+  const followCaret = (input: HTMLInputElement) => {
+    const style = getComputedStyle(input);
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.font = style.font;
+    const prefix = input.value.slice(0, input.selectionStart ?? input.value.length);
+    const width = context.measureText(prefix).width + (parseFloat(style.letterSpacing) || 0) * prefix.length;
+    const box = input.getBoundingClientRect();
+    setTarget({ x: Math.min(box.right - 12, Math.max(box.left + 12, box.left + parseFloat(style.paddingLeft) + width - input.scrollLeft)), y: box.top + box.height / 2 });
+  };
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [courses, setCourses] = useState<Array<{ id: string; name: string; grade?: string }>>([]);
-  const [grades, setGrades] = useState<Array<{ id: string; name: string }>>([]);
-  const [groups, setGroups] = useState<Array<{ id: string; name: string; grade_id?: string }>>([]);
-  const [studentType, setStudentType] = useState<"online" | "offline">("online");
+  const [recoveryHelp, setRecoveryHelp] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
   const mountedRef = useRef(true);
@@ -72,10 +68,6 @@ const Auth = () => {
     };
   }, []);
 
-  const explainInviteRegistration = () => toast({
-    title: "التسجيل من رابط المدرس",
-    description: "اطلب رابط الانضمام من مدرسك. بعد موافقته ستسجل الدخول من هذه الصفحة برقمك وكلمة المرور.",
-  });
 
   // A pending role redirect is valid only while the login it belongs to is
   // still the current session. Unmount, logout or a newer login cancels it.
@@ -106,8 +98,7 @@ const Auth = () => {
     setError("");
 
     try {
-      if (isLogin) {
-        // Invite-only registration: the else branch throws the user-facing error. //"إنشاء حساب الطالب يتم من رابط الدعوة الذي يرسله المدرس فقط.");
+
       // Phone-based login
       const result = await signIn(phone.trim(), password);
       if (!mountedRef.current) return;
@@ -129,7 +120,8 @@ const Auth = () => {
             toast({
               title: "تم تسجيل الدخول بنجاح",
               description: `مرحباً بك ${result.user.name}`,
-            });            {
+            });
+            {
               goToRoleHome("/teacher", result.token);
             }
           } else if (result.user.role === 'instructor') {
@@ -138,7 +130,8 @@ const Auth = () => {
             toast({
               title: "تم تسجيل الدخول بنجاح",
               description: `مرحباً بك ${result.user.name}`,
-            });            {
+            });
+            {
               goToRoleHome(result.user.billing_only ? "/instructor-subscription" : "/teacher", result.token);
             }
           } else if (result.user.role === 'staff') {
@@ -146,7 +139,8 @@ const Auth = () => {
             toast({
               title: "تم تسجيل الدخول بنجاح",
               description: `مرحباً بك ${result.user.name}`,
-            });            {
+            });
+            {
               goToRoleHome("/teacher", result.token);
             }
           } else {
@@ -159,10 +153,7 @@ const Auth = () => {
         }
 
         throw new Error("رقم الهاتف أو كلمة المرور غير صحيحة");
-      } else {
-        throw new Error("إنشاء حساب الطالب يتم من رابط الدعوة الذي يرسله المدرس فقط.");
-      }
-        } catch (error) {
+    } catch (error) {
       if (!mountedRef.current) return;
       const errorMessage = error instanceof Error ? error.message :  "حدث خطأ غير متوقع";
       setError(errorMessage);
@@ -180,661 +171,79 @@ const Auth = () => {
     }
   };
 
+  const covering = field === "password" || (visible && password.length > 0);
+
   return (
-    <div className="min-h-screen relative overflow-hidden" dir="rtl">
-      {/* Background Image - Full screen with edge blur */}
-      <div
-        className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-        style={{
-          backgroundImage: `url(${logBackground})`,
-        }}
-      />
-
-      {/* Top Navbar */}
-      <nav className="absolute -top-4 left-0 right-0 z-50 px-8 py-0">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          {/* Toggle button */}
-          <Button
-            onClick={explainInviteRegistration}
-            className="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white px-8 py-2 rounded-lg font-semibold shadow-lg"
-          >
-            التسجيل من رابط المدرس
-          </Button>
-
-          {/* Navigation links */}
-          <div className="hidden md:flex items-center gap-8 text-white text-lg">
-            <a href="#" className="hover:text-yellow-400 transition-colors">الرئيسية</a>
-            <a href="#" className="hover:text-yellow-400 transition-colors">النتائج</a>
-            <a href="#" className="hover:text-yellow-400 transition-colors">اتصال</a>
-            <a href="#" className="hover:text-yellow-400 transition-colors">الدعم</a>
-            <a href="#" className="hover:text-yellow-400 transition-colors">اليوميات</a>
+    <main className="academy-auth" dir="rtl">
+      <header className="academy-auth-header">
+        <Link className="academy-auth-home" to="/"><ArrowLeft size={17} /> العودة للرئيسية</Link>
+        <span className="academy-auth-header-line" aria-hidden="true" />
+        <div className="academy-auth-brand"><AcademyBrand /></div>
+      </header>
+      <div className="academy-auth-body">
+        <svg className="academy-auth-contour" viewBox="0 0 1526 830" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M940 150 C956 104 981 72 1024 72 L1075 72 C1116 72 1119 108 1160 108 L1452 108 Q1525 108 1525 180" />
+          <g><circle cx="1018" cy="99" r="7"/><circle cx="1043" cy="99" r="7"/><circle cx="1068" cy="99" r="7"/></g>
+        </svg>
+        <aside className="academy-auth-studio">
+          <svg className="academy-auth-reference-art" viewBox="30 134 940 830" aria-hidden="true">
+            <defs><filter id="auth-text-feather"><feGaussianBlur stdDeviation="10"/></filter><mask id="auth-art-only" maskUnits="userSpaceOnUse" x="30" y="134" width="940" height="830">
+              <rect x="30" y="134" width="940" height="830" fill="white"/>
+              <rect x="270" y="175" width="665" height="190" fill="black" filter="url(#auth-text-feather)"/>
+              <rect x="30" y="910" width="940" height="54" fill="black"/>
+            </mask></defs>
+            <image href="/auth/blueprint-approved-reference.png" width="1586" height="992" mask="url(#auth-art-only)" />
+          </svg>
+          <div className="academy-auth-studio-title"><h2>مساحتك للتعلّم.</h2><p>كل يوم، خطوة أبعد.</p></div>
+          <div className="academy-auth-studio-footer"><span aria-hidden="true">•••••<br/>•••••</span><b lang="en">TABWEB ACADEMY</b><span> / مساحة واحدة لكل خطوة</span></div>
+        </aside>
+        <div className="academy-auth-form-area">
+        <section className="academy-auth-card">
+          <AuthTab target={target} pose={covering ? (visible ? "peek" : "covered") : "watch"} />
+          <span className="academy-auth-rays" aria-hidden="true"><i/><i/><i/></span>
+          <h1>{isLogin ? "أهلًا بيك من جديد" : "إنشاء حساب"}</h1>
+          <p className="academy-auth-welcome">{isLogin ? "ادخل لحسابك وكمّل رحلتك" : "ابدأ رحلتك مع تبويب أكاديمي"}</p>
+          <div className="academy-auth-switch" aria-label="نوع الحساب" role="group">
+            <button type="button" aria-pressed={role === "teacher"} onClick={() => setRole("teacher")}><UserRound size={18} /> مدرّس</button>
+            <button type="button" aria-pressed={role === "student"} onClick={() => setRole("student")}><Users size={20} /> طالب</button>
           </div>
-
-          {/* Logo on the right */}
-          <Link to="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity cursor-pointer">
-            <img src={tabwebAcademyLogo} alt="Tabweb Academy" className="w-32 h-32 rounded-lg object-contain" />
-          </Link>
-        </div>
-      </nav>
-
-      {/* Edge Blur Overlay - removed for cleaner look */}
-
-      <FloatingParticles />
-
-      {/* Animated Background Elements - removed for cleaner look */}
-
-      {/* Tabweb Academy brand - Left Side */}
-      <motion.div
-        initial={{ opacity: 0, x: -100 }}
-        animate={{ opacity: 1, x: 0 }}
-        transition={{ duration: 0.8, delay: 0.3 }}
-        className="hidden lg:block absolute left-0 top-0 bottom-0 z-10 pointer-events-none"
-      >
-        <div className="relative h-full flex items-center pt-16">
-          <motion.div
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ duration: 0.8, delay: 0.5 }}
-            whileHover={{ scale: 1.02 }}
-          >
-            <img
-              src={tabwebAcademyLogo}
-              alt="Tabweb Academy"
-              className="h-[58vh] w-[58vh] object-contain drop-shadow-2xl"
-            />
-          </motion.div>
-        </div>
-      </motion.div>
-
-      {/* Main Content - Form on the right with more spacing */}
-      <div className="flex items-center justify-center min-h-screen px-8 lg:px-0 pt-12">
-        <motion.div
-          initial={{ opacity: 0, x: -50 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.6 }}
-          className="w-full max-w-lg lg:max-w-xl z-20 lg:fixed lg:right-24"
-        >
-          {/* Welcome Text - Above form, centered */}
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-            className="mb-2 text-center mt-16"
-          >
-            <h1 className="text-6xl font-bold text-white mb-4 leading-tight">
-              {isLogin ? "مرحباً أهلاً بعودتك!" : "إنشاء حساب جديد"}
-            </h1>
-          </motion.div>
-
-          {/* Login/Register Form */}
-          <div className={`bg-black/50 backdrop-blur-xl rounded-3xl border border-white/10 shadow-2xl mt-3 ${isLogin ? 'p-10' : 'p-6'}`}>
-            <form onSubmit={handleAuth} className={isLogin ? 'space-y-6' : 'space-y-5'}>
-              {/* Name & Phone - Side by side on desktop (for registration) */}
-              {!isLogin ? (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {/* Name Input */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="name" className="text-white text-right block text-sm">
-                      اسم الطالب
-                    </Label>
-                    <div className="relative">
-                      <Input
-                        id="name"
-                        type="text"
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
-                        placeholder="أدخل اسم الطالب"
-                        required
-                        className="bg-white/10 border-white/20 text-white placeholder:text-gray-400 h-11 rounded-xl text-right"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Phone Input */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="phone" className="text-white text-right block text-sm">
-                      رقم الهاتف
-                    </Label>
-                    <div className="relative">
-                      <Input
-                        id="phone"
-                        type="tel"
-                        value={phone}
-                        onChange={(e) => setPhone(e.target.value)}
-                        placeholder="01234567890"
-                        required
-                        className="bg-white/10 border-white/20 text-white placeholder:text-gray-400 h-11 rounded-xl text-right"
-                      />
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                /* Phone only for login */
-                <div className="space-y-2">
-                  <Label htmlFor="phone" className="text-white text-right block">
-                    رقم الهاتف
-                  </Label>
-                  <div className="relative">
-                    <Input
-                      id="phone"
-                      type="tel"
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      placeholder="01234567890"
-                      required
-                      className="bg-white/10 border-white/20 text-white placeholder:text-gray-400 h-14 rounded-xl text-right"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Password & Grade - 2 fields side by side on desktop (for registration) */}
-              {!isLogin ? (
-                <>
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                    {/* Password Input */}
-                    <div className="space-y-1.5">
-                      <Label htmlFor="password-register" className="text-white text-right block text-sm">
-                        كلمة المرور
-                      </Label>
-                      <div className="relative">
-                        <Input
-                          id="password-register"
-                          type="password"
-                          value={password}
-                          onChange={(e) => setPassword(e.target.value)}
-                          placeholder="••••••••"
-                          required
-                          className="bg-white/10 border-white/20 text-white placeholder:text-gray-400 h-11 rounded-xl text-right"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Grade Select */}
-                    <div className="space-y-1.5">
-                      <Label htmlFor="grade" className="text-white text-right block text-sm">
-                        الصف الدراسي
-                      </Label>
-                      <div className="relative">
-                        <Select value={gradeId} onValueChange={(value) => {
-                          console.log('✅ Selected grade:', value);
-                          console.log('📋 All groups:', groups);
-                          const filtered = groups.filter(g => g.grade_id === value);
-                          console.log('📋 Filtered groups for grade:', filtered);
-                          setGradeId(value);
-                          setSelectedGroup(''); // Reset group when grade changes
-                          setSelectedCourses([]); // Reset courses when grade changes
-                        }} required>
-                          <SelectTrigger className="bg-white/10 border-white/20 text-white h-11 rounded-xl text-right">
-                            <SelectValue placeholder="اختر الصف الدراسي" />
-                          </SelectTrigger>
-                          <SelectContent className="bg-gray-900 border-white/20">
-                            {grades.map((gradeItem) => (
-                              <SelectItem key={gradeItem.id} value={gradeItem.id} className="text-white">
-                                {gradeItem.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Guardian Phone - Full width */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="guardianPhone" className="text-white text-right block text-sm">
-                      رقم هاتف ولي الأمر
-                    </Label>
-                    <div className="relative">
-                      <Input
-                        id="guardianPhone"
-                        type="tel"
-                        value={guardianPhone}
-                        onChange={(e) => setGuardianPhone(e.target.value)}
-                        placeholder="01234567890"
-                        required
-                        className="bg-white/10 border-white/20 text-white placeholder:text-gray-400 h-11 rounded-xl text-right"
-                      />
-                    </div>
-                  </div>
-                </>
-              ) : (
-                /* Password only for login */
-                <div className="space-y-2">
-                  <Label htmlFor="password-login" className="text-white text-right block">
-                    كلمة المرور
-                  </Label>
-                  <div className="relative">
-                    <Input
-                      id="password-login"
-                      type="password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="••••••••"
-                      required
-                      className="bg-white/10 border-white/20 text-white placeholder:text-gray-400 h-14 rounded-xl text-right"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Student Type & Group - Side by side (for registration) */}
-              {!isLogin && (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {/* Student Type Select */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="studentType" className="text-white text-right block text-sm">
-                      نوع الطالب
-                    </Label>
-                    <div className="relative">
-                      <Select
-                        value={studentType}
-                        onValueChange={(value: "online" | "offline") => setStudentType(value)}
-                        required
-                      >
-                        <SelectTrigger className="bg-white/10 border-white/20 text-white h-11 rounded-xl text-right">
-                          <SelectValue placeholder="اختر نوع الطالب" />
-                        </SelectTrigger>
-                        <SelectContent className="bg-gray-900 border-white/20">
-                          <SelectItem value="online" className="text-white">أونلاين</SelectItem>
-                          <SelectItem value="offline" className="text-white">أوفلاين</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-
-                  {/* Group Select */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="group" className="text-white text-right block text-sm">
-                      المجموعة
-                    </Label>
-                    <div className="relative">
-                      <Select
-                        value={selectedGroup}
-                        onValueChange={setSelectedGroup}
-                        required
-                        disabled={!gradeId}
-                      >
-                        <SelectTrigger className="bg-white/10 border-white/20 text-white h-11 rounded-xl text-right">
-                          <SelectValue placeholder={gradeId ? "اختر المجموعة" : "اختر الصف أولاً"} />
-                        </SelectTrigger>
-                        <SelectContent className="bg-gray-900 border-white/20">
-                          {groups
-                            .filter(g => !gradeId || g.grade_id === gradeId)
-                            .map((group) => (
-                              <SelectItem key={group.id} value={group.id} className="text-white">
-                                {group.name}
-                              </SelectItem>
-                            ))}
-                          {gradeId && groups.filter(g => g.grade_id === gradeId).length === 0 && (
-                            <div className="p-2 text-sm text-gray-400 text-center">
-                              لا توجد مجموعات لهذا الصف
-                            </div>
-                          )}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Courses Selection - Only for registration, filtered by grade */}
-              {!isLogin && (
-                <div className="space-y-1.5">
-                  <Label className="text-white text-right block text-sm">
-                    اختر الكورسات المسجلة
-                  </Label>
-                  <div className="bg-white/5 rounded-xl p-3 max-h-32 overflow-y-auto space-y-2">
-                    {gradeId ? (
-                      <>
-                        {courses
-                          .filter(course => {
-                            const selectedGrade = grades.find(g => g.id === gradeId);
-                            const gradeName = selectedGrade?.name;
-                            console.log('🔍 Course:', course.name, '| Course Grade:', course.grade, '| Selected Grade Name:', gradeName, '| Match:', course.grade === gradeName);
-                            return course.grade === gradeName;
-                          })
-                          .map((course) => (
-                            <div key={course.id} className="flex items-center justify-end gap-2">
-                              <Label htmlFor={course.id} className="text-white text-sm cursor-pointer">
-                                {course.name}
-                              </Label>
-                              <Checkbox
-                                id={course.id}
-                                checked={selectedCourses.includes(course.id)}
-                                onCheckedChange={(checked) => {
-                                  if (checked) {
-                                    setSelectedCourses([...selectedCourses, course.id]);
-                                  } else {
-                                    setSelectedCourses(selectedCourses.filter(id => id !== course.id));
-                                  }
-                                }}
-                                className="border-white/30"
-                              />
-                            </div>
-                          ))}
-                        {(() => {
-                          const selectedGrade = grades.find(g => g.id === gradeId);
-                          const gradeName = selectedGrade?.name;
-                          return courses.filter(c => c.grade === gradeName).length === 0;
-                        })() && (
-                            <div className="p-2 text-sm text-gray-400 text-center">
-                              لا توجد كورسات لهذا الصف
-                            </div>
-                          )}
-                      </>
-                    ) : (
-                      <div className="p-2 text-sm text-gray-400 text-center">
-                        اختر الصف الدراسي أولاً
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Remember me & Forgot password */}
-              <div className="flex items-center justify-between text-sm">
-                <a href="#" className="text-white hover:text-yellow-400 transition-colors">
-                  نسيت كلمة المرور؟
-                </a>
-                <div className="flex items-center gap-2">
-                  <label htmlFor="remember" className="text-white cursor-pointer">
-                    تذكر بشكل
-                  </label>
-                  <Checkbox id="remember" className="border-white/30" />
-                </div>
+          {isLogin ? (
+            <form onSubmit={handleAuth}>
+              <label htmlFor="academy-phone">رقم الهاتف</label>
+              <div className="academy-auth-phone">
+              <Phone size={20} aria-hidden="true" />
+              <input id="academy-phone" placeholder="رقم الهاتف" type="tel" dir="ltr" autoComplete="username" required value={phone}
+                onFocus={e => { setField("phone"); followCaret(e.currentTarget); }} onBlur={() => { setField(""); setTarget(null); }}
+                onSelect={e => followCaret(e.currentTarget)} onKeyUp={e => followCaret(e.currentTarget)} onScroll={e => followCaret(e.currentTarget)}
+                onChange={e => { setPhone(e.target.value); followCaret(e.currentTarget); }} />
               </div>
-
-              {/* Submit Button */}
-              <Button
-                type="submit"
-                disabled={loading}
-                className={`w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white rounded-xl font-semibold shadow-lg ${isLogin ? 'h-14 text-lg' : 'h-11 text-base'}`}
-              >
-                {loading ? "جاري المعالجة..." : (isLogin ? "تسجيل الدخول" : "إنشاء حساب جديد")}
-              </Button>
-
-              {/* Divider - Only show for login */}
-              {isLogin && (
-                <>
-                  <div className="relative my-6">
-                    <div className="absolute inset-0 flex items-center">
-                      <div className="w-full border-t border-white/20"></div>
-                    </div>
-                    <div className="relative flex justify-center text-sm">
-                      <span className="px-4 bg-black/40 text-white">سجل الدخول ب</span>
-                    </div>
-                  </div>
-
-                </>
-              )}
-
-              {/* Toggle between login and signup */}
-              <div className="text-center text-sm text-white mt-6">
-                {isLogin ? (
-                  <>
-                    لا يوجد حساب بعد؟{" "}
-                    <button
-                      type="button"
-                      onClick={explainInviteRegistration}
-                      className="text-yellow-400 hover:text-yellow-300 font-semibold"
-                    >
-                      حساب جديد
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    لديك حساب بالفعل؟{" "}
-                    <button
-                      type="button"
-                      onClick={() => setIsLogin(true)}
-                      className="text-yellow-400 hover:text-yellow-300 font-semibold"
-                    >
-                      تسجيل الدخول
-                    </button>
-                  </>
-                )}
+              <label htmlFor="academy-password">كلمة المرور</label>
+              <div className="academy-auth-password">
+                <LockKeyhole size={20} aria-hidden="true" />
+                <input id="academy-password" placeholder="كلمة المرور" type={visible ? "text" : "password"} autoComplete="current-password" required value={password}
+                  dir="ltr" onFocus={e => { setField("password"); followCaret(e.currentTarget); }} onSelect={e => followCaret(e.currentTarget)} onKeyUp={e => followCaret(e.currentTarget)} onBlur={() => setField("")} onChange={e => { setPassword(e.target.value); followCaret(e.currentTarget); }} />
+                <button type="button" aria-label={visible ? "إخفاء كلمة المرور" : "إظهار كلمة المرور"} onClick={() => { setVisible(!visible); setField("password"); }}>
+                  {visible ? <EyeOff size={19} /> : <Eye size={19} />}
+                </button>
               </div>
-
-              {error && (
-                <Alert variant="destructive" className="mt-4">
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
+              <button className="academy-auth-recovery" type="button" aria-expanded={recoveryHelp} onClick={() => setRecoveryHelp(!recoveryHelp)}>نسيت كلمة المرور؟</button>
+              {recoveryHelp && <p className="academy-auth-help" role="status">{role === "student" ? "تواصل مع مدرسك أو إدارة أكاديميتك لمساعدتك في استعادة الدخول." : "تواصل مع إدارة المنصة لمساعدتك في استعادة الدخول إلى حسابك."}</p>}
+              {error && <p role="alert">{error}</p>}
+              <button className="academy-auth-primary" disabled={loading}>{loading ? "جاري تسجيل الدخول…" : "تسجيل الدخول"}<ArrowLeft size={26} aria-hidden="true" /></button>
             </form>
-          </div>
-        </motion.div>
-      </div>
-
-      {/* Old form hidden */}
-      <div className="hidden">
-        <GlassmorphicCard className="overflow-hidden max-w-md">
-          <CardHeader className="text-center space-y-4 pb-6 bg-gradient-to-r from-primary/10 to-accent/10 px-4 md:px-6">
-            <motion.div
-              className="flex justify-center"
-              whileHover={{ scale: 1.1, rotate: 360 }}
-              transition={{ duration: 0.6 }}
-            >
-              <div className="relative">
-                <motion.div
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
-                  className="absolute inset-0 bg-gradient-to-r from-yellow-400 to-orange-500 rounded-2xl blur-xl opacity-50"
-                />
-                <div className="relative w-24 h-24 rounded-2xl overflow-hidden shadow-2xl border-4 border-white/20">
-                  <img src={tabwebAcademyLogo} alt="Tabweb Academy" className="w-full h-full object-contain" />
-                </div>
-              </div>
-            </motion.div>
-            <div>
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.2 }}
-              >
-                <CardTitle className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent mb-2 flex items-center justify-center gap-2">
-                  <Sparkles className="w-6 h-6 text-yellow-500" />
-                  Tabweb Academy
-                </CardTitle>
-                <p className="text-muted-foreground font-medium" dir="ltr">Build • Code • Launch</p>
-              </motion.div>
+          ) : (
+            <div className="academy-auth-registration">
+              <p>{role === "student" ? "افتح رابط الدعوة اللي أرسله لك مدرسك لإنشاء حساب الطالب." : "تواصل مع فريق تبويب أكاديمي لتجهيز منصتك وحساب المدرّس."}</p>
+              {role === "teacher" && <Link className="academy-auth-primary" to="/#plans">اطّلع على الباقات</Link>}
             </div>
-
-            {/* Tab Switcher */}
-            <div className="flex gap-2 p-1 bg-muted/50 rounded-xl backdrop-blur-sm">
-              <Button
-                type="button"
-                variant={isLogin ? "default" : "ghost"}
-                onClick={() => setIsLogin(true)}
-                className={`flex-1 transition-all duration-300 ${isLogin ? 'bg-gradient-to-r from-primary to-accent shadow-lg' : ''}`}
-              >
-                <LogIn className="w-4 h-4 ml-2" />
-                تسجيل الدخول
-              </Button>
-              <Button
-                type="button"
-                variant={!isLogin ? "default" : "ghost"}
-                onClick={explainInviteRegistration}
-                className={`flex-1 transition-all duration-300 ${!isLogin ? 'bg-gradient-to-r from-primary to-accent shadow-lg' : ''}`}
-              >
-                <UserPlus className="w-4 h-4 ml-2" />
-                حساب جديد
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="pt-6 px-4 md:px-6">
-            <form onSubmit={handleAuth} className="space-y-4">
-              {!isLogin && (
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="space-y-2"
-                >
-                  <Label htmlFor="name" className="flex items-center gap-2">
-                    <User className="w-4 h-4" />
-                    اسم الطالب
-                  </Label>
-                  <Input
-                    id="name"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="أدخل اسم الطالب"
-                    required
-                    className="text-right bg-background/50 border-2 focus:border-primary transition-all"
-                  />
-                </motion.div>
-              )}
-
-              <div className="space-y-2">
-                <Label htmlFor="email" className="flex items-center gap-2">
-                  <Mail className="w-4 h-4" />
-                  البريد الإلكتروني
-                </Label>
-                <Input
-                  id="email"
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="example@email.com"
-                  required
-                  className="text-right bg-background/50 border-2 focus:border-primary transition-all"
-                />
-              </div>
-
-              {!isLogin && (
-                <div className="space-y-2">
-                  <Label htmlFor="phone">رقم الهاتف</Label>
-                  <Input
-                    id="phone"
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    placeholder="01234567890"
-                    required
-                    className="text-right"
-                  />
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <Label htmlFor="password">كلمة المرور</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  required
-                  className="text-right"
-                />
-              </div>
-
-              {!isLogin && (
-                <>
-                  <div className="space-y-2">
-                    <Label htmlFor="grade">الصف الدراسي</Label>
-                    <Select value={gradeId} onValueChange={setGradeId} required>
-                      <SelectTrigger>
-                        <SelectValue placeholder="اختر الصف الدراسي" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {grades.map((gradeItem) => (
-                          <SelectItem key={gradeItem.id} value={gradeItem.id}>
-                            {gradeItem.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="group">المجموعة (اختياري)</Label>
-                    <Select
-                      value={selectedGroup}
-                      onValueChange={setSelectedGroup}
-                      disabled={!gradeId}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder={gradeId ? "اختر المجموعة" : "اختر الصف أولاً"} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {groups
-                          .filter(g => !gradeId || g.grade_id === gradeId)
-                          .map((group) => (
-                            <SelectItem key={group.id} value={group.id}>
-                              {group.name}
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="courses">اختر الكورسات المسجلة</Label>
-                    <div className="space-y-2 max-h-32 overflow-y-auto">
-                      {courses.map((course) => (
-                        <div key={course.id} className="flex items-center space-x-2 space-x-reverse">
-                          <Checkbox
-                            id={course.id}
-                            checked={selectedCourses.includes(course.id)}
-                            onCheckedChange={(checked) => {
-                              if (checked) {
-                                setSelectedCourses([...selectedCourses, course.id]);
-                              } else {
-                                setSelectedCourses(selectedCourses.filter(id => id !== course.id));
-                              }
-                            }}
-                          />
-                          <Label htmlFor={course.id} className="text-sm font-normal">
-                            {course.name}
-                          </Label>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {error && (
-                <Alert variant="destructive">
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
-
-              <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                <Button
-                  type="submit"
-                  className="w-full bg-gradient-to-r from-primary via-accent to-primary bg-[length:200%_100%] hover:bg-[position:100%_0] transition-all duration-500 shadow-lg hover:shadow-glow"
-                  disabled={loading}
-                >
-                  {loading ? (
-                    <motion.div
-                      animate={{ rotate: 360 }}
-                      transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                      className="flex items-center gap-2"
-                    >
-                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full" />
-                      جاري المعالجة...
-                    </motion.div>
-                  ) : isLogin ? (
-                    <>
-                      <LogIn className="w-4 h-4 ml-2" />
-                      تسجيل الدخول
-                    </>
-                  ) : (
-                    <>
-                      <UserPlus className="w-4 h-4 ml-2" />
-                      إنشاء حساب جديد
-                    </>
-                  )}
-                </Button>
-              </motion.div>
-            </form>
-
-          </CardContent>
-        </GlassmorphicCard>
+          )}
+          <button type="button" className="academy-auth-mode" disabled={loading} onClick={() => { setIsLogin(!isLogin); setPassword(""); setVisible(false); setField(""); setError(""); }}>
+            <span>{isLogin ? "ليس لديك حساب؟ " : "لديك حساب بالفعل؟ "}</span>{isLogin ? "إنشاء حساب" : "تسجيل الدخول"}
+          </button>
+        </section>
+        </div>
       </div>
-
-    </div>
+    </main>
   );
 };
 
