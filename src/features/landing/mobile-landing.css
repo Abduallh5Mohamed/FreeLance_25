@@ -1,0 +1,112 @@
+/* Approved mobile continuation: every desktop section stays in document order. */
+@media(max-width:699px){
+ .tw-landing .tw-sticky-signup{display:none;}
+ .tw-landing{padding-bottom:0;}
+ .tw-header .tw-nav{height:68px;min-height:68px;width:calc(100% - 24px);}
+ .tw-header .tw-auth .tw-button{min-height:40px;padding:8px 10px;}
+ .tw-menu-toggle{min-width:40px;min-height:40px;}
+ .tw-hero{width:calc(100% - 32px);padding-top:28px;gap:26px;margin-bottom:32px;}
+ .tw-hero h1{font-size:clamp(30px,8.4vw,40px);line-height:1.35;}
+ .tw-hero-copy>p{font-size:15px;line-height:1.8;margin:18px 0 22px;}
+ .tw-hero .tw-actions{display:flex;flex-direction:column;gap:10px;width:100%;}
+ .tw-hero .tw-button{min-height:46px;width:100%;font-size:16px;}
+ .tw-reference-art{width:100%;margin:0;}
+ .tw-together{margin-bottom:48px;}
+ .tw-platform{border-radius:24px;margin-inline:8px;}
+ .tw-platform>.tw-container{gap:55px;padding-bottom:20px;}
+ .tw-features{width:calc(100% - 32px);}
+ .tw-story,.tw-story.tw-story-reverse{padding:30px 0;gap:20px;}
+ .tw-story .tw-story-copy{padding:0;}
+ .tw-story h2{font-size:25px;line-height:1.45;padding-left:72px;min-height:70px;display:flex;align-items:center;}
+ .tw-story p{font-size:14px;line-height:1.8;max-width:none;margin:14px 0 20px;}
+ .tw-story .tw-dock{left:0;top:24px;width:76px;height:76px;}
+ .tw-story ul{gap:8px;}
+ .tw-story li{max-width:none;background:#eff6ff;border-radius:12px;padding:12px 5px;font-size:12px;line-height:1.5;}
+ .tw-story li svg{width:24px;height:24px;}
+ .tw-story>.tw-reference-panel{width:100%;}
+ .tw-feature-cable{display:none;}
+ .tw-feature-deck{margin-block:55px;}
+ .tw-more-features{width:calc(100% - 32px);}
+ .tw-daily-heading h2{font-size:29px;}
+ .tw-daily-grid article{border:1px solid #d4e5ff;border-radius:18px;padding:20px;background:#f8fbff;}
+ .tw-daily-grid h3{font-size:23px;}
+ .tw-daily-grid article>p{font-size:14px;}
+ .tw-setup>.tw-container{padding-bottom:90px;}
+ .tw-steps{display:grid;grid-template-columns:1fr;gap:18px;}
+ .tw-steps:before{display:none;}
+ .tw-steps article{padding:20px 48px 20px 16px;text-align:right;min-height:110px;}
+ .tw-steps h3{font-size:20px;}.tw-steps p{font-size:14px;line-height:1.7;}
+ .tw-steps article>svg{position:absolute;left:16px;top:20px;width:24px;height:24px;}
+ .tw-steps .tw-step-number{right:12px;top:20px;width:28px;height:28px;}
+ .tw-plans,.tw-faq{width:calc(100% - 32px);}
+ .tw-plan .tw-button{min-height:44px;}.tw-plan h3{font-size:25px;}
+ .tw-faq-list summary{min-height:48px;padding:12px;font-size:14px;line-height:1.6;}
+ .tw-faq-list details>p{font-size:14px;line-height:1.8;}
+ .tw-final{padding-top:35px;margin-top:55px;overflow:visible;}
+ .tw-final>.tw-container{width:calc(100% - 40px);padding:38px 18px 24px;min-height:180px;border-radius:28px 28px 0 0;}
+ .tw-final h2{font-size:29px;white-space:normal;line-height:1.4;padding:0 8px;}
+ .tw-final .tw-button{min-height:44px;font-size:16px;margin-top:16px;}
+ .tw-final .tw-dock{left:-6px;top:-65px;width:100px;height:100px;overflow:visible;}
+ .tw-final .tw-dock canvas{width:100px;height:100px;}
+ .tw-final>.tw-container:before{left:45%;width:75px;}
+ .tw-footer{padding:24px 16px;display:flex;flex-direction:column;gap:18px;text-align:center;}
+ .tw-footer nav{flex-wrap:wrap;justify-content:center;gap:8px 18px;font-size:12px;}
+ .tw-footer nav a,.tw-footer nav button{min-height:36px;display:inline-flex;align-items:center;}
+}
+@media(max-width:699px){
+ .tw-faq{
+  width:calc(100% - 32px);
+  max-width:none;
+  margin-inline:auto;
+  padding-left:0;
+  padding-right:0;
+  grid-template-columns:1fr;
+  justify-items:stretch;
+ }
+ .tw-faq > div:first-child{
+  width:100%;
+  text-align:center;
+  padding-inline:0;
+ }
+ .tw-faq-list{width:100%;min-width:0;}
+ .tw-steps article>svg{right:auto;bottom:auto;left:14px;top:22px;margin:0;}
+ .tw-steps article{padding-left:52px;}
+ .tw-story h2:after{left:auto;right:0;}
+}
+/* Remove obsolete runner lanes: scene docks now own their own space. */
+.tw-plan-grid,.tw-steps{padding-inline:0;min-width:0;}
+.tw-final .tw-dock{left:-36px;top:-58px;width:130px;height:130px;overflow:visible;}
+.tw-final .tw-dock canvas{width:130px;height:130px;clip-path:inset(0 0 30% 0);}
+@media(min-width:700px) and (max-width:1000px){
+ .tw-together-inner{display:flex;flex-direction:column;align-items:center;gap:28px;}
+ .tw-together-inner>div:first-child{text-align:center;width:100%;}
+ .tw-together-inner h2:after{margin-inline:auto;}
+ .tw-gather-art{width:100%;max-width:760px;align-self:center;margin-inline:auto;}
+ .tw-setup>.tw-container{display:flex;flex-direction:column;align-items:center;padding:0 0 100px;gap:28px;}
+ .tw-setup .tw-section-heading{text-align:center;}
+ .tw-steps{width:100%;max-width:none;grid-template-columns:repeat(3,minmax(0,1fr));}
+ .tw-setup .tw-dock{top:auto;bottom:0;left:15px;}
+ .tw-plans{display:flex;flex-direction:column;align-items:center;gap:28px;}
+ .tw-plans .tw-section-heading{text-align:center;}
+ .tw-plan-grid{width:100%;max-width:none;grid-template-columns:repeat(3,minmax(0,1fr));}
+}
+@media(max-width:699px){
+ .tw-plan-grid,.tw-steps{padding-inline:0;max-width:none;margin-inline:auto;}
+ .tw-final .tw-dock{left:0;top:-48px;width:100px;height:100px;}
+ .tw-final .tw-dock canvas{width:100px;height:100px;}
+}
+@media(max-width:699px){.tw-setup{width:calc(100% - 16px);margin-inline:auto;}}
+@media(min-width:700px){.tw-final{padding-top:65px;overflow:visible;}}
+/* Peek beside the white border, not above the blue background. */
+.tw-final .tw-dock{left:-78px;top:12px;width:130px;height:130px;}
+.tw-final .tw-dock canvas{width:130px;height:130px;}
+@media(max-width:699px){
+ .tw-final>.tw-container{width:calc(100% - 76px);margin-left:60px;margin-right:16px;padding-inline:12px;}
+ .tw-final .tw-dock{left:-61px;top:8px;width:100px;height:100px;}
+ .tw-final .tw-dock canvas{width:100px;height:100px;}
+ .tw-final h2{font-size:26px;}
+}
+
+/* The grip line in this transparent pose is at 73.4% of its width. */
+.tw-final-peek{--peek-size:130px;position:absolute;width:var(--peek-size);height:auto;left:calc(var(--peek-size) * -.734);top:8px;z-index:5;pointer-events:none;}
+@media(max-width:699px){.tw-final-peek{--peek-size:90px;top:22px;}}
