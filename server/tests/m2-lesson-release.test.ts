@@ -888,6 +888,40 @@ test('reorder: a batch that keeps every edge ordered still commits', async () =>
     assert.equal(state.lessons.find(l => l.id === LESSON_2)!.display_order, 9);
 });
 
+test('reorder: moving both ends forward uses the final dependent position regardless of payload order', async () => {
+    for (const dependentFirst of [false, true]) {
+        const state = withStoredEdge(1, 2);
+        const harness = build(state);
+        const items = [
+            { id: LESSON_1, display_order: 5 },
+            { id: LESSON_2, display_order: 6 },
+        ];
+        const res = await runChain(harness.chain, reorderReq({ items: dependentFirst ? items.reverse() : items }));
+
+        assert.equal(res.status, 200);
+        assert.equal(harness.commitCount(), 1);
+        assert.equal(harness.auditRows.length, 2, 'both changed rows have their own audit');
+        assert.equal(state.lessons.find(l => l.id === LESSON_1)!.display_order, 5);
+        assert.equal(state.lessons.find(l => l.id === LESSON_2)!.display_order, 6);
+    }
+});
+
+test('reorder: reversing both ends refuses the final order before any write or audit', async () => {
+    const state = withStoredEdge(1, 2);
+    const harness = build(state);
+    const res = await runChain(harness.chain, reorderReq({ items: [
+        { id: LESSON_1, display_order: 6 },
+        { id: LESSON_2, display_order: 5 },
+    ] }));
+
+    assert.equal(res.status, 409);
+    assert.equal(harness.events.includes('reorder_update'), false);
+    assert.deepEqual(harness.auditRows, []);
+    assert.equal(harness.commitCount(), 0);
+    assert.equal(state.lessons.find(l => l.id === LESSON_1)!.display_order, 1);
+    assert.equal(state.lessons.find(l => l.id === LESSON_2)!.display_order, 2);
+});
+
 test('reorder: a dependent set larger than the provable bound refuses the whole batch', async () => {
     const state = withStoredEdge(0, 1);
     state.dependentsOverflow = true;

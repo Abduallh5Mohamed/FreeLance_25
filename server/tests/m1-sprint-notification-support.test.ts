@@ -26,6 +26,7 @@ import type { AddressInfo } from 'node:net';
 import { createServer, type Server } from 'node:http';
 import express from 'express';
 import jwt from 'jsonwebtoken';
+import { randomUUID } from 'node:crypto';
 
 process.env.JWT_SECRET ??= 'hermetic-test-jwt-secret-not-a-real-key';
 
@@ -46,6 +47,7 @@ interface FakeState {
   notifications: Row[];
   tickets: Row[];
   replies: Row[];
+  audits: Row[];
   /** Active platform permission grants (admin_role_permissions view). */
   permissions: Record<string, string[]>;
   /** super_admin role holders (admin_user_roles). */
@@ -59,6 +61,7 @@ const makeState = (): FakeState => ({
   notifications: [],
   tickets: [],
   replies: [],
+  audits: [],
   permissions: {},
   superAdmins: new Set<string>(),
   executed: [],
@@ -77,6 +80,13 @@ const interpolateLimit = (rows: Row[], sql: string): Row[] => rows.slice(0, limi
 const runSelect = (sql: string, params: unknown[]): Row[] => {
   state.executed.push({ sql, params });
   if (!isAuthLookup(sql) && state.failWith) throw state.failWith;
+  if(sql.includes('information_schema.TABLES'))return ['users','support_tickets','support_ticket_replies','audit_events','admin_user_roles','admin_role_permissions'].map(table_name=>({table_name,engine:'InnoDB'}));
+  if(sql.includes('information_schema.STATISTICS'))return ['users','support_tickets','support_ticket_replies','audit_events'].map(table_name=>({table_name,column_name:'id',seq_in_index:1}));
+  if(sql.includes('information_schema.COLUMNS'))return [];
+  if(sql.includes('FROM users WHERE id=? LIMIT 1 FOR UPDATE')){
+    const user=state.users.find(row=>row.id===params[0]);return user?[{...user,suspension_active:0}]:[];
+  }
+  if(sql.startsWith('SELECT ur.user_id,rp.permission_key'))return state.superAdmins.has(String(params[0]))||(state.permissions[String(params[0])]??[]).includes('support.read')?[{user_id:params[0],permission_key:'support.read'}]:[];
 
   // --- auth / permission lookups -----------------------------------------
   if (sql.includes('permission_key')) {
@@ -119,6 +129,7 @@ const runSelect = (sql: string, params: unknown[]): Row[] => {
   }
 
   // --- support tickets ------------------------------------------------------
+  if(sql.startsWith('SELECT id,ticket_number,user_id,category')){const row=state.tickets.find(row=>row.id===params[0]);return row?[{...row}]:[];}
   if (sql.includes('user_id, status FROM support_tickets WHERE id')) {
     const ticket = state.tickets.find((t) => t.id === params[0]);
     return ticket ? [{ id: ticket.id, ticket_number: ticket.ticket_number, user_id: ticket.user_id, status: ticket.status }] : [];
@@ -135,12 +146,18 @@ const runSelect = (sql: string, params: unknown[]): Row[] => {
       .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
     return interpolateLimit(rows, sql);
   }
-  if (sql.includes('u.phone AS user_phone')) {
+  if (sql.includes('u.name AS user_name') && sql.includes('FROM support_tickets t')) {
     // ticket detail projection (WHERE t.id = ?) or the admin queue listing
     if (sql.includes('WHERE t.id = ?')) {
       const ticket = state.tickets.find((t) => t.id === params[0]);
       if (!ticket) return [];
+      if (sql.includes('AND t.user_id = ?') && ticket.user_id !== params[1]) return [];
       const owner = state.users.find((u) => u.id === ticket.user_id);
+      if (!sql.includes('u.phone AS user_phone')) return [{
+        id: ticket.id, ticket_number: ticket.ticket_number, user_id: ticket.user_id, category: ticket.category,
+        subject: ticket.subject, description: ticket.description, status: ticket.status, priority: ticket.priority,
+        created_at: ticket.created_at, updated_at: ticket.updated_at, user_name: owner?.name ?? null,
+      }];
       return [{ ...ticket, user_name: owner?.name ?? null, user_phone: owner?.phone ?? null }];
     }
     const rows = state.tickets.map((t) => {
@@ -153,20 +170,28 @@ const runSelect = (sql: string, params: unknown[]): Row[] => {
 
   // --- support ticket replies ------------------------------------------------
   if (sql.includes('FROM support_ticket_replies')) {
-    if (sql.includes('WHERE r.id = ?')) {
+    if(sql.startsWith('SELECT id,ticket_id,sender_id,body')){const row=state.replies.find(row=>row.id===params[0]);return row?[{...row}]:[];}
+    if (sql.startsWith('SELECT id FROM support_ticket_replies WHERE ticket_id')) {
+      const anchor=state.replies.find(r=>r.ticket_id===params[0]&&r.id===params[1]);return anchor?[{id:anchor.id}]:[];
+    }
+    if (sql.includes('WHERE r.id = ?')||sql.includes('WHERE r.id=?')) {
       const reply = state.replies.find((r) => r.id === params[0]);
       if (!reply) return [];
       const sender = state.users.find((u) => u.id === reply.sender_id);
       return [{ ...reply, sender_name: sender?.name ?? null, sender_role: sender?.role ?? null }];
     }
-    const ticketId = String(params[0]);
-    return state.replies
+    const anchored=sql.includes('INNER JOIN support_ticket_replies anchor');
+    const ticketId = String(params[anchored?1:0]);
+    const anchor=anchored?state.replies.find(r=>r.id===params[0]&&r.ticket_id===ticketId):null;
+    const rows = state.replies
       .filter((r) => r.ticket_id === ticketId)
+      .filter(r=>!anchored||!!anchor&&(String(r.created_at)<String(anchor.created_at)||r.created_at===anchor.created_at&&String(r.id)<String(anchor.id)))
       .map((r): Row => {
         const sender = state.users.find((u) => u.id === r.sender_id);
-        return { ...r, sender_name: sender?.name ?? null, sender_role: sender?.role ?? null };
+        return { id:r.id,body:r.body,created_at:r.created_at,sender_id:r.sender_id, sender_name: sender?.name ?? null, sender_role: sender?.role ?? null };
       })
-      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)) || String(b.id).localeCompare(String(a.id)));
+    return interpolateLimit(rows, sql);
   }
 
   throw new Error(`fake db: unhandled SELECT: ${sql}`);
@@ -186,6 +211,7 @@ const isAuthLookup = (sql: string): boolean =>
 const runWrite = (sql: string, params: unknown[]): { affectedRows: number; insertId: number } => {
   state.executed.push({ sql, params });
   if (state.failWith) throw state.failWith;
+  if(sql.includes('INSERT INTO audit_events')){state.audits.push({params});return {affectedRows:1,insertId:0};}
 
   if (sql.includes('UPDATE notifications SET is_read = TRUE WHERE id = ? AND user_id = ?')) {
     const [id, userId, userType] = params;
@@ -245,7 +271,7 @@ const runWrite = (sql: string, params: unknown[]): { affectedRows: number; inser
     if (params[0] === 'closed') ticket.closed_at = '2026-10-16T12:00:00Z';
     return { affectedRows: 1, insertId: 0 };
   }
-  if (/UPDATE support_tickets\s+SET status = \?, updated_at/.test(sql)) {
+  if (/UPDATE support_tickets\s+SET status\s*=\s*\?,\s*updated_at/.test(sql)) {
     // reply side-effect — params [status, id]
     const ticket = state.tickets.find((t) => t.id === params[1]);
     if (!ticket) return { affectedRows: 0, insertId: 0 };
@@ -278,7 +304,11 @@ const fakePool = {
   },
   query: async (sql: string, params?: unknown[]) =>
     [runSelect(sql, params ?? []), []] as const,
-  getConnection: async () => fakePool,
+  getConnection: async () => {
+    let before: {tickets:Row[];replies:Row[];audits:Row[]}|null=null;
+    return {...fakePool,beginTransaction:async()=>{before=structuredClone({tickets:state.tickets,replies:state.replies,audits:state.audits});},
+      commit:async()=>{},rollback:async()=>{if(before)Object.assign(state,before);},destroy:()=>{}};
+  },
   release: () => undefined,
   end: async () => undefined,
 };
@@ -332,12 +362,15 @@ const api = async (
   path: string,
   token: string | null,
   body?: unknown,
+  extraHeaders: Record<string,string> = {},
 ): Promise<ApiResult> => {
   const res = await fetch(`${h.base}${path}`, {
     method,
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(method==='POST'&&path.startsWith('/api/support-tickets')?{'Idempotency-Key':randomUUID()}:{}),
+      ...extraHeaders,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -576,6 +609,30 @@ test('ticket creation enforces category and length bounds', async () => {
     assert.equal((await api(h, 'POST', '/api/support-tickets', sign(userA), { ...base, category: 'technical', description: 'short' })).status, 400);
   });
 });
+test('support write routes require a key and reconcile the same actor attempt without duplicating',async()=>{
+  await withState(seedTickets,async h=>{
+    const key='a1000000-0000-4000-8000-000000000001',headers={'Idempotency-Key':key};
+    const body={category:'technical',subject:'Synthetic duplicate',description:'Synthetic request content'};
+    assert.equal((await api(h,'POST','/api/support-tickets',sign(userA),body,{'Idempotency-Key':''})).status,400);
+    const first=await api(h,'POST','/api/support-tickets',sign(userA),body,headers);assert.equal(first.status,201);
+    const repeat=await api(h,'POST','/api/support-tickets',sign(userA),body,headers);assert.equal(repeat.status,200);assert.equal(repeat.body.unchanged,true);
+    assert.equal(repeat.body.ticket.id,first.body.ticket.id);
+    const check=await api(h,'GET',`/api/support-tickets/attempts/create/${key}`,sign(userA));assert.equal(check.status,200);assert.equal(check.body.ticket.id,first.body.ticket.id);
+    assert.equal((await api(h,'GET',`/api/support-tickets/attempts/create/${key}`,sign(userB))).status,404);
+    assert.equal((await api(h,'POST','/api/support-tickets',sign(userA),{...body,subject:'Different input'},headers)).status,409);
+    const reply=await api(h,'POST',`/api/support-tickets/${first.body.ticket.id}/replies`,sign(userA),{body:'Synthetic reply'},headers);assert.equal(reply.status,201);
+    const ack=await api(h,'GET',`/api/support-tickets/attempts/reply/${key}`,sign(userA));assert.equal(ack.status,200);assert.equal(ack.body.reply.id,reply.body.reply.id);assert.equal(ack.body.ticket_id,first.body.ticket.id);
+  });
+});
+test('ticket context is scoped and a client body cannot supply its missing workspace authority',async()=>{
+  await withState(seedTickets,async h=>{
+    const own=await api(h,'GET','/api/support-tickets/ticket-a/context',sign(userA));assert.equal(own.status,200);assert.deepEqual(own.body,{state:'unconfigured',context:null});
+    assert.equal((await api(h,'GET','/api/support-tickets/ticket-a/context',sign(userB))).status,404);
+    const request={category:'technical',subject:'Synthetic lesson issue',description:'Synthetic support description',tenant_id:'tenant-a',student_enrollment_id:'foreign',context:{kind:'catalog_lesson',course_id:'b1000000-0000-4000-8000-000000000001',lesson_id:'c1000000-0000-4000-8000-000000000001'}};
+    assert.equal((await api(h,'POST','/api/support-tickets',sign(userA),request)).status,403);
+    assert.equal(state.tickets.length,2);
+  });
+});
 
 test('mine lists only the caller\'s tickets', async () => {
   await withState(seedTickets, async (h) => {
@@ -625,10 +682,55 @@ test('ticket detail is readable by its owner and 404 for any other user', async 
     const stranger = await api(h, 'GET', '/api/support-tickets/ticket-a', sign(userB));
     assert.equal(stranger.status, 404);
     assert.equal(
-      state.executed.filter((e) => e.sql.includes('u.phone AS user_phone') && e.params[0] === 'ticket-a').length,
+      state.executed.filter((e) => e.sql.includes('u.name AS user_name') && e.sql.includes('WHERE t.id = ?') && e.params[0] === 'ticket-a').length,
       1,
       'a rejected caller must not reach the PII-projection query',
     );
+  });
+});
+test('ticket detail exposes a fixed owner view and marks bounded older replies', async () => {
+  await withState(seedTickets, async (h) => {
+    for (let n = 2; n <= 105; n++) state.replies.push({ id: `reply-a-${String(n).padStart(3,'0')}`, ticket_id:'ticket-a',
+      sender_id:'user-a', body:`reply ${n}`, created_at:`2026-10-16T11:${String(Math.floor(n / 60)).padStart(2,'0')}:${String(n % 60).padStart(2,'0')}Z` });
+    const result = await api(h, 'GET', '/api/support-tickets/ticket-a', sign(userA));
+    assert.equal(result.status, 200);assert.equal(result.body.has_more_replies, true);assert.equal(result.body.replies.length, 100);
+    assert.equal(result.body.replies.at(-1).id,'reply-a-105');
+    assert.equal('user_phone' in result.body.ticket,false);assert.equal('assigned_to' in result.body.ticket,false);
+    const detailSql=state.executed.find(e=>e.sql.includes('FROM support_tickets t')&&e.sql.includes('WHERE t.id = ?'))!;
+    assert.ok(!detailSql.sql.includes('SELECT t.*'));assert.match(detailSql.sql,/AND t.user_id = \?/);
+    const repliesSql=state.executed.find(e=>e.sql.includes('FROM support_ticket_replies r')&&e.sql.includes('LIMIT 101'))!;
+    assert.match(repliesSql.sql,/ORDER BY r.created_at DESC, r.id DESC LIMIT 101/);
+  });
+});
+test('support reply keyset pages preserve timestamp ties and exclude concurrent new replies',async()=>{
+  await withState(seedTickets,async h=>{
+    state.replies=[];
+    for(let n=1;n<=251;n++)state.replies.push({id:`reply-${String(n).padStart(3,'0')}`,ticket_id:'ticket-a',sender_id:'user-a',body:`message ${n}`,created_at:'2026-10-16T10:00:00Z'});
+    const first=await api(h,'GET','/api/support-tickets/ticket-a',sign(userA));
+    assert.equal(first.status,200);assert.equal(first.body.replies.length,100);assert.equal(first.body.next_cursor,'reply-152');
+    state.replies.push({id:'reply-999',ticket_id:'ticket-a',sender_id:'user-a',body:'new after first page',created_at:'2026-10-16T11:00:00Z'});
+    const second=await api(h,'GET',`/api/support-tickets/ticket-a/replies?before=${first.body.next_cursor}`,sign(userA));
+    assert.equal(second.status,200);assert.equal(second.body.next_cursor,'reply-052');
+    const third=await api(h,'GET',`/api/support-tickets/ticket-a/replies?before=${second.body.next_cursor}`,sign(userA));
+    assert.equal(third.status,200);assert.equal(third.body.next_cursor,null);assert.equal(third.body.replies.length,51);
+    const all=[...third.body.replies,...second.body.replies,...first.body.replies];
+    assert.equal(all.length,251);assert.equal(new Set(all.map(r=>r.id)).size,251);assert.equal(all[0].id,'reply-001');assert.equal(all.at(-1).id,'reply-251');
+    assert.ok(state.executed.filter(e=>e.sql.includes('INNER JOIN support_ticket_replies anchor')).every(e=>e.sql.includes('anchor.ticket_id = r.ticket_id')&&e.sql.includes('LIMIT 101')));
+  });
+});
+test('older support replies recheck ticket authority and constrain cursor to that ticket',async()=>{
+  await withState(seedTickets,async h=>{
+    const before=state.executed.length;
+    assert.equal((await api(h,'GET','/api/support-tickets/ticket-a/replies?before=reply-a-1',sign(userB))).status,404);
+    assert.ok(!state.executed.slice(before).some(e=>e.sql.includes('FROM support_ticket_replies')));
+    for(const suffix of ['','?before=missing','?before=reply-a-1&before=repeat','?before=reply-a-1&user_id=user-b','?before=%27%20OR%201=1']){
+      assert.equal((await api(h,'GET',`/api/support-tickets/ticket-a/replies${suffix}`,sign(userA))).status,400);
+    }
+    assert.equal((await api(h,'GET','/api/support-tickets/ticket-b/replies?before=reply-a-1',sign(userB))).status,400);
+    assert.equal((await api(h,'GET','/api/support-tickets/ticket-a/replies?before=reply-a-1',sign(supportAdmin))).status,200);
+    delete state.permissions['admin-support'];
+    assert.equal((await api(h,'GET','/api/support-tickets/ticket-a/replies?before=reply-a-1',sign(supportAdmin))).status,404);
+    assert.equal((await api(h,'GET','/api/support-tickets/ticket-a/replies?before=reply-a-1',null)).status,401);
   });
 });
 

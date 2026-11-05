@@ -96,6 +96,13 @@ Isolation status after the 2026-10-26 batch 4 (see
   pass; fix the fixture or inject the missing seam. See
   [audit D/G](AUDIT-2026-10-26.md).
 
+The 2026-11-03 business implementation ran its scoped import/catalog/path suites
+on the already installed bundled **Node v24.19.0**, using
+`--import ./node_modules/tsx/dist/loader.mjs` and, for backend suites, the
+`isolated-io-guard.ts` import. Exact paths, commands and results are in
+[BUSINESS-IMPLEMENTATION-2026-11-03.md](BUSINESS-IMPLEMENTATION-2026-11-03.md).
+This neither changes CI's pinned version nor verifies the full suite on v24.
+
 - Server route tests normally inject an in-memory data seam or a purpose-built
   harness; do not import production defaults accidentally.
 - Clear/restore environment values modified by a test.

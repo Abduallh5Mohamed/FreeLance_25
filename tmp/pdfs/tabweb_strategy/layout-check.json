@@ -1,0 +1,434 @@
+[
+  {
+    "page": 1,
+    "title": "تعليم أسهل.تشغيل أهدأ.بيزنس أقوى.",
+    "bodyBottom": 849.578125,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 2,
+    "title": "خريطة الدليل",
+    "bodyBottom": 957.421875,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 3,
+    "title": "ما الذي نحاول بناءه؟",
+    "bodyBottom": 785.328125,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 4,
+    "title": "ما هو دليل؟ وما هو اقتراح؟",
+    "bodyBottom": 916.390625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 5,
+    "title": "الخطة الأصلية والسياق المعتمد",
+    "bodyBottom": 855.953125,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 6,
+    "title": "أربعة أطراف، وأربع صور للراحة",
+    "bodyBottom": 809.125,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 7,
+    "title": "ماذا دعم البحث الأولي؟",
+    "bodyBottom": 665.984375,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 8,
+    "title": "البيانات والاستقبال",
+    "bodyBottom": 838.765625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 9,
+    "title": "المال وتقفيل اليوم",
+    "bodyBottom": 838.765625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 10,
+    "title": "المجموعات وتغيير الحصص",
+    "bodyBottom": 838.765625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 11,
+    "title": "الفريق والأسرة",
+    "bodyBottom": 838.765625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 12,
+    "title": "التحضير والتصحيح",
+    "bodyBottom": 893.65625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 13,
+    "title": "التواصل والمواعيد",
+    "bodyBottom": 839.375,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 14,
+    "title": "متابعة الفرد وتعويض الغياب",
+    "bodyBottom": 839.375,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 15,
+    "title": "تعليمات أقل، وخطوة أوضح",
+    "bodyBottom": 760.5,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 16,
+    "title": "مشاكل إضافية لا نعتبرها مثبتة بعد",
+    "bodyBottom": 889.703125,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 17,
+    "title": "السوق فيه أساس قوي بالفعل",
+    "bodyBottom": 898.09375,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 18,
+    "title": "أين توجد حدود معلنة؟",
+    "bodyBottom": 734.515625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 19,
+    "title": "شكاوى تتحول إلى اختبارات",
+    "bodyBottom": 975.046875,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 20,
+    "title": "كنترول ورقي من أول الامتحان لآخر التدريب",
+    "bodyBottom": 1040.5,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 21,
+    "title": "تصحيح بالسؤال ومعيار واحد",
+    "bodyBottom": 982.015625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 22,
+    "title": "السؤال يقود إلى الجزء المناسب من الشرح",
+    "bodyBottom": 926.265625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 23,
+    "title": "إصلاح السؤال الخاطئ وإصلاح أثره",
+    "bodyBottom": 926.265625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 24,
+    "title": "تسليم يمكن الوثوق به",
+    "bodyBottom": 956.140625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 25,
+    "title": "اختبار جهاز قبل الشراء",
+    "bodyBottom": 982.015625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 26,
+    "title": "تحديث المحتوى دون لخبطة النسخ",
+    "bodyBottom": 956.140625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 27,
+    "title": "انتقال منظم من منصة أخرى",
+    "bodyBottom": 926.265625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 28,
+    "title": "ابدأ بمجموعة واحدة، ونجهزها معك",
+    "bodyBottom": 944.15625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 29,
+    "title": "ملخص يطمئن الأسرة وخطوة واحدة",
+    "bodyBottom": 831.390625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 30,
+    "title": "رجوع بعد الغياب بخطوات صغيرة",
+    "bodyBottom": 831.390625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 31,
+    "title": "تحضير مختصر قبل الحصة",
+    "bodyBottom": 801.515625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 32,
+    "title": "الحصة تتجهز مرة وتستمر قيمتها",
+    "bodyBottom": 831.390625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 33,
+    "title": "طلبك يصل للشخص المناسب",
+    "bodyBottom": 861.265625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 34,
+    "title": "تجربة توصل للاختيار المناسب",
+    "bodyBottom": 831.390625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 35,
+    "title": "أجندة الأسرة في مكان مفهوم",
+    "bodyBottom": 888.40625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 36,
+    "title": "موسم جديد مبني على خبرة الموسم الماضي",
+    "bodyBottom": 907.84375,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 37,
+    "title": "قيمة يمكن للعميل رؤيتها وإثباتها",
+    "bodyBottom": 861.265625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 38,
+    "title": "حصة واحدة تربط المنظومة",
+    "bodyBottom": 909.265625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 39,
+    "title": "شكلان مبسطان للتجربة",
+    "bodyBottom": 881.9375,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 40,
+    "title": "سرعة الاستخدام: كيف نقلل المجهود؟",
+    "bodyBottom": 883.296875,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 41,
+    "title": "نقطة دخول واحدة قبل التوسع",
+    "bodyBottom": 879.203125,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 42,
+    "title": "الراحة لازم تكون مربحة لنا أيضًا",
+    "bodyBottom": 856.40625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 43,
+    "title": "بحث ميداني قائم على وقائع",
+    "bodyBottom": 690.296875,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 44,
+    "title": "لوحة مقاييس بسيطة ومفيدة",
+    "bodyBottom": 912.90625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 45,
+    "title": "مقارنة عملية مع المنافسين",
+    "bodyBottom": 853.875,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 46,
+    "title": "ترتيب التنفيذ حسب الأدلة والتبعيات",
+    "bodyBottom": 786.390625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 47,
+    "title": "بساطة تحترم الناس والبيانات",
+    "bodyBottom": 674.46875,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 48,
+    "title": "ما الذي قيل عن الوضع الحالي؟",
+    "bodyBottom": 1016.796875,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 49,
+    "title": "فجوات أداء وتشغيل ذُكرت سابقًا",
+    "bodyBottom": 1020.265625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 50,
+    "title": "نتائج محلية محفوظة بسياقها",
+    "bodyBottom": 853.484375,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 51,
+    "title": "المراجع العامة | 1 من 3",
+    "bodyBottom": 919,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 52,
+    "title": "المراجع العامة | 2 من 3",
+    "bodyBottom": 919,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 53,
+    "title": "المراجع العامة | 3 من 3",
+    "bodyBottom": 825.265625,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  },
+  {
+    "page": 54,
+    "title": "أين توجد الملاحظات والقرارات؟",
+    "bodyBottom": 905.234375,
+    "footerTop": 1063.171875,
+    "overflow": 0,
+    "horizontal": []
+  }
+]

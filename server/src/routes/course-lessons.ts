@@ -6,20 +6,24 @@
  *
  * A course lesson is private METADATA: a title, an optional description, a
  * display position and a status. This module adds no lesson delivery, no
- * content or asset reference, no student entitlement, no publication, no drip
- * or progression rule, no payment and no upload rule. It never changes the
+ * student entitlement, no publication, no drip
+ * or progression rule and no payment. It never changes the
  * access of an existing course, unit or material, and it never moves a lesson
  * to another unit or a unit to another course. Archiving a lesson is a
  * metadata change only.
+ * J02 adds separate owner-only /contents preparation routes for existing
+ * same-course materials. These carry no URL, delivery or completion authority.
+ * BUILD-06 adds conditional owner-only PDF ingestion/status under each reference.
+ * Its storage/scanner dependencies remain unconfigured by default; source writes
+ * and audit share a transaction, while external I/O runs between transactions.
  *
  * The module is deliberately self-contained:
  *   * it imports `AuthRequest` as a TYPE only, so it pulls in no
  *     authentication, database, provider or environment module at runtime;
  *   * it has no default export and binds no production adapter — the
  *     transactional connection supplier is injected by the caller;
- *   * every statement of one request runs on the injected connection, so the
- *     authorization, the parent scope proof, the writes and their audit
- *     events share ONE transaction.
+ *   * each metadata operation or ingestion transition uses its injected
+ *     connection for authorization, scope, mutation and audit together.
  *
  * The tenant is never taken from the request: it is the server-selected
  * scope on the authenticated principal, it is re-verified against the real
@@ -29,6 +33,8 @@
 import { randomUUID } from 'crypto';
 import { Router, Response } from 'express';
 import type { AuthRequest } from '../middleware/auth';
+import { collectMaterialPdf, createMaterialFileIngestionService, type MaterialFileIngestionConfig } from '../services/material-file-ingestion';
+import { MATERIAL_PDF_MAX_BYTES } from '../services/material-file-delivery';
 
 /**
  * Minimal transactional connection seam, structurally identical to the
@@ -51,9 +57,10 @@ export interface CourseLessonConnection {
   destroy(): void;
 }
 
-/** The only dependency of this router: a transactional connection supplier. */
+/** Transaction supplier plus an optional trusted private PDF ingestion configuration. */
 export interface CourseLessonsDeps {
   getConnection: () => Promise<CourseLessonConnection>;
+  materialFileIngestion?: MaterialFileIngestionConfig;
 }
 
 /** A lesson status is only 'active' or 'archived'. */
@@ -477,6 +484,7 @@ interface TxResult {
 export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
   const router = Router();
   const { getConnection } = deps;
+  const materialFiles = createMaterialFileIngestionService({ getConnection, config: deps.materialFileIngestion });
 
   /**
    * Local billing-only denial.
@@ -641,7 +649,8 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
         disposal = 'destroy';
         console.error(`${label} error before transaction start:`, error);
       }
-      return res.status(500).json({ error: label });
+      return res.status(500).json({ error: label,
+        ...(commitAttempted && label === 'Failed to manage lesson contents' ? { code: 'PERSISTENCE_UNCERTAIN' } : {}) });
     } finally {
       if (connection) {
         if (disposal === 'destroy') {
@@ -817,7 +826,10 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
       };
       const dependentPosition: PathPosition = {
         lessonId: canonicalUuidIdentity(String(dependent.id)),
-        lessonOrder: Number(dependent.display_order),
+        // The dependent may move in the SAME batch. Compare both final
+        // positions; only an unmoved dependent keeps its stored position.
+        lessonOrder: finalOrders.get(canonicalUuidIdentity(String(dependent.id)))
+          ?? Number(dependent.display_order),
         unitId: unitIdentity,
         unitOrder,
       };
@@ -1604,6 +1616,189 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
       }
       return { status: 200, body: { lesson: dto }, commit: true };
     });
+  });
+
+  // J02: private owner preparation only. Attaching never grants student delivery.
+  const contentsPath = '/courses/:courseId/units/:unitId/lessons/:lessonId/contents';
+  const contentLimit = 20;
+  for (const operation of ['list', 'sources', 'attach', 'detach'] as const) {
+    const method = operation === 'attach' ? 'post' : operation === 'detach' ? 'delete' : 'get';
+    router[method](contentsPath + (operation === 'sources' ? '/available-materials' : method === 'delete' ? '/:contentId' : ''), async (req: AuthRequest, res: Response) => {
+      res.set('Cache-Control', 'no-store');
+      if (denyBillingOnly(req, res)) return;
+      const { courseId, unitId, lessonId, contentId } = req.params;
+      if (![courseId, unitId, lessonId, ...(method === 'delete' ? [contentId] : [])]
+        .every(id => typeof id === 'string' && UUID_PATTERN.test(id))) {
+        return res.status(400).json({ error: 'Invalid lesson content path' });
+      }
+      const cursor = req.query?.cursor;
+      if (operation === 'sources' ? Object.keys(req.query ?? {}).some(key => key !== 'cursor')
+        || (cursor !== undefined && (typeof cursor !== 'string' || !UUID_PATTERN.test(cursor)))
+        : Object.keys(req.query ?? {}).length > 0) return res.status(400).json({ error: 'Unexpected query' });
+      const body = req.body;
+      if (method === 'post' && (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).length !== 2 || !Object.prototype.hasOwnProperty.call(body, 'material_id') || !Object.prototype.hasOwnProperty.call(body, 'display_order')
+        || typeof body.material_id !== 'string' || !UUID_PATTERN.test(body.material_id)
+        || !Number.isInteger(body.display_order) || body.display_order < 0 || body.display_order > DISPLAY_ORDER_MAX)) {
+        return res.status(400).json({ error: 'Expected material_id and integer display_order' });
+      }
+      if (method !== 'post' && body && Object.keys(body).length) {
+        return res.status(400).json({ error: 'Unexpected body' });
+      }
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
+      if (!userId || !tenantId) return res.status(404).json({ error: 'Tenant membership not found' });
+      return runInTransaction('Failed to manage lesson contents', res, async connection => {
+        const lock = method !== 'get';
+        if (!await verifyTenantOwner(connection, userId, tenantId, lock)) {
+          return { status: 403, body: { error: 'Forbidden' }, commit: false };
+        }
+        if (!await resolveCourse(connection, courseId, tenantId, lock)
+          || !await resolveUnit(connection, unitId, courseId, lock)) {
+          return { status: 404, body: { error: 'Lesson not found' }, commit: false };
+        }
+        const [lessons] = await connection.execute(
+          `SELECT l.id FROM course_lessons l WHERE l.id=? AND l.unit_id=?${lock ? ' FOR UPDATE' : ''}`,
+          [lessonId, unitId]
+        );
+        if (!(lessons as any[])[0]) return { status: 404, body: { error: 'Lesson not found' }, commit: false };
+        // Read the actual catalog, never infer readiness from a migration file.
+        const required = ['id', 'lesson_id', 'material_id', 'display_order'];
+        const [columns] = await connection.execute(
+          `SELECT COLUMN_NAME AS column_name FROM information_schema.COLUMNS
+           WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='course_lesson_contents' LIMIT 16`
+        );
+        if (!required.every(name => (columns as any[]).some(row => row.column_name === name))) {
+          return { status: 503, body: { error: 'Lesson contents schema unavailable', code: 'LESSON_CONTENTS_UNAVAILABLE' }, commit: false };
+        }
+        if (operation === 'sources') {
+          const [materials] = await connection.execute(
+            `SELECT m.id,m.title,m.material_type,m.is_published FROM course_materials m
+             WHERE m.course_id=? AND m.id>? ORDER BY m.id ASC LIMIT 26`, [courseId, cursor ?? '']
+          );
+          const page = (materials as any[]).slice(0, 25);
+          return { status: 200, body: { materials: page.map(row => ({ material_id: String(row.id),
+            title: String(row.title), material_type: String(row.material_type), is_published: Number(row.is_published) === 1 })),
+            next_cursor: (materials as any[]).length > 25 ? String(page[page.length - 1].id) : null }, commit: false };
+        }
+        // Parent lock serializes count + uniqueness for every mutation of this lesson.
+        // LEFT JOIN keeps corrupt/foreign bindings observable; never silently omit them.
+        const [rows] = await connection.execute(
+          `SELECT b.id,b.material_id,b.display_order,m.id AS source_id,m.title,m.material_type
+           FROM course_lesson_contents b LEFT JOIN course_materials m ON m.id=b.material_id AND m.course_id=?
+           WHERE b.lesson_id=? ORDER BY b.display_order,b.id LIMIT 21`, [courseId, lessonId]
+        );
+        const contents = rows as any[];
+        if (contents.length > contentLimit || contents.some(row => !row.source_id
+          || !UUID_PATTERN.test(String(row.id)) || !UUID_PATTERN.test(String(row.material_id))
+          || !Number.isInteger(Number(row.display_order)) || Number(row.display_order) < 0 || Number(row.display_order) > DISPLAY_ORDER_MAX
+          || typeof row.title !== 'string' || !row.title.trim() || row.title.length > TITLE_MAX
+          || !['pdf', 'video', 'presentation', 'link', 'other'].includes(row.material_type))) {
+          return { status: 409, body: { error: 'Lesson contents require repair' }, commit: false };
+        }
+        const dto = (row: any) => ({ content_id: String(row.id), material_id: String(row.material_id),
+          title: String(row.title), material_type: String(row.material_type), display_order: Number(row.display_order) });
+        if (method === 'get') return { status: 200, body: { contents: contents.map(dto) }, commit: false };
+        let affected: any;
+        let action: string;
+        if (method === 'post') {
+          const [sources] = await connection.execute(
+            'SELECT m.id,m.title,m.material_type FROM course_materials m WHERE m.id=? AND m.course_id=? FOR UPDATE',
+            [body.material_id, courseId]
+          );
+          const source = (sources as any[])[0];
+          if (!source) return { status: 404, body: { error: 'Material not found' }, commit: false };
+          const existing = contents.find(row => canonicalUuidIdentity(String(row.material_id)) === canonicalUuidIdentity(body.material_id));
+          if (existing && Number(existing.display_order) === body.display_order) {
+            return { status: 200, body: { content: dto(existing), unchanged: true }, commit: false };
+          }
+          if (existing || contents.some(row => Number(row.display_order) === body.display_order) || contents.length >= contentLimit) {
+            return { status: 409, body: { error: 'Material, position or lesson content limit conflicts' }, commit: false };
+          }
+          affected = { id: randomUUID(), material_id: String(source.id), title: source.title,
+            material_type: source.material_type, display_order: body.display_order };
+          const [result] = await connection.execute(
+            'INSERT INTO course_lesson_contents (id,lesson_id,material_id,display_order) VALUES (?,?,?,?)',
+            [affected.id, lessonId, affected.material_id, affected.display_order]
+          );
+          if (Number(result.affectedRows) !== 1) throw new Error('Unexpected lesson content insert result');
+          action = 'course_lesson_content.attach';
+        } else {
+          affected = contents.find(row => canonicalUuidIdentity(String(row.id)) === canonicalUuidIdentity(contentId));
+          if (!affected) return { status: 404, body: { error: 'Lesson content not found' }, commit: false };
+          const [result] = await connection.execute('DELETE FROM course_lesson_contents WHERE id=? AND lesson_id=?', [affected.id, lessonId]);
+          if (Number(result.affectedRows) !== 1) throw new Error('Unexpected lesson content delete result');
+          action = 'course_lesson_content.detach';
+        }
+        const auditValue = JSON.stringify({ lesson_id: lessonId, material_id: affected.material_id, display_order: Number(affected.display_order) });
+        const [auditResult] = await connection.execute(
+          `INSERT INTO audit_events (id,actor_user_id,tenant_id,action,resource_type,resource_id,old_value,new_value)
+           VALUES (?,?,?,?,?,?,?,?)`,
+          [randomUUID(), userId, tenantId, action, 'course_lesson_content', affected.id,
+            method === 'delete' ? auditValue : null, method === 'post' ? auditValue : null]
+        );
+        if (Number(auditResult.affectedRows) !== 1) throw new Error('Unexpected lesson content audit result');
+        return { status: method === 'post' ? 201 : 200,
+          body: method === 'post' ? { content: dto(affected), unchanged: false } : { detached: true, content_id: String(affected.id) }, commit: true };
+      });
+    });
+  }
+
+  // Private owner ingestion: body reading happens inside the bounded service,
+  // after real ownership/schema checks. No arbitrary URL/key/clean payload.
+  for (const method of ['get', 'post', 'delete'] as const) router[method](contentsPath + '/:contentId/file', async (req: AuthRequest, res: Response) => {
+    res.set('Cache-Control', 'no-store');
+    if (denyBillingOnly(req, res)) return;
+    const { courseId, unitId, lessonId, contentId } = req.params;
+    if (![courseId, unitId, lessonId, contentId].every(value => UUID_PATTERN.test(value))) return res.status(400).json({ error: 'Invalid lesson file path' });
+    if (Object.keys(req.query ?? {}).length || ['x-tenant-id','x-student-id','x-enrollment-id','x-instructor-id'].some(key => req.headers[key] !== undefined)) {
+      return res.status(400).json({ error: 'Unexpected file selector' });
+    }
+    const userId = req.user?.id, tenantId = req.user?.tenantId;
+    if (!userId || !tenantId) return res.status(404).json({ error: 'Tenant membership not found' });
+    const authorize = async (connection: CourseLessonConnection, lock: boolean) => {
+      if (!await verifyTenantOwner(connection, userId, tenantId, lock)) return { status: 403, body: { error: 'Forbidden' } };
+      const course = await resolveCourse(connection, courseId, tenantId, lock);
+      if (!course || !await resolveUnit(connection, unitId, courseId, lock)) return { status: 404, body: { error: 'Lesson content not found' } };
+      const [lessons] = await connection.execute(`SELECT l.id FROM course_lessons l WHERE l.id=? AND l.unit_id=?${lock ? ' FOR UPDATE' : ''}`, [lessonId, unitId]);
+      if (!(lessons as any[])[0]) return { status: 404, body: { error: 'Lesson content not found' } };
+      const [bindings] = await connection.execute(`SELECT b.material_id FROM course_lesson_contents b
+        INNER JOIN course_materials m ON m.id=b.material_id AND m.course_id=? AND m.material_type='pdf'
+        WHERE b.id=? AND b.lesson_id=? LIMIT 1${lock ? ' FOR UPDATE' : ''}`, [courseId, contentId, lessonId]);
+      const binding = (bindings as any[])[0];
+      if (!binding) return { status: 404, body: { error: 'Lesson content not found' } };
+      return { actorId: userId, tenantId, courseId: String(course.id), materialId: String(binding.material_id) };
+    };
+    if (method === 'get') {
+      if (req.body && Object.keys(req.body).length) return res.status(400).json({ error: 'Unexpected file body' });
+      const result = await materialFiles.status(authorize); return res.status(result.status).json(result.body);
+    }
+    if (method === 'delete') {
+      if (req.body && Object.keys(req.body).length) return res.status(400).json({ error: 'Unexpected file body' });
+      const result = await materialFiles.revoke(authorize); return res.status(result.status).json(result.body);
+    }
+    // Existing global JSON/urlencoded middleware initializes an empty body even
+    // when it deliberately skips a PDF stream. Nonempty/preparsed bytes are refused.
+    if (String(req.headers['content-type'] ?? '').toLowerCase() !== 'application/pdf'
+      || req.body !== undefined && (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Buffer.isBuffer(req.body) || Object.keys(req.body).length > 0)) {
+      return res.status(415).json({ error: 'Expected application/pdf stream' });
+    }
+    const requestId = req.headers['idempotency-key'];
+    if (typeof requestId !== 'string' || !UUID_PATTERN.test(requestId)) return res.status(400).json({ error: 'Upload request id required' });
+    const length = req.headers['content-length'];
+    if (length !== undefined && (typeof length !== 'string' || !/^\d+$/.test(length) || !Number.isSafeInteger(Number(length)) || Number(length) > MATERIAL_PDF_MAX_BYTES)) {
+      return res.status(413).json({ error: 'Invalid or oversized PDF length' });
+    }
+    const abort = new AbortController(), cancel = () => abort.abort();
+    req.once?.('aborted', cancel); res.once?.('close', cancel);
+    try {
+      const result = await materialFiles.upload({ authorize, requestId, signal: abort.signal, readPayload: async signal => {
+        const bytes = await collectMaterialPdf(req, signal);
+        if (length !== undefined && bytes.length !== Number(length)) throw new Error('PDF body length mismatch');
+        return bytes;
+      } });
+      if (!abort.signal.aborted && !res.destroyed) return res.status(result.status).json(result.body);
+    } finally { req.removeListener?.('aborted', cancel); res.removeListener?.('close', cancel); }
   });
 
   return router;

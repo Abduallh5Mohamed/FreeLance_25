@@ -36,6 +36,14 @@ server/migrations/ tests/{unit,integration,security}/
 
 ## M2–M8 implementation order
 
+### إدراج استراتيجية البيزنس في دفعات التنفيذ
+
+[22 — خطة الدمج](22-business-strategy-integration-ar.md) يربط 18 فكرة بــJ00–J10 وبنود 17. الأولوية التخطيطية التالية PLAN-01: جرد حديث لـJ01–J03 ببيانات مصطنعة، ثم عقد ربط المحتوى والتقدم، ثم نموذج تدفق، ثم دفعة بناء رأسية تحددها الأدلة. هذه عناوين دفعات للتحضير وليست موافقة تنفيذها. لا تصبح مراجعات أكتوبر أو PDF نوفمبر دليل جاهزية جديدًا.
+
+كل عرض دفعة يذكر: الرحلة وBX وبند 17، المستفيد والسلوك قبل/بعد، ملفات المصدر والاختبارات بعد قراءتها، authority/schema/provider/audit، القرارات الحاجزة، حالات الخطأ والتكرار والانقطاع، الأوامر المناسبة، معيار القبول، وحدود الوقت والتكلفة إن قيست. حالة «لم يقس» أفضل من ادعاء توفير. التغييرات المالية أو نشر/إرسال/مزود/DB تحتاج طلبها المخول الصريح؛ لا يجيزها اعتماد وثيقة الخطة.
+
+### الترتيب الهندسي القائم
+
 Use every item in `17-full-feature-backlog.md` as acceptance source. For each feature: migration/API contract → service/policy → UI/state/error/accessibility → observability → unit/integration/security test → run evidence → commit. Build domain modules per roadmap; ensure each route/API has a negative permission/tenant test, not only happy-path UI.
 
 ## Database migration discipline

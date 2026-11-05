@@ -1,5 +1,19 @@
 # M2-B16 proposal: binding a course lesson to deliverable content, and who owns progression
 
+**Implementation follow-up — 2026-11-03:** a narrower owner-only material
+attach/list/detach slice and its owner UI/selector are now implemented locally under the existing catalog
+mount. Its controlling contract is [J02 material binding](J02-LESSON-MATERIAL-BINDING-CONTRACT.md).
+The migration is an unapplied file. The historical proposal below is not a
+claim that direct video-asset binding or the student delivery path exists.
+
+**Product decision update — 2026-11-03:** the owner chose several deliverables
+per lesson and separate catalog/legacy progression ledgers for now, with that
+difference explained to users. The two product questions in §4.3/§5 below are
+therefore resolved. This does not accept every detail of the historical proposal
+or prove an asset-to-course authority/delivery mapping. No content-binding
+implementation or migration application is claimed by this update. See the
+[local implementation record](../../agent-context/BUSINESS-IMPLEMENTATION-2026-11-03.md).
+
 **PROPOSAL ONLY — not approved, not queued, not implemented, not executed.**
 Prepared 2026-10-26 after the local source review (`AUDIT-2026-10-26.md`, work
 order item 6) and the batch 5 corrections. Nothing in this document authorizes a

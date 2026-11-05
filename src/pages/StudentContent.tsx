@@ -52,6 +52,7 @@ import {
   type StudentLesson,
 } from '@/lib/api-http';
 import { subscribeSessionChange } from '@/lib/session-events';
+import { StudentLessonMaterials } from '@/features/catalog/StudentLessonMaterials';
 import {
   STUDENT_LOCK_NOT_RELEASED_MESSAGE,
   STUDENT_LOCK_PREREQUISITE_MESSAGE,
@@ -358,6 +359,9 @@ const StudentContent = () => {
                       </p>
                     ) : null}
 
+                    {lesson.accessible && courseId ? <StudentLessonMaterials key={`${courseId}/${lesson.lesson_id}`} courseId={courseId} lessonId={lesson.lesson_id} /> : null}
+                    {lesson.accessible && courseId ? <Button type="button" variant="outline" size="sm" className="mt-2" onClick={()=>navigate(`/support?course=${encodeURIComponent(courseId)}&lesson=${encodeURIComponent(lesson.lesson_id)}`)}>طلب مساعدة في الدرس</Button> : null}
+                    {lesson.accessible ? <p className="mt-2 text-xs text-muted-foreground">إتمام هذا الدرس يُسجّل في مسار التعلّم الجديد، منفصلًا مؤقتًا عن سجل المحتوى القديم. عرض المواد لا يسجّل الإتمام تلقائيًا.</p> : null}
                     {!lesson.accessible ? (
                       <p className="text-xs text-amber-700 mt-2">{lockText(lesson)}</p>
                     ) : null}

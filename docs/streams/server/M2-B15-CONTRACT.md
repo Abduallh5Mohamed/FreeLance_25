@@ -191,6 +191,13 @@ introduced by a direct database write before the row is committed.
 
 ### 4.2 The final-state invariant
 
+Correction verified locally on 2026-11-03: when BOTH a prerequisite and its
+dependent move in one reorder request, the dependent proof uses the final
+position of each endpoint from the same canonical map. An unmoved dependent
+retains its stored position. Moving 1/2 to 5/6 is accepted in either payload
+order; moving to 6/5 is refused before any UPDATE or audit. No DTO, migration,
+authority, bound or progression policy changes with this correction.
+
 `display_order` is part of that order, so any write that MOVES a lesson has to be
 proved not to invert an edge before it commits. Two directions are checked:
 

@@ -1,0 +1,15 @@
+# J04 — bounded support ticket detail, BUILD-09
+
+Local step on the existing `/api/support-tickets` route. It does not introduce a second inbox or change who may create or act on tickets.
+
+`GET /:id` still requires the authenticated ticket owner or a verified `support.read` platform permission. A foreign ticket returns 404. The detail SQL now projects only `id`, `ticket_number`, `user_id`, `category`, `subject`, `description`, `status`, `priority`, `created_at`, `updated_at` and `user_name`. An owner's detail query also binds their user ID directly. The detail response does not expose phone, assignee, internal timestamps or future columns added to the table. The existing privileged queue projection is separate.
+
+Replies are fetched newest first with deterministic `(created_at,id)` order and `LIMIT 101`. The response presents at most the latest 100 chronologically and includes `has_more_replies: true` when older rows exist. BUILD-10 adds `next_cursor: string | null` (the oldest returned reply ID when there is another page), and `GET /:id/replies?before=<reply-id>` returning exactly `{replies,next_cursor}`.
+
+Every older-page request rechecks authenticated ticket-owner or verified platform support authority. The anchor must belong to that same ticket; a missing or foreign anchor is the same 400. Duplicate/unknown query keys and malformed cursor values are refused. The page joins its anchor inside SQL, constrains both to the authorized ticket and uses `created_at < anchor.created_at OR (created_at = anchor.created_at AND id < anchor.id)`. No offset scan, client timestamp conversion or cursor-based access grant. Each page is bounded to 101 fetched/100 returned rows. All router responses, including authentication failures, declare `no-store`.
+
+The Support page validates the fixed six-field reply DTO and bounded page, loads older replies only on explicit action, rejects overlap/nonadvancing cursors and retains the cursor for explicit retry after a transient failure. Navigation aborts/invalidates an outstanding page; session events, credential/profile changes and denied reads retire private detail. A bounded scroll area preserves reading position when older messages are prepended. Newly arriving replies after the initial page are shown after an explicit ticket refresh; older-page browsing does not poll or claim a snapshot of future messages. Deletion of a cursor anchor requires refreshing the ticket.
+
+This closes BUILD-09's temporary inability to browse older replies. The existing SQL fixture exercises tie ordering, concurrent new replies, foreign anchors and revoked authority; real MySQL query plans/latency are not verified by those tests. No migration or real database access was needed for this slice.
+
+Follow-up BUILD-11 implements [keyed creation/replies, atomic status/audit and attempt reconciliation](J04-SUPPORT-WRITE-RELIABILITY.md). J04 assignment, classification/context proof, private support notes, staff identity mapping and a response-time policy remain incomplete; this is not acceptance of the whole routed service flow.

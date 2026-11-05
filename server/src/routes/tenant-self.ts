@@ -6,6 +6,7 @@ import { execute, getPool, query, queryOne } from '../db';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { createCourseUnitsRouter } from './course-units';
 import { createCourseLessonsRouter } from './course-lessons';
+import type { MaterialFileIngestionConfig } from '../services/material-file-ingestion';
 import { createLocalizedTenantBrandingRouter as createTenantBrandingRouter } from './tenant-branding';
 import { createAcademicPeriodsRouter } from './academic-periods';
 import { createStudentImportResolutionRouter } from './student-import-resolution';
@@ -48,6 +49,7 @@ export interface TenantSelfDataAccess {
  * this boundary instead of bypassing production authorization.
  */
 export interface TenantSelfDeps {
+  materialFileIngestion?: MaterialFileIngestionConfig;
   db: TenantSelfDataAccess;
   authenticate: RequestHandler;
   /**
@@ -278,13 +280,13 @@ export const createTenantSelfRouter = (deps: TenantSelfDeps): Router => {
   //
   // The lesson router is a separate, injected module
   // (routes/course-lessons.ts): it owns its own strict metadata contract,
-  // receives only the existing transactional connection supplier, and is
+  // receives the existing connection supplier and optional private-file config, and is
   // mounted here, AFTER the authentication middleware and next to the unit
   // router, so every lesson route is authenticated and the billing-only
   // exemption of the /api/tenants/me prefix is handled locally inside the
   // lesson module. Nothing else in this router is touched.
   // -------------------------------------------------------------------------
-  router.use('/catalog', createCourseLessonsRouter({ getConnection }));
+  router.use('/catalog', createCourseLessonsRouter({ getConnection, materialFileIngestion: deps.materialFileIngestion }));
 
   // -------------------------------------------------------------------------
   // M2-B06 — private localized branding metadata (owner-only, additive)

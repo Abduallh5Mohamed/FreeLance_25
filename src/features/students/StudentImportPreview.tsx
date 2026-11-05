@@ -56,6 +56,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { subscribeSessionChange } from '@/lib/session-events';
+import StudentImportGuide from './StudentImportGuide';
+import { describeStudentImportNextStep } from './import-guide';
 import { readInstructorSessionPrincipal } from '@/features/enrollment/instructor-students';
 import {
   createStudentCsvPreviewController,
@@ -494,7 +496,7 @@ export default function StudentImportPreview() {
   const commitGate: ImportCommitGate | null = showImport && resolution
     ? evaluateImportCommitGate(resolution.rows, serverResult)
     : null;
-  const canConfirm = commitGate !== null && commitGate.ok === true && !commitBusy;
+  const canConfirm = commitGate !== null && commitGate.ok === true && !commitBusy && commitResult === null;
   const gateRefusal = commitGate !== null && commitGate.ok !== true ? commitGate : null;
   const gateText = gateRefusal ? COMMIT_GATE_TEXT[gateRefusal.reason](gateRefusal.rowNumbers) : null;
 
@@ -743,6 +745,15 @@ export default function StudentImportPreview() {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        <StudentImportGuide guide={describeStudentImportNextStep({
+          previewPhase: phase,
+          hasRows: rows.length > 0,
+          gate: commitGate,
+          serverPhase,
+          serverAvailable: serverReady,
+          commitPhase,
+          hasConfirmedResult: commitResult !== null,
+        })} />
         <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">
           <AlertTriangle className="ml-1 inline h-4 w-4" />
           <strong>معاينة محلية فقط:</strong> لا يُحفظ أي طالب بمجرد قراءة الملف، ولا يُنشأ ولا
@@ -829,7 +840,7 @@ export default function StudentImportPreview() {
             </p>
 
             {showDecisions && counts ? (
-              <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div id="student-import-review" tabIndex={-1} className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="default" dir="auto">مُدرَج: {counts.included}</Badge>
                   <Badge variant="outline" dir="auto">مستبعَد: {counts.excluded}</Badge>
@@ -901,7 +912,7 @@ export default function StudentImportPreview() {
             ) : null}
 
             {showDecisions && serverReady ? (
-              <div className="space-y-3 rounded-lg border border-sky-200 bg-sky-50 p-3">
+              <div id="student-import-matching" tabIndex={-1} className="space-y-3 rounded-lg border border-sky-200 bg-sky-50 p-3">
                 <p className="text-sm leading-6 text-sky-900">
                   <strong>مطابقة مع السجلات الموجودة في مؤسستك (قراءة فقط):</strong> عند الضغط تُرسل
                   الصفوف المُدرجة فقط — بلا اسم ولا هاتف ولي الأمر ولا صف — لمعرفة أي قيم البريد
@@ -1000,7 +1011,7 @@ export default function StudentImportPreview() {
               times, so the button is never disabled without an explanation.
             */}
             {showImport ? (
-              <div className="space-y-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+              <div id="student-import-confirmation" tabIndex={-1} className="space-y-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
                 <p className="text-sm leading-6 text-emerald-900">
                   <strong>تأكيد إدخال الطلاب (سجلات طلاب فقط):</strong> تُدخل الصفوف المُدرجة
                   كسجلات طلاب في مؤسستك الحالية داخل دفعة واحدة لا تتجزأ. لا يُنشأ حساب ولا تسجيل

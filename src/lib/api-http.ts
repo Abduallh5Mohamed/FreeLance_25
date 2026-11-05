@@ -4,6 +4,9 @@
  */
 
 import { notifySessionChange } from './session-events';
+import { parseSupportReplyPage } from '../features/support/reply-page';
+import { parseSupportTicketWrite, parseSupportReplyWrite } from '../features/support/write-result';
+import { parseLessonSupportContext, parseSupportContextEnvelope } from '../features/support/lesson-context';
 
 // Get API base URL from environment or use relative path
 const getApiBaseUrl = (): string => {
@@ -1057,6 +1060,70 @@ const courseLessonCollectionPath = (courseId: string, unitId: string): string =>
  * the server's documented 400. No tenant selector is sent and no automatic
  * all-page draining happens here.
  */
+/** Owner-only material preparation; no delivery URLs or client tenant selector. */
+const lessonContentsPath = (courseId: string, unitId: string, lessonId: string) =>
+    `${courseLessonCollectionPath(courseId, unitId)}/${encodeURIComponent(lessonId)}/contents`;
+export const listLessonContents = (courseId: string, unitId: string, lessonId: string) =>
+    request<unknown>(lessonContentsPath(courseId, unitId, lessonId));
+/** Student projection is separate from owner references and carries no locator. */
+export const listStudentLessonContents = (courseId: string, lessonId: string) =>
+    request<unknown>(`/student-course-access/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/contents`);
+/** Bounded private binary read. No bearer is put in a URL or browser navigation. */
+export const downloadStudentMaterialPdf = async (courseId: string, lessonId: string, contentId: string, signal?: AbortSignal): Promise<Blob> => {
+    const response = await authenticatedApiFetch(`/student-course-access/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/contents/${encodeURIComponent(contentId)}/file`, { signal });
+    if (!response.ok) {
+        const data: unknown = await readAuthenticatedApiJson(response);
+        const error = data && typeof data === 'object' ? data as Record<string,unknown> : {};
+        throw new ApiRequestError('Material PDF download failed', response.status, typeof error.code === 'string' ? error.code : undefined);
+    }
+    const binding = protectedResponses.get(response);
+    const validSession = () => !!binding && getAuthToken() === binding.token && authRevision === binding.revision && !signal?.aborted;
+    const length = response.headers.get('Content-Length');
+    const disposition = response.headers.get('Content-Disposition') ?? '';
+    const mime = response.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase();
+    if (response.status !== 200 || mime !== 'application/pdf' || !length || !/^\d+$/.test(length)
+        || Number(length) < 5 || Number(length) > 10*1024*1024
+        || !/^attachment; filename="lesson-material-[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}\.pdf"$/i.test(disposition)
+        || !response.body || !validSession()) {
+        void response.body?.cancel().catch(() => {}); throw new Error('Invalid material PDF response');
+    }
+    const reader = response.body.getReader(); const chunks: Uint8Array[] = [];
+    let size = 0, count = 0;
+    const cancel = () => { void reader.cancel().catch(() => {}); };
+    signal?.addEventListener('abort', cancel, { once:true });
+    try {
+        while (true) {
+            const next = await reader.read();
+            if (!validSession()) throw new ApiRequestError('Session changed during download',409,'CLIENT_SESSION_CHANGED');
+            if (next.done) break;
+            size += next.value.byteLength;
+            if (++count > 16384 || size > Number(length) || size > 10*1024*1024) throw new Error('Material PDF size invalid');
+            const copy = new Uint8Array(next.value.byteLength); copy.set(next.value); chunks.push(copy);
+        }
+        if (!validSession() || size !== Number(length)) throw new Error('Incomplete material PDF');
+        const bytes = new Uint8Array(size); let offset = 0;
+        for (const chunk of chunks) { bytes.set(chunk,offset); offset += chunk.byteLength; }
+        if (new TextDecoder().decode(bytes.subarray(0,5)) !== '%PDF-') throw new Error('Invalid material PDF signature');
+        return new Blob([bytes],{type:'application/pdf'});
+    } finally { signal?.removeEventListener('abort',cancel); void reader.cancel().catch(() => {}); }
+};
+export const listLessonMaterialOptions = (courseId: string, unitId: string, lessonId: string, cursor: string | null) =>
+    request<unknown>(`${lessonContentsPath(courseId, unitId, lessonId)}/available-materials${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`);
+export const attachLessonMaterial = (courseId: string, unitId: string, lessonId: string, input: { material_id: string; display_order: number }) =>
+    request<unknown>(lessonContentsPath(courseId, unitId, lessonId), { method: 'POST',
+        body: JSON.stringify({ material_id: input.material_id, display_order: input.display_order }) });
+export const detachLessonMaterial = (courseId: string, unitId: string, lessonId: string, contentId: string) =>
+    request<unknown>(`${lessonContentsPath(courseId, unitId, lessonId)}/${encodeURIComponent(contentId)}`, { method: 'DELETE' });
+const ownerMaterialFilePath = (courseId: string, unitId: string, lessonId: string, contentId: string) =>
+    `${lessonContentsPath(courseId, unitId, lessonId)}/${encodeURIComponent(contentId)}/file`;
+export const getOwnerMaterialFileStatus = (courseId: string, unitId: string, lessonId: string, contentId: string, signal?: AbortSignal) =>
+    request<unknown>(ownerMaterialFilePath(courseId, unitId, lessonId, contentId), { signal });
+export const revokeOwnerMaterialPdf = (courseId: string, unitId: string, lessonId: string, contentId: string, signal?: AbortSignal) =>
+    request<unknown>(ownerMaterialFilePath(courseId, unitId, lessonId, contentId), { method: 'DELETE', signal });
+export const uploadOwnerMaterialPdf = (courseId: string, unitId: string, lessonId: string, contentId: string,
+    file: Blob, requestId: string, signal?: AbortSignal) => request<unknown>(ownerMaterialFilePath(courseId, unitId, lessonId, contentId),
+        { method: 'POST', headers: { 'Content-Type': 'application/pdf', 'Idempotency-Key': requestId }, body: file, signal });
+
 export const listCourseLessons = (
     courseId: string,
     unitId: string,
@@ -4086,8 +4153,22 @@ export interface SupportReply {
     created_at: string;
 }
 
-export const createSupportTicket = (data: { category: SupportCategory; subject: string; description: string }) =>
-    request<SupportTicket>('/support-tickets', { method: 'POST', body: JSON.stringify(data) });
+export const createSupportTicket = async (data: { category: SupportCategory; subject: string; description: string; context?:{kind:'catalog_lesson';course_id:string;lesson_id:string} }, requestId: string, signal?: AbortSignal) => {
+    const result = parseSupportTicketWrite(await request<unknown>('/support-tickets', { method: 'POST', headers: { 'Idempotency-Key': requestId }, body: JSON.stringify(data), signal }));
+    if (result.ticket.category !== data.category || result.ticket.subject !== data.subject.trim() || result.ticket.description !== data.description.trim()) throw Error('Support ticket acknowledgement mismatch');
+    return result;
+};
+export const getLessonSupportContext = async (courseId:string,lessonId:string,signal?:AbortSignal) => {
+    const result=await request<{context:unknown}>(`/student-course-access/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/support-context`,{signal});
+    if(!result||typeof result!=='object'||Object.keys(result).length!==1||!('context'in result))throw Error('Invalid lesson context response');
+    return parseLessonSupportContext(result.context,{courseId,lessonId});
+};
+export const getSupportTicketContext = async (ticketId:string,signal?:AbortSignal) =>
+    parseSupportContextEnvelope(await request<unknown>(`/support-tickets/${encodeURIComponent(ticketId)}/context`,{signal}));
+export const reconcileSupportTicket = async (requestId: string, signal?: AbortSignal) =>
+    parseSupportTicketWrite(await request<unknown>(`/support-tickets/attempts/create/${encodeURIComponent(requestId)}`, { signal }));
+export const reconcileSupportReply = async (ticketId: string, requestId: string, signal?: AbortSignal) =>
+    parseSupportReplyWrite(await request<unknown>(`/support-tickets/attempts/reply/${encodeURIComponent(requestId)}`, { signal }), ticketId);
 
 export const getMySupportTickets = () => request<SupportTicket[]>('/support-tickets/mine');
 
@@ -4099,11 +4180,20 @@ export const getSupportQueue = (filters?: { status?: SupportStatus; category?: S
     return request<SupportTicket[]>(`/support-tickets${query ? `?${query}` : ''}`);
 };
 
-export const getSupportTicket = (id: string) =>
-    request<{ ticket: SupportTicket; replies: SupportReply[] }>(`/support-tickets/${id}`);
+export const getSupportTicket = async (id: string, signal?: AbortSignal) => {
+    const result = await request<{ ticket: SupportTicket; replies: unknown; next_cursor: unknown; has_more_replies: boolean }>(`/support-tickets/${encodeURIComponent(id)}`, { signal });
+    const page = parseSupportReplyPage({ replies: result.replies, next_cursor: result.next_cursor });
+    if (result.has_more_replies !== (page.next_cursor !== null)) throw new Error('Invalid support reply pagination');
+    return { ticket: result.ticket, ...page, has_more_replies: result.has_more_replies };
+};
+export const getOlderSupportReplies = async (id: string, before: string, signal?: AbortSignal) =>
+    parseSupportReplyPage(await request<unknown>(`/support-tickets/${encodeURIComponent(id)}/replies?before=${encodeURIComponent(before)}`, { signal }));
 
-export const replyToSupportTicket = (id: string, body: string) =>
-    request<SupportReply>(`/support-tickets/${id}/replies`, { method: 'POST', body: JSON.stringify({ body }) });
+export const replyToSupportTicket = async (id: string, body: string, requestId: string, signal?: AbortSignal) => {
+    const result = parseSupportReplyWrite(await request<unknown>(`/support-tickets/${encodeURIComponent(id)}/replies`, { method: 'POST', headers: { 'Idempotency-Key': requestId }, body: JSON.stringify({ body }), signal }), id);
+    if (result.reply.body !== body.trim()) throw Error('Support reply acknowledgement mismatch');
+    return result;
+};
 
 export const updateSupportTicketStatus = (id: string, status: SupportStatus) =>
     request<{ success: boolean; status: SupportStatus }>(`/support-tickets/${id}/status`, {

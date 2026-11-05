@@ -1,0 +1,333 @@
+{
+  "pages": 54,
+  "bytes": 993793,
+  "words": 8906,
+  "total_links": 79,
+  "bookmarks": 124,
+  "pages_stats": [
+    {
+      "page": 1,
+      "chars": 498,
+      "arabic_chars": 361,
+      "links": 0
+    },
+    {
+      "page": 2,
+      "chars": 707,
+      "arabic_chars": 484,
+      "links": 14
+    },
+    {
+      "page": 3,
+      "chars": 882,
+      "arabic_chars": 700,
+      "links": 0
+    },
+    {
+      "page": 4,
+      "chars": 1049,
+      "arabic_chars": 812,
+      "links": 0
+    },
+    {
+      "page": 5,
+      "chars": 1132,
+      "arabic_chars": 831,
+      "links": 0
+    },
+    {
+      "page": 6,
+      "chars": 782,
+      "arabic_chars": 609,
+      "links": 0
+    },
+    {
+      "page": 7,
+      "chars": 1037,
+      "arabic_chars": 773,
+      "links": 12
+    },
+    {
+      "page": 8,
+      "chars": 1271,
+      "arabic_chars": 1008,
+      "links": 0
+    },
+    {
+      "page": 9,
+      "chars": 1162,
+      "arabic_chars": 920,
+      "links": 0
+    },
+    {
+      "page": 10,
+      "chars": 1165,
+      "arabic_chars": 926,
+      "links": 0
+    },
+    {
+      "page": 11,
+      "chars": 1166,
+      "arabic_chars": 927,
+      "links": 0
+    },
+    {
+      "page": 12,
+      "chars": 1012,
+      "arabic_chars": 800,
+      "links": 0
+    },
+    {
+      "page": 13,
+      "chars": 986,
+      "arabic_chars": 785,
+      "links": 0
+    },
+    {
+      "page": 14,
+      "chars": 971,
+      "arabic_chars": 766,
+      "links": 0
+    },
+    {
+      "page": 15,
+      "chars": 863,
+      "arabic_chars": 685,
+      "links": 0
+    },
+    {
+      "page": 16,
+      "chars": 918,
+      "arabic_chars": 741,
+      "links": 0
+    },
+    {
+      "page": 17,
+      "chars": 1086,
+      "arabic_chars": 805,
+      "links": 21
+    },
+    {
+      "page": 18,
+      "chars": 958,
+      "arabic_chars": 720,
+      "links": 0
+    },
+    {
+      "page": 19,
+      "chars": 1073,
+      "arabic_chars": 820,
+      "links": 12
+    },
+    {
+      "page": 20,
+      "chars": 1253,
+      "arabic_chars": 991,
+      "links": 0
+    },
+    {
+      "page": 21,
+      "chars": 1169,
+      "arabic_chars": 925,
+      "links": 0
+    },
+    {
+      "page": 22,
+      "chars": 1073,
+      "arabic_chars": 837,
+      "links": 0
+    },
+    {
+      "page": 23,
+      "chars": 1073,
+      "arabic_chars": 849,
+      "links": 0
+    },
+    {
+      "page": 24,
+      "chars": 1115,
+      "arabic_chars": 879,
+      "links": 0
+    },
+    {
+      "page": 25,
+      "chars": 1128,
+      "arabic_chars": 881,
+      "links": 0
+    },
+    {
+      "page": 26,
+      "chars": 1075,
+      "arabic_chars": 845,
+      "links": 0
+    },
+    {
+      "page": 27,
+      "chars": 1051,
+      "arabic_chars": 816,
+      "links": 0
+    },
+    {
+      "page": 28,
+      "chars": 1036,
+      "arabic_chars": 820,
+      "links": 0
+    },
+    {
+      "page": 29,
+      "chars": 972,
+      "arabic_chars": 772,
+      "links": 0
+    },
+    {
+      "page": 30,
+      "chars": 968,
+      "arabic_chars": 760,
+      "links": 0
+    },
+    {
+      "page": 31,
+      "chars": 893,
+      "arabic_chars": 706,
+      "links": 0
+    },
+    {
+      "page": 32,
+      "chars": 949,
+      "arabic_chars": 756,
+      "links": 0
+    },
+    {
+      "page": 33,
+      "chars": 904,
+      "arabic_chars": 706,
+      "links": 0
+    },
+    {
+      "page": 34,
+      "chars": 937,
+      "arabic_chars": 746,
+      "links": 0
+    },
+    {
+      "page": 35,
+      "chars": 958,
+      "arabic_chars": 761,
+      "links": 0
+    },
+    {
+      "page": 36,
+      "chars": 938,
+      "arabic_chars": 745,
+      "links": 0
+    },
+    {
+      "page": 37,
+      "chars": 965,
+      "arabic_chars": 759,
+      "links": 0
+    },
+    {
+      "page": 38,
+      "chars": 827,
+      "arabic_chars": 645,
+      "links": 0
+    },
+    {
+      "page": 39,
+      "chars": 660,
+      "arabic_chars": 520,
+      "links": 0
+    },
+    {
+      "page": 40,
+      "chars": 1052,
+      "arabic_chars": 840,
+      "links": 0
+    },
+    {
+      "page": 41,
+      "chars": 870,
+      "arabic_chars": 660,
+      "links": 0
+    },
+    {
+      "page": 42,
+      "chars": 1104,
+      "arabic_chars": 873,
+      "links": 0
+    },
+    {
+      "page": 43,
+      "chars": 898,
+      "arabic_chars": 709,
+      "links": 0
+    },
+    {
+      "page": 44,
+      "chars": 1051,
+      "arabic_chars": 821,
+      "links": 0
+    },
+    {
+      "page": 45,
+      "chars": 883,
+      "arabic_chars": 691,
+      "links": 0
+    },
+    {
+      "page": 46,
+      "chars": 844,
+      "arabic_chars": 676,
+      "links": 0
+    },
+    {
+      "page": 47,
+      "chars": 917,
+      "arabic_chars": 717,
+      "links": 0
+    },
+    {
+      "page": 48,
+      "chars": 1196,
+      "arabic_chars": 931,
+      "links": 0
+    },
+    {
+      "page": 49,
+      "chars": 1139,
+      "arabic_chars": 858,
+      "links": 0
+    },
+    {
+      "page": 50,
+      "chars": 1286,
+      "arabic_chars": 631,
+      "links": 0
+    },
+    {
+      "page": 51,
+      "chars": 1145,
+      "arabic_chars": 489,
+      "links": 7
+    },
+    {
+      "page": 52,
+      "chars": 1047,
+      "arabic_chars": 494,
+      "links": 7
+    },
+    {
+      "page": 53,
+      "chars": 987,
+      "arabic_chars": 476,
+      "links": 6
+    },
+    {
+      "page": 54,
+      "chars": 1086,
+      "arabic_chars": 620,
+      "links": 0
+    }
+  ]
+}

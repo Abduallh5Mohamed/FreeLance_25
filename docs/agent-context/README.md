@@ -36,6 +36,16 @@ Git and GitHub use, including read-only commands; inspect files directly.
 | Copy a bounded corrective task to WorkBuddy | [WORKBUDDY-NEXT.md](WORKBUDDY-NEXT.md) |
 | Independent review of WorkBuddy's five batches | [SUPERVISOR-REVIEW-2026-10-26.md](SUPERVISOR-REVIEW-2026-10-26.md) |
 | Copy the required follow-up corrections | [WORKBUDDY-CORRECTIONS-2026-10-26.md](WORKBUDDY-CORRECTIONS-2026-10-26.md) |
+| Business strategy integration, journey priorities and acceptance mapping | [22-business-strategy-integration-ar.md](../22-business-strategy-integration-ar.md) (planning addition 2026-11-03; no runtime-readiness change) |
+| Local business implementation, current scoped evidence and next work | [BUSINESS-IMPLEMENTATION-2026-11-03.md](BUSINESS-IMPLEMENTATION-2026-11-03.md) (guided import, final-order correction, owner lesson material UI/backend; not whole-strategy completion) |
+| Student visibility and PDF boundary history | [BUSINESS-IMPLEMENTATION-2026-11-04.md](BUSINESS-IMPLEMENTATION-2026-11-04.md) (default delivery unconfigured; source schema unapplied) |
+| Owner PDF ingestion implementation | [BUSINESS-IMPLEMENTATION-2026-11-05.md](BUSINESS-IMPLEMENTATION-2026-11-05.md) (producer/UI; migrations unapplied) |
+| PDF adapters and student download continuation | [BUSINESS-IMPLEMENTATION-2026-11-05-BUILD-07.md](BUSINESS-IMPLEMENTATION-2026-11-05-BUILD-07.md) (explicit adapters + conditional student download UI; default runtime unconfigured) |
+| PDF source withdrawal continuation | [BUSINESS-IMPLEMENTATION-2026-11-05-BUILD-08.md](BUSINESS-IMPLEMENTATION-2026-11-05-BUILD-08.md) (audited owner revocation and student offer/download denial; no object deletion) |
+| J04 initial support detail boundary | [BUSINESS-IMPLEMENTATION-2026-11-05-BUILD-09.md](BUSINESS-IMPLEMENTATION-2026-11-05-BUILD-09.md) (private fixed detail projection, bounded latest replies and honest UI warning) |
+| J04 reply pagination | [BUSINESS-IMPLEMENTATION-2026-11-05-BUILD-10.md](BUSINESS-IMPLEMENTATION-2026-11-05-BUILD-10.md) (same-ticket keyset pages, real older-reply UI, session fences and browser evidence) |
+| J04 write reliability | [BUSINESS-IMPLEMENTATION-2026-11-05-BUILD-11.md](BUSINESS-IMPLEMENTATION-2026-11-05-BUILD-11.md) (keyed creation/replies, atomic status/audit and reload-safe read-only reconciliation; real schema acceptance pending) |
+| Latest business implementation — J04 lesson support context | [BUSINESS-IMPLEMENTATION-2026-11-05-BUILD-12.md](BUSINESS-IMPLEMENTATION-2026-11-05-BUILD-12.md) (student lesson help action, shared live proof and atomic reference binding; new migration unapplied; generic support stays available) |
 | Current OpenCode delegation and 15-minute supervision | [OPENCODE-SUPERVISION-2026-10-26.md](OPENCODE-SUPERVISION-2026-10-26.md) |
 
 ## Fast task-start checklist

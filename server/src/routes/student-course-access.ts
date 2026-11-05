@@ -17,13 +17,18 @@
  *     that course and their active lessons, each with an access decision;
  *   * `POST /courses/:courseId/lessons/:lessonId/completion` — record the
  *     student's completion of one CURRENTLY ACCESSIBLE lesson, once.
+ *   * `GET /courses/:courseId/lessons/:lessonId/contents` — separate private
+ *     material metadata after lesson, group and branch revalidation (BUILD-04).
+ *   * `GET .../contents/:contentId/file` — conditional verified PDF attachment
+ *     boundary (BUILD-05); production defaults remain unconfigured.
  *
  * What it is NOT:
  *   * it is not an enrollment. Nothing here creates, approves, extends or
  *     reactivates a `students` row or a `student_courses` row, and nothing here
  *     reads a subscription, a price or a payment;
- *   * it is not a content delivery surface. There is no lesson file, video,
- *     asset, URL or locator in any projection — only bounded lesson metadata;
+ *   * metadata projections carry no file/video URL or storage locator. The
+ *     separate PDF response requires trusted source/scan/storage configuration;
+ *     the material list continues to report opening unavailable by default;
  *   * it is not a client-authoritative view. Every access decision is made from
  *     the DATABASE clock and from `course_lesson_completions` rows keyed by the
  *     principal's own `student_enrollment_id`. The client cannot state which
@@ -48,6 +53,10 @@ import { randomUUID } from 'crypto';
 import { Router, Response } from 'express';
 import type { AuthRequest } from '../middleware/auth';
 import { getPool, query } from '../db';
+import { listStudentLessonMaterials } from '../services/student-lesson-materials';
+import { createMaterialFileDeliveryService, type MaterialFileDeliveryConfig } from '../services/material-file-delivery';
+import { verifyStudentEnrollment, resolveStudentCourse, proveStudentLesson } from '../services/student-lesson-access';
+import { supportContextSchema, proveLessonSupportContext } from '../services/support-lesson-context';
 
 /**
  * Minimal transactional connection seam, structurally identical to the
@@ -64,10 +73,12 @@ export interface StudentCourseAccessConnection {
   destroy(): void;
 }
 
-/** The only dependencies of this router: a read seam and a connection supplier. */
+/** Read seams plus an optional, explicitly configured private PDF delivery boundary. */
 export interface StudentCourseAccessDeps {
   query<T = any>(sql: string, params?: any[]): Promise<T[]>;
   getConnection: () => Promise<StudentCourseAccessConnection>;
+  /** Unconfigured by default; no storage/scanner evidence is invented. */
+  materialFileDelivery?: MaterialFileDeliveryConfig;
 }
 
 const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -169,6 +180,7 @@ const courseHeader = (row: any) => ({
 export const createStudentCourseAccessRouter = (deps: StudentCourseAccessDeps): Router => {
   const router = Router();
   const { getConnection, query: readQuery } = deps;
+  const deliverMaterialFile = createMaterialFileDeliveryService({ getConnection, config: deps.materialFileDelivery });
 
   /**
    * The student authority proof.
@@ -179,25 +191,7 @@ export const createStudentCourseAccessRouter = (deps: StudentCourseAccessDeps): 
    * revoked, un-approved, suspended, or pushed outside its enrollment window
    * stops resolving here as well.
    */
-  const verifyEnrollment = async (
-    connection: StudentCourseAccessConnection,
-    userId: string,
-    enrollmentId: string,
-    tenantId: string
-  ): Promise<{ enrollment_id: string; tenant_id: string } | null> => {
-    const [rows] = await connection.execute(
-      `SELECT s.id AS enrollment_id,s.tenant_id
-       FROM students s INNER JOIN tenants t ON t.id=s.tenant_id
-       WHERE s.id=? AND s.user_id=? AND s.tenant_id=? AND s.is_active=1
-         AND s.approval_status='approved' AND t.status='active'
-         AND (s.enrollment_status IS NULL OR s.enrollment_status='active')
-         AND (s.enrollment_start_date IS NULL OR s.enrollment_start_date<=UTC_TIMESTAMP())
-         AND (s.enrollment_end_date IS NULL OR s.enrollment_end_date>UTC_TIMESTAMP())
-       LIMIT 1`,
-      [enrollmentId, userId, tenantId]
-    );
-    return ((rows as any[]) ?? [])[0] ?? null;
-  };
+  const verifyEnrollment = verifyStudentEnrollment;
 
   /**
    * The course authority proof.
@@ -211,30 +205,7 @@ export const createStudentCourseAccessRouter = (deps: StudentCourseAccessDeps): 
    * course of another academy and a course that does not exist are the same
    * answer.
    */
-  const resolveCourse = async (
-    connection: StudentCourseAccessConnection,
-    enrollmentId: string,
-    courseId: string,
-    tenantId: string
-  ): Promise<{ course_id: string; name: string; subject: any; grade: any } | null> => {
-    const [enrolled] = await connection.execute(
-      `SELECT sc.id AS student_course_id
-       FROM student_courses sc
-       WHERE sc.student_id=? AND sc.course_id=? AND sc.status='active'
-       LIMIT 1`,
-      [enrollmentId, courseId]
-    );
-    if (!(((enrolled as any[]) ?? [])[0])) return null;
-
-    const [courses] = await connection.execute(
-      `SELECT c.id AS course_id,c.name,c.subject,c.grade
-       FROM courses c
-       WHERE c.id=? AND c.tenant_id=? AND c.is_active=TRUE AND c.publication_state='published'
-       LIMIT 1`,
-      [courseId, tenantId]
-    );
-    return ((courses as any[]) ?? [])[0] ?? null;
-  };
+  const resolveCourse = resolveStudentCourse;
 
   /**
    * Reject a client-supplied authority selector.
@@ -683,6 +654,73 @@ export const createStudentCourseAccessRouter = (deps: StudentCourseAccessDeps): 
       }
       return { status: 200, body: { completion: { lesson_id: lessonId, completed_at: completedAt } }, commit: true };
     });
+  });
+
+  // Shared authority for metadata and the two fresh file-delivery snapshots.
+  const readAccessibleLessonContents = async (connection: StudentCourseAccessConnection,
+    scope: { userId: string; tenantId: string; enrollmentId: string }, courseId: string, lessonId: string,
+    principal: NonNullable<AuthRequest['user']>, includeReadiness = true): Promise<TxResult> => {
+      const proof = await proveStudentLesson(connection, scope, courseId, lessonId);
+      if (!proof.ok) return proof;
+      return listStudentLessonMaterials(connection, scope, courseId, String(proof.lesson.id), principal, includeReadiness ? deps.materialFileDelivery : undefined);
+  };
+
+  router.get('/courses/:courseId/lessons/:lessonId/support-context', async (req:AuthRequest,res:Response) => {
+    res.set('Cache-Control','no-store');
+    if(suppliedSelector(req)!==null||Object.keys(req.query??{}).length||req.body&&(typeof req.body!=='object'||Array.isArray(req.body)||Object.keys(req.body).length))return res.status(400).json({error:'Invalid lesson support context request'});
+    const scope=requireStudentScope(req,res);if(!scope)return;
+    const {courseId,lessonId}=req.params;
+    if(!UUID_PATTERN.test(courseId)||!UUID_PATTERN.test(lessonId))return res.status(404).json({error:'Lesson not found'});
+    return runInTransaction('Failed to load lesson support context',res,async connection=>{
+      if(!await supportContextSchema(connection))return {status:503,body:{error:'Lesson support context unavailable',code:'SUPPORT_CONTEXT_UNAVAILABLE'},commit:false};
+      const proof=await proveLessonSupportContext(connection,scope,{kind:'catalog_lesson',course_id:courseId,lesson_id:lessonId});
+      return proof.ok?{status:200,body:{context:proof.context},commit:false}:proof;
+    });
+  });
+
+  // J02/J03: explicit lesson expansion; never widens the strict learning-path DTO.
+  const contentsPath = '/courses/:courseId/lessons/:lessonId/contents';
+  for (const file of [false, true]) router.get(contentsPath + (file ? '/:contentId/file' : ''), async (req: AuthRequest, res: Response) => {
+    res.set('Cache-Control', 'no-store');
+    if (suppliedSelector(req) !== null || Object.keys(req.query ?? {}).length
+      || req.body && (typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length)) {
+      return res.status(400).json({ error: 'Invalid lesson contents request' });
+    }
+    const scope = requireStudentScope(req, res); if (!scope) return;
+    const { courseId, lessonId, contentId } = req.params;
+    if (!UUID_PATTERN.test(courseId) || !UUID_PATTERN.test(lessonId) || file && !UUID_PATTERN.test(contentId)) {
+      return res.status(404).json({ error: 'Lesson not found' });
+    }
+    if (!file) return runInTransaction('Failed to load lesson contents', res,
+      connection => readAccessibleLessonContents(connection, scope, courseId, lessonId, req.user!));
+    if (req.headers.range || req.headers['if-range']) return res.status(416).json({ error: 'Partial material downloads are unsupported' });
+    const abort = new AbortController();
+    const cancel = () => abort.abort();
+    req.once?.('aborted', cancel); res.once?.('close', cancel);
+    try {
+      const result = await deliverMaterialFile({ courseId, lessonId, contentId, tenantId: scope.tenantId, signal: abort.signal,
+        authorize: connection => readAccessibleLessonContents(connection, scope, courseId, lessonId, req.user!, false) });
+      if (abort.signal.aborted || res.destroyed) { if (result.ok) result.release(); return; }
+      if (!result.ok) return res.status(result.status).json(result.body);
+      // Retain the bounded memory/response lease until HTTP finishes or closes.
+      res.once('finish', result.release); res.once('close', result.release);
+      try {
+        res.set('Content-Type', 'application/pdf'); res.set('X-Content-Type-Options', 'nosniff');
+        res.set('Content-Security-Policy', 'sandbox');
+        res.set('Content-Disposition', `attachment; filename="lesson-material-${result.fileId}.pdf"`);
+        res.set('Content-Length', String(result.bytes.length));
+        // Native end avoids Express.send's automatic ETag/conditional 304 path.
+        res.removeHeader('ETag'); res.removeHeader('Last-Modified');
+        return res.status(200).end(result.bytes);
+      } catch {
+        result.release();
+        if (!res.headersSent) {
+          res.removeHeader('Content-Length'); res.removeHeader('Content-Disposition'); res.removeHeader('Content-Type');
+          return res.status(503).json({ error: 'Private material file delivery unavailable', code: 'MATERIAL_FILE_UNAVAILABLE' });
+        }
+        res.destroy();
+      }
+    } finally { req.removeListener?.('aborted', cancel); res.removeListener?.('close', cancel); }
   });
 
   return router;

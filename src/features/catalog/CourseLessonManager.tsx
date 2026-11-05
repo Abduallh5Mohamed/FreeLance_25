@@ -58,6 +58,7 @@ import {
   type CourseLesson,
 } from '@/lib/api-http';
 import { subscribeSessionChange } from '@/lib/session-events';
+import { LessonContentManager } from './LessonContentManager';
 import {
   COURSE_LESSON_ARCHIVE_NOTICE,
   COURSE_LESSON_DESCRIPTION_MAX,
@@ -402,7 +403,7 @@ export default function CourseLessonManager({
                 return (
                   <li
                     key={row.id}
-                    className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between"
+                    className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-white p-3"
                   >
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-slate-800 truncate" dir="auto">{row.title}</p>
@@ -469,6 +470,7 @@ export default function CourseLessonManager({
                         )}
                       </Button>
                     </div>
+                    <LessonContentManager courseId={courseId} unitId={unitId} lessonId={row.id} />
                   </li>
                 );
               })}

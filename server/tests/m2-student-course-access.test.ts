@@ -34,6 +34,8 @@ import path from 'node:path';
 import Module from 'node:module';
 import jwt from 'jsonwebtoken';
 import type { RequestHandler } from 'express';
+import { createHash } from 'node:crypto';
+import type { MaterialFileDeliveryConfig } from '../src/services/material-file-delivery';
 
 const TEST_SECRET = 'm2-23-hermetic-jwt-secret-not-a-real-key';
 
@@ -150,6 +152,8 @@ interface LessonRow {
 interface CompletionRow { id: string; student_enrollment_id: string; lesson_id: string; completed_at: Date }
 
 interface State {
+    supportContextSchema?: boolean;
+    lessonMaterialFixture?: { schema: boolean; groupId: string | null; bindings: any[]; links: any[]; fileRecord?: any; fileRows?: any[]; fileSchema?: boolean };
     tenants: Array<{ id: string; status: string }>;
     enrollments: EnrollmentRow[];
     studentCourses: StudentCourseRow[];
@@ -291,7 +295,7 @@ const releasedDecision = (
 
 interface Call { sql: string; params: any[] }
 
-function buildHarness(state: State) {
+function buildHarness(state: State, materialFileDelivery?: MaterialFileDeliveryConfig) {
     const calls: Call[] = [];
     const events: string[] = [];
     let connectionCount = 0;
@@ -341,6 +345,40 @@ function buildHarness(state: State) {
     const dispatch = (sql: string, params: any[]): [any, any] => {
         const n = squash(sql);
         calls.push({ sql, params });
+        if(n.includes("TABLE_NAME='support_tickets'"))return [state.supportContextSchema?['context_kind','context_tenant_id','context_enrollment_id','context_course_id','context_lesson_id'].map(column_name=>({column_name})):[],[]];
+        if(n.includes('information_schema.TABLES'))return [['students','tenants','student_courses','courses','course_units','course_lessons','course_lesson_completions'].map(table_name=>({table_name,engine:'InnoDB'})),[]];
+        if (state.lessonMaterialFixture) {
+            const fixture = state.lessonMaterialFixture;
+            if (n.includes("TABLE_NAME='course_material_files'")) return [fixture.fileSchema ? ['id','material_id','tenant_id','course_id','object_key','object_version','sha256','size_bytes',
+                'mime_type','status','scan_status','scanned_object_version','scanned_sha256','scan_engine','scan_policy_version','scanned_at'].map(column_name => ({ column_name })) : [], []];
+            if (n.includes('INNER JOIN course_material_files f')) {
+                if (n.startsWith('SELECT b.id AS content_id')) {
+                    assert.ok(n.endsWith('LIMIT 21'));assert.equal(params[0],LESSON_1);assert.equal(params.at(-1),TENANT_A);
+                    return [fixture.fileRows ?? (fixture.fileRecord ? [{ ...fixture.fileRecord, content_id: contentId }] : []), []];
+                }
+                assert.deepEqual(params, [contentId, LESSON_1, COURSE_A1, TENANT_A]);
+                return [fixture.fileRecord ? [{ ...fixture.fileRecord }] : [], []];
+            }
+            if (n.includes('information_schema.COLUMNS')) return [fixture.schema ? ['id', 'lesson_id', 'material_id', 'display_order'].map(column_name => ({ column_name })) : [], []];
+            if (n.includes('FROM course_lesson_contents b')) {
+                assert.ok(n.endsWith('LIMIT 21')); assert.ok(!n.includes('file_url'));
+                return [fixture.bindings.filter(row => row.lesson_id === params[1]).slice(0, 21).map(row => ({ ...row, source_id: row.course_id === params[0] ? row.material_id : null })), []];
+            }
+            if (n.startsWith('SELECT s.group_id')) return [[{ group_id: fixture.groupId }], []];
+            if (n.includes('FROM material_groups mg LEFT JOIN')) {
+                assert.ok(n.endsWith('LIMIT 201')); assert.equal(params[0], STUDENT_USER);
+                return [fixture.links.filter(row => params.slice(1).includes(row.material_id)).slice(0, 201), []];
+            }
+        }
+        if (n.startsWith('SELECT l.id,l.prerequisite_lesson_id,') && n.includes('FROM course_lessons l INNER JOIN course_units')) {
+            const [enrollmentId, lessonId, courseId] = params;
+            const lesson = state.lessons.find(row => row.id === lessonId && row.status === 'active');
+            const unit = state.units.find(row => row.id === lesson?.unit_id && row.status === 'active' && row.course_id === courseId);
+            if (!lesson || !unit) return [[], []];
+            return [[{ id: lesson.id, title:lesson.title, prerequisite_lesson_id: lesson.prerequisite_lesson_id,
+                is_released: releasedDecision(n, lesson.release_at, state.nowEpoch, state.sessionOffsetSeconds),
+                is_prerequisite_met: lesson.prerequisite_lesson_id === null || state.completions.some(row => row.lesson_id === lesson.prerequisite_lesson_id && row.student_enrollment_id === enrollmentId) ? 1 : 0 }], []];
+        }
 
         // --- enrollment proof (used by every route) ---
         if (n.includes('FROM students s INNER JOIN tenants t')) {
@@ -553,6 +591,7 @@ function buildHarness(state: State) {
     };
 
     const router = accessModule.createStudentCourseAccessRouter({
+        materialFileDelivery,
         query: async (sql: string, params: any[] = []) => dispatch(sql, params)[0],
         getConnection: async () => {
             if (state.failAcquire) throw new Error('pool connection unavailable');
@@ -568,7 +607,7 @@ function buildHarness(state: State) {
     ];
 
     return {
-        chain, calls, events, state,
+        chain, router, calls, events, state,
         connectionCount: () => connectionCount,
         releaseCount: () => releaseCount,
         destroyCount: () => destroyCount,
@@ -623,14 +662,19 @@ function runChain(chain: RequestHandler[], req: any): Promise<Result> {
         let settled = false;
         const finish = (result: Result) => { if (!settled) { settled = true; resolve(result); } };
         const headers: Record<string, string> = {};
+        const responseEvents = new Map<string, Set<() => void>>();
+        const emitFinish = () => { for (const fn of responseEvents.get('finish') ?? []) fn(); responseEvents.delete('finish'); };
         const res: any = {
             statusCode: 200,
             status(code: number) { res.statusCode = code; return res; },
             set(name: string, value: string) { headers[name] = value; return res; },
             setHeader(name: string, value: string) { headers[name] = value; return res; },
-            json(payload: any) { finish({ status: res.statusCode, body: payload, headers }); return res; },
-            send(payload: any) { finish({ status: res.statusCode, body: payload, headers }); return res; },
-            end() { finish({ status: res.statusCode, body: undefined, headers }); return res; },
+            once(event: string, fn: () => void) { if (!responseEvents.has(event)) responseEvents.set(event, new Set()); responseEvents.get(event)!.add(fn); return res; },
+            removeListener(event: string, fn: () => void) { responseEvents.get(event)?.delete(fn); return res; },
+            removeHeader(name: string) { delete headers[name]; },
+            json(payload: any) { emitFinish(); finish({ status: res.statusCode, body: payload, headers }); return res; },
+            send(payload: any) { emitFinish(); finish({ status: res.statusCode, body: payload, headers }); return res; },
+            end(payload?: any) { emitFinish(); finish({ status: res.statusCode, body: payload, headers }); return res; },
         };
         const next = (error?: any) => {
             if (error) { if (!settled) { settled = true; reject(error); } return; }
@@ -663,12 +707,33 @@ const coursesPath = '/courses';
 const pathOf = (courseId: string) => `/courses/${courseId}`;
 const completionOf = (courseId: string, lessonId: string) =>
     `/courses/${courseId}/lessons/${lessonId}/completion`;
+const supportContextOf=(courseId:string,lessonId:string)=>`/courses/${courseId}/lessons/${lessonId}/support-context`;
+test('lesson support preflight is private, fixed, read-only and requires actual context columns',async()=>{
+    const state=makeState(),h=buildHarness(state);
+    assert.equal((await runChain(h.chain,makeReq({token:studentToken(),pathName:supportContextOf(COURSE_A1,LESSON_1)}))).status,503);
+    state.supportContextSchema=true;
+    const result=await runChain(h.chain,makeReq({token:studentToken(),pathName:supportContextOf(COURSE_A1,LESSON_1)}));
+    assert.equal(result.status,200);assert.equal(result.headers['Cache-Control'],'no-store');
+    assert.deepEqual(Object.keys(result.body.context).sort(),['kind','course_id','lesson_id','course_name','lesson_title'].sort());
+    assert.equal(result.body.context.lesson_title,'First');assert.equal(h.commitCount(),0);assert.ok(!JSON.stringify(result.body).includes('Private first lesson text'));
+});
+for(const target of [{course:COURSE_DRAFT,lesson:LESSON_1,status:404},{course:COURSE_B1,lesson:LESSON_1,status:404},{course:COURSE_A1,lesson:LESSON_UNRELEASED,status:409},{course:COURSE_A1,lesson:LESSON_GATED,status:409},{course:COURSE_A1,lesson:LESSON_ARCHIVED,status:404}])test(`lesson support preflight denies ${target.course}/${target.lesson}`,async()=>{
+    const state=makeState();state.supportContextSchema=true;const h=buildHarness(state);
+    const result=await runChain(h.chain,makeReq({token:studentToken(),pathName:supportContextOf(target.course,target.lesson)}));
+    assert.equal(result.status,target.status);assert.ok(!('context'in result.body));assert.equal(h.commitCount(),0);
+});
+test('lesson support preflight refuses client authority selectors and non-student roles',async()=>{
+    const state=makeState();state.supportContextSchema=true;const h=buildHarness(state);
+    const pathName=supportContextOf(COURSE_A1,LESSON_1);
+    assert.equal((await runChain(h.chain,makeReq({token:studentToken(),pathName,query:{tenant_id:TENANT_B}}))).status,400);
+    assert.equal((await runChain(h.chain,makeReq({token:sign(INSTRUCTOR,'instructor'),pathName}))).status,403);
+});
 
 // ---------------------------------------------------------------------------
 // Composition
 // ---------------------------------------------------------------------------
 
-test('mount: the router exposes exactly the three documented routes', () => {
+test('mount: the router exposes the path/completion routes and the private student material read', () => {
     const state = makeState();
     const harness = buildHarness(state);
     const router = harness.chain[harness.chain.length - 1] as any;
@@ -678,6 +743,9 @@ test('mount: the router exposes exactly the three documented routes', () => {
     assert.deepEqual(routes.sort(), [
         'GET /courses',
         'GET /courses/:courseId',
+        'GET /courses/:courseId/lessons/:lessonId/contents',
+        'GET /courses/:courseId/lessons/:lessonId/contents/:contentId/file',
+        'GET /courses/:courseId/lessons/:lessonId/support-context',
         'POST /courses/:courseId/lessons/:lessonId/completion',
     ]);
 });
@@ -1439,4 +1507,220 @@ test('projection: a locked lesson is never readable through the completion endpo
     assert.equal(res.status, 409);
     assert.equal(JSON.stringify(res.body).includes('Private gated text'), false);
     assert.equal(JSON.stringify(res.body).includes('description'), false);
+});
+
+// BUILD-04: real student router + existing auth chain; new bounded fixture SQL only.
+const materialId = '71000000-0000-4000-8000-000000000001';
+const contentId = '72000000-0000-4000-8000-000000000001';
+const groupId = '73000000-0000-4000-8000-000000000001';
+const branchId = '74000000-0000-4000-8000-000000000001';
+function materialState() {
+    const state = makeState();
+    state.lessonMaterialFixture = { schema: true, groupId,
+        bindings: [{ lesson_id: LESSON_1, content_id: contentId, material_id: materialId, course_id: COURSE_A1,
+            title: 'Published worksheet', material_type: 'pdf', display_order: 0, is_published: 1, file_url: 'private-secret-url' }],
+        links: [{ material_id: materialId, group_id: groupId, resolved_group_id: groupId, branch_id: null,
+            branch_scope: 'tenant', instructor_id: INSTRUCTOR, group_course_id: COURSE_A1, tenant_id: TENANT_A }],
+    };
+    return state as State & { lessonMaterialFixture: NonNullable<State['lessonMaterialFixture']> };
+}
+const contentsPath = (lessonId = LESSON_1, courseId = COURSE_A1) => `/courses/${courseId}/lessons/${lessonId}/contents`;
+test('student materials: explicit private projection, no locator, progress, commit or N+1', async () => {
+    const h = buildHarness(materialState());
+    const r = await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath() }));
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { lesson_id: LESSON_1, contents: [{ content_id: contentId, title: 'Published worksheet', material_type: 'pdf', display_order: 0, delivery_status: 'unavailable' }] });
+    assert.equal(r.headers['Cache-Control'], 'no-store'); assert.equal(h.commitCount(), 0); assert.equal(h.state.completions.length, 0);
+    assert.ok(!JSON.stringify(r.body).includes('private-secret-url'));
+    assert.equal(h.calls.filter(call => call.sql.includes('FROM material_groups')).length, 1);
+    assert.ok(h.calls.every(call => !/INSERT|UPDATE|DELETE/.test(call.sql)));
+});
+for (const scenario of ['withdrawn', 'foreign-source', 'other-group', 'no-group', 'ambiguous', 'cross-course-group', 'cross-tenant-group'] as const) {
+    test(`student materials: ${scenario} is withheld`, async () => {
+        const state = materialState(), f = state.lessonMaterialFixture;
+        if (scenario === 'withdrawn') f.bindings[0].is_published = 0;
+        if (scenario === 'foreign-source') f.bindings[0].course_id = COURSE_A2;
+        if (scenario === 'other-group') f.groupId = 'other-group';
+        if (scenario === 'no-group') f.groupId = null;
+        if (scenario === 'ambiguous') f.links[0].branch_scope = 'unassigned';
+        if (scenario === 'cross-course-group') f.links[0].group_course_id = COURSE_A2;
+        if (scenario === 'cross-tenant-group') f.links[0].tenant_id = TENANT_B;
+        const h = buildHarness(state), r = await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath() }));
+        assert.equal(r.status, 200); assert.deepEqual(r.body.contents, []);
+    });
+}
+test('student materials: unpublish, assignment revocation and course withdrawal take effect on the next read', async () => {
+    const state = materialState(), h = buildHarness(state);
+    const read = () => runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath() }));
+    assert.equal((await read()).body.contents.length, 1);
+    state.lessonMaterialFixture.bindings[0].is_published = 0; assert.equal((await read()).body.contents.length, 0);
+    state.lessonMaterialFixture.bindings[0].is_published = 1; state.lessonMaterialFixture.links = []; assert.equal((await read()).body.contents.length, 0);
+    state.courses.find(row => row.id === COURSE_A1)!.publication_state = 'draft'; assert.equal((await read()).status, 404);
+});
+for (const scenario of ['inactive-branch', 'foreign-branch', 'missing-member', 'revoked-member', 'conflicting-branches'] as const) {
+    test(`student materials: ${scenario} denied by existing branch policy`, async () => {
+        const state = materialState(), f = state.lessonMaterialFixture;
+        Object.assign(f.links[0], { branch_scope: 'branch', branch_id: branchId, resolved_branch_id: branchId,
+            branch_tenant_id: TENANT_A, branch_status: 'active', branch_version: 2, member_user_id: STUDENT_USER,
+            member_status: 'active', member_role: 'student', member_version: 2 });
+        if (scenario === 'inactive-branch') f.links[0].branch_status = 'suspended';
+        if (scenario === 'foreign-branch') f.links[0].branch_tenant_id = TENANT_B;
+        if (scenario === 'missing-member') f.links[0].member_user_id = null;
+        if (scenario === 'revoked-member') f.links[0].member_status = 'revoked';
+        if (scenario === 'conflicting-branches') f.links.push({ ...f.links[0], group_id: 'other', resolved_group_id: 'other', branch_id: 'another-branch', resolved_branch_id: 'another-branch' });
+        const h = buildHarness(state), r = await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath() }));
+        assert.equal(r.status, 200); assert.deepEqual(r.body.contents, []);
+    });
+}
+test('student materials: active branch member works; direct router enforces scoped membership version', async () => {
+    const state = materialState(), f = state.lessonMaterialFixture;
+    Object.assign(f.links[0], { branch_scope: 'branch', branch_id: branchId, resolved_branch_id: branchId,
+        branch_tenant_id: TENANT_A, branch_status: 'active', branch_version: 2, member_user_id: STUDENT_USER,
+        member_status: 'active', member_role: 'student', member_version: 2 });
+    const h = buildHarness(state);
+    assert.equal((await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath() }))).body.contents.length, 1);
+    const req: any = makeReq({ pathName: contentsPath() });
+    req.user = { id: STUDENT_USER, role: 'student', tenantId: TENANT_A, studentEnrollmentId: ENROLLMENT_1, branchId, branchMembershipVersion: 1 };
+    assert.deepEqual((await runChain([h.router], req)).body.contents, []);
+});
+test('student materials: lesson release/prerequisite are rechecked before any content query', async () => {
+    const state = materialState(), h = buildHarness(state);
+    for (const lessonId of [LESSON_UNRELEASED, LESSON_GATED]) {
+        const r = await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath(lessonId) }));
+        assert.equal(r.status, 409); assert.equal(r.body.code, 'LESSON_LOCKED');
+    }
+    assert.ok(h.calls.every(call => !call.sql.includes('FROM course_lesson_contents')));
+    // Another enrollment's completion cannot unlock this student's prerequisite.
+    state.completions.push({ id: 'other-completion', student_enrollment_id: ENROLLMENT_OTHER, lesson_id: LESSON_1, completed_at: stamp(NOW_EPOCH) });
+    assert.equal((await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath(LESSON_GATED) }))).status, 409);
+    state.completions.push({ id: 'own-completion', student_enrollment_id: ENROLLMENT_1, lesson_id: LESSON_1, completed_at: stamp(NOW_EPOCH) });
+    assert.equal((await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath(LESSON_GATED) }))).status, 200);
+});
+test('student materials: archived/foreign lesson and unpublished/unenrolled course expose no content', async () => {
+    const h = buildHarness(materialState());
+    for (const [lesson, course] of [[LESSON_ARCHIVED, COURSE_A1], [LESSON_OTHER_COURSE, COURSE_A1], [LESSON_1, COURSE_DRAFT], [LESSON_1, COURSE_B1]]) {
+        const r = await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath(lesson, course) })); assert.equal(r.status, 404);
+    }
+    assert.ok(h.calls.every(call => !call.sql.includes('FROM course_lesson_contents')));
+});
+test('student materials: missing schema and bounded overflow fail closed', async () => {
+    const state = materialState(), h = buildHarness(state), f = state.lessonMaterialFixture;
+    f.schema = false; const missing = await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath() }));
+    assert.equal(missing.status, 503); assert.equal(missing.body.code, 'LESSON_CONTENTS_UNAVAILABLE');
+    f.schema = true; f.bindings = Array.from({ length: 21 }, (_, i) => ({ ...f.bindings[0], display_order: i }));
+    assert.equal((await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath() }))).status, 409);
+    f.bindings = [f.bindings[0]]; f.links = Array.from({ length: 201 }, () => f.links[0]);
+    assert.equal((await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath() }))).status, 409);
+});
+test('student materials: request selectors and unknown query/body are refused before SQL', async () => {
+    const h = buildHarness(materialState());
+    for (const extra of [{ query: { tenant_id: TENANT_B } }, { query: { cursor: 'anything' } }, { body: { material_id: materialId } }, { headers: { 'x-student-id': OTHER_STUDENT_USER } }]) {
+        const r = await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath(), ...extra })); assert.equal(r.status, 400);
+    }
+    assert.equal(h.calls.length, 0);
+});
+test('student materials: twenty references use one bulk group query; no per-material DB queries', async () => {
+    const state = materialState(), f = state.lessonMaterialFixture;
+    const base = f.bindings[0], link = f.links[0];
+    const key = (prefix: string, n: number) => `${prefix}-0000-4000-8000-${String(n).padStart(12, '0')}`;
+    f.bindings = Array.from({ length: 20 }, (_, n) => ({ ...base, content_id: key('75000000', n), material_id: key('76000000', n), display_order: n }));
+    f.links = f.bindings.map(row => ({ ...link, material_id: row.material_id }));
+    const h = buildHarness(state), r = await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath() }));
+    assert.equal(r.body.contents.length, 20); assert.equal(h.calls.filter(call => call.sql.includes('FROM material_groups')).length, 1);
+    assert.equal(h.calls.length, 8); assert.equal(h.commitCount(), 0);
+});
+test('student materials: release boundary uses database epochs across SQL session offsets', async () => {
+    for (const offset of [0, 7200, 10800]) {
+        const state = materialState(); state.sessionOffsetSeconds = offset;
+        state.lessons.find(row => row.id === LESSON_1)!.release_at = stamp(NOW_EPOCH);
+        const h = buildHarness(state);
+        assert.equal((await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath() }))).status, 200);
+        state.nowEpoch = NOW_EPOCH - 1;
+        assert.equal((await runChain(h.chain, makeReq({ token: studentToken(), pathName: contentsPath() }))).status, 409);
+    }
+});
+
+const pdfBytes = Buffer.from('%PDF-1.7\nsynthetic course material\n%%EOF');
+function fileDeliveryFixture() {
+    const state = materialState(), fixture = state.lessonMaterialFixture;
+    fixture.fileSchema = true;
+    const fileId = '79000000-0000-4000-8000-000000000001', sha = createHash('sha256').update(pdfBytes).digest('hex');
+    fixture.fileRecord = { id: fileId, material_id: materialId, tenant_id: TENANT_A, course_id: COURSE_A1,
+        object_key: `catalog-materials/${TENANT_A}/${COURSE_A1}/${materialId}/${fileId}.pdf`, object_version: Buffer.from('version-1'),
+        sha256: sha, size_bytes: pdfBytes.length, mime_type: 'application/pdf', status: 'active', scan_status: 'clean',
+        scanned_object_version: Buffer.from('version-1'), scanned_sha256: sha, scan_engine: 'fixture-scanner', scan_policy_version: 'v1',
+        scanned_at_epoch: NOW_EPOCH - 1, now_epoch: NOW_EPOCH };
+    let reads = 0;
+    const config: MaterialFileDeliveryConfig = { trustedScanner: { engine: 'fixture-scanner', policyVersion: 'v1' }, reader: {
+        read: async () => { reads++; return (async function*() { yield pdfBytes; })(); },
+    } };
+    return { state, fixture, config, reads: () => reads };
+}
+const filePath = (key = contentId, lessonId = LESSON_1) => `${contentsPath(lessonId)}/${key}/file`;
+test('student file route: production default remains unavailable and a foreign content ID remains 404', async () => {
+    const h = buildHarness(materialState());
+    const valid = await runChain(h.chain, makeReq({ token: studentToken(), pathName: filePath() }));
+    assert.equal(valid.status, 503); assert.equal(valid.body.code, 'MATERIAL_FILE_UNAVAILABLE');
+    assert.equal(valid.headers['Cache-Control'], 'no-store');
+    const foreign = await runChain(h.chain, makeReq({ token: studentToken(), pathName: filePath('79000000-0000-4000-8000-000000000099') }));
+    assert.equal(foreign.status, 404);
+    assert.ok(h.calls.every(call => !call.sql.includes("TABLE_NAME='course_material_files'")));
+});
+test('student file route: trusted configured fixture serves attachment bytes only after two full proofs', async () => {
+    const f = fileDeliveryFixture(), h = buildHarness(f.state, f.config);
+    for (let n = 0; n < 3; n++) {
+        const r = await runChain(h.chain, makeReq({ token: studentToken(), pathName: filePath() }));
+        assert.equal(r.status, 200); assert.deepEqual(r.body, pdfBytes);
+        assert.equal(r.headers['Content-Type'], 'application/pdf'); assert.equal(r.headers['X-Content-Type-Options'], 'nosniff');
+        assert.equal(r.headers['Content-Security-Policy'], 'sandbox'); assert.equal(r.headers['Content-Length'], String(pdfBytes.length));
+        assert.match(r.headers['Content-Disposition'], /^attachment; filename="lesson-material-[a-f\d-]+\.pdf"$/);
+        assert.equal(r.headers.ETag, undefined); assert.equal(r.headers['Last-Modified'], undefined);
+        assert.ok(!JSON.stringify(r.headers).includes('catalog-materials'));
+    }
+    assert.equal(f.reads(), 3); assert.equal(h.connectionCount(), 6); assert.equal(h.rollbackCount(), 6); assert.equal(h.releaseCount(), 6);
+    assert.equal(h.state.completions.length, 0); assert.equal(h.commitCount(), 0);
+});
+for (const revoke of ['course','assignment','branch','lesson','binding','source-version'] as const) {
+    test(`student file route: ${revoke} changed during read returns no file bytes`, async () => {
+        const f = fileDeliveryFixture();
+        f.config.reader.read = async () => (async function*() {
+            yield pdfBytes;
+            if (revoke === 'course') f.state.courses.find(row => row.id === COURSE_A1)!.publication_state = 'draft';
+            if (revoke === 'assignment') f.fixture.links = [];
+            if (revoke === 'branch') f.fixture.links[0].branch_scope = 'unassigned';
+            if (revoke === 'lesson') f.state.lessons.find(row => row.id === LESSON_1)!.release_at = stamp(NOW_EPOCH + 60);
+            if (revoke === 'binding') f.fixture.bindings = [];
+            if (revoke === 'source-version') f.fixture.fileRecord.object_version = f.fixture.fileRecord.scanned_object_version = Buffer.from('version-2');
+        })();
+        const h = buildHarness(f.state, f.config), r = await runChain(h.chain, makeReq({ token: studentToken(), pathName: filePath() }));
+        assert.ok([404, 409].includes(r.status)); assert.equal(Buffer.isBuffer(r.body), false); assert.equal(r.headers['Content-Disposition'], undefined);
+    });
+}
+test('student file route: request selectors, range, locked lesson and absent scan never read storage', async () => {
+    const f = fileDeliveryFixture(), h = buildHarness(f.state, f.config);
+    assert.equal((await runChain(h.chain, makeReq({ token: studentToken(), pathName: filePath(), query: { object_key: 'foreign' } }))).status, 400);
+    assert.equal((await runChain(h.chain, makeReq({ token: studentToken(), pathName: filePath(), headers: { Range: 'bytes=0-5' } }))).status, 416);
+    assert.equal((await runChain(h.chain, makeReq({ token: studentToken(), pathName: filePath(contentId, LESSON_UNRELEASED) }))).status, 409);
+    f.fixture.fileRecord.scan_status = 'pending';
+    assert.equal((await runChain(h.chain, makeReq({ token: studentToken(), pathName: filePath() }))).status, 503); assert.equal(f.reads(), 0);
+});
+test('student PDF availability is an explicit source-proof offer, with no provider I/O or private metadata',async()=>{
+    const f=fileDeliveryFixture(),h=buildHarness(f.state,f.config);
+    const r=await runChain(h.chain,makeReq({token:studentToken(),pathName:contentsPath()}));
+    assert.equal(r.status,200);assert.equal(r.body.contents[0].delivery_status,'pdf_available');assert.equal(f.reads(),0);
+    assert.deepEqual(Object.keys(r.body.contents[0]).sort(),['content_id','title','material_type','display_order','delivery_status'].sort());
+    assert.ok(!JSON.stringify(r.body).includes('catalog-materials'));assert.ok(!JSON.stringify(r.body).includes('version-1'));
+    assert.equal(h.calls.filter(call=>call.sql.includes('SELECT b.id AS content_id,f.id')).length,1);
+});
+for(const gate of ['schema','pending','revoked','policy','raw-version','digest','duplicate','overflow'] as const)test(`student availability ${gate} never offers download`,async()=>{
+    const f=fileDeliveryFixture();
+    if(gate==='schema')f.fixture.fileSchema=false;
+    if(gate==='pending')f.fixture.fileRecord.scan_status='pending';
+    if(gate==='revoked')f.fixture.fileRecord.status='revoked';
+    if(gate==='policy')f.fixture.fileRecord.scan_policy_version='old';
+    if(gate==='raw-version')f.fixture.fileRecord.scanned_object_version=Buffer.from('version-1 ');
+    if(gate==='digest')f.fixture.fileRecord.scanned_sha256='0'.repeat(64);
+    if(gate==='duplicate'||gate==='overflow')f.fixture.fileRows=Array.from({length:gate==='duplicate'?2:21},()=>({...f.fixture.fileRecord,content_id:contentId}));
+    const h=buildHarness(f.state,f.config),r=await runChain(h.chain,makeReq({token:studentToken(),pathName:contentsPath()}));
+    assert.equal(r.status,200);assert.equal(r.body.contents[0].delivery_status,'unavailable');assert.equal(f.reads(),0);
 });

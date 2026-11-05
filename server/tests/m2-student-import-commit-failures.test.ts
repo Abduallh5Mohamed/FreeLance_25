@@ -385,15 +385,21 @@ test('safety: a 500 never names a table, a column, a statement or a driver code'
 
 test('safety: the caller identity recorded on a successful batch is the verified owner', async () => {
   const { state, harness } = setup();
-  const result = await call(harness, goodBatch(1, 'who'));
+  const payload = goodBatch(1, 'who');
+  const result = await call(harness, payload);
   assert.equal(result.status, 200);
   assert.equal(state.importBatches.length, 1);
   assert.equal(state.importBatches[0].created_by, OWNER_A);
   assert.equal(state.importBatches[0].tenant_id, TENANT_A);
   // The sanitized record stores no CSV value and no created student id.
   const serialized = JSON.stringify(state.importBatches[0]);
+  assert.deepEqual(Object.keys(state.importBatches[0]).sort(), [
+    'id', 'tenant_id', 'idempotency_key', 'payload_digest', 'created_count', 'row_numbers', 'created_by',
+  ].sort(), 'the batch stores only the documented sanitized projection');
   assert.equal(serialized.includes('@x.com'), false, 'no submitted value is stored');
-  assert.equal(serialized.includes('07f'), false, 'no submitted phone is stored');
+  // A three-character hex fragment can occur in a random UUID or digest. Check
+  // the submitted phone itself, not an unrelated fragment of another fixture.
+  assert.equal(serialized.includes(payload.rows[0].phone), false, 'no submitted phone is stored');
   const created = state.students.filter(student => student.tenant_id === TENANT_A && !['a1', 'a2', 'a3', 'a4', 'a5'].includes(student.id));
   assert.equal(created.length, 1);
   assert.equal(serialized.includes(created[0].id), false, 'no created student id is stored');

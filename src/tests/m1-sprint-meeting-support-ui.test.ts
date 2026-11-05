@@ -38,9 +38,14 @@ import { notifySessionChange } from "../lib/session-events";
 // ---------------------------------------------------------------------------
 const API_STUB = [
   "export const createSupportTicket = async () => ({ id: 'stub', ticket_number: 'STUB-1' });",
+  "export const reconcileSupportTicket = async () => ({});",
+  "export const reconcileSupportReply = async () => ({});",
   "export const getMySupportTickets = async () => [];",
   "export const getSupportQueue = async () => [];",
   "export const getSupportTicket = async () => ({ ticket: null, replies: [] });",
+  "export const getOlderSupportReplies = async () => ({ replies: [], next_cursor: null });",
+  "export const getLessonSupportContext = async () => ({});",
+  "export const getSupportTicketContext = async () => ({ state: 'none', context: null });",
   "export const replyToSupportTicket = async () => ({ id: 'stub-reply' });",
   "export const updateSupportTicketStatus = async () => ({ id: 'stub' });",
 ].join("\n");
@@ -103,15 +108,8 @@ type LoaderDeps<T> = {
   onError: (message: string) => void;
   onLoadingChange?: (loading: boolean) => void;
 };
-type DetailsDeps = {
-  request: (ticketId: string) => Promise<{ ticket: SupportTicket; replies: SupportReply[] }>;
-  onSelect: (ticket: SupportTicket) => void;
-  onClearReplies: () => void;
-  onApply: (ticket: SupportTicket, replies: SupportReply[]) => void;
-  onError: (message: string) => void;
-  onLoadingChange?: (loading: boolean) => void;
-};
-type DetailsController = { open(ticket: SupportTicket): Promise<void>; invalidate(): void };
+type DetailsDeps = import('../pages/Support').TicketDetailsControllerDeps;
+type DetailsController = import('../pages/Support').TicketDetailsController;
 type ActionRefusal = "no-session" | "scope-changed" | "not-in-list" | "unsafe-url";
 type ActionDecision = { ok: boolean; reason?: ActionRefusal; url?: string };
 type ActionGateDeps = {
@@ -553,6 +551,19 @@ test("createTicketDetailsController clears the previous ticket's replies the mom
   assert.equal(clears, 2, "replies cleared on every open");
   assert.deepEqual(errors, []);
 });
+test("support detail controller clears the older-replies warning when another ticket opens", async () => {
+  const { support } = await loadPages();
+  const pending = deferred<{ ticket: SupportTicket; replies: SupportReply[]; has_more_replies: boolean }>();
+  let more = false;
+  const controller = support.createTicketDetailsController({
+    request: (ticketId) => ticketId === 'A' ? Promise.resolve({ ticket: makeTicket('A'), replies: [makeReply('latest')], has_more_replies: true }) : pending.promise,
+    onSelect: () => {}, onClearReplies: () => { more = false; },
+    onApply: (_ticket, _replies, hasMoreReplies) => { more = hasMoreReplies === true; }, onError: () => {},
+  });
+  await controller.open(makeTicket('A'));assert.equal(more,true);
+  const opening=controller.open(makeTicket('B'));assert.equal(more,false);
+  pending.resolve({ ticket: makeTicket('B'), replies: [], has_more_replies: false });await opening;assert.equal(more,false);
+});
 
 test("createTicketDetailsController clears stale replies on failure and never commits the failed ticket", async () => {
   const { support } = await loadPages();
@@ -637,6 +648,52 @@ test("createTicketDetailsController.invalidate drops an in-flight open (close/id
 
   assert.deepEqual(applied, [], "an invalidated open must not commit");
   assert.deepEqual(errors, []);
+});
+test('support older replies use one flight and advance only after a validated page',async()=>{
+  const {support}=await loadPages();const pending=deferred<any>();let calls=0;const prepended:string[][]=[],errors:string[]=[];
+  const controller=support.createTicketDetailsController({
+    request:async()=>({ticket:makeTicket('A'),replies:[makeReply('latest')],next_cursor:'latest',has_more_replies:true}),
+    requestOlder:async(_id,before)=>{calls++;assert.equal(before,'latest');return pending.promise;},
+    onSelect:()=>{},onClearReplies:()=>{},onApply:()=>{},onError:e=>errors.push(e),onPrepend:rows=>prepended.push(rows.map(row=>row.id)),
+  });
+  await controller.open(makeTicket('A'));const first=controller.loadOlder();await controller.loadOlder();assert.equal(calls,1);
+  pending.resolve({replies:[makeReply('oldest'),makeReply('older')],next_cursor:null});await first;
+  assert.deepEqual(prepended,[['oldest','older']]);await controller.loadOlder();assert.equal(calls,1);assert.deepEqual(errors,[]);
+});
+test('older-page failure preserves cursor for explicit retry and rejects overlap',async()=>{
+  const {support}=await loadPages();let calls=0;const errors:string[]=[],prepended:string[][]=[];
+  const controller=support.createTicketDetailsController({
+    request:async()=>({ticket:makeTicket('A'),replies:[makeReply('latest')],next_cursor:'latest'}),
+    requestOlder:async(_id,before)=>{assert.equal(before,'latest');calls++;if(calls===1)throw Error('offline');if(calls===2)return{replies:[makeReply('latest')],next_cursor:null};return{replies:[makeReply('older')],next_cursor:null};},
+    onSelect:()=>{},onClearReplies:()=>{},onApply:()=>{},onError:e=>errors.push(e),onPrepend:rows=>prepended.push(rows.map(row=>row.id)),
+  });
+  await controller.open(makeTicket('A'));await controller.loadOlder();await controller.loadOlder();assert.equal(errors.length,2);assert.deepEqual(prepended,[]);
+  await controller.loadOlder();assert.deepEqual(prepended,[['older']]);
+});
+for(const fence of ['ticket','silent-identity','session-ABA','invalidate'] as const)test(`older support response is fenced after ${fence}`,async()=>{
+  const {support}=await loadPages();const pending=deferred<any>();let identity='A',applied=0,ended=0;let signal:AbortSignal|undefined;
+  const controller=support.createTicketDetailsController({
+    readIdentity:()=>identity,
+    request:async id=>({ticket:makeTicket(id),replies:[makeReply('latest')],next_cursor:'latest'}),
+    requestOlder:async(_id,_before,cancel)=>{signal=cancel;return pending.promise;},
+    onSelect:()=>{},onClearReplies:()=>{},onApply:()=>{},onError:()=>{},onPrepend:()=>{applied++;},onSessionEnded:()=>{ended++;},
+  });
+  await controller.open(makeTicket('A'));const first=controller.loadOlder();
+  if(fence==='ticket')await controller.open(makeTicket('B'));
+  else if(fence==='silent-identity')identity='B';
+  else if(fence==='session-ABA'){identity='B';controller.endSession();identity='A';}
+  else controller.invalidate();
+  pending.resolve({replies:[makeReply('older')],next_cursor:null});await first;assert.equal(applied,0);assert.equal(signal?.aborted,true);
+  if(fence==='silent-identity')assert.equal(ended,1);
+});
+test('older reply permission loss retires private conversation instead of keeping stale messages',async()=>{
+  const {support}=await loadPages();let ended=0,applied=0;
+  const controller=support.createTicketDetailsController({
+    request:async()=>({ticket:makeTicket('A'),replies:[makeReply('latest')],next_cursor:'latest'}),
+    requestOlder:async()=>{throw Object.assign(Error('not found'),{status:404});},
+    onSelect:()=>{},onClearReplies:()=>{},onApply:()=>{},onError:()=>{},onPrepend:()=>{applied++;},onSessionEnded:()=>{ended++;},
+  });
+  await controller.open(makeTicket('A'));await controller.loadOlder();assert.equal(ended,1);assert.equal(applied,0);
 });
 
 // ---------------------------------------------------------------------------

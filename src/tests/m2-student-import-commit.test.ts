@@ -1566,6 +1566,41 @@ const liveImportSeam = () => {
   return { controller, calls };
 };
 
+test("component: onboarding guide uses the actual gate and keeps confirmation as an explicit separate control", async () => {
+  const preview = await previewStateFrom(PANEL_CSV);
+  const model = modelOf(PANEL_CSV);
+  const { controller: commit, calls } = liveImportSeam();
+  const server = createServerResolutionController({ resolve: async () => clearResultFor([]) });
+  try {
+    const first = await renderPanel({ preview, resolution: model, resolutionController: resolutionSeamFor(model),
+      serverController: server,
+      commitController: commit, commitState: initialImportCommitState() });
+    assert.match(first.html, /خطوات استيراد الطلاب/);
+    assert.match(first.html, /تنزيل قالب CSV فارغ/);
+    assert.match(first.html, /href="#student-import-matching"/);
+    assert.match(first.html, /<li[^>]*aria-current="step"[^>]*>3/);
+    assert.equal(calls.length, 0);
+
+    const matched = await renderPanel({ preview, resolution: model, resolutionController: resolutionSeamFor(model),
+      serverController: server,
+      serverState: { phase: 'ready', result: clearResultFor(CLEAN_ROWS), message: null, revision: 1 },
+      commitController: commit, commitState: initialImportCommitState() });
+    assert.match(matched.html, /href="#student-import-confirmation"/);
+    assert.match(matched.html, /لم يُحفظ الطلاب بهذه المعاينة وحدها/);
+    assert.equal(calls.length, 0, 'neither rendering nor the guide submits or retries');
+
+    const saved = await renderPanel({ preview, resolution: model, resolutionController: resolutionSeamFor(model),
+      serverController: server,
+      serverState: { phase: 'ready', result: clearResultFor(CLEAN_ROWS), message: null, revision: 1 },
+      commitController: commit,
+      commitState: { phase: 'committed', result: { batch_id: 'saved-batch', replayed: false, created: 2, row_numbers: CLEAN_ROWS }, message: null, revision: 1 } });
+    assert.match(saved.html, /لا تعد إرسال الملف/);
+    assert.equal(saved.controls.find(control => control.text.includes('تأكيد إدخال الطلاب'))?.disabled, true,
+      'a confirmed import no longer offers a redundant confirmation');
+    assert.equal(calls.length, 0);
+  } finally { commit.dispose(); server.dispose(); }
+});
+
 test("component: the import block renders with a live seam", async () => {
   const preview = await previewStateFrom(PANEL_CSV);
   const model = modelOf(PANEL_CSV);
