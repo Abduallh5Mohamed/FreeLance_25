@@ -1,0 +1,1042 @@
+/* Hero proportions are independent of the smaller product preview widgets. */
+.tw-header .tw-nav {
+  min-height: 64px;
+  height: 64px;
+}
+.tw-hero {
+  width: calc(100% - clamp(32px, 4vw, 96px));
+  grid-template-columns: 1fr 1.85fr;
+  gap: 24px;
+  padding: 10px 0 25px;
+  min-height: 0;
+}
+.tw-hero-copy {
+  padding: 35px 0 0;
+  align-self: start;
+}
+.tw-hero h1 {
+  font-size: clamp(34px, 4.5vw, 58px);
+  line-height: 1.27;
+  letter-spacing: -1.8px;
+  white-space: nowrap;
+  font-weight: 900;
+}
+.tw-hero-copy > p {
+  font-size: clamp(15px, 1.3vw, 18px);
+  line-height: 1.8;
+  margin: 26px 0;
+}
+.tw-hero h1 span:after {
+  left: 18%;
+  right: 19%;
+  height: 14px;
+  bottom: -11px;
+  background: none;
+  border-top: 7px solid #ffd322;
+  border-radius: 60% 70% 0 0;
+  transform: rotate(-3deg);
+}
+.tw-hero .tw-actions {
+  gap: 12px;
+}
+.tw-hero .tw-button {
+  font-size: 18px;
+  padding: 10px 24px;
+  min-height: 48px;
+}
+.tw-hero .tw-scroll-hint {
+  display: none;
+}
+.tw-reference-art {
+  container-type: inline-size;
+  position: relative;
+  width: 100%;
+  aspect-ratio: 550/270;
+  direction: ltr;
+  font-family: "Tajawal", sans-serif;
+}
+.tw-reference-cloud {
+  position: absolute;
+  inset: 0 0 2% 0;
+  background: linear-gradient(130deg, #d7edff, #c7e5ff);
+  border-radius: 45% 60% 12% 15% / 60% 90% 13% 15%;
+  transform: rotate(-3deg);
+}
+.tw-reference-wires {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  inset: 0;
+}
+.tw-reference-window {
+  position: absolute;
+  left: 32.4%;
+  top: 11.1%;
+  width: 64.5%;
+  height: 71.1%;
+  border: 2px solid #154caa;
+  background: linear-gradient(100deg, #103e98, #0870ee);
+  border-radius: 28px 28px 20px 20px;
+  box-shadow:
+    inset 0 0 0 3px #79b6ff,
+    4px 7px 0 #8fbfff,
+    6px 9px 0 #2761b7;
+  transform: rotate(2deg);
+  padding: 0 9px 9px;
+}
+.tw-reference-chrome {
+  height: 12%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-left: 16px;
+}
+.tw-reference-chrome i {
+  width: 9px;
+  height: 9px;
+  background: white;
+  border-radius: 50%;
+}
+.tw-reference-tabs {
+  display: flex;
+  direction: rtl;
+  height: 17%;
+  gap: 2px;
+}
+.tw-reference-tabs > span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: 1;
+  color: #0b2655;
+  font-weight: 800;
+  font-size: clamp(6px, 1.6cqw, 13px);
+  border: 1px solid #91b9e8;
+  border-bottom: none;
+  border-radius: 22px 22px 0 0;
+  background: linear-gradient(white, #cee5ff);
+  white-space: nowrap;
+}
+.tw-reference-tabs svg {
+  width: 17px;
+  height: 17px;
+}
+.tw-reference-panels {
+  height: 71%;
+  padding: 11px;
+  display: grid;
+  grid-template-columns: 1fr 1.48fr 0.77fr;
+  gap: 7px;
+  background: #f8fbff;
+  border: 2px solid #b9d9fb;
+  border-radius: 16px;
+  margin-inline: -11px;
+  box-shadow: inset 0 0 0 5px white;
+}
+.tw-reference-panels > div {
+  direction: rtl;
+  background: #f2f7ff;
+  border: 1px solid #c5defb;
+  border-radius: 10px;
+  min-width: 0;
+  padding: 6px;
+}
+.tw-reference-panels h3 {
+  font-size: clamp(6px, 1.45cqw, 13px);
+  text-align: center;
+  font-weight: 800;
+  margin: 0 0 8px;
+  white-space: nowrap;
+}
+.tw-reference-attendance > div {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 6px 0;
+  background: white;
+  border-radius: 5px;
+  font-size: clamp(5px, 1.3cqw, 11px);
+  padding: 2px;
+}
+.tw-reference-attendance > div > svg {
+  width: 18px;
+  height: 18px;
+  color: #0762e9;
+  background: #d9eaff;
+  border-radius: 50%;
+  fill: #a2c7ff;
+}
+.tw-reference-attendance span {
+  flex: 1;
+}
+.tw-reference-attendance b {
+  display: grid;
+  place-items: center;
+  background: #2baf70;
+  color: white;
+  border-radius: 50%;
+  width: 12px;
+  height: 12px;
+}
+.tw-reference-attendance b.absent {
+  background: #929cac;
+}
+.tw-reference-attendance b svg {
+  width: 10px;
+  height: 10px;
+}
+.tw-reference-player {
+  position: relative;
+  height: 60%;
+  background: linear-gradient(140deg, #3d65a0 40%, #345b98 40%, #264a86 75%);
+  color: white;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+.tw-reference-player > svg {
+  width: 34px;
+  height: 34px;
+}
+.tw-reference-controls {
+  position: absolute;
+  bottom: 5px;
+  inset-inline: 7px;
+  display: flex;
+  direction: ltr;
+  align-items: center;
+  gap: 6px;
+}
+.tw-reference-controls > svg {
+  width: 8px;
+  height: 8px;
+}
+.tw-reference-controls > span {
+  flex: 1;
+  height: 3px;
+  background: #96b4d9;
+  position: relative;
+}
+.tw-reference-controls i {
+  position: absolute;
+  left: 35%;
+  top: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: white;
+}
+.tw-reference-controls small {
+  font-size: 7px;
+}
+.tw-reference-lesson-footer {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: clamp(4px, 1cqw, 9px);
+  font-weight: 700;
+}
+.tw-reference-lesson-footer span {
+  background: #deebfc;
+  padding: 5px 2px;
+  border-radius: 4px;
+  flex: 1;
+  text-align: center;
+}
+.tw-reference-schedule > b {
+  display: block;
+  background: white;
+  padding: 4px 0;
+  text-align: center;
+  font-size: clamp(5px, 1.1cqw, 10px);
+}
+.tw-reference-week {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-items: center;
+  gap: 2px;
+  margin-top: 6px;
+  text-align: center;
+  font-size: clamp(5px, 1.1cqw, 10px);
+}
+.tw-reference-week span {
+  padding: 5px 0;
+  background: #e3effe;
+  border-radius: 3px;
+}
+.tw-reference-week span.highlight {
+  background: #ffe47b;
+  font-weight: 900;
+}
+.tw-reference-card {
+  position: absolute;
+  width: 19%;
+  height: 21%;
+  background: #fff;
+  border: 1.5px solid #1d509d;
+  border-radius: 8px;
+  box-shadow:
+    inset 0 0 0 3px #daebff,
+    2px 3px 0 #bcd6f1;
+  padding: 5px 9px;
+  direction: rtl;
+}
+.tw-reference-card-top {
+  display: flex;
+  gap: 3px;
+  direction: ltr;
+  margin: -1px 0 4px;
+}
+.tw-reference-card-top i {
+  width: 4px;
+  height: 4px;
+  background: #2674d8;
+  border-radius: 50%;
+}
+.tw-reference-card strong {
+  display: block;
+  font-size: clamp(6px, 1.5cqw, 13px);
+  text-align: right;
+  line-height: 1;
+}
+.tw-reference-card.card-0 {
+  left: 6%;
+  top: 5%;
+  transform: rotate(9deg);
+}
+.tw-reference-card.card-1 {
+  left: 2%;
+  top: 30%;
+  transform: rotate(-6deg);
+}
+.tw-reference-card.card-2 {
+  left: 6%;
+  top: 54%;
+  transform: rotate(5deg);
+}
+.tw-reference-card.card-3 {
+  left: 2%;
+  top: 77%;
+  transform: rotate(2deg);
+}
+.tw-tiny-calendar {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 3px;
+  margin-top: 6px;
+}
+.tw-tiny-calendar i {
+  background: #e7f2ff;
+  border: 1px solid #cfe1f4;
+  height: 8px;
+}
+.tw-tiny-calendar i:nth-child(4n) {
+  background: #91c1fb;
+}
+.tw-tiny-list > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 12px;
+}
+.tw-tiny-list svg {
+  width: 11px;
+  height: 11px;
+  color: #0056db;
+}
+.tw-tiny-list b {
+  width: 60%;
+  height: 3px;
+  border-radius: 3px;
+  background: #d0d9e5;
+}
+.tw-tiny-list i {
+  width: 7px;
+  height: 7px;
+  border: 1px solid #1b5fc8;
+  border-radius: 1px;
+}
+.tw-tiny-video {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  margin-top: 6px;
+}
+.tw-tiny-video svg {
+  grid-row: span 2;
+  background: #89bdff;
+  color: white;
+  width: 32px;
+  height: 24px;
+  border-radius: 3px;
+  padding: 5px;
+}
+.tw-tiny-video span {
+  height: 4px;
+  background: #d2dfef;
+}
+.tw-reference-spark {
+  position: absolute;
+  right: 5%;
+  top: 3%;
+  width: 9%;
+}
+.tw-hero > .tw-dock {
+  width: 180px;
+  height: 180px;
+  left: 17%;
+  bottom: -13px;
+}
+@media (min-width: 1600px) {
+  .tw-hero {
+    grid-template-columns: 1fr 1.8fr;
+  }
+}
+@media (max-width: 1000px) and (min-width: 700px) {
+  .tw-hero {
+    gap: 14px;
+    width: calc(100% - 30px);
+  }
+  .tw-hero h1 {
+    font-size: 34px;
+  }
+  .tw-hero .tw-button {
+    font-size: 13px;
+    padding: 8px 15px;
+  }
+  .tw-hero > .tw-dock {
+    width: 120px;
+    height: 120px;
+  }
+}
+@media (max-width: 699px) {
+  .tw-hero {
+    width: calc(100% - 32px);
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 28px 0 85px;
+    min-height: 0;
+  }
+  .tw-hero-copy {
+    text-align: center;
+    width: 100%;
+    padding: 0;
+  }
+  .tw-hero h1 {
+    font-size: clamp(30px, 8.8vw, 43px);
+    line-height: 1.4;
+    letter-spacing: -1px;
+  }
+  .tw-hero-copy > p {
+    font-size: 15px;
+    margin: 20px 0;
+  }
+  .tw-hero .tw-actions {
+    justify-content: center;
+  }
+  .tw-hero .tw-button {
+    font-size: 14px;
+    min-height: 42px;
+    padding: 8px 17px;
+  }
+  .tw-reference-art {
+    width: 100%;
+    min-height: 190px;
+  }
+  .tw-reference-window {
+    left: 23%;
+    width: 76%;
+    padding: 0 5px 5px;
+    border-radius: 16px;
+  }
+  .tw-reference-tabs > span {
+    font-size: 6px;
+    gap: 2px;
+    border-radius: 10px 10px 0 0;
+  }
+  .tw-reference-tabs svg {
+    width: 10px;
+    height: 10px;
+  }
+  .tw-reference-chrome {
+    padding-left: 10px;
+    gap: 5px;
+  }
+  .tw-reference-chrome i {
+    width: 5px;
+    height: 5px;
+  }
+  .tw-reference-panels {
+    padding: 5px;
+    gap: 3px;
+    margin-inline: -7px;
+    border-radius: 8px;
+  }
+  .tw-reference-panels > div {
+    padding: 3px;
+    border-radius: 5px;
+  }
+  .tw-reference-panels h3 {
+    font-size: 6px;
+    margin-bottom: 4px;
+  }
+  .tw-reference-attendance > div {
+    font-size: 5px;
+    margin: 3px 0;
+    gap: 2px;
+  }
+  .tw-reference-attendance > div > svg {
+    width: 10px;
+    height: 10px;
+  }
+  .tw-reference-attendance b {
+    width: 8px;
+    height: 8px;
+  }
+  .tw-reference-attendance b svg {
+    width: 7px;
+    height: 7px;
+  }
+  .tw-reference-player > svg {
+    width: 20px;
+    height: 20px;
+  }
+  .tw-reference-controls {
+    gap: 2px;
+    inset-inline: 3px;
+  }
+  .tw-reference-controls small {
+    font-size: 4px;
+  }
+  .tw-reference-lesson-footer {
+    gap: 2px;
+    margin-top: 4px;
+    font-size: 4px;
+  }
+  .tw-reference-lesson-footer span {
+    padding: 3px 0;
+  }
+  .tw-reference-week {
+    font-size: 5px;
+    gap: 1px;
+    margin-top: 3px;
+  }
+  .tw-reference-week span {
+    padding: 3px 0;
+  }
+  .tw-reference-schedule > b {
+    font-size: 5px;
+    padding: 2px;
+  }
+  .tw-reference-card {
+    padding: 4px;
+    border-radius: 5px;
+  }
+  .tw-reference-card strong {
+    font-size: 6px;
+  }
+  .tw-reference-card-top {
+    gap: 2px;
+    margin-bottom: 3px;
+  }
+  .tw-reference-card-top i {
+    width: 3px;
+    height: 3px;
+  }
+  .tw-tiny-calendar {
+    gap: 2px;
+    margin-top: 4px;
+  }
+  .tw-tiny-calendar i {
+    height: 4px;
+  }
+  .tw-tiny-list > span {
+    height: 7px;
+    gap: 3px;
+  }
+  .tw-tiny-list svg {
+    width: 7px;
+    height: 7px;
+  }
+  .tw-tiny-list b {
+    height: 2px;
+  }
+  .tw-tiny-list i {
+    width: 5px;
+    height: 5px;
+  }
+  .tw-tiny-video {
+    margin-top: 3px;
+    gap: 2px;
+  }
+  .tw-tiny-video svg {
+    width: 20px;
+    height: 15px;
+    padding: 3px;
+  }
+  .tw-tiny-video span {
+    height: 2px;
+  }
+  .tw-hero > .tw-dock {
+    width: 105px;
+    height: 105px;
+    left: 20%;
+    bottom: 0;
+  }
+}
+/* The second scene preserves the reference's three feeds and one destination. */
+.tw-together {
+  width: calc(100% - clamp(24px, 3vw, 72px));
+  max-width: none;
+  margin: 0 auto;
+  padding: 26px 20px 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+}
+.tw-together:before { display: none; }
+.tw-together-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.tw-together-inner {
+  position: relative;
+  width: 100%;
+  min-height: 190px;
+  padding-block: 8px;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.5fr);
+  gap: 30px;
+}
+.tw-together-inner h2 {
+  font-size: clamp(26px, 2.5vw, 36px);
+  line-height: 1.4;
+}
+.tw-together-inner h2 span {
+  position: relative;
+  display: inline-block;
+}
+.tw-together-inner h2 span:after {
+  content: "";
+  position: absolute;
+  width: 44%;
+  right: 8%;
+  bottom: -6px;
+  height: 10px;
+  border-top: 5px solid #ffda22;
+  border-radius: 50%;
+  transform: rotate(3deg);
+}
+.tw-gather-art {
+  position: relative;
+  aspect-ratio: 800/250;
+  width: 100%;
+  direction: ltr;
+}
+.tw-gather-art:before {
+  content: "";
+  position: absolute;
+  right: -3%;
+  bottom: -4%;
+  width: 49%;
+  height: 13%;
+  background: #b8dbfc;
+  border-radius: 50%;
+}
+.tw-gather-wires {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.tw-gather-cards {
+  display: flex;
+  gap: 12px;
+  width: 55%;
+  position: absolute;
+  left: 0;
+  top: 5%;
+}
+.tw-gather-card {
+  flex: 1;
+  min-width: 0;
+  height: auto;
+  aspect-ratio: 1.16;
+  background: #fff;
+  border: 1px solid #92afd0;
+  border-radius: 8px;
+  padding: 9px;
+  box-shadow:
+    inset 0 0 0 3px #eef5fd,
+    2px 3px 0 #c6daee;
+}
+.tw-gather-card strong {
+  display: block;
+  font-size: 12px;
+  text-align: center;
+  margin-bottom: 12px;
+  font-weight: 800;
+}
+.tw-gather-calendar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
+}
+.tw-gather-calendar i {
+  height: 14px;
+  background: #dceafa;
+  border-radius: 2px;
+}
+.tw-gather-calendar i:nth-child(3n + 1) {
+  background: #8bbfff;
+}
+.tw-gather-calendar i:nth-child(7) {
+  background: #ffe592;
+}
+.tw-gather-list > span {
+  display: flex;
+  direction: rtl;
+  align-items: center;
+  gap: 6px;
+  height: 17px;
+}
+.tw-gather-list svg {
+  width: 13px;
+  height: 13px;
+  fill: #82b5ff;
+  color: #1d67de;
+}
+.tw-gather-list b {
+  height: 4px;
+  flex: 1;
+  background: #c7d2e0;
+}
+.tw-gather-list i {
+  width: 4px;
+  height: 4px;
+  background: #d3ddeb;
+  border-radius: 50%;
+}
+.tw-gather-list em {
+  width: 10px;
+  height: 10px;
+  border: 1px solid #326ac0;
+  font-size: 8px;
+  color: #175bd8;
+  font-style: normal;
+  line-height: 9px;
+}
+.tw-gather-platform {
+  position: absolute;
+  right: 0;
+  top: 17%;
+  width: 42%;
+  height: 78%;
+  background: #1156c9;
+  border: 2px solid #164b9d;
+  border-radius: 19px 19px 9px 9px;
+  box-shadow:
+    inset 0 0 0 3px #4d92ed,
+    4px 6px 0 #b3d4f7;
+  padding: 0 5px 5px;
+  transform: rotate(1deg);
+}
+.tw-gather-chrome {
+  height: 16%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-left: 10px;
+}
+.tw-gather-chrome i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: white;
+}
+.tw-gather-body {
+  height: 84%;
+  background: #fff;
+  border-radius: 10px 10px 5px 5px;
+  padding: 8px;
+}
+.tw-gather-body > strong {
+  display: flex;
+  direction: rtl;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-start;
+  font-size: 12px;
+}
+.tw-gather-body > strong svg {
+  width: 26px;
+  height: 20px;
+  fill: #1a54a7;
+}
+.tw-gather-skeleton {
+  display: flex;
+  gap: 6px;
+  margin: 9px 0;
+}
+.tw-gather-skeleton i {
+  flex: 1;
+  height: 4px;
+  background: #dde4ec;
+  border-radius: 3px;
+}
+.tw-gather-tools {
+  display: flex;
+  gap: 7px;
+}
+.tw-gather-tools svg {
+  width: 24%;
+  height: 38px;
+  background: #e2f0ff;
+  border: 1px solid #d6e7fa;
+  border-radius: 5px;
+  color: #1e77ee;
+  padding: 6px;
+}
+.tw-gather-rays {
+  position: absolute;
+  width: 8%;
+  right: -2%;
+  top: 0;
+}
+.tw-reference-card {
+  translate: calc(var(--tw-tug, 0) * 2px) 0;
+}
+.tw-reference-wires {
+  transform-origin: 36% 80%;
+  scale: calc(1 + var(--tw-tug, 0) * 0.003) 1;
+}
+@media (max-width: 1000px) {
+  .tw-gather-card {
+    height: 95px;
+    padding: 6px;
+  }
+  .tw-gather-card strong {
+    font-size: 9px;
+    margin-bottom: 8px;
+  }
+  .tw-gather-calendar {
+    gap: 3px;
+  }
+  .tw-gather-calendar i {
+    height: 10px;
+  }
+  .tw-gather-list > span {
+    height: 13px;
+  }
+}
+@media (max-width: 699px) {
+  .tw-together-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    padding: 24px 14px;
+    min-height: 0;
+  }
+  .tw-together-inner h2 {
+    font-size: 30px;
+    text-align: center;
+  }
+  .tw-gather-art {
+    aspect-ratio: 800/290;
+    min-height: 130px;
+  }
+  .tw-gather-cards {
+    gap: 6px;
+  }
+  .tw-gather-card {
+    height: 73px;
+    padding: 5px;
+  }
+  .tw-gather-card strong {
+    font-size: 6px;
+    margin-bottom: 7px;
+  }
+  .tw-gather-calendar {
+    gap: 2px;
+  }
+  .tw-gather-calendar i {
+    height: 7px;
+  }
+  .tw-gather-list > span {
+    height: 9px;
+    gap: 3px;
+  }
+  .tw-gather-list svg {
+    width: 8px;
+    height: 8px;
+  }
+  .tw-gather-list b {
+    height: 2px;
+  }
+  .tw-gather-list em {
+    width: 6px;
+    height: 6px;
+    font-size: 5px;
+    line-height: 5px;
+  }
+  .tw-gather-platform {
+    height: 70%;
+    top: 24%;
+    border-radius: 10px 10px 6px 6px;
+    padding: 0 3px 3px;
+  }
+  .tw-gather-chrome {
+    gap: 3px;
+    padding-left: 6px;
+  }
+  .tw-gather-chrome i {
+    width: 4px;
+    height: 4px;
+  }
+  .tw-gather-body {
+    padding: 5px;
+  }
+  .tw-gather-body > strong {
+    font-size: 7px;
+    gap: 5px;
+  }
+  .tw-gather-body > strong svg {
+    width: 14px;
+    height: 12px;
+  }
+  .tw-gather-skeleton {
+    gap: 3px;
+    margin: 5px 0;
+  }
+  .tw-gather-skeleton i {
+    height: 2px;
+  }
+  .tw-gather-tools {
+    gap: 3px;
+  }
+  .tw-gather-tools svg {
+    height: 24px;
+    padding: 4px;
+    border-radius: 3px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tw-reference-card {
+    translate: none;
+  }
+  .tw-reference-wires {
+    scale: none;
+  }
+}
+/* Reference coordinates: all wires, cards and the actor share one 550×270 plane. */
+.tw-reference-card {
+  width: 16.7%;
+  height: 22%;
+  translate: none;
+}
+.tw-reference-card.card-0 {
+  left: 4.2%;
+  top: 4.1%;
+  transform: rotate(8deg);
+}
+.tw-reference-card.card-1 {
+  left: 1.8%;
+  top: 31.8%;
+  transform: rotate(-7deg);
+}
+.tw-reference-card.card-2 {
+  left: 5.5%;
+  top: 52.2%;
+  width: 15%;
+  transform: rotate(6deg);
+}
+.tw-reference-card.card-3 {
+  left: 1.3%;
+  top: 73%;
+  transform: rotate(2deg);
+}
+.tw-reference-wires {
+  scale: none;
+}
+.tw-reference-tail {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 4;
+}
+.tw-reference-art .tw-reference-character {
+  position: absolute;
+  left: 26.4%;
+  top: 67.8%;
+  bottom: auto;
+  width: 20%;
+  height: auto;
+  aspect-ratio: 1;
+  z-index: 5;
+}
+.tw-reference-cloud {
+  inset: 0 0 2%;
+  border-radius: 48% 60% 12% 8% / 70% 90% 15% 12%;
+}
+.tw-header .tw-brand {
+  font-size: 25px;
+  white-space: nowrap;
+}
+.tw-header .tw-brand small {
+  font-size: 9px;
+  letter-spacing: 1.6px;
+}
+@media (min-width: 1000px) {
+  .tw-header .tw-nav {
+    justify-content: flex-start;
+    gap: 38px;
+  }
+  .tw-header .tw-desktop-links {
+    margin-inline-start: 50px;
+    gap: 24px;
+  }
+  .tw-header .tw-desktop-links a:nth-child(2),
+  .tw-header .tw-desktop-links a:nth-child(4) {
+    display: none;
+  }
+  .tw-header .tw-auth .tw-button {
+    min-height: 32px;
+    font-size: 12px;
+    padding: 5px 16px;
+  }
+}
+@media (max-width: 699px) {
+  .tw-header .tw-brand {
+    font-size: 17px;
+    gap: 5px;
+  }
+  .tw-header .tw-brand small {
+    font-size: 7px;
+    letter-spacing: 0.6px;
+  }
+  .tw-header .tw-nav {
+    gap: 8px;
+  }
+  .tw-reference-art {
+    min-height: 0;
+  }
+  .tw-reference-window {
+    left: 32.4%;
+    width: 64.5%;
+  }
+  .tw-hero {
+    padding-bottom: 28px;
+  }
+}
+.tw-reference-art .tw-reference-character {
+  left: 25.27%;
+  top: 58.89%;
+  width: 24.36%;
+}
