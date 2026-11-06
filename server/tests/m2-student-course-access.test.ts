@@ -1536,7 +1536,7 @@ function catalogVideoState(){
 test('student video actual route is authenticated, fixed/no-store and produces no token, write or legacy access',async()=>{
     const state=catalogVideoState(),h=buildHarness(state),pathName=`/courses/${COURSE_A1}/lessons/${LESSON_1}/videos`;
     const result=await runChain(h.chain,makeReq({token:studentToken(),pathName}));assert.equal(result.status,200);
-    assert.deepEqual(result.body,{lesson_id:LESSON_1,videos:[{content_id:contentId,title:'Verified catalog video',display_order:0,playback_status:'unconfigured'}]});assert.equal(result.headers['Cache-Control'],'no-store');
+    assert.deepEqual(result.body,{lesson_id:LESSON_1,videos:[{content_id:contentId,title:'Verified catalog video',display_order:0,playback_status:'session_required'}]});assert.equal(result.headers['Cache-Control'],'no-store');
     assert.equal(h.commitCount(),0);assert.ok(!JSON.stringify(result.body).includes('private-'));assert.ok(!JSON.stringify(result.body).includes('video_id'));assert.ok(!h.calls.some(call=>/^(INSERT|UPDATE|DELETE)/.test(squash(call.sql))));
     state.lessonVideoFixture.bindings=[];assert.deepEqual((await runChain(h.chain,makeReq({token:studentToken(),pathName}))).body.videos,[]);
     state.lessonVideoFixture.group=null;assert.equal((await runChain(h.chain,makeReq({token:studentToken(),pathName}))).status,404);

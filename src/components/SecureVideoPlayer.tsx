@@ -4,21 +4,22 @@ import Hls from 'hls.js';
 import { Loader2, X, Play, Pause, Volume2, VolumeX, Shield, AlertTriangle, RotateCcw, RotateCw, Maximize, Minimize } from 'lucide-react';
 import { VideoSecurityManager, SecurityViolation } from '@/utils/VideoSecurityManager';
 import { notifySessionChange, subscribeSessionChange } from '@/lib/session-events';
+import { createCatalogPlayback, catalogPlaybackRequest, type CatalogVideoSelection } from '@/features/catalog/catalog-video-playback';
+import { readCourseSessionPrincipal } from '@/features/catalog/course-management';
 
-const API_BASE = import.meta.env.VITE_API_URL || '/api';
+const API_BASE = (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL || '/api';
 
-interface SecureVideoPlayerProps {
-    videoId: string;
-    offerId?: string;
+type SecureVideoPlayerProps = {
     userId: string;
     studentName: string;
     groupName: string;
     onClose: () => void;
-    directUrl?: string;
-}
+} & ({ videoId: string; offerId?: string; directUrl?: string; catalog?: never }
+    | { catalog: CatalogVideoSelection; videoId?: never; offerId?: never; directUrl?: never });
 
 export function SecureVideoPlayer({
-    videoId,
+    videoId: legacyVideoId,
+    catalog,
     offerId,
     userId,
     studentName,
@@ -26,6 +27,10 @@ export function SecureVideoPlayer({
     onClose,
     directUrl
 }: SecureVideoPlayerProps) {
+    const [catalogVideoId, setCatalogVideoId] = useState('');
+    const [catalogWatermark, setCatalogWatermark] = useState('');
+    const videoId = legacyVideoId ?? catalogVideoId;
+    const catalogPlaybackRef = useRef<ReturnType<typeof createCatalogPlayback> | null>(null);
     const navigate = useNavigate();
     const videoRef = useRef<HTMLVideoElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -67,7 +72,7 @@ export function SecureVideoPlayer({
     const animationFrameRef = useRef<number | null>(null);
 
     // Watermark tex
-    const watermarkText = `${studentName} • ${groupName} • ${userId.slice(-4)}`;
+    const watermarkText = catalog ? catalogWatermark : `${studentName} • ${groupName} • ${userId.slice(-4)}`;
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
     // Release the forced landscape orientation lock when the player is torn down.
@@ -89,6 +94,7 @@ export function SecureVideoPlayer({
     // clear src, destroy HLS). Playback/protection behavior is untouched,
     // and the app-level logout owns navigation.
     useEffect(() => {
+        if (catalog) return; // The catalog lifecycle handles every scope event.
         const unsubscribe = subscribeSessionChange((event) => {
             if (event.kind !== 'logout') return;
             videoRef.current?.pause();
@@ -96,7 +102,7 @@ export function SecureVideoPlayer({
             hlsRef.current?.destroy();
         });
         return unsubscribe;
-    }, []);
+    }, [Boolean(catalog)]);
 
     // Keep the fullscreen state in sync with the browser (user can press Esc).
     useEffect(() => {
@@ -200,6 +206,7 @@ export function SecureVideoPlayer({
     }, [navigate]);
 
     const acceptVideoSecurityTerms = async () => {
+        if (catalog) { await catalogPlaybackRef.current?.accept(); return; }
         const authToken = localStorage.getItem('authToken');
         if (!authToken || !consentTermsVersion) {
             setError('سجّل الدخول من جديد لقبول شروط حماية الفيديو.');
@@ -390,6 +397,7 @@ export function SecureVideoPlayer({
 
     // LOAD VIDEO
     useEffect(() => {
+        if (catalog) return;
         setLoading(true);
         setError(null);
         setConsentRequired(false);
@@ -510,11 +518,76 @@ export function SecureVideoPlayer({
                 videoRef.current.src = '';
             }
         };
-    }, [videoId, userId, directUrl, offerId, sessionRetry]);
+    }, [videoId, userId, directUrl, offerId, sessionRetry, Boolean(catalog)]);
+
+    // Catalog playback has its own lifecycle: every async reply/media callback
+    // belongs to this reference and login incarnation, with no legacy fallback.
+    useEffect(() => {
+        if (!catalog) return;
+        let sourceEpoch = 0;
+        let readinessTimer: ReturnType<typeof setTimeout> | undefined;
+        const stopMedia = () => {
+            sourceEpoch++;
+            clearTimeout(readinessTimer);
+            hlsRef.current?.destroy(); hlsRef.current = null;
+            const video = videoRef.current;
+            if (video) { video.onloadedmetadata = null; video.onerror = null; video.pause(); video.removeAttribute('src'); video.load(); }
+        };
+        setLoading(true); setError(null); setHasStarted(false); setSourceType('unknown');
+        setConsentRequired(false); setSessionActive(false); setCatalogVideoId(''); setCatalogWatermark('');
+        const controller = createCatalogPlayback(catalog, {
+            fingerprint: window.crypto.randomUUID(), screenRes: `${window.screen.width}x${window.screen.height}`, origin: window.location.origin,
+            request: catalogPlaybackRequest,
+            readPrincipal: () => { try { return readCourseSessionPrincipal(localStorage); } catch { return null; } },
+            subscribeSession: fn => subscribeSessionChange(fn),
+            every: (fn, ms) => { const timer = window.setInterval(fn, ms); return () => window.clearInterval(timer); },
+            stop: () => { stopMedia(); securityManagerRef.current?.stop(); },
+            state: state => {
+                setConsentRequired(state.phase === 'consent'); setError(state.message);
+                if (state.phase !== 'active') setLoading(state.phase === 'loading');
+            },
+            source: (session, current) => {
+                if (!current()) return;
+                const video = videoRef.current;
+                if (!video) throw Error('Missing media element');
+                const resumeAt = video.currentTime || 0, resume = !video.paused;
+                stopMedia(); const ticket = sourceEpoch;
+                const valid = () => ticket === sourceEpoch && current();
+                setCatalogVideoId(session.videoId); setSourceType('hls');
+                if (session.watermarkText) setCatalogWatermark(session.watermarkText);
+                const ready = () => {
+                    if (!valid()) return;
+                    clearTimeout(readinessTimer);
+                    setLoading(false);
+                    if (resumeAt > 0) video.currentTime = resumeAt;
+                    if (resume) void video.play().catch(() => undefined);
+                };
+                readinessTimer = setTimeout(() => { if (valid()) controller.mediaFailed(); }, 30000);
+                if (Hls.isSupported()) {
+                    const hls = new Hls(); hlsRef.current = hls;
+                    hls.on(Hls.Events.MANIFEST_PARSED, ready);
+                    hls.on(Hls.Events.ERROR, (_, data) => { if (valid() && data.fatal) controller.mediaFailed(); });
+                    hls.loadSource(session.streamUrl); hls.attachMedia(video);
+                } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                    video.onloadedmetadata = ready;
+                    video.onerror = () => { if (valid()) controller.mediaFailed(); };
+                    video.src = session.streamUrl;
+                } else throw Error('Unsupported HLS playback');
+            },
+        });
+        catalogPlaybackRef.current = controller;
+        const storage = (event: StorageEvent) => { if (event.key === null || ['authToken', 'currentUser', 'currentStudent', 'currentStudentSpace', 'student_session', 'offlineStudentSession', 'supabaseUser'].includes(event.key)) controller.invalidate(); };
+        window.addEventListener('storage', storage); void controller.start();
+        return () => {
+            window.removeEventListener('storage', storage); controller.dispose();
+            catalogPlaybackRef.current = null;
+            if (videoRef.current) { videoRef.current.onloadedmetadata = null; videoRef.current.onerror = null; }
+        };
+    }, [catalog?.course_id, catalog?.lesson_id, catalog?.content_id]);
 
     // Keep the server-side session alive and rotate the short-lived manifest token.
     useEffect(() => {
-        if (!sessionActive) return;
+        if (catalog || !sessionActive) return;
         let heartbeatBusy = false;
         let refreshBusy = false;
         const authToken = localStorage.getItem('authToken');
@@ -595,7 +668,7 @@ export function SecureVideoPlayer({
             window.clearInterval(heartbeat);
             window.clearInterval(refresh);
         };
-    }, [sessionActive, forceLogout]);
+    }, [sessionActive, forceLogout, Boolean(catalog)]);
 
     // VIDEO CONTROLS
     const togglePlay = useCallback(() => {
@@ -753,6 +826,7 @@ export function SecureVideoPlayer({
     };
 
     const handleClose = () => {
+        catalogPlaybackRef.current?.dispose();
         securityManagerRef.current?.stop();
         if (hlsRef.current) hlsRef.current.destroy();
         unlockOrientation();
@@ -842,6 +916,7 @@ export function SecureVideoPlayer({
                     <Shield className="h-16 w-16 text-blue-400" />
                     <h2 className="text-2xl font-bold">شروط حماية الفيديو</h2>
                     <p className="max-w-xl text-gray-300">بالموافقة، ستبدأ جلسة مشاهدة آمنة وتُسجّل موافقتك على شروط حماية الفيديو لهذه النسخة.</p>
+                    {catalog && error ? <p role="alert" className="text-amber-300">{error}</p> : null}
                     <button onClick={acceptVideoSecurityTerms} className="rounded-lg bg-blue-600 px-6 py-3 font-bold hover:bg-blue-700">
                         أوافق وأتابع
                     </button>
@@ -850,7 +925,7 @@ export function SecureVideoPlayer({
             )}
 
             {/* START SESSION OVERLAY - Skip on Mobile, show on Desktop */}
-            {!hasStarted && !loading && (sourceType === 'hls' || sourceType === 'mp4') && !isMobile && (
+            {!hasStarted && !loading && !error && (sourceType === 'hls' || sourceType === 'mp4') && (!isMobile || Boolean(catalog)) && (
                 <div
                     className="absolute inset-0 z-[9000] bg-black/95 flex flex-col items-center justify-center text-white cursor-pointer"
                     onClick={startSession}
@@ -1066,6 +1141,7 @@ export function SecureVideoPlayer({
                     <div className="flex flex-col items-center">
                         <Loader2 className="w-16 h-16 text-blue-500 animate-spin mb-4" />
                         <p className="text-white">جاري تحميل الفيديو...</p>
+                        {catalog ? <button onClick={handleClose} className="mt-4 text-white underline">إغلاق الفيديو</button> : null}
                     </div>
                 </div>
             )}

@@ -1,5 +1,10 @@
 # Business implementation — 2026-11-06, BUILD-20
 
+Continuation: [BUILD-21](BUSINESS-IMPLEMENTATION-2026-11-06-BUILD-21.md) implements
+the actual student catalog player and explicit consent challenge ordering. This
+record remains the historical backend slice; its UI-pending statements are not
+the current queue. Schema/provider/browser/device/load acceptance remains open.
+
 Continues [BUILD-19](BUSINESS-IMPLEMENTATION-2026-11-06-BUILD-19.md).
 [Contract](../streams/server/J03-CATALOG-VIDEO-SESSIONS.md),
 [execution queue](BUSINESS-EXECUTION-QUEUE.md).

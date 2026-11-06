@@ -1080,6 +1080,14 @@ export function createSecureVideoDeliveryRouter(deps: SecureVideoDeliveryDeps): 
                 }
                 if (!deps.catalog)
                     return res.status(503).json({ error: 'Catalog playback unavailable', code: 'CATALOG_PLAYBACK_UNAVAILABLE' });
+                // Resolve also requires consent. Expose the existing explicit
+                // consent challenge before an unproven reference becomes 404.
+                if (req.user!.role === 'student' && !await queryOne(
+                    'SELECT id FROM video_security_consents WHERE user_id=? AND terms_version=? LIMIT 1',
+                    [userId, VIDEO_TERMS_VERSION],
+                )) return res.status(428).json({
+                    error: 'consent_required', code: 'VIDEO_CONSENT_REQUIRED', termsVersion: VIDEO_TERMS_VERSION,
+                });
                 try {
                     const resolved = await deps.catalog.resolve(req.user!, selectors);
                     if (!resolved)

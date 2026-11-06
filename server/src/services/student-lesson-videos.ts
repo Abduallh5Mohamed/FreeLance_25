@@ -61,9 +61,9 @@ async function authorizedVideos(connection:StudentCourseAccessConnection,scope:S
 }
 export async function listStudentLessonVideos(connection:StudentCourseAccessConnection,scope:StudentLessonScope,courseId:string,lessonId:string,principal:Principal){
   const proof=await authorizedVideos(connection,scope,courseId,lessonId,principal);if(!proof.ok)return proof;
-  return {status:200,body:{lesson_id:proof.lessonId,videos:proof.videos.map(row=>({content_id:row.content_id,title:row.title,display_order:row.display_order,playback_status:'unconfigured' as const}))},commit:false as const};
+  return {status:200,body:{lesson_id:proof.lessonId,videos:proof.videos.map(row=>({content_id:row.content_id,title:row.title,display_order:row.display_order,playback_status:'session_required' as const}))},commit:false as const};
 }
-/** Future issuance/delivery must call this afresh AND prove their own session. */
+/** Issuance/delivery call this afresh AND must prove their own session. */
 export async function proveStudentCatalogVideo(connection:StudentCourseAccessConnection,scope:StudentLessonScope,courseId:string,lessonId:string,contentId:string,principal:Principal){
   if(!uuid.test(contentId))return missing();
   const proof=await authorizedVideos(connection,scope,courseId,lessonId,principal);if(!proof.ok)return proof;

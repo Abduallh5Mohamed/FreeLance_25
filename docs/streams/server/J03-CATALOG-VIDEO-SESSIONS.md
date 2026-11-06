@@ -1,5 +1,10 @@
 # J03 — catalog-bound secure video sessions
 
+Continuation: [BUILD-21 student player](../client/J03-STUDENT-CATALOG-VIDEO-PLAYER.md)
+adds the actual UI and `session_required` candidate status. It also moves the
+explicit missing-consent challenge before resolution, retaining fresh consent
+proof. UI-specific pending statements below describe the BUILD-20 checkpoint.
+
 Local implementation: **2026-11-06, BUILD-20**. Continues the
 [student reference proof](J03-STUDENT-CATALOG-VIDEO-PROOF.md).
 This contract describes backend behavior, not production acceptance or a

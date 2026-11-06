@@ -1071,6 +1071,8 @@ export const listLessonContents = (courseId: string, unitId: string, lessonId: s
 /** Student projection is separate from owner references and carries no locator. */
 export const listStudentLessonContents = (courseId: string, lessonId: string) =>
     request<unknown>(`/student-course-access/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/contents`);
+export const listStudentLessonVideos = (courseId: string, lessonId: string, signal?: AbortSignal) =>
+    request<unknown>(`/student-course-access/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/videos`, { signal });
 /** Bounded private binary read. No bearer is put in a URL or browser navigation. */
 export const downloadStudentMaterialPdf = async (courseId: string, lessonId: string, contentId: string, signal?: AbortSignal): Promise<Blob> => {
     const response = await authenticatedApiFetch(`/student-course-access/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/contents/${encodeURIComponent(contentId)}/file`, { signal });

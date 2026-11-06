@@ -2454,7 +2454,10 @@ test('catalog session rejects caller source overrides, unsupported authority and
         const h=makeDeliveryHarness({catalog:c.authority});assert.equal((await invokeDelivery(h.router,{method:'POST',path:'/session',body})).status,400);assert.equal(h.created.length,0);
     }
     const unsupported=makeDeliveryHarness();assert.equal((await invokeDelivery(unsupported.router,{method:'POST',path:'/session',body:{catalog,fingerprint:'fp-1',screenRes:'1920x1080'}})).status,503);
-    const consent=makeDeliveryHarness({catalog:c.authority,consent:false});assert.equal((await invokeDelivery(consent.router,{method:'POST',path:'/session',body:{catalog,fingerprint:'fp-1',screenRes:'1920x1080'}})).status,428);assert.equal(consent.created.length,0);
+    let prematureResolution=0;
+    const consent=makeDeliveryHarness({catalog:{...c.authority,resolve:async()=>{prematureResolution++;return null;}},consent:false});
+    const challenge=await invokeDelivery(consent.router,{method:'POST',path:'/session',body:{catalog,fingerprint:'fp-1',screenRes:'1920x1080'}});
+    assert.equal(challenge.status,428);assert.equal(challenge.body.code,'VIDEO_CONSENT_REQUIRED');assert.equal(prematureResolution,0);assert.equal(consent.created.length,0);
     c.deny();const revoked=makeDeliveryHarness({catalog:c.authority});assert.equal((await invokeDelivery(revoked.router,{method:'POST',path:'/session',body:{catalog,fingerprint:'fp-1',screenRes:'1920x1080'}})).status,404);assert.equal(revoked.created.length,0);
 });
 test('catalog-bound video cannot start or continue a generic legacy session, including preview fallback',async()=>{

@@ -30,8 +30,8 @@ function fixture(){
  }};
  return {s,connection,read:()=>listStudentLessonVideos(connection as any,scope,id(90),id(91),principal),proof:(content=id(101),actor:any=principal)=>proveStudentCatalogVideo(connection as any,scope,id(90),id(91),content,actor)};
 }
-test('student video metadata is fixed, locator-free and explicitly unconfigured; selected proof remains server-private',async()=>{
- const h=fixture(),result=await h.read();assert.equal(result.status,200);assert.deepEqual(result.body,{lesson_id:id(91),videos:[{content_id:id(101),title:'Video 1',display_order:0,playback_status:'unconfigured'}]});
+test('student video metadata is fixed, locator-free and explicitly requires a session; selected proof remains server-private',async()=>{
+ const h=fixture(),result=await h.read();assert.equal(result.status,200);assert.deepEqual(result.body,{lesson_id:id(91),videos:[{content_id:id(101),title:'Video 1',display_order:0,playback_status:'session_required'}]});
  assert.ok(!JSON.stringify(result.body).includes('private-'));assert.ok(!JSON.stringify(result.body).includes('video_id'));assert.equal(result.commit,false);
  const proof=await h.proof();assert.equal(proof.ok,true);if(proof.ok){assert.equal(proof.video.video_id,id(1));assert.deepEqual(proof.scope,scope);assert.ok(!JSON.stringify(proof).includes('private-'));}
  assert.ok(!h.s.calls.some(q=>/^(INSERT|UPDATE|DELETE)/.test(q)));assert.ok(!h.s.calls.some(q=>q.includes('FROM lectures WHERE')||q.includes('FROM video_sessions')));

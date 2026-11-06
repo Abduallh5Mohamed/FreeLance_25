@@ -2,8 +2,9 @@
 
 Continuation: [BUILD-20 catalog sessions](J03-CATALOG-VIDEO-SESSIONS.md) now adds
 mounted issuance/refresh/delivery checks with durable context. The historical
-slice below describes BUILD-19 only; metadata remains unconfigured pending the
-student player and actual schema/provider acceptance.
+slice below describes BUILD-19 only. [BUILD-21](../client/J03-STUDENT-CATALOG-VIDEO-PLAYER.md)
+adds the student player and changes candidates to `session_required`; actual
+schema/provider/browser acceptance remains open.
 
 Local backend checkpoint: **2026-11-06**. Continues [owner preparation/editor](J02-LESSON-VIDEO-PREPARATION.md). This slice implements an actual authenticated student metadata endpoint and a shared selected-reference proof. It **does not issue playback sessions, tokens or media**; integration with protected issuance/refresh/delivery remains next.
 
