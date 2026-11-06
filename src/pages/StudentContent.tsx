@@ -54,6 +54,8 @@ import {
 import { subscribeSessionChange } from '@/lib/session-events';
 import { StudentLessonMaterials } from '@/features/catalog/StudentLessonMaterials';
 import { StudentLessonVideos } from '@/features/catalog/StudentLessonVideos';
+import { StudentLessonActivities } from '@/features/catalog/StudentLessonActivities';
+import { StudentLessonAnnouncement } from '@/features/catalog/StudentLessonAnnouncement';
 import {
   STUDENT_LOCK_NOT_RELEASED_MESSAGE,
   STUDENT_LOCK_PREREQUISITE_MESSAGE,
@@ -362,6 +364,8 @@ const StudentContent = () => {
 
                     {lesson.accessible && courseId ? <StudentLessonMaterials key={`${courseId}/${lesson.lesson_id}`} courseId={courseId} lessonId={lesson.lesson_id} /> : null}
                     {lesson.accessible && courseId ? <StudentLessonVideos key={`videos/${courseId}/${lesson.lesson_id}`} courseId={courseId} lessonId={lesson.lesson_id} /> : null}
+                    {lesson.accessible && courseId ? <StudentLessonActivities key={`activities/${courseId}/${lesson.lesson_id}`} courseId={courseId} lessonId={lesson.lesson_id} /> : null}
+                    {lesson.accessible && courseId ? <StudentLessonAnnouncement key={`announcement/${courseId}/${lesson.lesson_id}`} courseId={courseId} lessonId={lesson.lesson_id} /> : null}
                     {lesson.accessible && courseId ? <Button type="button" variant="outline" size="sm" className="mt-2" onClick={()=>navigate(`/support?course=${encodeURIComponent(courseId)}&lesson=${encodeURIComponent(lesson.lesson_id)}`)}>طلب مساعدة في الدرس</Button> : null}
                     {lesson.accessible ? <p className="mt-2 text-xs text-muted-foreground">إتمام هذا الدرس يُسجّل في مسار التعلّم الجديد، منفصلًا مؤقتًا عن سجل المحتوى القديم. عرض المواد لا يسجّل الإتمام تلقائيًا.</p> : null}
                     {!lesson.accessible ? (

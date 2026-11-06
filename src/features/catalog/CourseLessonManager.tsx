@@ -60,6 +60,9 @@ import {
 import { subscribeSessionChange } from '@/lib/session-events';
 import { LessonContentManager } from './LessonContentManager';
 import {LessonVideoManager} from './LessonVideoManager';
+import { LessonActivityManager } from './LessonActivityManager';
+import { LessonAnnouncementManager } from './LessonAnnouncementManager';
+import { LessonPackagePreview } from './LessonPackagePreview';
 import {
   COURSE_LESSON_ARCHIVE_NOTICE,
   COURSE_LESSON_DESCRIPTION_MAX,
@@ -473,6 +476,9 @@ export default function CourseLessonManager({
                     </div>
                     <LessonContentManager courseId={courseId} unitId={unitId} lessonId={row.id} />
                     <LessonVideoManager courseId={courseId} unitId={unitId} lessonId={row.id}/>
+                    <LessonActivityManager courseId={courseId} unitId={unitId} lessonId={row.id} />
+                    <LessonAnnouncementManager courseId={courseId} unitId={unitId} lessonId={row.id} />
+                    <LessonPackagePreview courseId={courseId} unitId={unitId} lessonId={row.id} sources={rows} />
                   </li>
                 );
               })}

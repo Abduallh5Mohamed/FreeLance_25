@@ -930,7 +930,7 @@ const courseUnitCollectionPath = (courseId: string): string =>
  */
 export const listCourseUnits = (
     courseId: string,
-    options: { limit?: number; cursor?: string | null } = {},
+    options: { limit?: number; cursor?: string | null; signal?: AbortSignal } = {},
 ) => {
     const params = new URLSearchParams();
     params.set('limit', String(options.limit ?? COURSE_UNIT_PAGE_LIMIT));
@@ -938,6 +938,7 @@ export const listCourseUnits = (
     const query = params.toString();
     return request<CourseUnitListEnvelope>(
         `${courseUnitCollectionPath(courseId)}${query ? `?${query}` : ''}`,
+        { signal: options.signal },
     );
 };
 
@@ -1073,6 +1074,10 @@ export const listStudentLessonContents = (courseId: string, lessonId: string) =>
     request<unknown>(`/student-course-access/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/contents`);
 export const listStudentLessonVideos = (courseId: string, lessonId: string, signal?: AbortSignal) =>
     request<unknown>(`/student-course-access/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/videos`, { signal });
+export const listStudentLessonActivities = (courseId: string, lessonId: string, signal?: AbortSignal) =>
+    request<unknown>(`/student-course-access/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/activities`, { signal });
+export const readStudentLessonActivity = (courseId: string, lessonId: string, contentId: string, signal?: AbortSignal) =>
+    request<unknown>(`/student-course-access/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/activities/${encodeURIComponent(contentId)}`, { signal });
 /** Bounded private binary read. No bearer is put in a URL or browser navigation. */
 export const downloadStudentMaterialPdf = async (courseId: string, lessonId: string, contentId: string, signal?: AbortSignal): Promise<Blob> => {
     const response = await authenticatedApiFetch(`/student-course-access/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/contents/${encodeURIComponent(contentId)}/file`, { signal });
@@ -1120,6 +1125,16 @@ export const attachLessonMaterial = (courseId: string, unitId: string, lessonId:
 export const detachLessonMaterial = (courseId: string, unitId: string, lessonId: string, contentId: string) =>
     request<unknown>(`${lessonContentsPath(courseId, unitId, lessonId)}/${encodeURIComponent(contentId)}`, { method: 'DELETE' });
 const lessonVideosPath=(courseId:string,unitId:string,lessonId:string)=>`${courseLessonCollectionPath(courseId,unitId)}/${encodeURIComponent(lessonId)}/videos`;
+const lessonActivitiesPath = (courseId: string, unitId: string, lessonId: string) => `${courseLessonCollectionPath(courseId, unitId)}/${encodeURIComponent(lessonId)}/activities`;
+const quizVersionPath = (courseId: string, unitId: string, lessonId: string, contentId: string) => `${lessonActivitiesPath(courseId, unitId, lessonId)}/quiz/${encodeURIComponent(contentId)}`;
+export const readLessonQuizVersion = (courseId: string, unitId: string, lessonId: string, contentId: string, signal?: AbortSignal) => request<unknown>(quizVersionPath(courseId, unitId, lessonId, contentId) + '/version', { signal });
+export const listLessonQuizVersions = (courseId: string, unitId: string, lessonId: string, contentId: string, cursor: string | null, signal?: AbortSignal) => request<unknown>(`${quizVersionPath(courseId, unitId, lessonId, contentId)}/available-versions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`, { signal });
+export const pinLessonQuizVersion = (courseId: string, unitId: string, lessonId: string, contentId: string, versionId: string, signal?: AbortSignal) => request<unknown>(quizVersionPath(courseId, unitId, lessonId, contentId) + '/version', { method: 'POST', body: JSON.stringify({ exam_version_id: versionId }), signal });
+export const unpinLessonQuizVersion = (courseId: string, unitId: string, lessonId: string, contentId: string, versionId: string, signal?: AbortSignal) => request<unknown>(`${quizVersionPath(courseId, unitId, lessonId, contentId)}/version/${encodeURIComponent(versionId)}`, { method: 'DELETE', signal });
+export const listLessonActivities = (courseId: string, unitId: string, lessonId: string, signal?: AbortSignal) => request<unknown>(lessonActivitiesPath(courseId, unitId, lessonId), { signal });
+export const listLessonActivitySources = (courseId: string, unitId: string, lessonId: string, kind: 'homework' | 'quiz', cursor: string | null, signal?: AbortSignal) => request<unknown>(`${lessonActivitiesPath(courseId, unitId, lessonId)}/${kind}/available-sources${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`, { signal });
+export const attachLessonActivity = (courseId: string, unitId: string, lessonId: string, kind: 'homework' | 'quiz', sourceId: string, signal?: AbortSignal) => request<unknown>(`${lessonActivitiesPath(courseId, unitId, lessonId)}/${kind}`, { method: 'POST', body: JSON.stringify({ source_id: sourceId }), signal });
+export const detachLessonActivity = (courseId: string, unitId: string, lessonId: string, kind: 'homework' | 'quiz', contentId: string, signal?: AbortSignal) => request<unknown>(`${lessonActivitiesPath(courseId, unitId, lessonId)}/${kind}/${encodeURIComponent(contentId)}`, { method: 'DELETE', signal });
 export const listLessonVideos=(courseId:string,unitId:string,lessonId:string,signal?:AbortSignal)=>request<unknown>(lessonVideosPath(courseId,unitId,lessonId),{signal});
 export const listLessonVideoOptions=(courseId:string,unitId:string,lessonId:string,cursor:string|null,signal?:AbortSignal)=>request<unknown>(`${lessonVideosPath(courseId,unitId,lessonId)}/available-videos${cursor?`?cursor=${encodeURIComponent(cursor)}`:''}`,{signal});
 export const attachLessonVideo=(courseId:string,unitId:string,lessonId:string,input:{video_id:string;display_order:number},signal?:AbortSignal)=>request<unknown>(lessonVideosPath(courseId,unitId,lessonId),{method:'POST',body:JSON.stringify({video_id:input.video_id,display_order:input.display_order}),signal});
@@ -1137,7 +1152,7 @@ export const uploadOwnerMaterialPdf = (courseId: string, unitId: string, lessonI
 export const listCourseLessons = (
     courseId: string,
     unitId: string,
-    options: { limit?: number; cursor?: string | null } = {},
+    options: { limit?: number; cursor?: string | null; signal?: AbortSignal } = {},
 ) => {
     const params = new URLSearchParams();
     params.set('limit', String(options.limit ?? COURSE_LESSON_PAGE_LIMIT));
@@ -1145,6 +1160,7 @@ export const listCourseLessons = (
     const query = params.toString();
     return request<CourseLessonListEnvelope>(
         `${courseLessonCollectionPath(courseId, unitId)}${query ? `?${query}` : ''}`,
+        { signal: options.signal },
     );
 };
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -39,6 +39,7 @@ import {
 // course state of its own: the selected course is a RESOURCE id and never a
 // tenant authority.
 import CourseUnitManager from "@/features/catalog/CourseUnitManager";
+import { LessonPackageTemplates } from "@/features/catalog/LessonPackageTemplates";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -87,6 +88,10 @@ const Courses = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [detailsDialogOpen, setDetailsDialogOpen] = useState(false);
+  const templateLock = useRef(false);
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const onTemplateLock = useCallback((locked: boolean) => { templateLock.current = locked; setTemplateBusy(locked); }, []);
+  const changeDetailsOpen = (open: boolean) => { if (!open && templateLock.current) return; setDetailsDialogOpen(open); };
   const [selectedCourse, setSelectedCourse] = useState<Course | null>(null);
   const [controller, setController] = useState<CourseManagementController | null>(null);
   const [snapshot, setSnapshot] = useState<CourseManagementState | null>(null);
@@ -137,6 +142,7 @@ const Courses = () => {
     // old-scope save could close the new session's dialog, and the detail
     // dialog could keep rendering the previous tenant's course.
     const unsubscribe = subscribeSessionChange(() => {
+      onTemplateLock(false);
       setFormInstance(0);
       setIsOpen(false);
       setEditingCourse(null);
@@ -262,6 +268,7 @@ const Courses = () => {
   };
 
   const handleViewDetails = (course: Course) => {
+    if (templateLock.current) return;
     setSelectedCourse(course);
     setDetailsDialogOpen(true);
   };
@@ -640,7 +647,7 @@ const Courses = () => {
         </div>
 
         {/* Dialog for Course Details */}
-        <Dialog open={detailsDialogOpen} onOpenChange={setDetailsDialogOpen}>
+        <Dialog open={detailsDialogOpen} onOpenChange={changeDetailsOpen}>
           {/* The panel below adds a bounded private section, so the dialog
               scrolls vertically instead of growing past the viewport. The
               course controller and the course form are untouched. */}
@@ -697,10 +704,18 @@ const Courses = () => {
                   <CourseUnitManager key={selectedCourse.id} courseId={selectedCourse.id} />
                 ) : null}
 
+                {/* Private same-course template library and explicit apply
+                    journey. Mounted only while the owner details dialog is
+                    open, keyed by the selected course resource id. */}
+                {detailsDialogOpen && selectedCourse ? (
+                  <LessonPackageTemplates key={'templates-' + selectedCourse.id} courseId={selectedCourse.id} onLockChange={onTemplateLock} />
+                ) : null}
+
                 <Button
                   variant="outline"
                   className="w-full"
-                  onClick={() => setDetailsDialogOpen(false)}
+                  disabled={templateBusy}
+                  onClick={() => changeDetailsOpen(false)}
                 >
                   إغلاق
                 </Button>

@@ -6,6 +6,7 @@ import fs from 'fs';
 import { randomUUID } from 'crypto';
 import { optionalAuth, authenticateToken, instructorScopeId, AuthRequest } from '../middleware/auth';
 import { requireTeachingWrite } from '../middleware/teaching-access';
+import { createCatalogExamAuthority, type CatalogExamAuthority } from '../services/catalog-exam-access';
 import {
     getResourceBranchDeps,
     principalFromAuthUser,
@@ -38,6 +39,7 @@ export interface ExamRouterDeps {
     requireTeachingWriteAccess: RequestHandler;
     /** Resource-derived branch authority; defaults to the production SQL deps. */
     branchAccess?: ResourceBranchDeps;
+    catalog?: Pick<CatalogExamAuthority, 'hasBindings'>;
 }
 
 // Setup multer for question image uploads (module level: no DB, no env).
@@ -144,6 +146,21 @@ export const createExamRouter = (deps: ExamRouterDeps): Router => {
     const requireTeachingWriteAccess = deps.requireTeachingWriteAccess;
 
     router.use(deps.optionalAuthenticate);
+    // Catalog-bound exams cannot fall back to legacy question/attempt/review
+    // paths. Listing published metadata and staff history retain their policy.
+    router.use(async (req: AuthRequest, res: Response, next) => {
+        if (!deps.catalog || req.user?.role !== 'student') return next();
+        let examId: string | undefined;
+        try {
+            const segment = String(req.url || '').split('?')[0].split('/').filter(Boolean)[0];
+            examId = segment === undefined ? undefined : decodeURIComponent(segment);
+        } catch { return res.status(400).json({ error: 'Invalid exam selector' }); }
+        if (!examId || ['student','upload-question-image'].includes(examId) || !/^[A-Za-z0-9_-]{1,64}$/.test(examId)) return next();
+        try {
+            if (await deps.catalog.hasBindings(deps.db, examId)) return res.status(403).json({ error: 'Catalog lesson context required', code: 'CATALOG_EXAM_DENIED' });
+            return next();
+        } catch { return res.status(503).json({ error: 'Catalog exam authority unavailable' }); }
+    });
 
     // Exams belong to an instructor when the exam is linked to at least one of
     // the instructor's groups
@@ -2215,4 +2232,5 @@ export default createExamRouter({
     optionalAuthenticate: optionalAuth,
     authenticate: authenticateToken,
     requireTeachingWriteAccess: requireTeachingWrite('exams'),
+    catalog: createCatalogExamAuthority(),
 });

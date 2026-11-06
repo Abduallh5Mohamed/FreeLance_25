@@ -6,6 +6,7 @@ import { execute, getPool, query, queryOne } from '../db';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { createCourseUnitsRouter } from './course-units';
 import { createCourseLessonsRouter } from './course-lessons';
+import { createLessonPackageTemplatesRouter } from './lesson-package-templates';
 import type { MaterialFileIngestionConfig } from '../services/material-file-ingestion';
 import { createLocalizedTenantBrandingRouter as createTenantBrandingRouter } from './tenant-branding';
 import { createAcademicPeriodsRouter } from './academic-periods';
@@ -287,6 +288,19 @@ export const createTenantSelfRouter = (deps: TenantSelfDeps): Router => {
   // lesson module. Nothing else in this router is touched.
   // -------------------------------------------------------------------------
   router.use('/catalog', createCourseLessonsRouter({ getConnection, materialFileIngestion: deps.materialFileIngestion }));
+
+  // -------------------------------------------------------------------------
+  // J02 — private same-course saved lesson templates (owner-only, additive)
+  //
+  // The template router is a separate, injected module
+  // (routes/lesson-package-templates.ts): it receives only the existing
+  // transactional connection supplier and is mounted next to the lesson router
+  // under /catalog, so every template route is authenticated and the
+  // billing-only exemption of the /api/tenants/me prefix is handled locally
+  // inside the module. The existing lesson module and its reserved files are
+  // untouched.
+  // -------------------------------------------------------------------------
+  router.use('/catalog', createLessonPackageTemplatesRouter({ getConnection }));
 
   // -------------------------------------------------------------------------
   // M2-B06 — private localized branding metadata (owner-only, additive)

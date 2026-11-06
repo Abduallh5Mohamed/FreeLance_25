@@ -64,6 +64,7 @@ import {
     validateExamVersionInput,
 } from '../services/exam-snapshots';
 import { QuestionKind } from '../services/question-bank';
+import { createCatalogExamAuthority, CatalogExamDenied, parseCatalogExamContext, validateCatalogExamSnapshot, type CatalogExamAuthority, type CatalogExamContext } from '../services/catalog-exam-access';
 
 export interface ExamVersionsDataAccess {
     query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>;
@@ -81,6 +82,8 @@ export interface ExamVersionsDeps {
     now?: () => Date;
     /** Optional atomic seam; production supplies a pooled transaction. */
     transaction?: <T>(fn: (tx: ExamVersionsDataAccess) => Promise<T>) => Promise<T>;
+    /** Production always supplies the catalog boundary; isolated legacy fixtures may omit it. */
+    catalog?: CatalogExamAuthority;
 }
 
 const STAFF_AUTHORITIES = new Set(['owner', 'instructor']);
@@ -219,6 +222,21 @@ const MAX_DRAFT_ANSWER_BYTES = 128 * 1024;
 const MAX_DRAFT_ANSWERS = 500;
 const MAX_AUTOSAVE_THROTTLE_TRACKED = 5000;
 
+async function persistAttemptStart(tx: ExamVersionsDataAccess, p: {
+    attemptId: string; tenantId: string; examId: string; versionId: string; enrollmentId: string; userId: string;
+    startedAt: Date; deadlineUtc: string; context?: CatalogExamContext;
+}) {
+    const result = await tx.execute(p.context ? `INSERT INTO exam_versioned_attempts
+      (id,tenant_id,exam_id,exam_version_id,student_enrollment_id,student_user_id,status,started_at,deadline_at,auto_submitted,catalog_context)
+      VALUES (?,?,?,?,?,?, 'in_progress', ?,?, 0, ?)` : `INSERT INTO exam_versioned_attempts
+      (id,tenant_id,exam_id,exam_version_id,student_enrollment_id,student_user_id,status,started_at,deadline_at,auto_submitted)
+      VALUES (?,?,?,?,?,?, 'in_progress', ?,?, 0)`,
+      [p.attemptId,p.tenantId,p.examId,p.versionId,p.enrollmentId,p.userId,toDbUtc(p.startedAt),toDbUtc(p.deadlineUtc),...(p.context?[JSON.stringify(parseCatalogExamContext(p.context))]:[])]);
+    if (result.affectedRows !== 1) throw Error('Attempt insert was not acknowledged');
+    await recordAudit(tx.execute, { actorUserId:p.context?p.userId:p.enrollmentId,tenantId:p.tenantId,action:'exam_attempt.start',resourceType:'exam_attempt',resourceId:p.attemptId,
+      newValue:snapshotRow({exam_id:p.examId,exam_version_id:p.versionId,deadline_at:p.deadlineUtc,...(p.context?{catalog_lesson_id:p.context.lessonId,catalog_content_id:p.context.contentId}:{})}) });
+}
+
 const timingOf = (row: ExamVersionRow): SnapshotTiming => ({
     durationSeconds: Number(row.duration_seconds),
     opensAtUtc: toUtcIso(row.opens_at),
@@ -237,9 +255,9 @@ const gradingQuestionsOf = (rows: ExamVersionQuestionRow[]): GradingQuestion[] =
     correctAnswers: parseJsonArray(row.correct_answers),
 }));
 
-const loadVersionRow = async (db: ExamVersionsDataAccess, tenantId: string, examId: string, versionId: string): Promise<ExamVersionRow | null> =>
+const loadVersionRow = async (db: ExamVersionsDataAccess, tenantId: string, examId: string, versionId: string, lock=false): Promise<ExamVersionRow | null> =>
     db.queryOne<ExamVersionRow>(
-        `SELECT ${VERSION_COLUMNS} FROM exam_versions WHERE id = ? AND exam_id = ? AND tenant_id = ? LIMIT 1`,
+        `SELECT ${VERSION_COLUMNS} FROM exam_versions WHERE id = ? AND exam_id = ? AND tenant_id = ? LIMIT 1${lock?' FOR UPDATE':''}`,
         [versionId, examId, tenantId],
     );
 
@@ -257,7 +275,7 @@ const loadAttemptRow = async (db: ExamVersionsDataAccess, tenantId: string, atte
 
 const loadStoredAnswers = async (db: ExamVersionsDataAccess, tenantId: string, attemptId: string): Promise<AnswerRow[]> =>
     db.query<AnswerRow>(
-        `SELECT id,question_ref,question_type,response,awarded_points,is_correct,manual_review
+        `SELECT id,question_ref,question_type,CAST(response AS CHAR) AS response,awarded_points,is_correct,manual_review
          FROM exam_versioned_answers WHERE attempt_id = ? AND tenant_id = ?`,
         [attemptId, tenantId],
     );
@@ -421,7 +439,29 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
     // (which rebuild the router) never share it.
     const lastAutosaveAt = new Map<string, number>();
 
+    router.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
     router.use(deps.authenticate);
+
+    const requireGenericExam = async (source: ExamVersionsDataAccess, examId: string) => {
+        if (deps.catalog && await deps.catalog.hasBindings(source,examId)) throw new CatalogExamDenied();
+    };
+    const requireAttemptCatalog = async (source: ExamVersionsDataAccess, req: AuthRequest, attempt: AttemptRow, write=false) => {
+        if (deps.catalog && (!req.user || !await deps.catalog.check(source,req.user,attempt,write))) throw new CatalogExamDenied();
+    };
+    const atomicForAttempt = (req: AuthRequest, attempt: AttemptRow) => <T>(work:(tx:ExamVersionsDataAccess)=>Promise<T>):Promise<T> => {
+        if (deps.catalog && !deps.transaction) return Promise.reject(new CatalogExamDenied());
+        return runAtomic(async tx => { await requireAttemptCatalog(tx,req,attempt,true); return work(tx); });
+    };
+    // Server expiry/staff grading may settle already saved work after a lesson
+    // withdrawal, but may never grade a changed catalog snapshot.
+    const atomicForServerAttempt = (attempt: AttemptRow) => <T>(work:(tx:ExamVersionsDataAccess)=>Promise<T>):Promise<T> => runAtomic(async tx=>{
+        if(deps.catalog&&!await deps.catalog.checkFrozen(tx,attempt))throw new CatalogExamDenied();
+        return work(tx);
+    });
+    const catalogError = (error: unknown, res: Response): boolean => {
+        if (!(error instanceof CatalogExamDenied)) return false;
+        res.status(403).json({error:'Catalog lesson access required or withdrawn',code:'CATALOG_EXAM_DENIED'}); return true;
+    };
 
     /* --------------------------------------------------------------------- */
     /* Scope resolvers                                                        */
@@ -466,14 +506,14 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
         }>(
             `SELECT s.id, s.tenant_id, s.group_id, grp.branch_id, grp.branch_scope
              FROM students s LEFT JOIN \`groups\` grp ON grp.id = s.group_id
-             WHERE s.user_id=? AND s.tenant_id=? AND s.is_active=1 AND s.approval_status='approved'
+             WHERE s.user_id=? AND s.tenant_id=? ${deps.catalog?'AND s.id=?':''} AND s.is_active=1 AND s.approval_status='approved'
                AND (s.enrollment_status IS NULL OR s.enrollment_status='active')
                AND (s.enrollment_start_date IS NULL OR s.enrollment_start_date<=UTC_TIMESTAMP())
                AND (s.enrollment_end_date IS NULL OR s.enrollment_end_date>UTC_TIMESTAMP())
              LIMIT 1`,
-            [user.id, user.tenantId],
+            [user.id, user.tenantId,...(deps.catalog?[user.studentEnrollmentId??'']:[])],
         );
-        if (!row) {
+        if (!row || deps.catalog && row.id !== user.studentEnrollmentId) {
             res.status(404).json({ error: 'Student workspace not found' });
             return null;
         }
@@ -885,6 +925,56 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
     /* --------------------------------------------------------------------- */
     /* POST /exams/:examId/versions/:versionId/attempts — start (audited)     */
     /* --------------------------------------------------------------------- */
+    // Explicit catalog start and read-only recovery. Both resolve source/version
+    // from the saved pin; the body never supplies tenant, enrollment or exam IDs.
+    for (const method of ['get','post'] as const) router[method]('/catalog/courses/:courseId/lessons/:lessonId/activities/:contentId/attempt', async (req:AuthRequest,res:Response)=>{
+        res.set('Cache-Control','no-store');
+        if(!deps.catalog||!deps.transaction)return res.status(503).json({error:'Catalog attempts unavailable',code:'CATALOG_ATTEMPT_UNAVAILABLE'});
+        const user=req.user;
+        if(!user||user.role!=='student'||!user.tenantId||!user.studentEnrollmentId)return res.status(403).json({error:'Selected student workspace required'});
+        const selectors={courseId:req.params.courseId,lessonId:req.params.lessonId,contentId:req.params.contentId};
+        if(!Object.values(selectors).every(value=>/^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(value))||Object.keys(req.query??{}).length||req.body!==undefined&&req.body!==null&&(typeof req.body!=='object'||Array.isArray(req.body)||Object.keys(req.body).length)||['x-tenant-id','x-student-id','x-enrollment-id','x-instructor-id'].some(key=>req.headers[key]!==undefined))return res.status(400).json({error:'Invalid catalog attempt request'});
+        const compact=(attempt:AttemptRow)=>{
+            const started=toUtcIso(attempt.started_at),deadline=toUtcIso(attempt.deadline_at);
+            if(!started||!deadline||!['in_progress','pending_review','graded','expired'].includes(attempt.status))throw Error('Invalid persisted attempt');
+            return {id:attempt.id,status:attempt.status,started_at:started,deadline_at:deadline};
+        };
+        let writeAttempted=false;
+        try{
+            const result=await runAtomic(async tx=>{
+                if(method==='post'){
+                    const course=await tx.queryOne('SELECT id FROM courses WHERE id=? AND tenant_id=? FOR UPDATE',[selectors.courseId,user.tenantId]);
+                    const enrollment=await tx.queryOne('SELECT id FROM students WHERE id=? AND user_id=? AND tenant_id=? FOR UPDATE',[user.studentEnrollmentId,user.id,user.tenantId]);
+                    if(!course||!enrollment)return {status:404,body:{error:'Catalog activity not found'}};
+                }
+                const context=await deps.catalog!.resolve(tx,user,selectors,method==='post');
+                if(!context)return {status:403,body:{error:'Catalog activity access denied',code:'CATALOG_EXAM_DENIED'}};
+                const existing=await tx.queryOne<AttemptRow&{catalog_context:unknown}>(`SELECT ${ATTEMPT_COLUMNS},catalog_context FROM exam_versioned_attempts WHERE exam_id=? AND student_enrollment_id=? AND tenant_id=? LIMIT 1${method==='post'?' FOR UPDATE':''}`,[context.examId,context.enrollmentId,context.tenantId]);
+                if(existing){
+                    if(existing.catalog_context===null||existing.catalog_context===undefined)return {status:409,body:{error:'Existing attempt has no catalog binding',code:'CATALOG_ATTEMPT_UNBOUND'}};
+                    if(JSON.stringify(parseCatalogExamContext(existing.catalog_context))!==JSON.stringify(context))return {status:409,body:{error:'Existing attempt belongs to another catalog context',code:'CATALOG_ATTEMPT_DIFFERENT_CONTEXT'}};
+                    await requireAttemptCatalog(tx,req,existing);
+                    return {status:200,body:{attempt:compact(existing),unchanged:true}};
+                }
+                if(method==='get')return {status:200,body:{attempt:null}};
+                const version=await loadVersionRow(tx,context.tenantId,context.examId,context.versionId,true);
+                if(!version)return {status:404,body:{error:'Published snapshot not found'}};
+                const timing=await validateCatalogExamSnapshot(tx,context,true),startedAt=now();
+                if(timing.fingerprint!==context.snapshotFingerprint)throw new CatalogExamDenied();
+                const decision=evaluateAttemptStart(timing,version.status,false,startedAt);
+                if(!decision.allowed)return {status:403,body:{error:'Attempt is not allowed',code:decision.reason}};
+                const attemptId=randomUUID();writeAttempted=true;
+                await persistAttemptStart(tx,{attemptId,tenantId:context.tenantId,examId:context.examId,versionId:context.versionId,enrollmentId:context.enrollmentId,userId:user.id,startedAt,deadlineUtc:decision.deadlineUtc,context});
+                return {status:201,body:{attempt:{id:attemptId,status:'in_progress',started_at:startedAt.toISOString(),deadline_at:decision.deadlineUtc},unchanged:false}};
+            });
+            return res.status(result.status).json(result.body);
+        }catch(error){
+            if(catalogError(error,res))return;
+            // A lost write/commit acknowledgement is recovered only with GET.
+            return res.status(503).json({error:writeAttempted?'Attempt creation outcome uncertain; inspect before retry':'Catalog attempts unavailable',code:writeAttempted?'PERSISTENCE_UNCERTAIN':'CATALOG_ATTEMPT_UNAVAILABLE'});
+        }
+    });
+
     router.post('/exams/:examId/versions/:versionId/attempts', async (req: AuthRequest, res: Response) => {
         try {
             const enrollment = await resolveEnrollment(req, res);
@@ -892,6 +982,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             const examId = normalizeId(req.params.examId);
             const versionId = normalizeId(req.params.versionId);
             if (!examId || !versionId) return res.status(404).json({ error: 'Exam version not found' });
+            await requireGenericExam(db,examId);
             if (!(await examInTenant(enrollment.tenantId, examId))) {
                 return res.status(404).json({ error: 'Exam version not found' });
             }
@@ -921,24 +1012,8 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             const startedAt = now();
             try {
                 await runAtomic(async (tx) => {
-                    await tx.execute(
-                        `INSERT INTO exam_versioned_attempts
-                           (id,tenant_id,exam_id,exam_version_id,student_enrollment_id,student_user_id,status,
-                            started_at,deadline_at,auto_submitted)
-                         VALUES (?,?,?,?,?,?, 'in_progress', ?,?, 0)`,
-                        [
-                            attemptId, enrollment.tenantId, examId, versionId, enrollment.id, enrollment.userId,
-                            toDbUtc(startedAt), toDbUtc(decision.deadlineUtc),
-                        ],
-                    );
-                    await recordAudit(tx.execute, {
-                        actorUserId: enrollment.id,
-                        tenantId: enrollment.tenantId,
-                        action: 'exam_attempt.start',
-                        resourceType: 'exam_attempt',
-                        resourceId: attemptId,
-                        newValue: snapshotRow({ exam_id: examId, exam_version_id: versionId, deadline_at: decision.deadlineUtc }),
-                    });
+                    await requireGenericExam(tx,examId);
+                    await persistAttemptStart(tx,{attemptId,tenantId:enrollment.tenantId,examId,versionId,enrollmentId:enrollment.id,userId:enrollment.userId,startedAt,deadlineUtc:decision.deadlineUtc});
                 });
             } catch (error) {
                 // A concurrent start loses the UNIQUE (exam_id, enrollment) race:
@@ -949,6 +1024,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
                 throw error;
             }
 
+            await requireGenericExam(db,examId);
             res.status(201).json({
                 id: attemptId,
                 exam_id: examId,
@@ -959,6 +1035,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
                 remaining_seconds: decision.remainingSeconds,
             });
         } catch (error) {
+            if(catalogError(error,res))return;
             console.error('Start exam attempt error:', error);
             res.status(500).json({ error: 'Failed to start exam attempt' });
         }
@@ -981,14 +1058,18 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
                 if (!attempt || attempt.student_enrollment_id !== enrollment.id) {
                     return res.status(404).json({ error: 'Attempt not found' });
                 }
+                await requireAttemptCatalog(db,req,attempt);
                 if (attempt.status === 'in_progress') {
-                    await expireDueAttempt(db, now, attempt, runAtomic);
+                    await expireDueAttempt(db, now, attempt, atomicForAttempt(req,attempt));
                     attempt = (await loadAttempt(enrollment.tenantId, attemptId)) ?? attempt;
                 }
                 const questions = await loadVersionWithQuestions(enrollment.tenantId, attempt.exam_version_id);
+                const answers = deps.catalog ? await deps.catalog.draft(db,user,attempt) : null;
+                await requireAttemptCatalog(db,req,attempt);
                 return res.json({
                     ...projectAttempt(attempt),
                     questions: questions.map((row) => projectQuestion(row, false)),
+                    ...(answers!==null?{answers}:{}),
                 });
             }
 
@@ -1001,7 +1082,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
                 return denyExamStaff(res, staffDecision, 'Attempt not found');
             }
             if (attempt.status === 'in_progress') {
-                await expireDueAttempt(db, now, attempt, runAtomic);
+                await expireDueAttempt(db, now, attempt, atomicForServerAttempt(attempt));
                 attempt = (await loadAttempt(scope.tenantId, attemptId)) ?? attempt;
             }
             const questions = await loadVersionWithQuestions(scope.tenantId, attempt.exam_version_id);
@@ -1010,6 +1091,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
                 questions: questions.map((row) => projectQuestion(row, true)),
             });
         } catch (error) {
+            if(catalogError(error,res))return;
             console.error('Read exam attempt error:', error);
             res.status(500).json({ error: 'Failed to load attempt' });
         }
@@ -1019,6 +1101,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
     /* POST /attempts/:attemptId/autosave — owner student, draft persistence  */
     /* --------------------------------------------------------------------- */
     router.post('/attempts/:attemptId/autosave', async (req: AuthRequest, res: Response) => {
+        let writeAttempted=false;
         try {
             const enrollment = await resolveEnrollment(req, res);
             if (!enrollment) return;
@@ -1028,6 +1111,8 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             if (!attempt || attempt.student_enrollment_id !== enrollment.id) {
                 return res.status(404).json({ error: 'Attempt not found' });
             }
+            await requireAttemptCatalog(db,req,attempt);
+            const guardedAtomic=<T>(work:(tx:ExamVersionsDataAccess)=>Promise<T>)=>atomicForAttempt(req,attempt)(tx=>{writeAttempted=true;return work(tx);});
             if (attempt.status !== 'in_progress') {
                 return res.status(409).json({ error: 'This attempt is no longer in progress' });
             }
@@ -1039,7 +1124,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             if (!decision.allowed) {
                 // An expired attempt is finalized (grading every saved draft) on
                 // this touch; a draft written inside the grace window is refused.
-                if (isAttemptExpiryDue(phase)) await expireDueAttempt(db, now, attempt, runAtomic);
+                if (isAttemptExpiryDue(phase)) await expireDueAttempt(db, now, attempt, guardedAtomic);
                 return res.status(403).json({ error: 'Autosave is not allowed', code: decision.reason });
             }
 
@@ -1066,7 +1151,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             }
             lastAutosaveAt.set(attemptId, nowMs);
 
-            await runAtomic(async (tx) => {
+            await guardedAtomic(async (tx) => {
                 for (const key of keys) {
                     const question = questionRows.find((row) => row.id === key);
                     if (!question) continue;
@@ -1081,6 +1166,8 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             });
             res.json({ ok: true, saved: keys.length });
         } catch (error) {
+            if(catalogError(error,res))return;
+            if(deps.catalog)return res.status(503).json({error:writeAttempted?'Write outcome uncertain; read the attempt before retry':'Catalog attempt temporarily unavailable',code:writeAttempted?'PERSISTENCE_UNCERTAIN':'CATALOG_ATTEMPT_UNAVAILABLE'});
             console.error('Autosave exam attempt error:', error);
             res.status(500).json({ error: 'Failed to autosave attempt' });
         }
@@ -1090,6 +1177,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
     /* POST /attempts/:attemptId/submit — owner student, auto-grade (audited) */
     /* --------------------------------------------------------------------- */
     router.post('/attempts/:attemptId/submit', async (req: AuthRequest, res: Response) => {
+        let writeAttempted=false;
         try {
             const enrollment = await resolveEnrollment(req, res);
             if (!enrollment) return;
@@ -1099,6 +1187,8 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             if (!attempt || attempt.student_enrollment_id !== enrollment.id) {
                 return res.status(404).json({ error: 'Attempt not found' });
             }
+            await requireAttemptCatalog(db,req,attempt);
+            const guardedAtomic=<T>(work:(tx:ExamVersionsDataAccess)=>Promise<T>)=>atomicForAttempt(req,attempt)(tx=>{writeAttempted=true;return work(tx);});
             if (attempt.status !== 'in_progress') {
                 return res.status(409).json({ error: 'This attempt has already been submitted' });
             }
@@ -1110,7 +1200,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             // answers: run the compensation pass (which grades every answer
             // autosaved during the attempt) and deny this late write.
             if (isAttemptExpiryDue(phase)) {
-                await expireDueAttempt(db, now, attempt, runAtomic);
+                await expireDueAttempt(db, now, attempt, guardedAtomic);
                 return res.status(403).json({ error: 'Submission is not allowed', code: 'EXPIRED' });
             }
             const decision = evaluateManualSubmit(phase);
@@ -1126,7 +1216,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
             }
 
             const computed = computeAttemptGrade(version, questionRows, answerMap);
-            const applied = await runAtomic((tx) => persistAttemptGrade(tx, {
+            const applied = await guardedAtomic((tx) => persistAttemptGrade(tx, {
                 tenantId: enrollment.tenantId,
                 attemptId,
                 examVersionId: attempt.exam_version_id,
@@ -1136,7 +1226,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
                 status: computed.status,
                 autoSubmitted: false,
                 gradedAt: computed.grade.manualRequired ? null : now().toISOString().slice(0, 19).replace('T', ' '),
-                actorUserId: enrollment.id,
+                actorUserId: deps.catalog ? enrollment.userId : enrollment.id,
                 auditAction: 'exam_attempt.submit',
             }));
             if (!applied) return res.status(409).json({ error: 'This attempt has already been submitted' });
@@ -1149,6 +1239,8 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
                 late: decision.late,
             });
         } catch (error) {
+            if(catalogError(error,res))return;
+            if(deps.catalog)return res.status(503).json({error:writeAttempted?'Write outcome uncertain; read the attempt before retry':'Catalog attempt temporarily unavailable',code:writeAttempted?'PERSISTENCE_UNCERTAIN':'CATALOG_ATTEMPT_UNAVAILABLE'});
             console.error('Submit exam attempt error:', error);
             res.status(500).json({ error: 'Failed to submit attempt' });
         }
@@ -1214,7 +1306,7 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
                 return res.json({ attempt_id: attemptId, applied: false, auto_score: Number(awarded), status: attempt.status });
             }
 
-            const appliedResult = await runAtomic(async (tx) => {
+            const appliedResult = await atomicForServerAttempt(attempt)(async (tx) => {
                 const updated = await tx.execute(
                     `UPDATE exam_versioned_attempts
                      SET status=?, auto_score=?, score=?, manual_required=?, grading_fingerprint=?,
@@ -1341,7 +1433,10 @@ export const runExamAttemptExpiryPass = async (): Promise<number> => {
     let expired = 0;
     for (const attempt of rows) {
         try {
-            if (await expireDueAttempt(db, clock, attempt, productionTransaction)) expired += 1;
+            if (await expireDueAttempt(db, clock, attempt, work=>productionTransaction(async tx=>{
+                if(!await createCatalogExamAuthority().checkFrozen(tx,attempt))throw new CatalogExamDenied();
+                return work(tx);
+            }))) expired += 1;
         } catch (error) {
             console.error('Exam attempt expiry failed:', error);
         }
@@ -1385,5 +1480,6 @@ export default createExamVersionsRouter({
         return authenticateToken(req, res, next);
     },
     loadActiveTenantAuthority,
+    catalog: createCatalogExamAuthority(),
     transaction: productionTransaction,
 });

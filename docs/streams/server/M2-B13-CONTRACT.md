@@ -1,5 +1,13 @@
 # M2-B13 — private group announcements (audited management lifecycle)
 
+Continuation: [BUILD-29 lesson reference/owner preview](J02-LESSON-ANNOUNCEMENT-PREPARATION.md)
+reuses these private sources without changing their state, adding recipients or
+granting student visibility by management state alone. Catalog publication and
+current student consumption are separately implemented locally in
+[BUILD-30](J03-LESSON-ANNOUNCEMENT-PUBLICATION.md), with fresh group/lesson proof
+and reviewed content. Source management alone still grants nothing; its meaning
+below stays unchanged.
+
 Task: `client-m2-21-private-group-announcements-20261023-01`
 Stream: server (implemented in `server/src/routes/groups.ts`)
 Status: implemented and reported by the WorkBuddy worker. **A worker report is

@@ -58,6 +58,8 @@ import { createMaterialFileDeliveryService, type MaterialFileDeliveryConfig } fr
 import { verifyStudentEnrollment, resolveStudentCourse, proveStudentLesson } from '../services/student-lesson-access';
 import { supportContextSchema, proveLessonSupportContext } from '../services/support-lesson-context';
 import {listStudentLessonVideos} from '../services/student-lesson-videos';
+import { listStudentLessonActivities, readStudentLessonActivity } from '../services/student-lesson-activities';
+import { readStudentLessonAnnouncement } from '../services/lesson-announcement-publication';
 
 /**
  * Minimal transactional connection seam, structurally identical to the
@@ -685,6 +687,25 @@ export const createStudentCourseAccessRouter = (deps: StudentCourseAccessDeps): 
     const scope=requireStudentScope(req,res);if(!scope)return;
     const {courseId,lessonId}=req.params;if(!UUID_PATTERN.test(courseId)||!UUID_PATTERN.test(lessonId))return res.status(404).json({error:'Lesson not found'});
     return runInTransaction('Failed to load lesson videos',res,connection=>listStudentLessonVideos(connection,scope,courseId,lessonId,req.user!));
+  });
+
+  for (const detail of [false, true]) router.get('/courses/:courseId/lessons/:lessonId/activities' + (detail ? '/:contentId' : ''), async (req: AuthRequest, res: Response) => {
+    res.set('Cache-Control', 'no-store');
+    if (suppliedSelector(req) !== null || Object.keys(req.query ?? {}).length || req.body && (typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length)) return res.status(400).json({ error: 'Invalid lesson activities request' });
+    const scope = requireStudentScope(req, res); if (!scope) return;
+    const { courseId, lessonId, contentId } = req.params;
+    if (![courseId, lessonId, ...(detail ? [contentId] : [])].every(id => typeof id === 'string' && UUID_PATTERN.test(id))) return res.status(404).json({ error: 'Lesson activity not found' });
+    return runInTransaction('Failed to read lesson activities', res, connection => detail
+      ? readStudentLessonActivity(connection, scope, courseId, lessonId, contentId, req.user!)
+      : listStudentLessonActivities(connection, scope, courseId, lessonId, req.user!));
+  });
+
+  router.get('/courses/:courseId/lessons/:lessonId/announcement',async(req:AuthRequest,res:Response)=>{
+    res.set('Cache-Control','no-store');
+    if(suppliedSelector(req)!==null||Object.keys(req.query??{}).length||req.body&&(typeof req.body!=='object'||Array.isArray(req.body)||Object.keys(req.body).length))return res.status(400).json({error:'Invalid lesson announcement request'});
+    const scope=requireStudentScope(req,res);if(!scope)return;
+    const {courseId,lessonId}=req.params;if(!UUID_PATTERN.test(courseId)||!UUID_PATTERN.test(lessonId))return res.status(404).json({error:'Lesson not found'});
+    return runInTransaction('Failed to read lesson announcement',res,connection=>readStudentLessonAnnouncement(connection,scope,courseId,lessonId,req.user!));
   });
 
   // J02/J03: explicit lesson expansion; never widens the strict learning-path DTO.

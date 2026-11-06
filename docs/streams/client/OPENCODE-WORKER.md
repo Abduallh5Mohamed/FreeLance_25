@@ -1,5 +1,15 @@
 # OpenCode implementation worker
 
+CURRENT human2026-11-06: the owner now delegates NEW business-strategy code to
+OpenCode under Codex supervision every FIFTEEN minutes. Read
+docs/agent-context/OPENCODE-BUSINESS-SUPERVISION-2026-11-06.md and the exact
+approved mailbox task. This supersedes correction-only/WorkBuddy-only role and
+old cadence wording below, not active ownership or safety boundaries. Claim only
+the explicitly dispatched task, implement its complete allocated journey, submit
+the required report and stop for independent review. The old WorkBuddy M2-23
+reserved paths remain excluded from the current batch. No worker timer,
+self-acceptance, model/account fallback, Git/GitHub or external production action.
+
 CURRENT human2026-10-26: OpenCode may implement the explicitly approved audit
 corrections while Codex supervises. The current task claim's exact allowedPaths
 and instructions govern. The older WorkBuddy-only NEW/correction lane rules below

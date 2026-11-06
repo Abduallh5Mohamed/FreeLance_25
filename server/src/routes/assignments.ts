@@ -49,6 +49,7 @@
 
 import { Router, RequestHandler, Response } from 'express';
 import { randomUUID } from 'crypto';
+import { createCatalogHomeworkAuthority, CatalogHomeworkDenied, homeworkUuid, sameHomeworkContext, type CatalogHomeworkAuthority, type CatalogHomeworkContext } from '../services/catalog-homework-access';
 import { AuthRequest } from '../middleware/auth';
 import { recordAudit, snapshotRow } from '../security/audit';
 import {
@@ -112,6 +113,7 @@ import {
     removeScannedObjectVersion,
     runBoundedScan,
     scanTimeoutMs,
+    supportsExactVersionRemoval,
     uploadAuthorizationTtlSeconds,
     verifyObjectSignature,
     verifySubmissionStorageKey,
@@ -135,6 +137,8 @@ export interface AssignmentsDataAccess {
 type TransactionSeam = <T>(fn: (tx: AssignmentsDataAccess) => Promise<T>) => Promise<T>;
 
 export interface AssignmentsDeps {
+    /** Production always enforces the catalog boundary; legacy isolated fixtures may omit it. */
+    catalog?: CatalogHomeworkAuthority;
     db: AssignmentsDataAccess;
     authenticate: RequestHandler;
     loadActiveTenantAuthority: (userId: string, tenantId: string) => Promise<{ authority: string } | null>;
@@ -345,6 +349,19 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
     const router = Router();
     const { db } = deps;
     const now = deps.now ?? ((): Date => new Date());
+    const catalogRequests = new WeakMap<Response, { context:CatalogHomeworkContext; principal:NonNullable<AuthRequest['user']>; submissionId?:string; requestKey?:string; writing:boolean }>();
+    const guardCatalog = async (res:Response, source:AssignmentsDataAccess=db, lock=false) => {
+        const request=catalogRequests.get(res);if(!request)return;
+        const fresh=await deps.catalog!.resolve(source,request.principal,request.context,lock);
+        if(!sameHomeworkContext(fresh,request.context))throw new CatalogHomeworkDenied();
+        if(request.submissionId)await deps.catalog!.checkSubmission(source,fresh,request.submissionId,lock);
+    };
+    const catalogFailure = (res:Response,error:unknown) => {
+        const request=catalogRequests.get(res);if(!request)return false;
+        if(error instanceof CatalogHomeworkDenied)res.status(403).json({error:'Catalog homework access required or withdrawn',code:'CATALOG_HOMEWORK_DENIED'});
+        else res.status(503).json({error:'Inspect the current submission before retry',code:request.writing?'PERSISTENCE_UNCERTAIN':'CATALOG_HOMEWORK_UNAVAILABLE'});
+        return true;
+    };
     /**
      * The unit-of-work seam, verbatim — never a pass-through to `db`.
      *
@@ -369,7 +386,11 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
      * effect has already landed.
      */
     const admitAtomic = (res: Response): TransactionSeam | null => {
-        if (runAtomic) return runAtomic;
+        if (runAtomic) return async work => runAtomic(async tx => {
+            await guardCatalog(res,tx,true);
+            const request=catalogRequests.get(res);if(request)request.writing=true;
+            return work(tx);
+        });
         res.status(503).json({
             error: 'Atomic writes are not configured',
             code: 'transaction_unavailable',
@@ -392,7 +413,94 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
         ),
     };
 
+    router.use((_req,res,next)=>{res.set('Cache-Control','no-store');next();});
     router.use(deps.authenticate);
+    // Resolve catalog selectors server-side, then reuse the original submission
+    // engine. The private binding never comes from a body or identity header.
+    router.use(async (req: AuthRequest, res: Response, next) => {
+        if (!String(req.url).startsWith('/catalog/')) {
+            if (!deps.catalog || req.user?.role !== 'student')
+                return next();
+            try {
+                const segment = String(req.url).split('?')[0].split('/').filter(Boolean)[0];
+                const assignmentId = segment ? decodeURIComponent(segment) : '';
+                if (assignmentId && assignmentId !== 'student' && await deps.catalog.hasBindings(db, assignmentId))
+                    return res.status(403).json({ error: 'Catalog homework context required', code: 'CATALOG_HOMEWORK_DENIED' });
+                return next();
+            }
+            catch {
+                return res.status(503).json({ error: 'Homework authority unavailable', code: 'CATALOG_HOMEWORK_UNAVAILABLE' });
+            }
+        }
+        try {
+            if (!deps.catalog || !runAtomic)
+                return res.status(503).json({ error: 'Catalog homework unavailable', code: 'CATALOG_HOMEWORK_UNAVAILABLE' });
+            const path = String(req.url).split('?')[0];
+            const match = /^\/catalog\/courses\/([^/]+)\/lessons\/([^/]+)\/activities\/([^/]+)\/(submission-policy|requests\/[^/]+|submissions(?:\/mine|\/[^/]+\/(?:upload-authorization|finalize|cancel))?)$/.exec(path);
+            if (!match)
+                return res.status(404).json({ error: 'Catalog homework route not found' });
+            const selectors = { courseId: decodeURIComponent(match[1]), lessonId: decodeURIComponent(match[2]), contentId: decodeURIComponent(match[3]) };
+            if (!Object.values(selectors).every(homeworkUuid) || Object.keys(req.query ?? {}).length || ['x-tenant-id', 'x-student-id', 'x-enrollment-id', 'x-instructor-id'].some(k => req.headers[k] !== undefined))
+                return res.status(400).json({ error: 'Invalid catalog homework selectors' });
+            const user = req.user;
+            if (!user || user.role !== 'student' || !user.studentEnrollmentId)
+                return res.status(403).json({ error: 'Selected student workspace required' });
+            const suffix = match[4], creating = req.method === 'POST' && suffix === 'submissions';
+            if (!(req.method === 'GET' && (suffix === 'submission-policy' || suffix === 'submissions/mine' || suffix.startsWith('requests/')) || req.method === 'POST' && (creating || /^submissions\/[^/]+\/(upload-authorization|finalize|cancel)$/.test(suffix))))
+                return res.status(405).json({ error: 'Unsupported homework operation' });
+            const body = req.body ?? {};
+            if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).sort().join(',') !== (creating ? 'file_name,file_type' : ''))
+                return res.status(400).json({ error: 'Invalid catalog homework body' });
+            const requestKey = creating ? req.headers['idempotency-key'] : suffix.startsWith('requests/') ? decodeURIComponent(suffix.slice(9)) : undefined;
+            if ((creating || suffix.startsWith('requests/')) && !homeworkUuid(requestKey))
+                return res.status(400).json({ error: 'A UUID request key is required' });
+            const context = await deps.catalog.resolve(db, user, selectors);
+            const sid = /^submissions\/([^/]+)\//.exec(suffix)?.[1];
+            if (sid && !homeworkUuid(sid))
+                return res.status(400).json({ error: 'Invalid submission selector' });
+            catalogRequests.set(res, { context, principal: user, submissionId: sid, requestKey: requestKey as string | undefined, writing: false });
+            const json = res.json.bind(res);
+            res.json = ((payload: any) => {
+                const fields = ['id','version','status','file_name','file_type','file_size_bytes','upload_status','scan_status','is_late','submitted_at','revoked_at','upload','cancelled','quarantine_cleanup','error','code','submission','unchanged','content_id','deadline_at','late_policy','resubmission_policy','max_submissions','max_file_bytes','allowed_file_types','accepting','reason','upload_configured'];
+                const project = (row: any) => row && typeof row === 'object' && !Array.isArray(row)
+                    ? Object.fromEntries(fields.filter(key => Object.prototype.hasOwnProperty.call(row,key)).map(key => [key,row[key]])) : row;
+                return json(Array.isArray(payload) ? payload.map(project) : project(payload));
+            }) as typeof res.json;
+            if (sid)
+                await deps.catalog.checkSubmission(db, context, sid);
+            if (requestKey) {
+                const old = await db.queryOne<any>(`SELECT id,version,status,file_name,file_type,file_size_bytes,scan_status,catalog_context FROM assignment_submissions WHERE tenant_id=? AND student_enrollment_id=? AND catalog_request_key=? LIMIT 1`, [context.tenantId, context.enrollmentId, requestKey]);
+                if (old) {
+                    if (!sameHomeworkContext(old.catalog_context, context) || creating && (old.file_name !== body.file_name?.trim?.() || old.file_type !== body.file_type?.trim?.()))
+                        return res.status(409).json({ error: 'Request key belongs to different homework or file', code: 'CATALOG_REQUEST_CONFLICT' });
+                    await guardCatalog(res);
+                    return res.json({ submission: { id: old.id, version: Number(old.version), status: old.status, file_name: old.file_name, file_type: old.file_type, file_size_bytes: Number(old.file_size_bytes), upload_status: deriveUploadStatus(Number(old.file_size_bytes), old.scan_status), scan_status: old.scan_status }, unchanged: true });
+                }
+                if (req.method === 'GET') {
+                    await guardCatalog(res);
+                    return res.json({ submission: null });
+                }
+            }
+            if (suffix === 'submission-policy') {
+                const row = await loadAssignmentForEnrollment(context.tenantId, context.assignmentId);
+                if (!row)
+                    throw new CatalogHomeworkDenied();
+                const rows = await loadEnrollmentSubmissions(context.tenantId, context.assignmentId, context.enrollmentId);
+                const decision = evaluateSubmission(submissionInput(row), toExistingSubmissions(rows), now());
+                await guardCatalog(res);
+                return res.json({ content_id: context.contentId, deadline_at: toUtcIso(row.deadline_at), late_policy: row.late_policy, resubmission_policy: row.resubmission_policy, max_submissions: Number(row.max_submissions), max_file_bytes: Number(row.max_file_bytes), allowed_file_types: parseJsonArray(row.allowed_file_types), accepting: decision.allowed, reason: decision.allowed ? null : decision.reason, upload_configured: Boolean(objectStore && supportsExactVersionRemoval(objectStore) && deps.objectVersionColumn === 'declared' && deps.cleanupObligations?.availability?.mode === 'durable') });
+            }
+            if (req.method === 'POST' && (!objectStore || !supportsExactVersionRemoval(objectStore) || deps.objectVersionColumn !== 'declared' || deps.cleanupObligations?.availability?.mode !== 'durable'))
+                return res.status(503).json({ error: 'Catalog private upload dependencies unavailable', code: 'CATALOG_HOMEWORK_UNAVAILABLE' });
+            req.url = `/${context.assignmentId}/${suffix}`;
+            return next();
+        }
+        catch (error) {
+            if (catalogFailure(res, error))
+                return;
+            return res.status(error instanceof CatalogHomeworkDenied ? 403 : 503).json({ error: 'Catalog homework unavailable', code: error instanceof CatalogHomeworkDenied ? 'CATALOG_HOMEWORK_DENIED' : 'CATALOG_HOMEWORK_UNAVAILABLE' });
+        }
+    });
 
     /* --------------------------------------------------------------------- */
     /* Scope resolvers                                                        */
@@ -437,14 +545,14 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
         }>(
             `SELECT s.id, s.tenant_id, s.group_id, grp.branch_id, grp.branch_scope, grp.course_id
              FROM students s LEFT JOIN \`groups\` grp ON grp.id = s.group_id
-             WHERE s.user_id=? AND s.tenant_id=? AND s.is_active=1 AND s.approval_status='approved'
+             WHERE s.user_id=? AND s.tenant_id=? ${deps.catalog?'AND s.id=?':''} AND s.is_active=1 AND s.approval_status='approved'
                AND (s.enrollment_status IS NULL OR s.enrollment_status='active')
                AND (s.enrollment_start_date IS NULL OR s.enrollment_start_date<=UTC_TIMESTAMP())
                AND (s.enrollment_end_date IS NULL OR s.enrollment_end_date>UTC_TIMESTAMP())
              LIMIT 1`,
-            [user.id, user.tenantId],
+            [user.id, user.tenantId,...(deps.catalog?[user.studentEnrollmentId??'']:[])],
         );
-        if (!row) {
+        if (!row || deps.catalog && row.id!==user.studentEnrollmentId) {
             res.status(404).json({ error: 'Student workspace not found' });
             return null;
         }
@@ -614,14 +722,17 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
         tenantId: string,
         assignmentId: string,
         enrollmentId: string,
-    ): Promise<SubmissionRow[]> =>
-        db.query<SubmissionRow>(
+    ): Promise<SubmissionRow[]> => {
+        const rows=await db.query<SubmissionRow>(
             `SELECT ${SUBMISSION_COLUMNS}
              FROM assignment_submissions
              WHERE assignment_id = ? AND tenant_id = ? AND student_enrollment_id = ?
-             ORDER BY version DESC`,
+             ORDER BY version DESC${deps.catalog?' LIMIT 1001':''}`,
             [assignmentId, tenantId, enrollmentId],
         );
+        if(deps.catalog&&rows.length>1000)throw Error('Homework history exceeds admission bound');
+        return rows;
+    };
 
     /** The caller's own submission version, including its private key. */
     const loadOwnSubmission = async (
@@ -1099,7 +1210,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             const existing = toExistingSubmissions(
                 await loadEnrollmentSubmissions(enrollment.tenantId, assignmentId, enrollment.id),
             );
-            const decision = evaluateSubmission(submissionInput(assignment), existing, now());
+            let decision = evaluateSubmission(submissionInput(assignment), existing, now());
             if (!decision.allowed) {
                 return res.status(403).json({ error: 'Submission is not allowed', code: decision.reason });
             }
@@ -1137,20 +1248,33 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 });
             }
 
-            const status = decision.late ? 'late' : 'submitted';
+            let status = decision.late ? 'late' : 'submitted';
             try {
                 await atomic(async (tx) => {
-                    await tx.execute(
+                    const catalog=catalogRequests.get(res);
+                    if(catalog){
+                        const current=await tx.queryOne<AssignmentRow>(`SELECT ${ASSIGNMENT_COLUMNS} FROM assignments WHERE id=? AND tenant_id=? LIMIT 1 FOR UPDATE`,[assignmentId,enrollment.tenantId]);
+                        const policy=(row:AssignmentRow)=>JSON.stringify([submissionInput(row),assignmentAudience(row),Number(row.max_file_bytes),parseJsonArray(row.allowed_file_types)]);
+                        if(!current||policy(current)!==policy(assignment))throw new CatalogHomeworkDenied();
+                        const rows=await tx.query<SubmissionRow>(`SELECT ${SUBMISSION_COLUMNS} FROM assignment_submissions WHERE assignment_id=? AND tenant_id=? AND student_enrollment_id=? ORDER BY version DESC LIMIT 1001 FOR UPDATE`,[assignmentId,enrollment.tenantId,enrollment.id]);
+                        if(rows.length>1000)throw Error('Homework history exceeds admission bound');
+                        decision=evaluateSubmission(submissionInput(current),toExistingSubmissions(rows),now());
+                        if(!decision.allowed)throw new CatalogHomeworkDenied();
+                        status=decision.late?'late':'submitted';
+                    }
+                    if(!decision.allowed)throw new CatalogHomeworkDenied();
+                    const inserted=await tx.execute(
                         `INSERT INTO assignment_submissions
                            (id,tenant_id,assignment_id,student_enrollment_id,student_user_id,version,status,
-                            file_name,file_type,file_size_bytes,storage_key,scan_status,is_late)
-                         VALUES (?,?,?,?,?,?,?,?,?,?,?, 'pending', ?)`,
+                            file_name,file_type,file_size_bytes,storage_key,scan_status,is_late${catalog?',catalog_context,catalog_request_key':''})
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?, 'pending', ?${catalog?',?,?':''})`,
                         [
                             submissionId, enrollment.tenantId, assignmentId, enrollment.id, enrollment.userId,
                             decision.nextVersion, status, upload.value.fileName, upload.value.fileType,
-                            0, storageKey, decision.late ? 1 : 0,
+                            0, storageKey, decision.late ? 1 : 0,...(catalog?[JSON.stringify(catalog.context),catalog.requestKey]:[]),
                         ],
                     );
+                    if(catalog&&inserted.affectedRows!==1)throw Error('Submission insert not confirmed');
                     await recordAudit(tx.execute, {
                         actorUserId: enrollment.userId,
                         tenantId: enrollment.tenantId,
@@ -1181,6 +1305,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 }
                 return res.status(409).json({ error: 'Submission changed concurrently, please retry' });
             }
+            await guardCatalog(res);
             res.status(201).json({
                 id: submissionId,
                 assignment_id: assignmentId,
@@ -1193,6 +1318,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 upload: authorization,
             });
         } catch (error) {
+            if(catalogFailure(res,error))return;
             console.error('Create assignment submission error:', error);
             res.status(500).json({ error: 'Failed to submit assignment' });
         }
@@ -1265,6 +1391,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                     code: 'upload_unavailable',
                 });
             }
+            await guardCatalog(res);
             res.json({
                 id: submissionId,
                 assignment_id: assignmentId,
@@ -1274,6 +1401,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 upload: authorization,
             });
         } catch (error) {
+            if(catalogFailure(res,error))return;
             console.error('Assignment upload authorization error:', error);
             res.status(500).json({ error: 'Failed to authorize the upload' });
         }
@@ -1393,6 +1521,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                     return true;
                 });
             } catch (error) {
+                if(catalogFailure(res,error))return;
                 console.error(`Assignment cancel write failed for submission ${submissionId}:`, error);
                 return res.status(500).json({ error: 'Failed to cancel the submission' });
             }
@@ -1433,8 +1562,10 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             } else {
                 await performVersionCleanup(cancelTarget, cancelHandle);
             }
+            await guardCatalog(res);
             res.json({ id: submissionId, status: 'revoked', cancelled: true });
         } catch (error) {
+            if(catalogFailure(res,error))return;
             console.error('Cancel assignment submission error:', error);
             res.status(500).json({ error: 'Failed to cancel the submission' });
         }
@@ -1466,6 +1597,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             // Idempotent retry: a verified object is never re-stat'ed or
             // re-audited, and a later assignment edit cannot revoke it.
             if (Number(row.file_size_bytes) > 0) {
+                await guardCatalog(res);
                 return res.status(200).json(finalizeProjection(row));
             }
 
@@ -1676,6 +1808,11 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             let recorded = false;
             try {
                 recorded = await atomic(async (tx) => {
+                    if(catalogRequests.has(res)){
+                        const current=await tx.queryOne<AssignmentRow>(`SELECT ${ASSIGNMENT_COLUMNS} FROM assignments WHERE id=? AND tenant_id=? LIMIT 1 FOR UPDATE`,[assignmentId,enrollment.tenantId]);
+                        const policy=(source:AssignmentRow)=>JSON.stringify([submissionInput(source),assignmentAudience(source),Number(source.max_file_bytes),parseJsonArray(source.allowed_file_types)]);
+                        if(!current||policy(current)!==policy(assignment)||!evaluateSubmissionWindow(submissionInput(current),now()).open)throw new CatalogHomeworkDenied();
+                    }
                     // The verified object version is recorded with the verdict when
                     // the column is declared. Without it the row has no version
                     // binding, and the fenced scan store deliberately refuses to
@@ -1732,6 +1869,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                     return true;
                 });
             } catch (error) {
+                if(catalogFailure(res,error))return;
                 console.error(`Assignment finalize write failed for submission ${submissionId}:`, error);
                 return res.status(500).json({ error: 'Failed to finalize the submission' });
             }
@@ -1747,6 +1885,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                     && Number(current.file_size_bytes) === verifiedSize.value
                     && current.scan_status === nextScanStatus;
                 if (current && sameOutcome) {
+                    await guardCatalog(res);
                     return res.status(200).json(finalizeProjection(current));
                 }
                 // A revoke that landed between the read and the write owns the
@@ -1765,6 +1904,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
                 file_size_bytes: verifiedSize.value,
                 scan_status: nextScanStatus,
             };
+            await guardCatalog(res);
             if (uploadStatus === 'quarantined') {
                 await quarantineRejectedObject(infectedTarget, quarantineHandle.handle, submissionId);
                 return res.status(422).json({
@@ -1775,6 +1915,7 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             }
             res.status(responseStatus).json(finalizeProjection(finalizedRow));
         } catch (error) {
+            if(catalogFailure(res,error))return;
             console.error('Finalize assignment submission error:', error);
             res.status(500).json({ error: 'Failed to finalize the submission' });
         }
@@ -1794,9 +1935,18 @@ export const createAssignmentsRouter = (deps: AssignmentsDeps): Router => {
             if (!enrollmentMatchesAssignment(assignmentAudience(assignment), enrollmentAudience(enrollment))) {
                 return res.status(404).json({ error: 'Assignment not found' });
             }
-            const rows = await loadEnrollmentSubmissions(enrollment.tenantId, assignmentId, enrollment.id);
+            const catalog=catalogRequests.get(res);
+            let rows = await loadEnrollmentSubmissions(enrollment.tenantId, assignmentId, enrollment.id);
+            if(catalog){
+                const markers=await db.query<any>(`SELECT id,catalog_context FROM assignment_submissions WHERE assignment_id=? AND tenant_id=? AND student_enrollment_id=? ORDER BY version DESC LIMIT 1001`,[assignmentId,enrollment.tenantId,enrollment.id]);
+                if(markers.length>1000)throw Error('Homework history exceeds read bound');
+                const ids=new Set(markers.filter(row=>row.catalog_context!==null&&sameHomeworkContext(row.catalog_context,catalog.context)).map(row=>row.id));
+                rows=rows.filter(row=>ids.has(row.id));
+                await guardCatalog(res);
+            }
             res.json(rows.map(projectSubmission));
         } catch (error) {
+            if(catalogFailure(res,error))return;
             console.error('Student submissions error:', error);
             res.status(500).json({ error: 'Failed to load submissions' });
         }
@@ -2469,6 +2619,7 @@ export const createAssignmentsRuntime = (options: AssignmentsRuntimeOptions): As
 };
 
 export default createAssignmentsRouter({
+    catalog: createCatalogHomeworkAuthority(),
     db: productionDb,
     authenticate: async (req, res, next) => {
         const { authenticateToken } = await import('../middleware/auth');

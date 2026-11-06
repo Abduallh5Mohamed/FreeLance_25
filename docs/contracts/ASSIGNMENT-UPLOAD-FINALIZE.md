@@ -1,5 +1,11 @@
 # Assignment private upload — authorization → upload → finalize
 
+Catalog continuation: [BUILD-27 lesson-bound submissions](../streams/server/J03-CATALOG-HOMEWORK-SUBMISSIONS.md)
+reuses this engine with durable context/request identity, current lesson proof
+and no generic student fallback for bound homework. Its schema and new upload
+runtime remain unconfigured. [BUILD-28 student UI](../streams/client/J03-STUDENT-CATALOG-HOMEWORK.md)
+now mounts the conditional catalog flow; it does not activate providers.
+
 Status: implemented server contract (2026-10-19, task
 `server-assignment-upload-finalize-20261019-01`), extended for private-bucket
 provisioning, ETag-bound scanning and bounded scan execution

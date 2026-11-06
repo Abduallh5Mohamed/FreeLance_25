@@ -36,6 +36,11 @@ import type { AuthRequest } from '../middleware/auth';
 import { collectMaterialPdf, createMaterialFileIngestionService, type MaterialFileIngestionConfig } from '../services/material-file-ingestion';
 import { MATERIAL_PDF_MAX_BYTES } from '../services/material-file-delivery';
 import {lessonVideoSchema,lessonVideoPositions,lessonMaterialPositions,eligibleLessonVideo} from '../services/lesson-videos';
+import { manageLessonActivities, type LessonActivityKind } from '../services/lesson-activities';
+import { manageLessonQuizVersion } from '../services/lesson-quiz-versions';
+import { manageLessonAnnouncement } from '../services/lesson-announcements';
+import { manageAnnouncementPublication } from '../services/lesson-announcement-publication';
+import { manageLessonPackageReuse, parsePackageReuseBody } from '../services/lesson-package-reuse';
 
 /**
  * Minimal transactional connection seam, structurally identical to the
@@ -651,7 +656,7 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
         console.error(`${label} error before transaction start:`, error);
       }
       return res.status(500).json({ error: label,
-        ...(commitAttempted && ['Failed to manage lesson contents','Failed to manage lesson videos'].includes(label) ? { code: 'PERSISTENCE_UNCERTAIN' } : {}) });
+        ...(commitAttempted && ['Failed to manage lesson contents','Failed to manage lesson videos','Failed to manage lesson activities','Failed to manage lesson quiz versions','Failed to manage lesson announcement','Failed to manage lesson announcement publication','Failed to reuse lesson package'].includes(label) ? { code: 'PERSISTENCE_UNCERTAIN' } : {}) });
     } finally {
       if (connection) {
         if (disposal === 'destroy') {
@@ -1621,6 +1626,28 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
 
   // J02: private owner preparation only. Attaching never grants student delivery.
   const contentsPath = '/courses/:courseId/units/:unitId/lessons/:lessonId/contents';
+  for (const operation of ['review','apply','status'] as const) {
+    const path = '/courses/:courseId/units/:unitId/lessons/:lessonId/package-reuse'
+      + (operation === 'review' ? '/review' : operation === 'status' ? '/operations/:operationId' : '');
+    router[operation === 'status' ? 'get' : 'post'](path, async (req: AuthRequest, res: Response) => {
+      res.set('Cache-Control','no-store'); if (denyBillingOnly(req,res)) return;
+      const {courseId,unitId,lessonId,operationId} = req.params;
+      if (![courseId,unitId,lessonId,...(operation === 'status' ? [operationId] : [])].every(id => typeof id === 'string' && UUID_PATTERN.test(id))
+        || Object.keys(req.query).length || ['x-tenant-id','x-student-id','x-enrollment-id','x-instructor-id'].some(key => req.headers[key] !== undefined)) return res.status(400).json({error:'Invalid package selectors'});
+      const body = operation === 'status' ? null : parsePackageReuseBody(req.body,operation === 'apply');
+      if (operation === 'status' ? req.body != null && (typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length) : !body) return res.status(400).json({error:'Invalid package request'});
+      const userId=req.user?.id,tenantId=req.user?.tenantId;
+      if (!userId || !tenantId) return res.status(404).json({error:'Tenant membership not found'});
+      return runInTransaction('Failed to reuse lesson package',res,async connection => {
+        // All three operations take the same parent locks, including recovery reads.
+        if (!await verifyTenantOwner(connection,userId,tenantId,true)) return {status:403,body:{error:'Forbidden'},commit:false};
+        if (!await resolveCourse(connection,courseId,tenantId,true) || !await resolveUnit(connection,unitId,courseId,true)) return {status:404,body:{error:'Lesson not found'},commit:false};
+        const [rows]=await connection.execute('SELECT l.id FROM course_lessons l WHERE l.id=? AND l.unit_id=? FOR UPDATE',[lessonId,unitId]);
+        if (!(rows as any[])[0]) return {status:404,body:{error:'Lesson not found'},commit:false};
+        return manageLessonPackageReuse(connection,{userId,tenantId,courseId,lessonId,operation,body:body ?? undefined,operationId:operationId?.toLowerCase()});
+      });
+    });
+  }
   const contentLimit = 20;
   for (const operation of ['list', 'sources', 'attach', 'detach'] as const) {
     const method = operation === 'attach' ? 'post' : operation === 'detach' ? 'delete' : 'get';
@@ -1817,6 +1844,102 @@ export const createCourseLessonsRouter = (deps: CourseLessonsDeps): Router => {
         const [audit]=await connection.execute(`INSERT INTO audit_events (id,actor_user_id,tenant_id,action,resource_type,resource_id,old_value,new_value) VALUES (?,?,?,?,?,?,?,?)`,[randomUUID(),userId,tenantId,'course_lesson_video.attach','course_lesson_video',id,null,value]);
         if(Number(audit.affectedRows)!==1)throw Error('Video attach audit failed');
         return {status:201,body:{content:dto(id),unchanged:false},commit:true};
+      });
+    });
+  }
+
+  // Activity preparation never publishes a source, grants an attempt or links
+  // catalog IDs to the legacy assignment/exam progress ledgers.
+  const activitiesPath = '/courses/:courseId/units/:unitId/lessons/:lessonId/activities';
+  for (const operation of ['list', 'sources', 'attach', 'detach'] as const) {
+    const method = operation === 'attach' ? 'post' : operation === 'detach' ? 'delete' : 'get';
+    const suffix = operation === 'list' ? '' : operation === 'sources' ? '/:kind/available-sources' : operation === 'detach' ? '/:kind/:contentId' : '/:kind';
+    router[method](activitiesPath + suffix, async (req: AuthRequest, res: Response) => {
+      res.set('Cache-Control', 'no-store');
+      if (denyBillingOnly(req, res)) return;
+      const { courseId, unitId, lessonId, contentId } = req.params;
+      const kind = operation === 'list' ? 'homework' : req.params.kind;
+      const cursor = req.query.cursor, body = req.body;
+      if (![courseId, unitId, lessonId, ...(operation === 'detach' ? [contentId] : [])].every(id => typeof id === 'string' && UUID_PATTERN.test(id)) || !['homework', 'quiz'].includes(kind)) return res.status(400).json({ error: 'Invalid lesson activity path' });
+      if (operation === 'sources' ? Object.keys(req.query).some(key => key !== 'cursor') || cursor !== undefined && (typeof cursor !== 'string' || !UUID_PATTERN.test(cursor)) : Object.keys(req.query).length > 0) return res.status(400).json({ error: 'Unexpected activity query' });
+      if (['x-tenant-id', 'x-student-id', 'x-enrollment-id', 'x-instructor-id'].some(key => req.headers[key] !== undefined)) return res.status(400).json({ error: 'Unexpected activity identity selector' });
+      if (method === 'post' ? !body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.source_id !== 'string' || !UUID_PATTERN.test(body.source_id) : body && (typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length)) return res.status(400).json({ error: 'Expected source_id only' });
+      const userId = req.user?.id, tenantId = req.user?.tenantId;
+      if (!userId || !tenantId) return res.status(404).json({ error: 'Tenant membership not found' });
+      return runInTransaction('Failed to manage lesson activities', res, async connection => {
+        const lock = method !== 'get';
+        if (!await verifyTenantOwner(connection, userId, tenantId, lock)) return { status: 403, body: { error: 'Forbidden' }, commit: false };
+        if (!await resolveCourse(connection, courseId, tenantId, lock) || !await resolveUnit(connection, unitId, courseId, lock)) return { status: 404, body: { error: 'Lesson not found' }, commit: false };
+        const [lessons] = await connection.execute(`SELECT l.id FROM course_lessons l WHERE l.id=? AND l.unit_id=?${lock ? ' FOR UPDATE' : ''}`, [lessonId, unitId]);
+        if (!(lessons as any[])[0]) return { status: 404, body: { error: 'Lesson not found' }, commit: false };
+        return manageLessonActivities(connection, { userId, tenantId, courseId, lessonId, kind: kind as LessonActivityKind, operation, sourceId: body?.source_id, contentId, cursor: cursor as string | undefined });
+      });
+    });
+  }
+
+  const quizVersionPath = activitiesPath + '/quiz/:contentId';
+  for (const operation of ['read', 'sources', 'pin', 'unpin'] as const) {
+    const method = operation === 'pin' ? 'post' : operation === 'unpin' ? 'delete' : 'get';
+    const suffix = operation === 'sources' ? '/available-versions' : '/version' + (operation === 'unpin' ? '/:versionId' : '');
+    router[method](quizVersionPath + suffix, async (req: AuthRequest, res: Response) => {
+      res.set('Cache-Control', 'no-store');
+      if (denyBillingOnly(req, res)) return;
+      const { courseId, unitId, lessonId, contentId, versionId } = req.params, cursor = req.query.cursor, body = req.body;
+      if (![courseId, unitId, lessonId, contentId, ...(operation === 'unpin' ? [versionId] : [])].every(id => typeof id === 'string' && UUID_PATTERN.test(id))) return res.status(400).json({ error: 'Invalid lesson quiz version path' });
+      if (operation === 'sources' ? Object.keys(req.query).some(key => key !== 'cursor') || cursor !== undefined && (typeof cursor !== 'string' || !UUID_PATTERN.test(cursor)) : Object.keys(req.query).length > 0) return res.status(400).json({ error: 'Unexpected quiz version query' });
+      if (['x-tenant-id', 'x-student-id', 'x-enrollment-id', 'x-instructor-id'].some(key => req.headers[key] !== undefined)) return res.status(400).json({ error: 'Unexpected quiz version identity selector' });
+      if (operation === 'pin' ? !body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.exam_version_id !== 'string' || !UUID_PATTERN.test(body.exam_version_id) : body !== undefined && body !== null && (typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length > 0)) return res.status(400).json({ error: 'Expected exam_version_id only' });
+      const userId = req.user?.id, tenantId = req.user?.tenantId;
+      if (!userId || !tenantId) return res.status(404).json({ error: 'Tenant membership not found' });
+      return runInTransaction('Failed to manage lesson quiz versions', res, async connection => {
+        const lock = method !== 'get';
+        if (!await verifyTenantOwner(connection, userId, tenantId, lock)) return { status: 403, body: { error: 'Forbidden' }, commit: false };
+        if (!await resolveCourse(connection, courseId, tenantId, lock) || !await resolveUnit(connection, unitId, courseId, lock)) return { status: 404, body: { error: 'Lesson quiz version not found' }, commit: false };
+        const [lessons] = await connection.execute(`SELECT l.id FROM course_lessons l WHERE l.id=? AND l.unit_id=?${lock ? ' FOR UPDATE' : ''}`, [lessonId, unitId]);
+        if (!(lessons as any[])[0]) return { status: 404, body: { error: 'Lesson quiz version not found' }, commit: false };
+        return manageLessonQuizVersion(connection, { userId, tenantId, courseId, lessonId, contentId, versionId: operation === 'pin' ? body.exam_version_id : versionId, cursor: cursor as string | undefined, operation });
+      });
+    });
+  }
+
+  const announcementPath = '/courses/:courseId/units/:unitId/lessons/:lessonId/announcement';
+  for (const operation of ['read','sources','attach','detach','preview'] as const) {
+    const method=operation==='attach'?'post':operation==='detach'?'delete':'get';
+    const suffix=operation==='sources'?'/available-sources':operation==='preview'?'/:contentId/preview':operation==='detach'?'/:contentId':'';
+    router[method](announcementPath+suffix,async(req:AuthRequest,res:Response)=>{
+      res.set('Cache-Control','no-store');if(denyBillingOnly(req,res))return;
+      const {courseId,unitId,lessonId,contentId}=req.params,body=req.body,cursor=req.query.cursor;
+      if(![courseId,unitId,lessonId,...(['detach','preview'].includes(operation)?[contentId]:[])].every(id=>typeof id==='string'&&UUID_PATTERN.test(id)))return res.status(400).json({error:'Invalid lesson announcement path'});
+      if(operation==='sources'?Object.keys(req.query).some(key=>key!=='cursor')||cursor!==undefined&&(typeof cursor!=='string'||!UUID_PATTERN.test(cursor)):Object.keys(req.query).length)return res.status(400).json({error:'Invalid announcement query'});
+      if(['x-tenant-id','x-student-id','x-enrollment-id','x-instructor-id'].some(key=>req.headers[key]!==undefined))return res.status(400).json({error:'Unexpected announcement identity selector'});
+      if(operation==='attach'?!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==1||typeof body.source_id!=='string'||!UUID_PATTERN.test(body.source_id):body!==undefined&&body!==null&&(typeof body!=='object'||Array.isArray(body)||Object.keys(body).length))return res.status(400).json({error:'Expected source_id only'});
+      const userId=req.user?.id,tenantId=req.user?.tenantId;if(!userId||!tenantId)return res.status(404).json({error:'Tenant membership not found'});
+      return runInTransaction('Failed to manage lesson announcement',res,async connection=>{
+        const lock=method!=='get';
+        if(!await verifyTenantOwner(connection,userId,tenantId,lock))return {status:403,body:{error:'Forbidden'},commit:false};
+        if(!await resolveCourse(connection,courseId,tenantId,lock)||!await resolveUnit(connection,unitId,courseId,lock))return {status:404,body:{error:'Lesson not found'},commit:false};
+        const [rows]=await connection.execute(`SELECT l.id FROM course_lessons l WHERE l.id=? AND l.unit_id=?${lock?' FOR UPDATE':''}`,[lessonId,unitId]);
+        if(!(rows as any[])[0])return{status:404,body:{error:'Lesson not found'},commit:false};
+        return manageLessonAnnouncement(connection,{userId,tenantId,courseId,lessonId,operation,sourceId:body?.source_id,contentId,cursor:cursor as string|undefined});
+      });
+    });
+  }
+
+  for (const operation of ['read','review','publish','withdraw'] as const) {
+    const method=operation==='publish'?'post':operation==='withdraw'?'delete':'get';
+    const suffix=operation==='review'?'/publication-preview':'/publication'+(operation==='withdraw'?'/:publicationId':'');
+    router[method](announcementPath+'/:contentId'+suffix,async(req:AuthRequest,res:Response)=>{
+      res.set('Cache-Control','no-store');if(denyBillingOnly(req,res))return;
+      const {courseId,unitId,lessonId,contentId,publicationId}=req.params,body=req.body;
+      if(![courseId,unitId,lessonId,contentId,...(operation==='withdraw'?[publicationId]:[])].every(id=>typeof id==='string'&&UUID_PATTERN.test(id))||Object.keys(req.query).length||['x-tenant-id','x-student-id','x-enrollment-id','x-instructor-id'].some(key=>req.headers[key]!==undefined))return res.status(400).json({error:'Invalid announcement publication selectors'});
+      if(operation==='publish'?!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).join(',')!=='review_token'||typeof body.review_token!=='string'||!/^[a-f\d]{64}$/.test(body.review_token):body!==undefined&&body!==null&&(typeof body!=='object'||Array.isArray(body)||Object.keys(body).length))return res.status(400).json({error:'Expected reviewed preview token only'});
+      const userId=req.user?.id,tenantId=req.user?.tenantId;if(!userId||!tenantId)return res.status(404).json({error:'Tenant membership not found'});
+      return runInTransaction('Failed to manage lesson announcement publication',res,async connection=>{
+        const lock=method!=='get';
+        if(!await verifyTenantOwner(connection,userId,tenantId,lock))return{status:403,body:{error:'Forbidden'},commit:false};
+        if(!await resolveCourse(connection,courseId,tenantId,lock)||!await resolveUnit(connection,unitId,courseId,lock))return{status:404,body:{error:'Lesson not found'},commit:false};
+        const [rows]=await connection.execute(`SELECT l.id FROM course_lessons l WHERE l.id=? AND l.unit_id=?${lock?' FOR UPDATE':''}`,[lessonId,unitId]);if(!(rows as any[])[0])return{status:404,body:{error:'Lesson not found'},commit:false};
+        return manageAnnouncementPublication(connection,{userId,tenantId,courseId,lessonId,contentId,publicationId,operation,reviewToken:body?.review_token});
       });
     });
   }

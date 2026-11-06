@@ -1,5 +1,9 @@
 # Business implementation — 2026-11-06, BUILD-21
 
+Continuation: [BUILD-22](BUSINESS-IMPLEMENTATION-2026-11-06-BUILD-22.md) adds owner
+homework/quiz reference preparation and its actual editor. Student assessment
+launch remains a separate proof/attempt boundary; follow the current queue.
+
 Continues [BUILD-20](BUSINESS-IMPLEMENTATION-2026-11-06-BUILD-20.md).
 [Player contract](../streams/client/J03-STUDENT-CATALOG-VIDEO-PLAYER.md),
 [execution queue](BUSINESS-EXECUTION-QUEUE.md).

@@ -755,6 +755,9 @@ test('mount: the router exposes the path/completion routes and the private stude
     assert.deepEqual(routes.sort(), [
         'GET /courses',
         'GET /courses/:courseId',
+        'GET /courses/:courseId/lessons/:lessonId/activities',
+        'GET /courses/:courseId/lessons/:lessonId/activities/:contentId',
+      'GET /courses/:courseId/lessons/:lessonId/announcement',
         'GET /courses/:courseId/lessons/:lessonId/contents',
         'GET /courses/:courseId/lessons/:lessonId/contents/:contentId/file',
         'GET /courses/:courseId/lessons/:lessonId/support-context',
@@ -1541,6 +1544,17 @@ test('student video actual route is authenticated, fixed/no-store and produces n
     state.lessonVideoFixture.bindings=[];assert.deepEqual((await runChain(h.chain,makeReq({token:studentToken(),pathName}))).body.videos,[]);
     state.lessonVideoFixture.group=null;assert.equal((await runChain(h.chain,makeReq({token:studentToken(),pathName}))).status,404);
 });
+test('student activity paths preserve the real auth/workspace chain and refuse override selectors before data access', async () => {
+    const h=buildHarness(makeState());
+    for (const suffix of ['', '/a3000000-0000-4000-8000-000000000001']) {
+        const pathName=`/courses/${COURSE_A1}/lessons/${LESSON_1}/activities${suffix}`;
+        assert.equal((await runChain(h.chain,makeReq({pathName}))).status,401);
+        assert.equal((await runChain(h.chain,makeReq({token:sign(INSTRUCTOR,'instructor'),pathName}))).status,403);
+        assert.equal((await runChain(h.chain,makeReq({token:studentToken(),pathName,query:{tenant_id:TENANT_B}}))).status,400);
+    }
+    assert.equal(h.connectionCount(),0);
+});
+
 test('student video route refuses caller authority selectors and unavailable schema without inventing an empty list',async()=>{
     const state=catalogVideoState(),h=buildHarness(state),pathName=`/courses/${COURSE_A1}/lessons/${LESSON_1}/videos`;
     for(const query of [{tenant_id:TENANT_B},{student_enrollment_id:ENROLLMENT_1},{branch_id:branchId},{video_id:materialId},{limit:1000}])assert.equal((await runChain(h.chain,makeReq({token:studentToken(),pathName,query}))).status,400);
