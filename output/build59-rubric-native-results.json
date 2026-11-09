@@ -1,0 +1,18 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "actual owner saves immutable reference criteria; exact keyed replay and GET recover one receipt, no repeated rubric revision",
+      "pass": true
+    },
+    {
+      "check": "stale version, excess precision and reused key with changed criteria are rejected before new revision",
+      "pass": true
+    },
+    {
+      "check": "actual foreign owner, legacy staff, platform admin and foreign question do not acquire owner rubric authority",
+      "pass": true
+    }
+  ],
+  "limits": "Native users/auth/SQL on synthetic local demo. Owner reference rubric only; no grader delegation, grading mutation or final reopen. Not production/racing commit/load/device acceptance."
+}

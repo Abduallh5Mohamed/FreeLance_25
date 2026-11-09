@@ -1,7 +1,6 @@
 import express, { Response, RequestHandler } from 'express';
 import { query, queryOne, execute, getPool } from '../db';
 import { optionalAuth, authenticateToken, instructorScopeId, AuthRequest } from '../middleware/auth';
-import { isSuperAdmin } from '../security/admin-permissions';
 import { recordAudit } from '../security/audit';
 
 /**
@@ -82,6 +81,7 @@ export interface ManualGradingRouterDeps {
     db: ManualGradingDataAccess;
     optionalAuthenticate: RequestHandler;
     authenticate: RequestHandler;
+    /** Deprecated and ignored: no platform administration grant for marking. */
     isPlatformAdmin?: (userId: string) => Promise<boolean>;
     hasActiveInstructorMembership?: (userId: string, tenantId: string) => Promise<boolean>;
 }
@@ -173,34 +173,21 @@ export const createManualGradingRouter = (deps: ManualGradingRouterDeps): expres
     const runTransaction = deps.db.withTransaction;
 
     router.use(deps.optionalAuthenticate);
+    // Platform business administration never grants access to student marking.
+    router.use((req:AuthRequest,res,next)=>{
+        if(req.user?.role==='admin'||req.impersonation||req.headers['x-impersonation']!==undefined){res.status(403).json({code:'GRADING_TEACHER_REQUIRED'});return;}
+        next();
+    });
 
-    const isPlatformAdmin = deps.isPlatformAdmin ?? isSuperAdmin;
-    const resolveAdminScope = async (
-        req: AuthRequest,
-    ): Promise<{ platform: boolean; tenantId: string | null } | null> => {
-        const user = req.user;
-        if (!user) return null;
-        if (user.role !== 'admin') return null;
-        if (await isPlatformAdmin(user.id)) {
-            return { platform: true, tenantId: user.tenantId ?? null };
-        }
-        if (!user.tenantId) return null;
-        const owner = await queryOne(
-            `SELECT t.id FROM tenants t
-             INNER JOIN users u ON u.id = t.owner_user_id
-             WHERE t.id = ? AND t.owner_user_id = ? AND t.status = 'active'
-               AND u.is_active = 1 AND u.role = 'admin'`,
-            [user.tenantId, user.id],
-        );
-        return owner ? { platform: false, tenantId: user.tenantId } : null;
-    };
+    // Compatibility shape only: business administration never authorizes marking.
+    const resolveAdminScope = async (_req: AuthRequest): Promise<{platform:boolean;tenantId:string|null}|null> => null;
     const hasActiveInstructorMembership = deps.hasActiveInstructorMembership
         ?? (async (userId: string, tenantId: string) => !!(await queryOne(
             `SELECT m.user_id FROM tenant_memberships m
              INNER JOIN tenants t ON t.id = m.tenant_id AND t.status = 'active'
              INNER JOIN users u ON u.id = m.user_id AND u.is_active = 1
              WHERE m.user_id = ? AND m.tenant_id = ? AND m.status = 'active'
-               AND m.role_key IN ('owner','instructor')`,
+               AND m.role_key IN ('owner','instructor') AND NOT EXISTS (SELECT 1 FROM admin_user_roles platform_role WHERE platform_role.user_id=u.id)`,
             [userId, tenantId],
         )));
 
@@ -219,7 +206,7 @@ export const createManualGradingRouter = (deps: ManualGradingRouterDeps): expres
                    WHERE eg.exam_id = ?`;
         const params: unknown[] = [examId];
         if (instructorId) {
-            sql += ' AND g.instructor_id = ?';
+            sql += ' AND c.instructor_id = ?';
             params.push(instructorId);
         }
         sql += ' AND s.id = ?';
@@ -281,7 +268,7 @@ export const createManualGradingRouter = (deps: ManualGradingRouterDeps): expres
                     WHERE eg.exam_id = ea.exam_id AND g.id = s.group_id AND c.tenant_id = ?`;
                 params.push(tenantId, tenantId);
                 if (scopeId) {
-                    sql += ' AND g.instructor_id = ?';
+                    sql += ' AND c.instructor_id = ?';
                     params.push(scopeId);
                 }
                 sql += ')';

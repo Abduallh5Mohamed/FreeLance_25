@@ -1,0 +1,102 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "phase": "before",
+  "rows_per_page": 25,
+  "fixture_rows": 26,
+  "warmup_requests": 2,
+  "measured_requests": 12,
+  "concurrency": 1,
+  "samples": [
+    {
+      "ms": 59.493600000000015,
+      "sql_count": 180,
+      "metadata_count": 78,
+      "sql_ms": 57.42129999999918
+    },
+    {
+      "ms": 57.25299999999993,
+      "sql_count": 180,
+      "metadata_count": 78,
+      "sql_ms": 55.43389999999863
+    },
+    {
+      "ms": 59.23519999999985,
+      "sql_count": 180,
+      "metadata_count": 78,
+      "sql_ms": 57.48350000000028
+    },
+    {
+      "ms": 55.02839999999992,
+      "sql_count": 180,
+      "metadata_count": 78,
+      "sql_ms": 53.43149999999923
+    },
+    {
+      "ms": 58.687799999999925,
+      "sql_count": 180,
+      "metadata_count": 78,
+      "sql_ms": 56.91200000000049
+    },
+    {
+      "ms": 57.07270000000017,
+      "sql_count": 180,
+      "metadata_count": 78,
+      "sql_ms": 55.47180000000071
+    },
+    {
+      "ms": 54.147199999999884,
+      "sql_count": 180,
+      "metadata_count": 78,
+      "sql_ms": 52.85669999999959
+    },
+    {
+      "ms": 60.440900000000056,
+      "sql_count": 180,
+      "metadata_count": 78,
+      "sql_ms": 57.7761000000005
+    },
+    {
+      "ms": 56.2817,
+      "sql_count": 180,
+      "metadata_count": 78,
+      "sql_ms": 54.847799999999324
+    },
+    {
+      "ms": 58.88259999999991,
+      "sql_count": 180,
+      "metadata_count": 78,
+      "sql_ms": 57.53909999999905
+    },
+    {
+      "ms": 56.6588999999999,
+      "sql_count": 180,
+      "metadata_count": 78,
+      "sql_ms": 55.31610000000046
+    },
+    {
+      "ms": 53.89060000000018,
+      "sql_count": 180,
+      "metadata_count": 78,
+      "sql_ms": 52.603799999998955
+    }
+  ],
+  "p50_ms": 57.07270000000017,
+  "p95_ms": 60.440900000000056,
+  "query_counts": [
+    180
+  ],
+  "metadata_counts": [
+    78
+  ],
+  "discovery_explain": [
+    {
+      "table": "exam_grading_assignments",
+      "type": "ref",
+      "key": "uq_grading_assignment_question",
+      "rows": 27,
+      "extra": "Using index condition; Using where; Using filesort"
+    }
+  ],
+  "limits": "Original router, injected fixture principal, actual MySQL, request savepoints inside outer rollback. Tiny bounded synthetic page, sequential warm connection; not HTTP/auth, representative load or production capacity.",
+  "persisted_probe_changes": 0
+}

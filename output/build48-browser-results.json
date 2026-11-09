@@ -1,0 +1,23 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "browser": "157.0.8103.38",
+  "checks": [
+    {
+      "check": "actual owner preparation, restricted pinned quiz and five-attempt/two-tag evidence rendered in Chrome",
+      "pass": true
+    },
+    {
+      "check": "explicit teacher-selected brief copied with counts/window only; question stems/unselected tag/resource IDs excluded",
+      "pass": true
+    },
+    {
+      "check": "changing evidence window clears choices/copy proof; zero-attempt window is insufficient with no copy action",
+      "pass": true
+    },
+    {
+      "check": "source withdrawal removes old learning evidence/copy action; fresh preparation shows unavailable source, fixture restored",
+      "pass": true
+    }
+  ],
+  "limits": "Desktop synthetic owner evidence only, not student quiz execution, field pedagogy, provider, mobile or load acceptance."
+}

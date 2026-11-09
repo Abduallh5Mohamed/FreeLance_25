@@ -1,0 +1,14 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "phase": "after",
+  "teacher_wait_in_innodb_view": true,
+  "teacher_pending_after_probe": true,
+  "grading": {
+    "ok": true
+  },
+  "teaching": {
+    "ok": true
+  },
+  "persisted_probe_changes": 0,
+  "limits": "Two actual concurrent MySQL transactions, live helpers and current retained fixture; rollback-only. INNODB_TRX view may lag, so pending promise and final driver outcome are separately reported. Not high-volume load or a write-commit race."
+}

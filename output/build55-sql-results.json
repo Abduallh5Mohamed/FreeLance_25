@@ -1,0 +1,14 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "original snapshot proof reads non-null UTC DATETIME windows verbatim independent of driver-local date conversion",
+      "pass": true
+    },
+    {
+      "check": "persisted native attempts retain exact catalog binding, four answers and pending essay; no automatic catalog lesson completion",
+      "pass": true
+    }
+  ],
+  "limits": "Window mutation was rollback-only, never used to silently change or settle a persisted attempt. No expiry/two-commit race/load acceptance."
+}

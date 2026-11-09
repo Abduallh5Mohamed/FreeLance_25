@@ -1,0 +1,23 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build57-homework.json",
+  "sections": [
+    {
+      "file": "20261024_06_assignment_cleanup_scan_fencing.sql",
+      "start": null,
+      "end": null,
+      "hash": "ebde65f22cc15d982ad7a8fd07745fbf6ab0b7e27ea1be7c4ad21a6ff420cd63",
+      "completed": 5,
+      "total": 5
+    },
+    {
+      "file": "20261106_06_catalog_homework_context.sql",
+      "start": null,
+      "end": null,
+      "hash": "5f8c2a5e502e776d9a3086eaae10ea1538be39a265da493e2ed04f8c7aa51382",
+      "completed": 1,
+      "total": 1
+    }
+  ],
+  "finished_at": "2026-11-08T19:25:46.674Z"
+}

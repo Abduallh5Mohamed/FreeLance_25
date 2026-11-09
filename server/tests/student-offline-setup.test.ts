@@ -1,0 +1,35 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {Router} from 'express';
+import {createStudentOfflineSetupRouter,parseOfflineSetup} from '../src/routes/student-offline-setup';import type {AuthRequest} from '../src/middleware/auth';import {invokeRoute} from './helpers/m2-harness';
+const id=(n:number)=>`b5100000-0000-4000-8000-${String(n).padStart(12,'0')}`,input={student_id:id(3),group_id:id(4),course_id:id(5)};
+function fixture(){let data={configured:false,assigned:false,ops:[] as any[],audit:[] as any[],head:{head_seq:0,head_entry_hash:null as string|null,head_row_id:null as string|null}};
+ const s={owner:true,schema:true,linked:false,capacity:10,roster:0,changed:false,failAudit:false,failReceipt:false,lostCommit:false,commits:0,rollbacks:0,destroyed:0,actor:{id:id(1),tenantId:id(2),role:'instructor',tokenVersion:0} as AuthRequest['user']};
+ const getConnection=async()=>{let before:typeof data;return{beginTransaction:async()=>{before=structuredClone(data);},execute:async(sql:string,p:any[]=[])=>{const q=sql.replace(/\s+/g,' ').trim();
+  if(q.startsWith('SELECT t.owner_user_id'))return[s.owner?[{owner_user_id:id(1)}]:[],[]];
+  if(q.includes('information_schema.TABLES'))return[s.schema?['student_offline_setup_operations','students','student_courses','groups','courses','audit_events','audit_chain_head'].map(name=>({name,engine:'InnoDB'})):[],[]];
+  if(q.includes('information_schema.COLUMNS'))return[[...Object.entries({tenant_id:['varchar',64],operation_id:['char',36],actor_user_id:['varchar',64],student_id:['char',36],group_id:['char',36],course_id:['char',36],request_hash:['char',64]}).map(([name,[type,len]])=>({name,type,len,nullable:'NO',collation:'utf8mb4_bin'})),{name:'created_at',type:'timestamp',nullable:'NO'}],[]];
+  if(q.includes('information_schema.STATISTICS'))return[[...['tenant_id','operation_id'].map((col,i)=>({name:'PRIMARY',col,seq:i+1})),...['tenant_id','student_id'].map((col,i)=>({name:'uq_offline_setup_student',col,seq:i+1}))],[]];
+  if(q.startsWith('SELECT operation_id,actor_user_id'))return[data.ops.filter(x=>x.tenant_id===p[0]&&x.operation_id===p[1]),[]];
+  if(q.startsWith('SELECT operation_id FROM student_offline'))return[data.ops.filter(x=>x.tenant_id===p[0]&&x.student_id===p[1]),[]];
+  if(q.startsWith('SELECT s.id,s.name,s.user_id'))return[s.linked||data.configured?[]:[{id:id(3),name:s.changed?'Edited':'Row',user_id:null,group_id:null,branch_id:null,is_offline:0,instructor_id:null,grade_id:null,updated_epoch:1}],[]];
+  if(q.startsWith('SELECT g.id,g.name,g.course_id'))return[[{id:id(4),name:'Group',course_id:id(5),course_name:'Course',grade_id:null,max_students:s.capacity}],[]];
+  if(q.startsWith('SELECT id FROM students'))return[Array.from({length:s.roster},(_,i)=>({id:id(20+i)})),[]];
+  if(q.startsWith('SELECT course_id,status'))return[data.assigned?[{course_id:id(5),status:'active'}]:[],[]];
+  if(q.startsWith('SELECT course_id FROM student_courses'))return[data.assigned?[{course_id:id(5)}]:[],[]];
+  if(q.startsWith('SELECT id FROM courses'))return[[{id:id(5)}],[]];
+  if(q.startsWith('UPDATE students SET')){data.configured=true;return[{affectedRows:1},[]];}
+  if(q.startsWith('INSERT IGNORE INTO student_courses')){data.assigned=true;return[{affectedRows:1},[]];}
+  if(q.startsWith('SELECT head_seq'))return[[{...data.head}],[]];
+  if(q.startsWith('UPDATE audit_chain_head')){data.head={head_seq:p[0],head_entry_hash:p[1],head_row_id:p[2]};return[{affectedRows:1},[]];}
+  if(q.startsWith('INSERT INTO audit_events')){if(s.failAudit)throw Error('audit');data.audit.push(p);return[{affectedRows:1},[]];}
+  if(q.startsWith('INSERT INTO student_offline_setup_operations')){if(s.failReceipt)throw Error('receipt');data.ops.push(Object.fromEntries(['tenant_id','operation_id','actor_user_id','student_id','group_id','course_id','request_hash'].map((k,i)=>[k,p[i]])));return[{affectedRows:1},[]];}
+  throw Error('Unexpected SQL '+q);
+ },commit:async()=>{s.commits++;if(s.lostCommit)throw Error('lost ACK');},rollback:async()=>{s.rollbacks++;data=before;},release:()=>{},destroy:()=>{s.destroyed++;}};};
+ const router=Router();router.use((req,_res,next)=>{(req as AuthRequest).user=s.actor;next();});router.use(createStudentOfflineSetupRouter({getConnection}));
+ const request=(path:string,body?:any)=>invokeRoute(router,{method:body?'POST':'GET',url:'/offline-setup/'+path,body});
+ return{s,request,data:()=>data,prepare:async()=>{const r=await request('review',input);assert.equal(r.statusCode,200);return{...input,review_token:(r.body as any).review_token,operation_id:id(9),confirmed:true};}};
+}
+test('exact offline selection rejects extra authority/account fields and unconfirmed apply',()=>{assert.deepEqual(parseOfflineSetup(input),input);assert.throws(()=>parseOfflineSetup({...input,password:'x'}));assert.throws(()=>parseOfflineSetup({...input,operation_id:id(9),review_token:'a'.repeat(64),confirmed:false},true));});
+test('real router saves same row/course/audit/receipt once; GET and matching replay are historical',async()=>{const h=fixture(),body=await h.prepare();assert.equal((await h.request('apply',body)).statusCode,201);assert.equal(h.data().configured,true);assert.equal(h.data().assigned,true);assert.equal(h.data().audit.length,1);assert.equal(h.data().ops.length,1);assert.equal((await h.request('apply',body)).statusCode,200);const status=await h.request('operations/'+id(9));assert.equal((status.body as any).operation.state,'offline_configured');assert.equal(h.s.commits,1);assert.equal((await h.request('apply',{...body,review_token:'b'.repeat(64)})).statusCode,409);});
+test('linked rows, full group, stale review, revoked owner and unavailable schema write nothing',async()=>{for(const mode of ['linked','capacity','changed','owner','schema']){const h=fixture(),body=await h.prepare();if(mode==='linked')h.s.linked=true;if(mode==='capacity'){h.s.capacity=1;h.s.roster=1;}if(mode==='changed')h.s.changed=true;if(mode==='owner')h.s.owner=false;if(mode==='schema')h.s.schema=false;assert.notEqual((await h.request('apply',body)).statusCode,201);assert.equal(h.data().configured,false);assert.equal(h.data().ops.length,0);assert.equal(h.s.commits,0);}});
+test('audit or receipt failure rolls back configuration, assignment, chain reservation and receipt',async()=>{for(const where of ['audit','receipt']){const h=fixture(),body=await h.prepare();if(where==='audit')h.s.failAudit=true;else h.s.failReceipt=true;assert.equal((await h.request('apply',body)).statusCode,503);assert.equal(h.data().configured,false);assert.equal(h.data().assigned,false);assert.equal(h.data().ops.length,0);assert.equal(h.data().head.head_seq,0);assert.equal(h.data().audit.length,0);}});
+test('unknown commit is destroyed without rollback; GET can recover its confirmed receipt',async()=>{const h=fixture(),body=await h.prepare(),before=h.s.rollbacks;h.s.lostCommit=true;assert.equal((await h.request('apply',body)).statusCode,500);assert.equal(h.s.rollbacks,before);assert.equal(h.s.destroyed,1);assert.equal((await h.request('operations/'+id(9))).statusCode,200);assert.equal(h.data().configured,true);});

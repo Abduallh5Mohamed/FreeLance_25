@@ -1,0 +1,35 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "browser": "157.0.8103.38",
+  "checks": [
+    {
+      "check": "real native non-owner teacher enters mounted workspace and sees only current responsible course, with truthful empty lessons",
+      "pass": true
+    },
+    {
+      "check": "actual instructor selects course/lesson on new workspace and reads original pinned-quiz automatic tag evidence, without owner-only discovery routes",
+      "pass": true
+    },
+    {
+      "check": "native selected-student return evidence and actual saved-plan follow-up render together, distinguishing current withdrawal/null/progress from historical receipts",
+      "pass": true
+    },
+    {
+      "check": "real browser network failure clears prior follow-up; explicit fresh GET recovers without any plan/progress mutation",
+      "pass": true
+    },
+    {
+      "check": "390px Chrome viewport with user-collapsed sidebar has no horizontal overflow; smoke evidence only, not real mobile-device acceptance",
+      "pass": true
+    },
+    {
+      "check": "real same-document replacement with another authenticated teaching identity removes selected course, lesson evidence and private student follow-up",
+      "pass": true
+    },
+    {
+      "check": "business admin navigation cannot mount teaching workspace or start its academic reads",
+      "pass": true
+    }
+  ],
+  "limits": "Native existing synthetic accounts, actual APIs and MySQL. One deliberate network abort negative; no mocked successful body. Desktop and resized viewport only; no field/real-device/load/production acceptance."
+}

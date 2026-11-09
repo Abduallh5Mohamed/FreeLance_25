@@ -1,0 +1,15 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "actual SQL audit_events error rolls back immutable rubric, sealed audit head and receipt through original router",
+      "pass": true
+    },
+    {
+      "check": "actual SQL exam_rubric_operations error rolls back immutable rubric, sealed audit head and receipt through original router",
+      "pass": true
+    }
+  ],
+  "persisted_probe_changes": 0,
+  "limits": "Original router/real SQL; injected fixture principal and exact SQL error. No positive native identity, commit-uncertainty/racing-commit or production/load proof."
+}

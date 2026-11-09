@@ -1,0 +1,15 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build58-branch-audit.json",
+  "sections": [
+    {
+      "file": "20261017_08_resource_branch_scope.sql",
+      "start": "CREATE TABLE IF NOT EXISTS branch_audit_log",
+      "end": "end of exact CREATE statement",
+      "hash": "c1c57b592c34b51c26cdf3f8e4cbbc775b03a5e1c6252dde41b3393eec25365c",
+      "completed": 1,
+      "total": 1
+    }
+  ],
+  "finished_at": "2026-11-08T20:11:45.562Z"
+}

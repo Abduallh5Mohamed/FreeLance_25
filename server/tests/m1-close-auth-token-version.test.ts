@@ -48,6 +48,7 @@ const response = () => {
         // The staff-login route carries the real rate-limit middleware, which
         // touches these response methods before the handler answers.
         setHeader() { return res; },
+        set() { return res; },
         removeHeader() { return res; },
         end() { return res; },
     } as unknown as Response;

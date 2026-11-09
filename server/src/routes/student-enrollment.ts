@@ -21,9 +21,11 @@ import {
 } from '../security/identity-otp';
 import { createNotification } from '../utils/notifications';
 import { recordAudit, snapshotRow } from '../security/audit';
+import { createStudentAccountLinkRequestRouter } from './student-account-link';
 
 const router = Router();
 const pool = getPool();
+router.use(createStudentAccountLinkRequestRouter({getConnection:()=>pool.getConnection(),authenticate:authenticateToken,otpKey:()=>process.env.OTP_HMAC_SECRET}));
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const publicMessage = 'إذا كانت البيانات صحيحة فسيظهر الطلب للمدرس للمراجعة.';
 const MAX_ENROLLMENT_COURSES = 50;

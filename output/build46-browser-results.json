@@ -1,0 +1,19 @@
+{
+  "browser": "157.0.8103.38",
+  "viewport": "1440x1100",
+  "checks": [
+    {
+      "check": "Chrome owner evidence counts, explicit reviewed save, lost ACK, reload and GET-only receipt recovery with one POST",
+      "pass": true
+    },
+    {
+      "check": "Chrome student dashboard shows current saved teacher plan and explicit estimate, not a content grant",
+      "pass": true
+    },
+    {
+      "check": "Chrome explicit owner withdrawal followed by student refresh removes the old plan without revision fallback",
+      "pass": true
+    }
+  ],
+  "limits": "Synthetic localhost, no provider or real educational effectiveness/mobile/load acceptance."
+}

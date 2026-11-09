@@ -1,0 +1,13 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "chain": {
+    "ok": true,
+    "checked": 12,
+    "unsealed": 38,
+    "truncated": false,
+    "head_anchored": true
+  },
+  "mounted_get_checks": 3,
+  "offline_roster": 3,
+  "limits": "Legacy unsealed rows remain unsealed. Tiny synthetic demo only; this is not load or production acceptance."
+}

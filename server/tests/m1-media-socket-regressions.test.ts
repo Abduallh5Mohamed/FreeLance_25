@@ -286,6 +286,10 @@ interface PremiumFixtures {
     ownedStudents?: string[];
     ownedGroups?: string[];
     platformAdmins?: string[];
+    groupCourses?: Record<string, string>;
+    courseTenants?: Record<string, string>;
+    videos?: Record<string, { id: string; tenant_id: string; course_id: string | null; uploaded_by: string }>;
+    playbackOwner?: boolean;
 }
 
 const makePremiumDeps = (fixtures: PremiumFixtures = {}) => {
@@ -293,6 +297,16 @@ const makePremiumDeps = (fixtures: PremiumFixtures = {}) => {
     const deps: PremiumLectureRouterDeps = {
         query: async (sql: string) => { executed.push({ sql }); return [] as never[]; },
         queryOne: async (sql: string, params?: unknown[]) => {
+            if (sql.includes('SELECT id, role, phone, is_active FROM users WHERE id = ?'))
+                return (fixtures.playbackOwner && params?.[0] === 'owner-1' ? { id: 'owner-1', role: 'instructor', phone: null, is_active: 1 } : null) as never;
+            if (sql.includes('UNION') && sql.includes("m.role_key IN ('owner','instructor')"))
+                return (fixtures.playbackOwner && params?.[0] === 'tenant-1' && params?.[1] === 'owner-1' ? { authority: 'owner' } : null) as never;
+            if (sql.includes('SELECT course_id FROM `groups` WHERE id = ?'))
+                return (fixtures.groupCourses?.[String(params?.[0])] ? { course_id: fixtures.groupCourses[String(params?.[0])] } : null) as never;
+            if (sql.includes('SELECT tenant_id FROM courses WHERE id = ?'))
+                return (fixtures.courseTenants?.[String(params?.[0])] ? { tenant_id: fixtures.courseTenants[String(params?.[0])] } : null) as never;
+            if (sql.includes('SELECT id, tenant_id, course_id, uploaded_by FROM videos WHERE id = ?'))
+                return (fixtures.videos?.[String(params?.[0])] ?? null) as never;
             if (sql.includes('FROM premium_lecture_payments WHERE id')) {
                 return (fixtures.payments?.[String(params?.[0])] ?? null) as never;
             }
@@ -432,7 +446,8 @@ test('premium lectures: creation requires ownership of the target group', async 
     assert.equal(denied.response.capturedStatus, 403);
     assert.equal(executed.some((call) => call.sql.includes('INSERT INTO premium_lectures')), false);
 
-    const allowed = makePremiumDeps({ ownedGroups: ['group-1'] });
+    const allowed = makePremiumDeps({ ownedGroups: ['group-1'], groupCourses: { 'group-1': 'course-1' },
+        courseTenants: { 'course-1': 'tenant-1' }, videos: { x: { id: 'x', tenant_id: 'tenant-1', course_id: 'course-1', uploaded_by: 'owner-1' } }, playbackOwner: true });
     const router2 = createPremiumLectureRouter(allowed.deps);
     const created = await dispatchAndSettle(router2, premiumRequest('owner-token', {
         method: 'POST', url: '/',
@@ -443,6 +458,18 @@ test('premium lectures: creation requires ownership of the target group', async 
     assert.ok(insert);
     // created_by is the verified caller, never a body-supplied value.
     assert.equal(insert!.params?.[10], 'owner-1');
+});
+
+for (const missing of ['destination', 'video', 'foreign-destination'] as const)
+test(`premium creation still denies ${missing} despite group ownership`, async () => {
+    const h = makePremiumDeps({ ownedGroups: ['group-1'], groupCourses: missing === 'destination' ? {} : { 'group-1': 'course-1' },
+        courseTenants: { 'course-1': missing === 'foreign-destination' ? 'tenant-2' : 'tenant-1' },
+        videos: missing === 'video' ? {} : { x: { id: 'x', tenant_id: 'tenant-1', course_id: null, uploaded_by: 'owner-1' } } });
+    const result = await dispatchAndSettle(createPremiumLectureRouter(h.deps), premiumRequest('owner-token', {
+        method: 'POST', url: '/', body: { title: 'T', video_url: 'video://x', price: 10, group_id: 'group-1', tenant_id: 'tenant-1' },
+    }));
+    assert.equal(result.response.capturedStatus, missing === 'video' ? 404 : 403);
+    assert.equal(h.executed.some(c => c.sql.includes('INSERT INTO premium_lectures')), false);
 });
 
 // ---------------------------------------------------------------------------

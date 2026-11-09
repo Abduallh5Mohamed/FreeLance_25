@@ -1,0 +1,10 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "passed": 3,
+  "checks": [
+    "Owner edits actual reference rubric in original instructor workbench; real committed POST/lost ACK/reload/GET recovery without duplicate POST",
+    "Fresh rubric read and SQL agree with retained immutable revision; no criteria text in recovery marker",
+    "Session change hides rubric and grading answers"
+  ],
+  "limits": "Synthetic native demo/Chrome only. No assigned grader rights, final reopen, grade mutation, human/device/load/production acceptance."
+}

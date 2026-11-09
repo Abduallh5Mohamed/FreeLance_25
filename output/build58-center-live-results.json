@@ -1,0 +1,34 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "native owner reuses declared branch and creates mapped group through original routes; new owner operations/setup report bounded facts with no account or privilege creation",
+      "pass": true
+    },
+    {
+      "check": "fresh native branch creation after fix commits exactly one matching creation audit; historical pre-fix branch is retained without fabricated backfill",
+      "pass": true
+    },
+    {
+      "check": "separate native owner/foreign owner/platform-admin/legacy-staff accounts preserve owner-only tenant review and reject forged tenant selectors",
+      "pass": true
+    },
+    {
+      "check": "platform support follow-up remains verified-platform only; neither owner workspace nor legacy staff identity becomes center/platform support authority",
+      "pass": true
+    },
+    {
+      "check": "native branch suspension invalidates scope and hides branch label in fresh review; original audited branch route restores synthetic branch",
+      "pass": true
+    },
+    {
+      "check": "actual instructor dashboard opens native center review and existing group setup, without misleading platform-staff link or implicit permission creation",
+      "pass": true
+    },
+    {
+      "check": "native dashboard session event clears all private center groups/counts and selected setup evidence",
+      "pass": true
+    }
+  ],
+  "limits": "Existing authority only; no center team provisioning/role grant, platform permission grant, new account, provider or human handover acceptance. Branch mutations use existing audit contract; not sealed/atomic acceptance. New branch/group are declared synthetic demo fixtures."
+}

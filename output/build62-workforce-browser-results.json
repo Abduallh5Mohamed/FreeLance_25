@@ -1,0 +1,14 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "current native assigned grader opens optimized list and assigned question only; no finalization/reopen controls",
+      "pass": true
+    },
+    {
+      "check": "actual independent center employee discovers current scoped membership and allowed group without teaching/platform/financial grants",
+      "pass": true
+    }
+  ],
+  "limits": "Native Chrome/actual synthetic users/APIs/MySQL; read-only actions. No new grading/attendance/task writes, no real-device/human/load acceptance."
+}

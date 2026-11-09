@@ -1,5 +1,11 @@
 # J04 — self-assigned platform-support queue (BUILD-16)
 
+BUILD-54 continuation (2026-11-08): relevant schema/indexes applied only to the isolated synthetic demo after snapshot; older unapplied statements below describe earlier checkpoints. Native generic-ticket HTTP/browser verification and rollback-only SQL transfer/revocation/paging/failure evidence: [report](../../agent-context/BUSINESS-IMPLEMENTATION-2026-11-08-BUILD-54.md). Assignment snapshot/candidate reads share a bounded 25s deadline (including pagination); timeout releases busy state and fences late results. A confirmed write remains confirmed if its refresh times out. Existing audit is atomic but unsealed; no center-staff, lesson-context, SLA, production or load acceptance. Online linking remains deferred.
+
+BUILD-41 adds a separate [last-ticket-update follow-up queue](J04-SUPPORT-FOLLOWUP.md)
+with operator-selected intervals and oldest-first paging. This original assigned
+queue keeps its ID order/all-status contract and does not become an SLA view.
+
 Local implementation checkpoint: 2026-11-05. Extends [assignment and transfer](J04-SUPPORT-ASSIGNMENT.md). This is an organizational view for existing verified platform support; it does not introduce assignment-based access rights, a teacher inbox or tenant staff identities.
 
 ## Server contract

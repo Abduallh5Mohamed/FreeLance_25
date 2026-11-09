@@ -1,0 +1,15 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build55-quiz.json",
+  "sections": [
+    {
+      "file": "20261018_08_question_bank_assignments.sql",
+      "start": "SET @has_qb_usages =",
+      "end": null,
+      "hash": "b2e681a5a269a5ab0fde61765fb8b877ed319f99889a7e35a32a9efb49681a24",
+      "completed": 16,
+      "total": 16
+    }
+  ],
+  "finished_at": "2026-11-08T16:33:17.527Z"
+}

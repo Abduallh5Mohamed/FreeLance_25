@@ -1,0 +1,15 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build60-grading-responsibility.json",
+  "sections": [
+    {
+      "file": "20261109_02_grading_assignment_responsibility.sql",
+      "start": null,
+      "end": null,
+      "hash": "6d0865b9779542d147c410e52fc4f0f18f884c08c2ff7f8fc4e31e5dc5c54fd7",
+      "completed": 1,
+      "total": 1
+    }
+  ],
+  "finished_at": "2026-11-08T23:49:42.906Z"
+}

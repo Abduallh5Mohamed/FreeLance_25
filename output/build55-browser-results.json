@@ -1,0 +1,28 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "browser": "157.0.8103.38",
+  "checks": [
+    {
+      "check": "actual student selects workspace; lost committed start ACK recovered after reload by GET only, original ID and UTC deadline retained",
+      "pass": true
+    },
+    {
+      "check": "native four-kind draft persisted despite lost save ACK and recovered on reload without another save",
+      "pass": true
+    },
+    {
+      "check": "native submission lost ACK reconciles after reload as pending manual review, disables edits and never repeats POST",
+      "pass": true
+    },
+    {
+      "check": "actual source revocation clears private questions with explicit denial and no legacy fallback",
+      "pass": true
+    }
+  ],
+  "counts": {
+    "start": 1,
+    "save": 1,
+    "submit": 1
+  },
+  "limits": "Desktop localhost with actual API/SQL and real HTTP session reuse; no login-form, mobile, provider, production or load acceptance. Interception only executes real writes then loses ACK."
+}

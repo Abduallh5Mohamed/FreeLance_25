@@ -1,0 +1,43 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checked_at": "2026-11-07T22:04:16.920Z",
+  "checks": [
+    {
+      "check": "actual owner roster and separate present/absent/excused/unrecorded evidence; cancelled/other-audience sessions excluded",
+      "pass": true
+    },
+    {
+      "check": "changed attendance rejects stale review without plan writes",
+      "pass": true
+    },
+    {
+      "check": "real concurrent saves CAS one version/receipt; same operation replay and GET recovery do not write again",
+      "pass": true
+    },
+    {
+      "check": "selected student receives minimal current two-step plan with known/unknown teacher estimates, no completion or content grant",
+      "pass": true
+    },
+    {
+      "check": "other enrollment cannot read target plan; student cannot act as owner; client identity selectors rejected",
+      "pass": true
+    },
+    {
+      "check": "new future release or incomplete prerequisite redacts saved step identity/title/estimate on fresh student read",
+      "pass": true
+    },
+    {
+      "check": "course withdrawal hides the plan; application does not bypass current publication",
+      "pass": true
+    },
+    {
+      "check": "owner can withdraw after enrollment deactivation, historical receipt still recoverable; reactivation cannot resurrect prior revision",
+      "pass": true
+    },
+    {
+      "check": "review/save/read/withdraw never insert catalog completion; final explicitly reviewed active plan remains for manual demo",
+      "pass": true
+    }
+  ],
+  "limits": "Synthetic fixture attendance; actual application return-plan routes, no notification/provider/field usefulness acceptance."
+}

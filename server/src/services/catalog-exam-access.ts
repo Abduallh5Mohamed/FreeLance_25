@@ -71,7 +71,7 @@ export class CatalogExamDenied extends Error {
 export async function validateCatalogExamSnapshot(db: ExamVersionsDataAccess, context: Pick<CatalogExamContext, 'versionId' | 'examId' | 'tenantId'>, lock = false): Promise<SnapshotTiming & {
     fingerprint: string;
 }> {
-    const header = await db.queryOne<any>(`SELECT id,duration_seconds,opens_at,closes_at,grace_seconds,total_points,passing_points,scoring_policy FROM exam_versions WHERE id=? AND exam_id=? AND tenant_id=? AND status='published' AND published_at IS NOT NULL LIMIT 1${lock ? ' FOR UPDATE' : ''}`, [context.versionId, context.examId, context.tenantId]);
+    const header = await db.queryOne<any>(`SELECT id,duration_seconds,CAST(opens_at AS CHAR) AS opens_at,CAST(closes_at AS CHAR) AS closes_at,grace_seconds,total_points,passing_points,scoring_policy FROM exam_versions WHERE id=? AND exam_id=? AND tenant_id=? AND status='published' AND published_at IS NOT NULL LIMIT 1${lock ? ' FOR UPDATE' : ''}`, [context.versionId, context.examId, context.tenantId]);
     const integer = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) || typeof value === 'string' && /^\d+$/.test(value) && Number.isSafeInteger(Number(value));
     if (!header || !integer(header.duration_seconds) || Number(header.duration_seconds) < MIN_DURATION_SECONDS || Number(header.duration_seconds) > MAX_DURATION_SECONDS || !integer(header.grace_seconds) || Number(header.grace_seconds) < 0 || Number(header.grace_seconds) > MAX_GRACE_SECONDS)
         throw Error('Invalid catalog snapshot timing');

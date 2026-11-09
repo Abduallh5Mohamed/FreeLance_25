@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {useLocation} from 'react-router-dom';
+import {Link,useLocation} from 'react-router-dom';
 import { Headphones, Loader2, MessageSquare, Plus, RefreshCw, Send } from "lucide-react";
 import Header from "@/components/Header";
 import StudentHeader from "@/components/StudentHeader";
@@ -20,6 +20,7 @@ import {readSupportSessionIdentity as supportSessionIdentity} from '@/features/s
 import {SupportPrivateNotes} from '@/features/support/SupportPrivateNotes';
 import {SupportAssignment} from '@/features/support/SupportAssignment';
 import {SupportAssignedQueue} from '@/features/support/SupportAssignedQueue';
+import {SupportFollowupQueue} from '@/features/support/SupportFollowupQueue';
 import {
   createSupportTicket,
   reconcileSupportTicket,
@@ -481,6 +482,7 @@ export default function Support() {
               <p className="mt-1 text-sm text-slate-600">{isAdmin ? "تابع طلبات المستخدمين ورد عليها حسب الأولوية." : "أرسل مشكلتك وتابع الرد وحالة الحل من مكان واحد."}</p>
             </div>
             <div className="flex gap-2">
+              <Link to="/center-work" className="self-center underline">مهام فريق السنتر</Link>
               <Button variant="outline" onClick={loadTickets} disabled={loading || sessionEnded}><RefreshCw className="ml-2 h-4 w-4" />تحديث</Button>
               {!isAdmin && <Button disabled={sessionEnded} onClick={() => setCreateOpen(true)}><Plus className="ml-2 h-4 w-4" />طلب دعم جديد</Button>}
             </div>
@@ -494,6 +496,7 @@ export default function Support() {
           </section>:null}
 
           {isAdmin&&!sessionEnded?<SupportAssignedQueue busyAssignment={assignmentActivity>0} revision={assignmentRevision} onOpen={openTicket}/>:null}
+          {isAdmin&&!sessionEnded?<SupportFollowupQueue busyActivity={assignmentActivity>0||submitting||replyAttemptState.busy||createAttemptState.busy} revision={assignmentRevision} onOpen={openTicket}/>:null}
           <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
             <Card className="overflow-hidden">
               <CardHeader className="border-b"><CardTitle className="text-lg">{isAdmin ? "قائمة الانتظار" : "طلباتي"}</CardTitle></CardHeader>

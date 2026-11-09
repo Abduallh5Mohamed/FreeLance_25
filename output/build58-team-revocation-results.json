@@ -1,0 +1,14 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "actual branch suspension hides groups/roster/tasks and denies stored attendance replay/receipt; original audited route restores branch",
+      "pass": true
+    },
+    {
+      "check": "foreign-branch session creator fixture cannot bypass dedicated delegation proof; original creator restored",
+      "pass": true
+    }
+  ],
+  "limits": "Native HTTP/auth and original SQL on synthetic demo only. Transient status/creator restored. No timing/racing commits/load/production claim."
+}

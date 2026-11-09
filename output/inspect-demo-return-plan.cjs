@@ -1,0 +1,15 @@
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+const {connect}=require('./demo-db.cjs');
+async function main(){const {c,database,version}=await connect();try{
+ const f=JSON.parse(fs.readFileSync(path.join(__dirname,'build45-lesson-fixtures.json'),'utf8'));assert.equal(f.database,database);
+ const [[course]]=await c.execute('SELECT tenant_id FROM courses WHERE id=?',[f.course]);
+ const [head]=await c.execute('SELECT id,version,status FROM course_return_plans WHERE tenant_id=? AND course_id=? AND enrollment_id=?',[course.tenant_id,f.course,f.enrollment]);assert.equal(head.length,1);assert.equal(head[0].status,'withdrawn');
+ const [[state]]=await c.execute('SELECT (SELECT COUNT(*) FROM course_return_plan_revisions WHERE plan_id=?) AS revisions,(SELECT COUNT(*) FROM course_return_plan_operations WHERE plan_id=?) AS receipts,(SELECT COUNT(*) FROM course_lesson_completions WHERE student_enrollment_id=?) AS completions',[head[0].id,head[0].id,f.enrollment]);assert.equal(state.revisions,head[0].version);assert.equal(state.receipts,head[0].version);assert.equal(state.completions,0);
+ const statements=[
+  {name:'student active head page',sql:"SELECT id,course_id,version,status FROM course_return_plans WHERE tenant_id=? AND enrollment_id=? AND status='active' AND id>? ORDER BY id LIMIT 6",params:[course.tenant_id,f.enrollment,'']},
+  {name:'owner attendance evidence',sql:"SELECT ss.id AS session_id,ss.title,a.id AS record_id,a.state FROM schedule_sessions ss LEFT JOIN attendance_records a ON a.session_id=ss.id AND a.tenant_id=ss.tenant_id AND a.student_id=? WHERE ss.tenant_id=? AND ss.group_id=? AND ss.audience='group' AND ss.status='scheduled' AND ss.ends_at<=UTC_TIMESTAMP() AND ss.starts_at>=? AND ss.starts_at<? ORDER BY ss.starts_at,ss.id LIMIT 101",params:[f.enrollment,course.tenant_id,f.group,'2026-11-01 00:00:00','2026-11-08 00:00:00']},
+ ];const plans=[];for(const q of statements){const [rows]=await c.execute('EXPLAIN '+q.sql,q.params);plans.push({name:q.name,steps:rows.map(r=>({table:r.table,type:r.type,key:r.key,possible_keys:r.possible_keys,estimated_rows:r.rows,extra:r.Extra}))});}
+ const [indexes]=await c.execute("SELECT TABLE_NAME AS table_name,INDEX_NAME AS index_name,COLUMN_NAME AS column_name,SEQ_IN_INDEX AS position FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('course_return_plans','schedule_sessions','attendance_records') ORDER BY TABLE_NAME,INDEX_NAME,SEQ_IN_INDEX");
+ const report={database,mysql:version,final_demo_plan:{version:head[0].version,status:head[0].status,...state},plans,indexes,limits:'EXPLAIN on tiny synthetic fixture, not measured throughput/latency, production cardinality, concurrent revocation or isolation acceptance.'};fs.writeFileSync(path.join(__dirname,'build46-query-plans.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({planStatus:head[0].status,revisionReceiptCountsMatch:true,completions:0,plans:plans.map(x=>({name:x.name,keys:x.steps.map(s=>s.key)}))}));
+ }finally{await c.end();}}
+main().catch(e=>{console.error(e.code||e.message);process.exitCode=1;});

@@ -61,6 +61,11 @@ export interface AttendanceDeps {
     loadActiveTenantAuthority: (userId: string, tenantId: string) => Promise<{ authority: string } | null>;
     now?: () => Date;
     transaction?: <T>(fn: (tx: AttendanceDataAccess) => Promise<T>) => Promise<T>;
+    /** Dedicated center-work mount only. Never configured on the generic router. */
+    delegation?: {
+        resolve(req: AuthRequest): Promise<{ tenantId: string; userId: string } | null>;
+        authorizeSession(tx: AttendanceDataAccess, session: { id: string; tenant_id: string; group_id: string | null; audience: string }): Promise<boolean>;
+    };
 }
 
 const STAFF_AUTHORITIES = new Set(['owner', 'instructor']);
@@ -93,6 +98,7 @@ interface StaffScope {
     tenantId: string;
     userId: string;
     isOwner: boolean;
+    delegated?: boolean;
 }
 
 interface SessionRow {
@@ -150,6 +156,11 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
         if (!user) {
             res.status(401).json({ error: 'Authentication required' });
             return null;
+        }
+        if (deps.delegation) {
+            const delegated = await deps.delegation.resolve(req);
+            if (!delegated || delegated.userId !== user.id) { res.status(403).json({ error: 'Center attendance scope unavailable' }); return null; }
+            return { ...delegated, isOwner: false, delegated: true };
         }
         if (!user.tenantId) {
             res.status(403).json({ error: 'An active tenant membership is required' });
@@ -216,6 +227,7 @@ export const createAttendanceRecordsRouter = (deps: AttendanceDeps): Router => {
             [sessionId, scope.tenantId],
         );
         if (!row || row.tenant_id !== scope.tenantId) return null;
+        if (scope.delegated) return deps.delegation && await deps.delegation.authorizeSession(tx, row) ? row : null;
         // Preserve the existing policy's independent owner/creator grants.
         if (scope.isOwner || row.created_by === scope.userId) return row;
         if (!row.group_id) return null;

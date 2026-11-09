@@ -1,5 +1,7 @@
 # J04 — private platform-support notes (BUILD-13)
 
+BUILD-54 continuation (2026-11-08): relevant schema/indexes applied only to the isolated synthetic demo after snapshot; older unapplied statements below describe earlier checkpoints. Native generic-ticket HTTP/browser verification and rollback-only SQL transfer/revocation/paging/failure evidence: [report](../../agent-context/BUSINESS-IMPLEMENTATION-2026-11-08-BUILD-54.md). Assignment snapshot/candidate reads share a bounded 25s deadline (including pagination); timeout releases busy state and fences late results. A confirmed write remains confirmed if its refresh times out. Existing audit is atomic but unsealed; no center-staff, lesson-context, SLA, production or load acceptance. Online linking remains deferred.
+
 Local implementation checkpoint: 2026-11-05. Continues [lesson context](J04-LESSON-SUPPORT-CONTEXT.md) and [write reliability](J04-SUPPORT-WRITE-RELIABILITY.md). This is an internal platform-support surface, not tenant teacher assignment.
 
 Follow-up: [BUILD-14 assignment backend](J04-SUPPORT-ASSIGNMENT.md) implements platform-support claim/transfer/recovery locally with an unapplied migration; the actual assignment UI and tenant staff mapping remain open.

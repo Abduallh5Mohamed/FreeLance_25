@@ -286,10 +286,11 @@ interface EnrollmentFacts {
     courseId: string | null;
 }
 
-function parseJsonArray(value: string | null): string[] {
+function parseJsonArray(value: unknown): string[] {
     if (!value) return [];
     try {
-        const parsed = JSON.parse(value) as unknown;
+        // mysql2 decodes native JSON columns; old text columns return JSON text.
+        const parsed = typeof value === 'string' ? JSON.parse(value) as unknown : value;
         return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string') : [];
     } catch {
         return [];

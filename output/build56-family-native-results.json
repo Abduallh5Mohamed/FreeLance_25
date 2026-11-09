@@ -1,0 +1,14 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "native runtime has no persisted parent links/tokens or view secret; authentic login discovers empty list but cannot read family summary or unpublished grades",
+      "pass": true
+    },
+    {
+      "check": "native browser with original auth/API shows no active verified link; no fabricated child, agenda or verify success",
+      "pass": true
+    }
+  ],
+  "limits": "Native empty/denial journey only; positive SQL/browser test uses explicit rollback-only fixture link and temporary original-router server, not native onboarding."
+}

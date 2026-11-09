@@ -1,0 +1,1 @@
+const fs=require('node:fs'),p='output/verify-build58-team-browser.cjs';let s=fs.readFileSync(p,'utf8').replace("if(await item.getByRole('button',{name:'بدء متابعة الطلب'}).count())", "if(await item.getByRole('button',{name:'بدء متابعة الطلب'}).count()&&await item.getByRole('button',{name:'بدء متابعة الطلب'}).isEnabled())");fs.writeFileSync(p,s);

@@ -1,0 +1,1 @@
+const {connect}=require('./demo-db.cjs');(async()=>{const {c}=await connect();try{const [r]=await c.query('SHOW CREATE TABLE assignments');console.log(r[0]['Create Table']);}finally{await c.end();}})();

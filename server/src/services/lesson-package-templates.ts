@@ -217,7 +217,7 @@ const templateForeignKeySpec: ReadonlyArray<readonly [string, string, string, st
 ];
 const normalizeType = (value: unknown) => String(value ?? '').replace(/\s+/g, '').toLowerCase();
 
-export async function lessonTemplateSchema(connection: CourseLessonConnection): Promise<boolean> {
+export async function lessonTemplateSchema(connection: CourseLessonConnection, referenceSources = true): Promise<boolean> {
   const tables = Object.keys(templateSchemaSpec);
   const placeholders = tables.map(() => '?').join(',');
   const [columns] = await connection.execute(
@@ -257,7 +257,7 @@ export async function lessonTemplateSchema(connection: CourseLessonConnection): 
       && row.referenced_table === referencedTable && row.referenced_column === referencedColumn
       && String(row.delete_rule).toUpperCase() === deleteRule)) return false;
   }
-  return lessonPackageReferenceSchema(connection);
+  return !referenceSources || lessonPackageReferenceSchema(connection);
 }
 
 const templateDto = (row: any) => ({
@@ -381,7 +381,9 @@ export async function manageLessonTemplates(connection: CourseLessonConnection, 
   templateId?: string; body?: TemplateCreateBody | TemplateRevisionBody | { status: 'archived'; operation_id: string };
   cursor?: string | null; limit?: number;
 }) {
-  if (!await lessonTemplateSchema(connection)) return unavailable();
+  // Metadata reads prove the exact library schema. They grant no source access
+  // and must not depend on unrelated video/homework/announcement installations.
+  if (!await lessonTemplateSchema(connection, !['list', 'revisions'].includes(input.operation))) return unavailable();
   const { userId, tenantId, courseId, operation } = input;
 
   let libraryOperation: LibraryOperationKind | null = null;
@@ -414,9 +416,12 @@ export async function manageLessonTemplates(connection: CourseLessonConnection, 
     const cursor = cursorRaw === null || cursorRaw === '' ? '' : decodeCursor(cursorRaw);
     if (cursor === null || cursor !== '' && !uuid(cursor)) return result(400, { error: 'Invalid template list cursor' });
     const limit = input.limit ?? 25;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) return result(400, { error: 'Invalid template list limit' });
     const [rows] = await connection.execute(
       `SELECT id,name,status,head_revision FROM lesson_package_templates WHERE tenant_id=? AND course_id=? AND status='active' AND id>? ORDER BY id ASC LIMIT ?`,
-      [tenantId, courseId, cursor, limit + 1],
+      // mysql2 encodes JS numbers as DOUBLE; MySQL 8 may refuse that type for
+      // a prepared LIMIT. A validated decimal string preserves parameterization.
+      [tenantId, courseId, cursor, String(limit + 1)],
     );
     const page = rows as any[];
     const hasMore = page.length > limit;
@@ -439,9 +444,10 @@ export async function manageLessonTemplates(connection: CourseLessonConnection, 
     if (decoded === null || !/^\d{1,9}$/.test(decoded)) return result(400, { error: 'Invalid revision list cursor' });
     const after = Number(decoded);
     const limit = input.limit ?? 25;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) return result(400, { error: 'Invalid template revision limit' });
     const [rows] = await connection.execute(
       'SELECT revision_number,source_lesson_id,reference_count,media_count FROM lesson_package_template_revisions WHERE template_id=? AND tenant_id=? AND course_id=? AND revision_number>? ORDER BY revision_number ASC LIMIT ?',
-      [input.templateId, tenantId, courseId, after, limit + 1],
+      [input.templateId, tenantId, courseId, after, String(limit + 1)],
     );
     const page = rows as any[];
     const hasMore = page.length > limit;

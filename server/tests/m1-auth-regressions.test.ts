@@ -95,6 +95,7 @@ const createResponse = (): CapturedResponse => {
             response.capturedStatus = code;
             return response;
         },
+        set() { return response; },
         json(body: unknown) {
             response.capturedBody = body;
             return response;
@@ -636,6 +637,10 @@ const invokeStaffRoute = async (
     permissionFixtures: PermissionFixtures = {},
 ) => {
     const router = createStaffRouter({
+        transaction: async work => work({
+            queryOne: async <T>(sql: string): Promise<T | null> => sql.includes('FROM staff') ? (fixtures.staffRow ?? null) as T | null : null,
+            execute: async () => ({insertId: 0,affectedRows: 1}),
+        }),
         query: async <T>(sql: string): Promise<T[]> => {
             fixtures.executed?.push(sql);
             return (fixtures.staffRows ?? []) as T[];
@@ -754,16 +759,16 @@ test('a verified active super_admin performs staff CRUD against injected rows', 
     const create = await invokeStaffRoute({},
         { method: 'POST', url: '/', token: admin, body: { name: 'Staff B', phone: '+201000000003', password: 'strong-pass-1', accessible_pages: ['messages'] } }, verified);
     assert.equal(create.response.capturedStatus, 201);
-    assert.equal((create.response.capturedBody as { id: string }).id, '42');
+    assert.match((create.response.capturedBody as { id: string }).id, /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i);
     assert.ok(create.nextCalled === false);
 
     const update = await invokeStaffRoute({ staffRow: staffRowFixture },
         { method: 'PUT', url: '/staff-a', token: admin, body: { name: 'Renamed' } }, verified);
-    assert.equal(update.response.capturedStatus, undefined);
+    assert.equal(update.response.capturedStatus, 200);
     assert.ok((update.response.capturedBody as { message: string }).message.length > 0);
 
     const remove = await invokeStaffRoute({ staffRow: staffRowFixture }, { method: 'DELETE', url: '/staff-a', token: admin }, verified);
-    assert.equal(remove.response.capturedStatus, undefined);
+    assert.equal(remove.response.capturedStatus, 200);
     assert.ok(remove.response.capturedBody);
 });
 

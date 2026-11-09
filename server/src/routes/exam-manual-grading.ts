@@ -75,6 +75,8 @@ export type ManualGradingAuditWriter = (
 ) => Promise<void>;
 
 export interface ExamManualGradingDeps {
+    /** Compatibility reads only when the scoped question workflow owns writes. */
+    readOnly?: boolean;
     store: ManualGradingStore;
     authenticate: RequestHandler;
     authority: ExamManualGradingAuthority;
@@ -191,6 +193,10 @@ export function createExamManualGradingRouter(deps: ExamManualGradingDeps): Rout
     const now = deps.now ?? ((): Date => new Date());
 
     router.use(deps.authenticate);
+    router.use((req:AuthRequest,res,next)=>{
+        if(req.user&&(!['teacher','instructor'].includes(req.user.role)||req.user.identitySource==='staff'||req.user.billingOnly||req.impersonation||req.headers['x-impersonation']!==undefined)){res.status(403).json({code:'GRADING_TEACHER_REQUIRED'});return;}
+        next();
+    });
 
     const resolveScope = async (req: AuthRequest, res: Response): Promise<ManualGradingScope | null> => {
         const user = req.user;
@@ -286,6 +292,7 @@ export function createExamManualGradingRouter(deps: ExamManualGradingDeps): Rout
             if (!scope) return;
             const bundle = await requireAttempt(scope, req.params.attemptId, res);
             if (!bundle) return;
+            if(req.method==='POST'&&deps.readOnly)return res.status(409).json({code:'GRADING_USE_QUESTION_WORKBENCH',error:'Use the scoped question grading workflow'});
             res.json(projectAttemptForGrading(bundle));
         } catch (error) {
             console.error('Read manual grading attempt error:', error);
@@ -302,6 +309,7 @@ export function createExamManualGradingRouter(deps: ExamManualGradingDeps): Rout
             if (!scope) return;
             const bundle = await requireAttempt(scope, req.params.attemptId, res);
             if (!bundle) return;
+            if(req.method==='POST'&&deps.readOnly)return res.status(409).json({code:'GRADING_USE_QUESTION_WORKBENCH',error:'Use the scoped question grading workflow'});
 
             const questionRef = normalizeOpaqueId(req.params.questionRef);
             if (!questionRef) return res.status(404).json({ error: 'Question not found' });
@@ -407,6 +415,7 @@ export function createExamManualGradingRouter(deps: ExamManualGradingDeps): Rout
             // re-read below, inside the transaction.
             const bundle = await requireAttempt(scope, req.params.attemptId, res);
             if (!bundle) return;
+            if(req.method==='POST'&&deps.readOnly)return res.status(409).json({code:'GRADING_USE_QUESTION_WORKBENCH',error:'Use the scoped question grading workflow'});
 
             const outcome = await deps.transaction(async (tx): Promise<FinalizeTransactionOutcome> => {
                 // Verify the SAME source inside the same transaction: fresh

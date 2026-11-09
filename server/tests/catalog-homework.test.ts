@@ -107,6 +107,14 @@ function world(options: {
     const start = () => call('POST', basePath + '/submissions', { file_name: 'hw.pdf', file_type: 'application/pdf' }, requestKey);
     return { s, deps, db, authority, call, start, basePath, requestKey, recover: () => call('GET', basePath + '/requests/' + requestKey), mine: () => call('GET', basePath + '/submissions/mine') };
 }
+test('homework policy preserves mysql2 decoded allowed-file-type arrays instead of advertising an empty policy', async () => {
+    const h = world();
+    h.s.assignment.allowed_file_types = ['pdf', 'txt'] as any;
+    const result = await h.call('GET', h.basePath + '/submission-policy');
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body.allowed_file_types, ['pdf', 'txt']);
+});
+
 test('homework policy and request recovery are private bounded reads, never an upload or a submission', async () => {
     const h = world();
     const policy = await h.call('GET', h.basePath + '/submission-policy');

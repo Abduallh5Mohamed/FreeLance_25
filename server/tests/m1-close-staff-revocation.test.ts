@@ -79,6 +79,8 @@ const invokeStaff = async (fixtures: RouterFixtures, method: string, url: string
         authenticate: ((_req: Request, _res: Response, next: NextFunction) => next()) as RequestHandler,
         authorizeAdmin: ((_req: Request, _res: Response, next: NextFunction) => next()) as RequestHandler,
     };
+    // Identity edits now require the real transaction seam; omission must503.
+    deps.transaction = work => work({ queryOne: deps.queryOne, execute: deps.execute });
     const router = createStaffRouter(deps);
     const output: { status?: number; body?: unknown } = {};
     const res = {
@@ -124,9 +126,9 @@ test('legacy missing token versions default to zero, while inactive staff remain
 test('staff password update increments token_version in the same update statement', async () => {
     const fixtures = await fixtureRow(4);
     const result = await invokeStaff(fixtures, 'PUT', '/staff-router-test', { password: 'changed-password-1' });
-    assert.equal(result.status, undefined);
+    assert.equal(result.status, 200);
     assert.equal(fixtures.updates.length, 1);
-    assert.match(fixtures.updates[0].sql, /password_hash = \?, token_version = COALESCE\(token_version, 0\) \+ 1/);
+    assert.match(fixtures.updates[0].sql, /password_hash\s*=\s*\?.*token_version\s*=\s*COALESCE\(token_version,\s*0\)\s*\+\s*1/);
     assert.deepEqual(fixtures.updates[0].params.slice(-1), ['staff-router-test']);
 });
 
@@ -138,21 +140,22 @@ test('staff login issues the live database version in the signed tv claim', asyn
     assert.equal(jwt.verify(body.token, secret).tv, 9);
 });
 
-test('pre-migration password update and login remain compatible at version zero', async () => {
+test('pre-migration identity writes fail closed without token_version while legacy login remains version zero', async () => {
     const fixtures = await fixtureRow();
     fixtures.missingVersion = true;
     const changed = await invokeStaff(fixtures, 'PUT', '/staff-router-test', { password: 'changed-password-1' });
-    assert.equal(changed.status, undefined);
-    assert.equal(fixtures.updates.length, 2);
+    assert.equal(changed.status, 503);
+    assert.equal(fixtures.updates.length, 1);
     assert.ok(fixtures.updates[0].sql.includes('token_version'));
-    assert.ok(!fixtures.updates[1].sql.includes('token_version'));
+    assert.equal((changed.body as { code: string }).code, 'SESSION_REVOCATION_UNAVAILABLE');
 
     const loginFixtures = await fixtureRow();
     loginFixtures.missingVersion = true;
     const login = await invokeStaff(loginFixtures, 'POST', '/login', { phone: loginFixtures.staff.phone, password: 'fixture-password-1' });
     assert.equal(login.status, undefined);
     assert.equal(jwt.verify((login.body as { token: string }).token, secret).tv, 0);
-    assert.equal(loginFixtures.queries.length, 2);
+    assert.equal(loginFixtures.queries.length, 3);
+    assert.match(loginFixtures.queries[2], /FROM users WHERE id/);
 });
 
 test('unrelated database failures are surfaced and never trigger legacy fallback', async () => {

@@ -1,0 +1,18 @@
+{
+  "checked_at": "2026-11-07T18:42:58.287Z",
+  "statuses": [
+    {
+      "endpoint": "/api/grades",
+      "status": 200
+    },
+    {
+      "endpoint": "/api/groups",
+      "status": 200
+    },
+    {
+      "endpoint": "/api/courses",
+      "status": 200
+    }
+  ],
+  "legacyGradingLoadErrorAbsent": true
+}

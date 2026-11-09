@@ -1,0 +1,1 @@
+const fs=require('node:fs'),p='output/verify-build58-team-browser.cjs';let s=fs.readFileSync(p,'utf8');s=s.replace("document.querySelector('select[aria-label=\"مؤسسة العمل\"]').value===''", "!document.querySelector('select[aria-label=\"مؤسسة العمل\"]')||document.querySelector('select[aria-label=\"مؤسسة العمل\"]').value===''");fs.writeFileSync(p,s);

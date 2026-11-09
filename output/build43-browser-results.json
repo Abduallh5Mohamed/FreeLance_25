@@ -1,0 +1,21 @@
+{
+  "checked_at": "2026-11-07T18:41:34.696Z",
+  "browser": "installed Chrome headless",
+  "viewport": "1440x1050",
+  "results": [
+    {
+      "check": "real browser form login",
+      "pass": true
+    },
+    {
+      "check": "anonymous pinned question UI validates malformed score and saves exactly one revision",
+      "pass": true
+    },
+    {
+      "check": "actual Courses panel previews owned settings and creates a separate season draft after confirmation",
+      "pass": true
+    }
+  ],
+  "pageErrors": 0,
+  "limits": "desktop synthetic demo only; no mobile, load, provider or production acceptance"
+}

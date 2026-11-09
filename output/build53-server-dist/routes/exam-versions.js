@@ -1,0 +1,1251 @@
+"use strict";
+/**
+ * M4 A2 + A3 — versioned exam snapshots and deterministic grading routes.
+ *
+ * Authority and scope are server-derived only:
+ *  - a staff caller is a verified owner/instructor of the principal's selected
+ *    tenant and the exam must belong to that tenant (`exams -> courses`);
+ *  - a student attempt requires a live, approved enrollment whose tenant matches
+ *    the exam and whose group/branch matches one of the exam's targets
+ *    (deny-by-default; a tenant-wide exam matches any enrollment in the tenant);
+ *  - every read/write carries `tenant_id = <principal tenant>`.
+ *
+ * A2: creating a version copies pinned question-bank versions into the frozen
+ * snapshot; publishing sets the snapshot immutable and records the usage
+ * provenance that locks those question-bank versions. Starting an attempt binds
+ * the student to that exact `exam_version_id`; the server clock mints the
+ * deadline and rejects a start before `opens_at` / at `closes_at`.
+ *
+ * A3: a submit grades from the snapshot only, writes the per-question award
+ * ledger plus an idempotency ledger row keyed by the deterministic fingerprint,
+ * and routes essay answers to `pending_review`. A regrade re-applies only when
+ * the fingerprint changed, and is audited either way.
+ *
+ * Exports `createExamVersionsRouter(deps)` and a default-wired router instance
+ * (real pool/auth/authority) so a later mounting task can `app.use` it. This
+ * module never mounts itself and never runs DDL.
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.runExamAttemptExpiryPass = exports.createExamVersionsRouter = void 0;
+const express_1 = require("express");
+const crypto_1 = require("crypto");
+const audit_1 = require("../security/audit");
+const branch_access_1 = require("../security/branch-access");
+const content_release_1 = require("../services/content-release");
+const question_bank_1 = require("../services/question-bank");
+const exam_grading_1 = require("../services/exam-grading");
+const exam_snapshots_1 = require("../services/exam-snapshots");
+const catalog_exam_access_1 = require("../services/catalog-exam-access");
+const STAFF_AUTHORITIES = new Set(['owner', 'instructor']);
+const VERSION_COLUMNS = 'id,exam_id,tenant_id,version,status,duration_seconds,opens_at,closes_at,grace_seconds,' +
+    'total_points,passing_points,scoring_policy,published_at';
+const QUESTION_COLUMNS = 'id,exam_version_id,tenant_id,position,question_id,question_version,source_version_id,' +
+    'question_type,question_text,options,correct_answers,points,explanation,content_hash';
+const ATTEMPT_COLUMNS = 'id,tenant_id,exam_id,exam_version_id,student_enrollment_id,student_user_id,status,started_at,' +
+    'deadline_at,submitted_at,auto_submitted,auto_score,score,manual_required,grading_fingerprint,graded_at,passed,version';
+function parseJson(value) {
+    if (value === null || value === undefined || value === '')
+        return null;
+    if (typeof value !== 'string')
+        return value;
+    try {
+        return JSON.parse(value);
+    }
+    catch {
+        return null;
+    }
+}
+function parseJsonArray(value) {
+    const parsed = parseJson(value);
+    return Array.isArray(parsed) ? parsed.filter((entry) => typeof entry === 'string') : [];
+}
+/** Render an instant as a MySQL DATETIME literal in UTC (`YYYY-MM-DD HH:MM:SS`). */
+function toDbUtc(value) {
+    const iso = value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+    return iso.slice(0, 19).replace('T', ' ');
+}
+/* ------------------------------------------------------------------------- */
+/* Shared loading / grading helpers (usable by routes and the expiry pass).   */
+/* ------------------------------------------------------------------------- */
+const AUTOSAVE_MIN_INTERVAL_MS = 1000;
+const MAX_DRAFT_ANSWER_BYTES = 128 * 1024;
+const MAX_DRAFT_ANSWERS = 500;
+const MAX_AUTOSAVE_THROTTLE_TRACKED = 5000;
+async function persistAttemptStart(tx, p) {
+    const result = await tx.execute(p.context ? `INSERT INTO exam_versioned_attempts
+      (id,tenant_id,exam_id,exam_version_id,student_enrollment_id,student_user_id,status,started_at,deadline_at,auto_submitted,catalog_context)
+      VALUES (?,?,?,?,?,?, 'in_progress', ?,?, 0, ?)` : `INSERT INTO exam_versioned_attempts
+      (id,tenant_id,exam_id,exam_version_id,student_enrollment_id,student_user_id,status,started_at,deadline_at,auto_submitted)
+      VALUES (?,?,?,?,?,?, 'in_progress', ?,?, 0)`, [p.attemptId, p.tenantId, p.examId, p.versionId, p.enrollmentId, p.userId, toDbUtc(p.startedAt), toDbUtc(p.deadlineUtc), ...(p.context ? [JSON.stringify((0, catalog_exam_access_1.parseCatalogExamContext)(p.context))] : [])]);
+    if (result.affectedRows !== 1)
+        throw Error('Attempt insert was not acknowledged');
+    await (0, audit_1.recordAudit)(tx.execute, { actorUserId: p.context ? p.userId : p.enrollmentId, tenantId: p.tenantId, action: 'exam_attempt.start', resourceType: 'exam_attempt', resourceId: p.attemptId,
+        newValue: (0, audit_1.snapshotRow)({ exam_id: p.examId, exam_version_id: p.versionId, deadline_at: p.deadlineUtc, ...(p.context ? { catalog_lesson_id: p.context.lessonId, catalog_content_id: p.context.contentId } : {}) }) });
+}
+const timingOf = (row) => ({
+    durationSeconds: Number(row.duration_seconds),
+    opensAtUtc: (0, content_release_1.toUtcIso)(row.opens_at),
+    closesAtUtc: (0, content_release_1.toUtcIso)(row.closes_at),
+    graceSeconds: Number(row.grace_seconds),
+});
+const scoringOf = (row) => (0, exam_grading_1.normalizeScoringPolicy)(parseJson(row.scoring_policy)) ?? { ...exam_grading_1.DEFAULT_SCORING_POLICY };
+const gradingQuestionsOf = (rows) => rows.map((row) => ({
+    ref: row.id,
+    position: Number(row.position),
+    questionType: row.question_type,
+    points: Number(row.points),
+    correctAnswers: parseJsonArray(row.correct_answers),
+}));
+const loadVersionRow = async (db, tenantId, examId, versionId, lock = false) => db.queryOne(`SELECT ${VERSION_COLUMNS} FROM exam_versions WHERE id = ? AND exam_id = ? AND tenant_id = ? LIMIT 1${lock ? ' FOR UPDATE' : ''}`, [versionId, examId, tenantId]);
+const loadQuestionRows = async (db, tenantId, versionId) => db.query(`SELECT ${QUESTION_COLUMNS} FROM exam_version_questions WHERE exam_version_id = ? AND tenant_id = ? ORDER BY position LIMIT 200`, [versionId, tenantId]);
+const loadAttemptRow = async (db, tenantId, attemptId) => db.queryOne(`SELECT ${ATTEMPT_COLUMNS} FROM exam_versioned_attempts WHERE id = ? AND tenant_id = ? LIMIT 1`, [attemptId, tenantId]);
+const loadStoredAnswers = async (db, tenantId, attemptId) => db.query(`SELECT id,question_ref,question_type,CAST(response AS CHAR) AS response,awarded_points,is_correct,manual_review
+         FROM exam_versioned_answers WHERE attempt_id = ? AND tenant_id = ?`, [attemptId, tenantId]);
+/** Deterministic grading of the saved/current answers against the frozen snapshot. */
+const computeAttemptGrade = (version, questionRows, answerMap) => {
+    const policy = scoringOf(version);
+    const gradingQuestions = gradingQuestionsOf(questionRows);
+    const grade = (0, exam_grading_1.gradeAttempt)(gradingQuestions, answerMap, policy);
+    const fingerprint = (0, exam_grading_1.computeGradingFingerprint)({ versionId: version.id, policy, questions: gradingQuestions, answers: answerMap });
+    const passingHundredths = (0, exam_grading_1.toHundredths)(version.passing_points) ?? 0;
+    const passed = grade.manualRequired ? null : grade.autoScoreHundredths >= passingHundredths;
+    return {
+        grade,
+        fingerprint,
+        status: grade.manualRequired ? 'pending_review' : 'graded',
+        passed,
+        awarded: (0, exam_grading_1.formatHundredths)(grade.autoScoreHundredths),
+    };
+};
+/**
+ * Atomically apply a completed grading pass: the attempt row (guarded by
+ * `status='in_progress'`), the per-question award ledger, the idempotency run
+ * row and the audit event. Returns false when the attempt already moved on.
+ */
+const persistAttemptGrade = async (tx, p) => {
+    const { grade, fingerprint, passed, awarded } = p.computed;
+    const updated = await tx.execute(`UPDATE exam_versioned_attempts
+         SET status=?, auto_score=?, score=?, manual_required=?, grading_fingerprint=?,
+             submitted_at=COALESCE(submitted_at, UTC_TIMESTAMP()), graded_at=?, passed=?,
+             auto_submitted=?, version=version+1
+         WHERE id=? AND tenant_id=? AND status='in_progress'`, [
+        p.status, awarded, grade.manualRequired ? null : awarded,
+        grade.manualRequired ? 1 : 0, fingerprint, p.gradedAt,
+        passed === null ? null : (passed ? 1 : 0),
+        p.autoSubmitted ? 1 : 0, p.attemptId, p.tenantId,
+    ]);
+    if ((updated.affectedRows) === 0)
+        return false;
+    for (const question of grade.questions) {
+        await tx.execute(`INSERT INTO exam_versioned_answers
+               (id,tenant_id,attempt_id,exam_version_id,question_ref,question_type,response,
+                awarded_points,is_correct,manual_review)
+             VALUES (?,?,?,?,?,?,?,?,?,?)
+             ON DUPLICATE KEY UPDATE response=VALUES(response), awarded_points=VALUES(awarded_points),
+                is_correct=VALUES(is_correct), manual_review=VALUES(manual_review)`, [
+            (0, crypto_1.randomUUID)(), p.tenantId, p.attemptId, p.examVersionId, question.ref,
+            p.questionRows.find((row) => row.id === question.ref)?.question_type ?? 'essay',
+            JSON.stringify(p.answerMap[question.ref] ?? null),
+            question.awardedHundredths === null ? null : (0, exam_grading_1.formatHundredths)(question.awardedHundredths),
+            question.isCorrect === null ? null : (question.isCorrect ? 1 : 0),
+            question.autoGraded ? 0 : 1,
+        ]);
+    }
+    await tx.execute(`INSERT IGNORE INTO exam_grading_runs
+           (id,tenant_id,attempt_id,exam_version_id,idempotency_key,auto_score,manual_required,applied,created_by)
+         VALUES (?,?,?,?,?,?,?,1,?)`, [(0, crypto_1.randomUUID)(), p.tenantId, p.attemptId, p.examVersionId, fingerprint, awarded, grade.manualRequired ? 1 : 0, p.actorUserId]);
+    await (0, audit_1.recordAudit)(tx.execute, {
+        actorUserId: p.actorUserId,
+        tenantId: p.tenantId,
+        action: p.auditAction,
+        resourceType: 'exam_attempt',
+        resourceId: p.attemptId,
+        newValue: (0, audit_1.snapshotRow)({ status: p.status, auto_score: awarded, manual_required: grade.manualRequired, fingerprint, auto_submitted: p.autoSubmitted }),
+    });
+    return true;
+};
+/**
+ * Expire one overdue in-progress attempt: recompute a grade from every answer
+ * saved so far (autosave drafts and/or a racing submit), set
+ * `status='expired'`/`auto_submitted=1` and persist the award ledger. A no-op
+ * when the attempt is not yet past the grace deadline.
+ */
+const expireDueAttempt = async (db, clock, attempt, runAtomic) => {
+    if (attempt.status !== 'in_progress')
+        return false;
+    const version = await loadVersionRow(db, attempt.tenant_id, attempt.exam_id, attempt.exam_version_id);
+    if (!version)
+        return false;
+    const phase = (0, exam_snapshots_1.evaluateAttemptPhase)(timingOf(version), (0, content_release_1.toUtcIso)(attempt.started_at) ?? clock().toISOString(), clock());
+    if (!(0, exam_snapshots_1.isAttemptExpiryDue)(phase))
+        return false;
+    const questionRows = await loadQuestionRows(db, attempt.tenant_id, attempt.exam_version_id);
+    const stored = await loadStoredAnswers(db, attempt.tenant_id, attempt.id);
+    const answerMap = {};
+    for (const row of stored)
+        answerMap[row.question_ref] = parseJson(row.response);
+    const computed = computeAttemptGrade(version, questionRows, answerMap);
+    return runAtomic((tx) => persistAttemptGrade(tx, {
+        tenantId: attempt.tenant_id,
+        attemptId: attempt.id,
+        examVersionId: attempt.exam_version_id,
+        questionRows,
+        answerMap,
+        computed,
+        status: 'expired',
+        autoSubmitted: true,
+        gradedAt: computed.grade.manualRequired ? null : clock().toISOString().slice(0, 19).replace('T', ' '),
+        actorUserId: attempt.student_user_id,
+        auditAction: 'exam_attempt.expire',
+    }));
+};
+const isDuplicateKeyError = (error) => {
+    if (typeof error !== 'object' || error === null)
+        return false;
+    const code = error.code;
+    const errno = error.errno;
+    return code === 'ER_DUP_ENTRY' || errno === 1062;
+};
+const createExamVersionsRouter = (deps) => {
+    const router = (0, express_1.Router)();
+    const { db } = deps;
+    const now = deps.now ?? (() => new Date());
+    const runAtomic = deps.transaction
+        ? deps.transaction
+        : (fn) => fn(db);
+    /* Branch-membership seam (same default wiring pattern as routes/gradebook.ts). */
+    const branchAccess = deps.branchAccess ?? {
+        findBranchById: async (branchId) => db.queryOne('SELECT id, tenant_id, status, version FROM branches WHERE id = ? LIMIT 1', [branchId]),
+        findMembership: async (branchId, memberUserId) => db.queryOne('SELECT id, branch_id, user_id, role, status, version FROM branch_memberships WHERE branch_id = ? AND user_id = ? LIMIT 1', [branchId, memberUserId]),
+    };
+    // Per-attempt autosave throttle state, kept on the router instance so tests
+    // (which rebuild the router) never share it.
+    const lastAutosaveAt = new Map();
+    router.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+    router.use(deps.authenticate);
+    const requireGenericExam = async (source, examId) => {
+        if (deps.catalog && await deps.catalog.hasBindings(source, examId))
+            throw new catalog_exam_access_1.CatalogExamDenied();
+    };
+    const requireAttemptCatalog = async (source, req, attempt, write = false) => {
+        if (deps.catalog && (!req.user || !await deps.catalog.check(source, req.user, attempt, write)))
+            throw new catalog_exam_access_1.CatalogExamDenied();
+    };
+    const atomicForAttempt = (req, attempt) => (work) => {
+        if (deps.catalog && !deps.transaction)
+            return Promise.reject(new catalog_exam_access_1.CatalogExamDenied());
+        return runAtomic(async (tx) => { await requireAttemptCatalog(tx, req, attempt, true); return work(tx); });
+    };
+    // Server expiry/staff grading may settle already saved work after a lesson
+    // withdrawal, but may never grade a changed catalog snapshot.
+    const atomicForServerAttempt = (attempt) => (work) => runAtomic(async (tx) => {
+        if (deps.catalog && !await deps.catalog.checkFrozen(tx, attempt))
+            throw new catalog_exam_access_1.CatalogExamDenied();
+        return work(tx);
+    });
+    const catalogError = (error, res) => {
+        if (!(error instanceof catalog_exam_access_1.CatalogExamDenied))
+            return false;
+        res.status(403).json({ error: 'Catalog lesson access required or withdrawn', code: 'CATALOG_EXAM_DENIED' });
+        return true;
+    };
+    /* --------------------------------------------------------------------- */
+    /* Scope resolvers                                                        */
+    /* --------------------------------------------------------------------- */
+    const resolveStaffScope = async (req, res) => {
+        const user = req.user;
+        if (!user) {
+            res.status(401).json({ error: 'Authentication required' });
+            return null;
+        }
+        const tenantId = user.tenantId;
+        if (!tenantId) {
+            res.status(403).json({ error: 'An active tenant membership is required' });
+            return null;
+        }
+        const authority = await deps.loadActiveTenantAuthority(user.id, tenantId);
+        if (!authority || !STAFF_AUTHORITIES.has(authority.authority)) {
+            res.status(403).json({ error: 'Tenant instructor authority required' });
+            return null;
+        }
+        return { tenantId, userId: user.id, isOwner: authority.authority === 'owner', branchId: user.branchId ?? null };
+    };
+    const resolveEnrollment = async (req, res) => {
+        const user = req.user;
+        if (!user) {
+            res.status(401).json({ error: 'Authentication required' });
+            return null;
+        }
+        if (user.role !== 'student') {
+            res.status(403).json({ error: 'Student access required' });
+            return null;
+        }
+        if (!user.tenantId) {
+            res.status(403).json({ error: 'An active student workspace is required' });
+            return null;
+        }
+        const row = await db.queryOne(`SELECT s.id, s.tenant_id, s.group_id, grp.branch_id, grp.branch_scope
+             FROM students s LEFT JOIN \`groups\` grp ON grp.id = s.group_id
+             WHERE s.user_id=? AND s.tenant_id=? ${deps.catalog ? 'AND s.id=?' : ''} AND s.is_active=1 AND s.approval_status='approved'
+               AND (s.enrollment_status IS NULL OR s.enrollment_status='active')
+               AND (s.enrollment_start_date IS NULL OR s.enrollment_start_date<=UTC_TIMESTAMP())
+               AND (s.enrollment_end_date IS NULL OR s.enrollment_end_date>UTC_TIMESTAMP())
+             LIMIT 1`, [user.id, user.tenantId, ...(deps.catalog ? [user.studentEnrollmentId ?? ''] : [])]);
+        if (!row || deps.catalog && row.id !== user.studentEnrollmentId) {
+            res.status(404).json({ error: 'Student workspace not found' });
+            return null;
+        }
+        return {
+            id: row.id,
+            userId: user.id,
+            tenantId: row.tenant_id,
+            branchId: row.branch_scope === 'branch' ? row.branch_id : null,
+            groupId: row.group_id,
+        };
+    };
+    /* --------------------------------------------------------------------- */
+    /* Loading helpers                                                        */
+    /* --------------------------------------------------------------------- */
+    const examInTenant = async (tenantId, examId) => {
+        const row = await db.queryOne(`SELECT e.id FROM exams e INNER JOIN courses c ON c.id = e.course_id
+             WHERE e.id = ? AND c.tenant_id = ? LIMIT 1`, [examId, tenantId]);
+        return Boolean(row);
+    };
+    /* --------------------------------------------------------------------- */
+    /* Staff course/exam authority (deny-by-default, subsumes examInTenant)   */
+    /* --------------------------------------------------------------------- */
+    // The same server-verified relation chain used by routes/gradebook.ts
+    // authorizeCourse: tenant ownership, the course's own instructor, an
+    // instructor who holds a group mapped to the course, or an instructor whose
+    // verified branch membership covers a group of the course. A branch
+    // membership is never by itself a course relation.
+    const examCourse = async (examId) => {
+        const row = await db.queryOne(`SELECT c.id, c.tenant_id, c.instructor_id
+             FROM exams e INNER JOIN courses c ON c.id = e.course_id
+             WHERE e.id = ? LIMIT 1`, [examId]);
+        return row;
+    };
+    const instructorTeachesCourse = async (tenantId, userId, courseId) => {
+        const row = await db.queryOne('SELECT g.id FROM `groups` g INNER JOIN courses c ON c.id = g.course_id WHERE g.course_id=? AND g.instructor_id=? AND c.tenant_id=? LIMIT 1', [courseId, userId, tenantId]);
+        return Boolean(row);
+    };
+    const courseHasGroupInBranch = async (tenantId, courseId, branchId) => {
+        const row = await db.queryOne(`SELECT g.id FROM \`groups\` g INNER JOIN courses c ON c.id = g.course_id
+             WHERE g.course_id=? AND g.branch_id=? AND g.branch_scope='branch' AND c.tenant_id=? LIMIT 1`, [courseId, branchId, tenantId]);
+        return Boolean(row);
+    };
+    const authorizeBranchMember = async (scope, branchId) => {
+        const decision = await (0, branch_access_1.resolveBranchAccess)(branchAccess, {
+            principalUserId: scope.userId,
+            principalTenantId: scope.tenantId,
+            branchId,
+            principalIsTenantOwner: scope.isOwner,
+        });
+        return decision.kind === 'allowed';
+    };
+    /**
+     * Deny-by-default staff authority over one exam: every leg is
+     * server-derived (course row, group mapping, active branch membership);
+     * absent or cross-tenant exams are not-found, unrelated staff are
+     * forbidden, never silently mapped to tenant-wide access.
+     */
+    const authorizeExamStaff = async (scope, examId) => {
+        const course = await examCourse(examId);
+        if (!course || course.tenant_id !== scope.tenantId)
+            return 'not_found';
+        if (scope.isOwner)
+            return 'ok';
+        if (course.instructor_id === scope.userId)
+            return 'ok';
+        if (await instructorTeachesCourse(scope.tenantId, scope.userId, course.id))
+            return 'ok';
+        if (scope.branchId
+            && await authorizeBranchMember(scope, scope.branchId)
+            && await courseHasGroupInBranch(scope.tenantId, course.id, scope.branchId))
+            return 'ok';
+        return 'forbidden';
+    };
+    const denyExamStaff = (res, decision, notFoundMessage) => {
+        if (decision === 'not_found')
+            res.status(404).json({ error: notFoundMessage });
+        else
+            res.status(403).json({ error: 'You are not authorized for this exam' });
+    };
+    const loadVersion = (tenantId, examId, versionId) => loadVersionRow(db, tenantId, examId, versionId);
+    const loadVersionWithQuestions = (tenantId, versionId) => loadQuestionRows(db, tenantId, versionId);
+    const loadAttempt = (tenantId, attemptId) => loadAttemptRow(db, tenantId, attemptId);
+    const loadExamTargets = async (examId) => {
+        const rows = await db.query(`SELECT eg.group_id, g.branch_id, g.branch_scope
+             FROM exam_groups eg INNER JOIN \`groups\` g ON g.id = eg.group_id
+             WHERE eg.exam_id = ?`, [examId]);
+        return rows.map((row) => ({
+            groupId: row.group_id,
+            branchId: row.branch_id,
+            branchScope: row.branch_scope ?? 'tenant',
+        }));
+    };
+    /* --------------------------------------------------------------------- */
+    /* Projections                                                            */
+    /* --------------------------------------------------------------------- */
+    const projectVersion = (row) => ({
+        id: row.id,
+        exam_id: row.exam_id,
+        tenant_id: row.tenant_id,
+        version: Number(row.version),
+        status: row.status,
+        duration_seconds: Number(row.duration_seconds),
+        opens_at: (0, content_release_1.toUtcIso)(row.opens_at),
+        closes_at: (0, content_release_1.toUtcIso)(row.closes_at),
+        grace_seconds: Number(row.grace_seconds),
+        total_points: Number(row.total_points),
+        passing_points: Number(row.passing_points),
+        scoring: scoringOf(row),
+        published_at: (0, content_release_1.toUtcIso)(row.published_at),
+    });
+    const projectQuestion = (row, revealAnswerKey) => ({
+        id: row.id,
+        position: Number(row.position),
+        question_type: row.question_type,
+        question_text: row.question_text,
+        options: parseJsonArray(row.options),
+        points: Number(row.points),
+        ...(revealAnswerKey ? { correct_answers: parseJsonArray(row.correct_answers) } : {}),
+    });
+    const projectAttempt = (row) => ({
+        id: row.id,
+        exam_id: row.exam_id,
+        exam_version_id: row.exam_version_id,
+        student_enrollment_id: row.student_enrollment_id,
+        status: row.status,
+        started_at: (0, content_release_1.toUtcIso)(row.started_at),
+        deadline_at: (0, content_release_1.toUtcIso)(row.deadline_at),
+        submitted_at: (0, content_release_1.toUtcIso)(row.submitted_at),
+        auto_submitted: Boolean(row.auto_submitted),
+        auto_score: row.auto_score === null ? null : Number(row.auto_score),
+        score: row.score === null ? null : Number(row.score),
+        manual_required: Boolean(row.manual_required),
+        graded_at: (0, content_release_1.toUtcIso)(row.graded_at),
+        passed: row.passed === null ? null : Boolean(row.passed),
+    });
+    /* --------------------------------------------------------------------- */
+    /* POST /exams/:examId/versions — create a draft snapshot (audited)       */
+    /* --------------------------------------------------------------------- */
+    router.post('/exams/:examId/versions', async (req, res) => {
+        try {
+            const scope = await resolveStaffScope(req, res);
+            if (!scope)
+                return;
+            const examId = (0, exam_snapshots_1.normalizeId)(req.params.examId);
+            if (!examId)
+                return res.status(404).json({ error: 'Exam not found' });
+            const staffDecision = await authorizeExamStaff(scope, examId);
+            if (staffDecision !== 'ok') {
+                return denyExamStaff(res, staffDecision, 'Exam not found');
+            }
+            const validated = (0, exam_snapshots_1.validateExamVersionInput)(req.body);
+            if (!validated.ok)
+                return res.status(400).json({ error: validated.error });
+            const value = validated.value;
+            // Pin resolution runs under the same staff branch visibility filter
+            // used by the question-bank read surfaces, so a branch-scoped
+            // instructor cannot pin question versions owned by another branch.
+            // Archived-head policy is a held product decision and is NOT
+            // filtered here (see report).
+            const pinVisibility = (0, question_bank_1.buildQuestionVisibilityFilter)({
+                tenantId: scope.tenantId,
+                branchId: scope.branchId,
+                isOwner: scope.isOwner,
+            });
+            const sources = [];
+            for (const pin of value.questions) {
+                const row = await db.queryOne(`SELECT qbv.id AS source_version_id, qbv.question_id, qbv.version, qbv.question_type, qbv.question_text,
+                            qbv.options, qbv.correct_answers, qbv.points, qbv.explanation
+                     FROM question_bank_versions qbv INNER JOIN question_bank_questions q ON q.id = qbv.question_id
+                     WHERE qbv.tenant_id = ? AND qbv.question_id = ? AND qbv.version = ? AND ${pinVisibility.sql}
+                     LIMIT 1`, [scope.tenantId, pin.questionId, pin.version, ...pinVisibility.params]);
+                if (!row) {
+                    return res.status(400).json({ error: `question ${pin.questionId} version ${pin.version} was not found` });
+                }
+                sources.push({
+                    position: pin.position,
+                    sourceVersionId: row.source_version_id,
+                    source: {
+                        questionId: row.question_id,
+                        version: Number(row.version),
+                        questionType: row.question_type,
+                        questionText: row.question_text,
+                        options: parseJsonArray(row.options),
+                        correctAnswers: parseJsonArray(row.correct_answers),
+                        points: Number(row.points),
+                        explanation: row.explanation,
+                    },
+                });
+            }
+            const snapshot = (0, exam_snapshots_1.buildSnapshotEntries)(sources);
+            if (!snapshot.ok)
+                return res.status(400).json({ error: snapshot.error });
+            const totalPoints = snapshot.value.reduce((sum, entry) => sum + entry.points, 0);
+            const maxRow = await db.queryOne(`SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM exam_versions
+                 WHERE exam_id = ? AND tenant_id = ?`, [examId, scope.tenantId]);
+            const nextVersion = Number(maxRow?.next_version ?? 1);
+            const versionId = (0, crypto_1.randomUUID)();
+            await runAtomic(async (tx) => {
+                await tx.execute(`INSERT INTO exam_versions
+                       (id,exam_id,tenant_id,version,status,duration_seconds,opens_at,closes_at,grace_seconds,
+                        total_points,passing_points,scoring_policy,created_by)
+                     VALUES (?,?,?,?, 'draft', ?,?,?,?, ?,?, ?, ?)`, [
+                    versionId, examId, scope.tenantId, nextVersion, value.durationSeconds,
+                    value.opensAtUtc === null ? null : toDbUtc(value.opensAtUtc),
+                    value.closesAtUtc === null ? null : toDbUtc(value.closesAtUtc),
+                    value.graceSeconds, totalPoints, value.passingPoints,
+                    JSON.stringify(value.scoring), scope.userId,
+                ]);
+                for (const [index, entry] of snapshot.value.entries()) {
+                    await tx.execute(`INSERT INTO exam_version_questions
+                           (id,exam_version_id,tenant_id,position,question_id,question_version,source_version_id,
+                            question_type,question_text,options,correct_answers,points,explanation,content_hash)
+                         VALUES (?,?,?,?,?,?,?, ?,?,?,?,?,?, ?)`, [
+                        (0, crypto_1.randomUUID)(), versionId, scope.tenantId, entry.position, entry.questionId, entry.version,
+                        sources[index].sourceVersionId,
+                        entry.questionType, entry.questionText, JSON.stringify(entry.options),
+                        JSON.stringify(entry.correctAnswers), entry.points, entry.explanation, entry.contentHash,
+                    ]);
+                }
+                await (0, audit_1.recordAudit)(tx.execute, {
+                    actorUserId: scope.userId,
+                    tenantId: scope.tenantId,
+                    action: 'exam_version.create',
+                    resourceType: 'exam_version',
+                    resourceId: versionId,
+                    newValue: (0, audit_1.snapshotRow)({
+                        exam_id: examId,
+                        version: nextVersion,
+                        questions: snapshot.value.length,
+                        total_points: totalPoints,
+                        duration_seconds: value.durationSeconds,
+                    }),
+                });
+            });
+            res.status(201).json({
+                id: versionId,
+                exam_id: examId,
+                version: nextVersion,
+                status: 'draft',
+                total_points: totalPoints,
+            });
+        }
+        catch (error) {
+            console.error('Create exam version error:', error);
+            res.status(500).json({ error: 'Failed to create exam version' });
+        }
+    });
+    /* --------------------------------------------------------------------- */
+    /* GET /exams/:examId/versions — staff list                               */
+    /* --------------------------------------------------------------------- */
+    router.get('/exams/:examId/versions', async (req, res) => {
+        try {
+            const scope = await resolveStaffScope(req, res);
+            if (!scope)
+                return;
+            const examId = (0, exam_snapshots_1.normalizeId)(req.params.examId);
+            if (!examId)
+                return res.status(404).json({ error: 'Exam not found' });
+            const staffDecision = await authorizeExamStaff(scope, examId);
+            if (staffDecision !== 'ok') {
+                return denyExamStaff(res, staffDecision, 'Exam not found');
+            }
+            const rows = await db.query(`SELECT ${VERSION_COLUMNS} FROM exam_versions
+                 WHERE exam_id = ? AND tenant_id = ? ORDER BY version DESC LIMIT 100`, [examId, scope.tenantId]);
+            res.json(rows.map(projectVersion));
+        }
+        catch (error) {
+            console.error('List exam versions error:', error);
+            res.status(500).json({ error: 'Failed to list exam versions' });
+        }
+    });
+    /* --------------------------------------------------------------------- */
+    /* GET /exams/:examId/versions/:versionId — staff detail (answer key)     */
+    /* --------------------------------------------------------------------- */
+    router.get('/exams/:examId/versions/:versionId', async (req, res) => {
+        try {
+            const scope = await resolveStaffScope(req, res);
+            if (!scope)
+                return;
+            const examId = (0, exam_snapshots_1.normalizeId)(req.params.examId);
+            const versionId = (0, exam_snapshots_1.normalizeId)(req.params.versionId);
+            if (!examId || !versionId)
+                return res.status(404).json({ error: 'Exam version not found' });
+            const staffDecision = await authorizeExamStaff(scope, examId);
+            if (staffDecision !== 'ok') {
+                return denyExamStaff(res, staffDecision, 'Exam version not found');
+            }
+            const version = await loadVersion(scope.tenantId, examId, versionId);
+            if (!version)
+                return res.status(404).json({ error: 'Exam version not found' });
+            const questions = await loadVersionWithQuestions(scope.tenantId, versionId);
+            res.json({
+                ...projectVersion(version),
+                questions: questions.map((row) => projectQuestion(row, true)),
+            });
+        }
+        catch (error) {
+            console.error('Read exam version error:', error);
+            res.status(500).json({ error: 'Failed to load exam version' });
+        }
+    });
+    /* --------------------------------------------------------------------- */
+    /* POST /exams/:examId/versions/:versionId/publish — freeze (audited)     */
+    /* --------------------------------------------------------------------- */
+    router.post('/exams/:examId/versions/:versionId/publish', async (req, res) => {
+        try {
+            const scope = await resolveStaffScope(req, res);
+            if (!scope)
+                return;
+            const examId = (0, exam_snapshots_1.normalizeId)(req.params.examId);
+            const versionId = (0, exam_snapshots_1.normalizeId)(req.params.versionId);
+            if (!examId || !versionId)
+                return res.status(404).json({ error: 'Exam version not found' });
+            const staffDecision = await authorizeExamStaff(scope, examId);
+            if (staffDecision !== 'ok') {
+                return denyExamStaff(res, staffDecision, 'Exam version not found');
+            }
+            const version = await loadVersion(scope.tenantId, examId, versionId);
+            if (!version)
+                return res.status(404).json({ error: 'Exam version not found' });
+            if (version.status === 'published') {
+                return res.status(409).json({ error: 'Exam version is already published' });
+            }
+            if (version.status === 'archived') {
+                return res.status(409).json({ error: 'An archived exam version cannot be published' });
+            }
+            const questions = await loadVersionWithQuestions(scope.tenantId, versionId);
+            const published = await runAtomic(async (tx) => {
+                const updated = await tx.execute(`UPDATE exam_versions SET status='published', published_at=UTC_TIMESTAMP()
+                     WHERE id=? AND exam_id=? AND tenant_id=? AND status='draft'`, [versionId, examId, scope.tenantId]);
+                if ((updated.affectedRows) === 0)
+                    return false;
+                for (const row of questions) {
+                    if (!row.source_version_id || !row.question_id)
+                        continue;
+                    await tx.execute(`INSERT IGNORE INTO question_bank_version_usages
+                           (id,question_id,version_id,tenant_id,version,exam_id,exam_published)
+                         VALUES (?,?,?,?,?,?,1)`, [(0, crypto_1.randomUUID)(), row.question_id, row.source_version_id, scope.tenantId, Number(row.question_version ?? 0), examId]);
+                }
+                await (0, audit_1.recordAudit)(tx.execute, {
+                    actorUserId: scope.userId,
+                    tenantId: scope.tenantId,
+                    action: 'exam_version.publish',
+                    resourceType: 'exam_version',
+                    resourceId: versionId,
+                    oldValue: (0, audit_1.snapshotRow)({ status: version.status }),
+                    newValue: (0, audit_1.snapshotRow)({ status: 'published', questions: questions.length }),
+                });
+                return true;
+            });
+            if (!published)
+                return res.status(409).json({ error: 'Exam version changed concurrently' });
+            res.json({ id: versionId, status: 'published' });
+        }
+        catch (error) {
+            console.error('Publish exam version error:', error);
+            res.status(500).json({ error: 'Failed to publish exam version' });
+        }
+    });
+    /* --------------------------------------------------------------------- */
+    /* POST /exams/:examId/versions/:versionId/attempts — start (audited)     */
+    /* --------------------------------------------------------------------- */
+    // Explicit catalog start and read-only recovery. Both resolve source/version
+    // from the saved pin; the body never supplies tenant, enrollment or exam IDs.
+    for (const method of ['get', 'post'])
+        router[method]('/catalog/courses/:courseId/lessons/:lessonId/activities/:contentId/attempt', async (req, res) => {
+            res.set('Cache-Control', 'no-store');
+            if (!deps.catalog || !deps.transaction)
+                return res.status(503).json({ error: 'Catalog attempts unavailable', code: 'CATALOG_ATTEMPT_UNAVAILABLE' });
+            const user = req.user;
+            if (!user || user.role !== 'student' || !user.tenantId || !user.studentEnrollmentId)
+                return res.status(403).json({ error: 'Selected student workspace required' });
+            const selectors = { courseId: req.params.courseId, lessonId: req.params.lessonId, contentId: req.params.contentId };
+            if (!Object.values(selectors).every(value => /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(value)) || Object.keys(req.query ?? {}).length || req.body !== undefined && req.body !== null && (typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length) || ['x-tenant-id', 'x-student-id', 'x-enrollment-id', 'x-instructor-id'].some(key => req.headers[key] !== undefined))
+                return res.status(400).json({ error: 'Invalid catalog attempt request' });
+            const compact = (attempt) => {
+                const started = (0, content_release_1.toUtcIso)(attempt.started_at), deadline = (0, content_release_1.toUtcIso)(attempt.deadline_at);
+                if (!started || !deadline || !['in_progress', 'pending_review', 'graded', 'expired'].includes(attempt.status))
+                    throw Error('Invalid persisted attempt');
+                return { id: attempt.id, status: attempt.status, started_at: started, deadline_at: deadline };
+            };
+            let writeAttempted = false;
+            try {
+                const result = await runAtomic(async (tx) => {
+                    if (method === 'post') {
+                        const course = await tx.queryOne('SELECT id FROM courses WHERE id=? AND tenant_id=? FOR UPDATE', [selectors.courseId, user.tenantId]);
+                        const enrollment = await tx.queryOne('SELECT id FROM students WHERE id=? AND user_id=? AND tenant_id=? FOR UPDATE', [user.studentEnrollmentId, user.id, user.tenantId]);
+                        if (!course || !enrollment)
+                            return { status: 404, body: { error: 'Catalog activity not found' } };
+                    }
+                    const context = await deps.catalog.resolve(tx, user, selectors, method === 'post');
+                    if (!context)
+                        return { status: 403, body: { error: 'Catalog activity access denied', code: 'CATALOG_EXAM_DENIED' } };
+                    const existing = await tx.queryOne(`SELECT ${ATTEMPT_COLUMNS},catalog_context FROM exam_versioned_attempts WHERE exam_id=? AND student_enrollment_id=? AND tenant_id=? LIMIT 1${method === 'post' ? ' FOR UPDATE' : ''}`, [context.examId, context.enrollmentId, context.tenantId]);
+                    if (existing) {
+                        if (existing.catalog_context === null || existing.catalog_context === undefined)
+                            return { status: 409, body: { error: 'Existing attempt has no catalog binding', code: 'CATALOG_ATTEMPT_UNBOUND' } };
+                        if (JSON.stringify((0, catalog_exam_access_1.parseCatalogExamContext)(existing.catalog_context)) !== JSON.stringify(context))
+                            return { status: 409, body: { error: 'Existing attempt belongs to another catalog context', code: 'CATALOG_ATTEMPT_DIFFERENT_CONTEXT' } };
+                        await requireAttemptCatalog(tx, req, existing);
+                        return { status: 200, body: { attempt: compact(existing), unchanged: true } };
+                    }
+                    if (method === 'get')
+                        return { status: 200, body: { attempt: null } };
+                    const version = await loadVersionRow(tx, context.tenantId, context.examId, context.versionId, true);
+                    if (!version)
+                        return { status: 404, body: { error: 'Published snapshot not found' } };
+                    const timing = await (0, catalog_exam_access_1.validateCatalogExamSnapshot)(tx, context, true), startedAt = now();
+                    if (timing.fingerprint !== context.snapshotFingerprint)
+                        throw new catalog_exam_access_1.CatalogExamDenied();
+                    const decision = (0, exam_snapshots_1.evaluateAttemptStart)(timing, version.status, false, startedAt);
+                    if (!decision.allowed)
+                        return { status: 403, body: { error: 'Attempt is not allowed', code: decision.reason } };
+                    const attemptId = (0, crypto_1.randomUUID)();
+                    writeAttempted = true;
+                    await persistAttemptStart(tx, { attemptId, tenantId: context.tenantId, examId: context.examId, versionId: context.versionId, enrollmentId: context.enrollmentId, userId: user.id, startedAt, deadlineUtc: decision.deadlineUtc, context });
+                    return { status: 201, body: { attempt: { id: attemptId, status: 'in_progress', started_at: startedAt.toISOString(), deadline_at: decision.deadlineUtc }, unchanged: false } };
+                });
+                return res.status(result.status).json(result.body);
+            }
+            catch (error) {
+                if (catalogError(error, res))
+                    return;
+                // A lost write/commit acknowledgement is recovered only with GET.
+                return res.status(503).json({ error: writeAttempted ? 'Attempt creation outcome uncertain; inspect before retry' : 'Catalog attempts unavailable', code: writeAttempted ? 'PERSISTENCE_UNCERTAIN' : 'CATALOG_ATTEMPT_UNAVAILABLE' });
+            }
+        });
+    router.post('/exams/:examId/versions/:versionId/attempts', async (req, res) => {
+        try {
+            const enrollment = await resolveEnrollment(req, res);
+            if (!enrollment)
+                return;
+            const examId = (0, exam_snapshots_1.normalizeId)(req.params.examId);
+            const versionId = (0, exam_snapshots_1.normalizeId)(req.params.versionId);
+            if (!examId || !versionId)
+                return res.status(404).json({ error: 'Exam version not found' });
+            await requireGenericExam(db, examId);
+            if (!(await examInTenant(enrollment.tenantId, examId))) {
+                return res.status(404).json({ error: 'Exam version not found' });
+            }
+            const version = await loadVersion(enrollment.tenantId, examId, versionId);
+            if (!version)
+                return res.status(404).json({ error: 'Exam version not found' });
+            const targets = await loadExamTargets(examId);
+            if (!(0, exam_snapshots_1.enrollmentMatchesExam)({ tenantId: version.tenant_id, targets }, { tenantId: enrollment.tenantId, groupId: enrollment.groupId, branchId: enrollment.branchId })) {
+                return res.status(404).json({ error: 'Exam version not found' });
+            }
+            const existing = await db.queryOne(`SELECT id FROM exam_versioned_attempts
+                 WHERE exam_id = ? AND student_enrollment_id = ? AND tenant_id = ? LIMIT 1`, [examId, enrollment.id, enrollment.tenantId]);
+            const decision = (0, exam_snapshots_1.evaluateAttemptStart)(timingOf(version), version.status, Boolean(existing), now());
+            if (!decision.allowed) {
+                const status = decision.reason === 'already_attempted' ? 409 : 403;
+                return res.status(status).json({ error: 'Attempt is not allowed', code: decision.reason });
+            }
+            const attemptId = (0, crypto_1.randomUUID)();
+            const startedAt = now();
+            try {
+                await runAtomic(async (tx) => {
+                    await requireGenericExam(tx, examId);
+                    await persistAttemptStart(tx, { attemptId, tenantId: enrollment.tenantId, examId, versionId, enrollmentId: enrollment.id, userId: enrollment.userId, startedAt, deadlineUtc: decision.deadlineUtc });
+                });
+            }
+            catch (error) {
+                // A concurrent start loses the UNIQUE (exam_id, enrollment) race:
+                // report the same 409 the pre-insert check would have, never a 500.
+                if (isDuplicateKeyError(error)) {
+                    return res.status(409).json({ error: 'Attempt is not allowed', code: 'already_attempted' });
+                }
+                throw error;
+            }
+            await requireGenericExam(db, examId);
+            res.status(201).json({
+                id: attemptId,
+                exam_id: examId,
+                exam_version_id: versionId,
+                status: 'in_progress',
+                started_at: startedAt.toISOString(),
+                deadline_at: decision.deadlineUtc,
+                remaining_seconds: decision.remainingSeconds,
+            });
+        }
+        catch (error) {
+            if (catalogError(error, res))
+                return;
+            console.error('Start exam attempt error:', error);
+            res.status(500).json({ error: 'Failed to start exam attempt' });
+        }
+    });
+    /* --------------------------------------------------------------------- */
+    /* GET /attempts/:attemptId — owner student or tenant staff               */
+    /* --------------------------------------------------------------------- */
+    router.get('/attempts/:attemptId', async (req, res) => {
+        try {
+            const user = req.user;
+            if (!user)
+                return res.status(401).json({ error: 'Authentication required' });
+            const attemptId = (0, exam_snapshots_1.normalizeId)(req.params.attemptId);
+            if (!attemptId)
+                return res.status(404).json({ error: 'Attempt not found' });
+            if (user.role === 'student') {
+                const enrollment = await resolveEnrollment(req, res);
+                if (!enrollment)
+                    return;
+                let attempt = await loadAttempt(enrollment.tenantId, attemptId);
+                if (!attempt || attempt.student_enrollment_id !== enrollment.id) {
+                    return res.status(404).json({ error: 'Attempt not found' });
+                }
+                await requireAttemptCatalog(db, req, attempt);
+                if (attempt.status === 'in_progress') {
+                    await expireDueAttempt(db, now, attempt, atomicForAttempt(req, attempt));
+                    attempt = (await loadAttempt(enrollment.tenantId, attemptId)) ?? attempt;
+                }
+                const questions = await loadVersionWithQuestions(enrollment.tenantId, attempt.exam_version_id);
+                const answers = deps.catalog ? await deps.catalog.draft(db, user, attempt) : null;
+                await requireAttemptCatalog(db, req, attempt);
+                return res.json({
+                    ...projectAttempt(attempt),
+                    questions: questions.map((row) => projectQuestion(row, false)),
+                    ...(answers !== null ? { answers } : {}),
+                });
+            }
+            const scope = await resolveStaffScope(req, res);
+            if (!scope)
+                return;
+            let attempt = await loadAttempt(scope.tenantId, attemptId);
+            if (!attempt)
+                return res.status(404).json({ error: 'Attempt not found' });
+            const staffDecision = await authorizeExamStaff(scope, attempt.exam_id);
+            if (staffDecision !== 'ok') {
+                return denyExamStaff(res, staffDecision, 'Attempt not found');
+            }
+            if (attempt.status === 'in_progress') {
+                await expireDueAttempt(db, now, attempt, atomicForServerAttempt(attempt));
+                attempt = (await loadAttempt(scope.tenantId, attemptId)) ?? attempt;
+            }
+            const questions = await loadVersionWithQuestions(scope.tenantId, attempt.exam_version_id);
+            return res.json({
+                ...projectAttempt(attempt),
+                questions: questions.map((row) => projectQuestion(row, true)),
+            });
+        }
+        catch (error) {
+            if (catalogError(error, res))
+                return;
+            console.error('Read exam attempt error:', error);
+            res.status(500).json({ error: 'Failed to load attempt' });
+        }
+    });
+    /* --------------------------------------------------------------------- */
+    /* POST /attempts/:attemptId/autosave — owner student, draft persistence  */
+    /* --------------------------------------------------------------------- */
+    router.post('/attempts/:attemptId/autosave', async (req, res) => {
+        let writeAttempted = false;
+        try {
+            const enrollment = await resolveEnrollment(req, res);
+            if (!enrollment)
+                return;
+            const attemptId = (0, exam_snapshots_1.normalizeId)(req.params.attemptId);
+            if (!attemptId)
+                return res.status(404).json({ error: 'Attempt not found' });
+            const attempt = await loadAttempt(enrollment.tenantId, attemptId);
+            if (!attempt || attempt.student_enrollment_id !== enrollment.id) {
+                return res.status(404).json({ error: 'Attempt not found' });
+            }
+            await requireAttemptCatalog(db, req, attempt);
+            const guardedAtomic = (work) => atomicForAttempt(req, attempt)(tx => { writeAttempted = true; return work(tx); });
+            if (attempt.status !== 'in_progress') {
+                return res.status(409).json({ error: 'This attempt is no longer in progress' });
+            }
+            const version = await loadVersion(enrollment.tenantId, attempt.exam_id, attempt.exam_version_id);
+            if (!version)
+                return res.status(404).json({ error: 'Exam version not found' });
+            const phase = (0, exam_snapshots_1.evaluateAttemptPhase)(timingOf(version), (0, content_release_1.toUtcIso)(attempt.started_at) ?? now().toISOString(), now());
+            const decision = (0, exam_snapshots_1.evaluateManualSubmit)(phase);
+            if (!decision.allowed) {
+                // An expired attempt is finalized (grading every saved draft) on
+                // this touch; a draft written inside the grace window is refused.
+                if ((0, exam_snapshots_1.isAttemptExpiryDue)(phase))
+                    await expireDueAttempt(db, now, attempt, guardedAtomic);
+                return res.status(403).json({ error: 'Autosave is not allowed', code: decision.reason });
+            }
+            const questionRows = await loadVersionWithQuestions(enrollment.tenantId, attempt.exam_version_id);
+            const answerMap = (0, exam_grading_1.normalizeAnswerMap)((typeof req.body === 'object' && req.body !== null ? req.body : {})['answers']);
+            const refs = new Set(questionRows.map((row) => row.id));
+            const keys = Object.keys(answerMap);
+            if (keys.some((key) => !refs.has(key))) {
+                return res.status(400).json({ error: 'Answers reference an unknown question' });
+            }
+            if (keys.length > MAX_DRAFT_ANSWERS || Buffer.byteLength(JSON.stringify(answerMap), 'utf8') > MAX_DRAFT_ANSWER_BYTES) {
+                return res.status(413).json({ error: 'Draft is too large' });
+            }
+            const nowMs = now().getTime();
+            const previous = lastAutosaveAt.get(attemptId);
+            if (previous !== undefined && nowMs - previous < AUTOSAVE_MIN_INTERVAL_MS) {
+                return res.status(429).json({ error: 'Autosave rate limited' });
+            }
+            // Bounded throttle bookkeeping: drop the oldest entries once the map
+            // grows past the cap (insertion-ordered Map, never rebuilt while hot).
+            if (lastAutosaveAt.size >= MAX_AUTOSAVE_THROTTLE_TRACKED) {
+                const drop = lastAutosaveAt.keys().next();
+                if (!drop.done)
+                    lastAutosaveAt.delete(drop.value);
+            }
+            lastAutosaveAt.set(attemptId, nowMs);
+            await guardedAtomic(async (tx) => {
+                for (const key of keys) {
+                    const question = questionRows.find((row) => row.id === key);
+                    if (!question)
+                        continue;
+                    await tx.execute(`INSERT INTO exam_versioned_answers
+                           (id,tenant_id,attempt_id,exam_version_id,question_ref,question_type,response,manual_review)
+                         VALUES (?,?,?,?,?,?,?,0)
+                         ON DUPLICATE KEY UPDATE response=VALUES(response)`, [(0, crypto_1.randomUUID)(), enrollment.tenantId, attemptId, attempt.exam_version_id, key, question.question_type, JSON.stringify(answerMap[key] ?? null)]);
+                }
+            });
+            res.json({ ok: true, saved: keys.length });
+        }
+        catch (error) {
+            if (catalogError(error, res))
+                return;
+            if (deps.catalog)
+                return res.status(503).json({ error: writeAttempted ? 'Write outcome uncertain; read the attempt before retry' : 'Catalog attempt temporarily unavailable', code: writeAttempted ? 'PERSISTENCE_UNCERTAIN' : 'CATALOG_ATTEMPT_UNAVAILABLE' });
+            console.error('Autosave exam attempt error:', error);
+            res.status(500).json({ error: 'Failed to autosave attempt' });
+        }
+    });
+    /* --------------------------------------------------------------------- */
+    /* POST /attempts/:attemptId/submit — owner student, auto-grade (audited) */
+    /* --------------------------------------------------------------------- */
+    router.post('/attempts/:attemptId/submit', async (req, res) => {
+        let writeAttempted = false;
+        try {
+            const enrollment = await resolveEnrollment(req, res);
+            if (!enrollment)
+                return;
+            const attemptId = (0, exam_snapshots_1.normalizeId)(req.params.attemptId);
+            if (!attemptId)
+                return res.status(404).json({ error: 'Attempt not found' });
+            const attempt = await loadAttempt(enrollment.tenantId, attemptId);
+            if (!attempt || attempt.student_enrollment_id !== enrollment.id) {
+                return res.status(404).json({ error: 'Attempt not found' });
+            }
+            await requireAttemptCatalog(db, req, attempt);
+            const guardedAtomic = (work) => atomicForAttempt(req, attempt)(tx => { writeAttempted = true; return work(tx); });
+            if (attempt.status !== 'in_progress') {
+                return res.status(409).json({ error: 'This attempt has already been submitted' });
+            }
+            const version = await loadVersion(enrollment.tenantId, attempt.exam_id, attempt.exam_version_id);
+            if (!version)
+                return res.status(404).json({ error: 'Exam version not found' });
+            const phase = (0, exam_snapshots_1.evaluateAttemptPhase)(timingOf(version), (0, content_release_1.toUtcIso)(attempt.started_at) ?? now().toISOString(), now());
+            // Past the grace window a manual submit can no longer capture
+            // answers: run the compensation pass (which grades every answer
+            // autosaved during the attempt) and deny this late write.
+            if ((0, exam_snapshots_1.isAttemptExpiryDue)(phase)) {
+                await expireDueAttempt(db, now, attempt, guardedAtomic);
+                return res.status(403).json({ error: 'Submission is not allowed', code: 'EXPIRED' });
+            }
+            const decision = (0, exam_snapshots_1.evaluateManualSubmit)(phase);
+            if (!decision.allowed) {
+                return res.status(403).json({ error: 'Submission is not allowed', code: decision.reason });
+            }
+            const questionRows = await loadVersionWithQuestions(enrollment.tenantId, attempt.exam_version_id);
+            const answerMap = (0, exam_grading_1.normalizeAnswerMap)((typeof req.body === 'object' && req.body !== null ? req.body : {})['answers']);
+            const refs = new Set(questionRows.map((row) => row.id));
+            if (Object.keys(answerMap).some((key) => !refs.has(key))) {
+                return res.status(400).json({ error: 'Answers reference an unknown question' });
+            }
+            const computed = computeAttemptGrade(version, questionRows, answerMap);
+            const applied = await guardedAtomic((tx) => persistAttemptGrade(tx, {
+                tenantId: enrollment.tenantId,
+                attemptId,
+                examVersionId: attempt.exam_version_id,
+                questionRows,
+                answerMap,
+                computed,
+                status: computed.status,
+                autoSubmitted: false,
+                gradedAt: computed.grade.manualRequired ? null : now().toISOString().slice(0, 19).replace('T', ' '),
+                actorUserId: deps.catalog ? enrollment.userId : enrollment.id,
+                auditAction: 'exam_attempt.submit',
+            }));
+            if (!applied)
+                return res.status(409).json({ error: 'This attempt has already been submitted' });
+            res.json({
+                attempt_id: attemptId,
+                status: computed.status,
+                auto_score: Number(computed.awarded),
+                manual_required: computed.grade.manualRequired,
+                late: decision.late,
+            });
+        }
+        catch (error) {
+            if (catalogError(error, res))
+                return;
+            if (deps.catalog)
+                return res.status(503).json({ error: writeAttempted ? 'Write outcome uncertain; read the attempt before retry' : 'Catalog attempt temporarily unavailable', code: writeAttempted ? 'PERSISTENCE_UNCERTAIN' : 'CATALOG_ATTEMPT_UNAVAILABLE' });
+            console.error('Submit exam attempt error:', error);
+            res.status(500).json({ error: 'Failed to submit attempt' });
+        }
+    });
+    /* --------------------------------------------------------------------- */
+    /* POST /attempts/:attemptId/regrade — authorized tenant staff,           */
+    /* idempotent (audited). The terminal expired/auto_submitted state of the */
+    /* attempt is preserved and the UPDATE is guarded by the expected state   */
+    /* and row version.                                                       */
+    /* --------------------------------------------------------------------- */
+    router.post('/attempts/:attemptId/regrade', async (req, res) => {
+        try {
+            const scope = await resolveStaffScope(req, res);
+            if (!scope)
+                return;
+            const attemptId = (0, exam_snapshots_1.normalizeId)(req.params.attemptId);
+            if (!attemptId)
+                return res.status(404).json({ error: 'Attempt not found' });
+            const attempt = await loadAttempt(scope.tenantId, attemptId);
+            if (!attempt)
+                return res.status(404).json({ error: 'Attempt not found' });
+            const staffDecision = await authorizeExamStaff(scope, attempt.exam_id);
+            if (staffDecision !== 'ok')
+                return denyExamStaff(res, staffDecision, 'Attempt not found');
+            if (attempt.status === 'in_progress') {
+                return res.status(409).json({ error: 'An in-progress attempt cannot be regraded' });
+            }
+            const version = await loadVersion(scope.tenantId, attempt.exam_id, attempt.exam_version_id);
+            if (!version)
+                return res.status(404).json({ error: 'Exam version not found' });
+            const questionRows = await loadVersionWithQuestions(scope.tenantId, attempt.exam_version_id);
+            const stored = await db.query(`SELECT id,question_ref,question_type,response,awarded_points,is_correct,manual_review
+                 FROM exam_versioned_answers WHERE attempt_id = ? AND tenant_id = ?`, [attemptId, scope.tenantId]);
+            const answerMap = {};
+            for (const row of stored)
+                answerMap[row.question_ref] = parseJson(row.response);
+            const policy = scoringOf(version);
+            const gradingQuestions = gradingQuestionsOf(questionRows);
+            const grade = (0, exam_grading_1.gradeAttempt)(gradingQuestions, answerMap, policy);
+            const fingerprint = (0, exam_grading_1.computeGradingFingerprint)({
+                versionId: attempt.exam_version_id,
+                policy,
+                questions: gradingQuestions,
+                answers: answerMap,
+            });
+            const awarded = (0, exam_grading_1.formatHundredths)(grade.autoScoreHundredths);
+            const passingHundredths = (0, exam_grading_1.toHundredths)(version.passing_points) ?? 0;
+            // G-A2-3: `auto_submitted` marks a server-terminated attempt; its
+            // status is terminal and is never rewritten to graded/pending by a
+            // regrade. Also only the recomputed grade values change.
+            const status = attempt.auto_submitted ? String(attempt.status) : (grade.manualRequired ? 'pending_review' : 'graded');
+            const passed = grade.manualRequired ? null : grade.autoScoreHundredths >= passingHundredths;
+            if (!(0, exam_grading_1.shouldApplyRegrade)(attempt.grading_fingerprint, fingerprint)) {
+                await (0, audit_1.recordAudit)(db.execute, {
+                    actorUserId: scope.userId,
+                    tenantId: scope.tenantId,
+                    action: 'exam_attempt.regrade',
+                    resourceType: 'exam_attempt',
+                    resourceId: attemptId,
+                    newValue: (0, audit_1.snapshotRow)({ applied: false, fingerprint, auto_score: awarded }),
+                });
+                return res.json({ attempt_id: attemptId, applied: false, auto_score: Number(awarded), status: attempt.status });
+            }
+            const appliedResult = await atomicForServerAttempt(attempt)(async (tx) => {
+                const updated = await tx.execute(`UPDATE exam_versioned_attempts
+                     SET status=?, auto_score=?, score=?, manual_required=?, grading_fingerprint=?,
+                         graded_at=?, passed=?, version=version+1
+                     WHERE id=? AND tenant_id=? AND status = ? AND version = ?`, [
+                    status, awarded, grade.manualRequired ? null : awarded, grade.manualRequired ? 1 : 0,
+                    fingerprint, new Date().toISOString().slice(0, 19).replace('T', ' '),
+                    passed === null ? null : (passed ? 1 : 0), attemptId, scope.tenantId,
+                    String(attempt.status), Number(attempt.version ?? 0),
+                ]);
+                if ((updated.affectedRows) === 0)
+                    return false;
+                for (const question of grade.questions) {
+                    await tx.execute(`UPDATE exam_versioned_answers
+                         SET awarded_points=?, is_correct=?, manual_review=?
+                         WHERE attempt_id=? AND tenant_id=? AND question_ref=?`, [
+                        question.awardedHundredths === null ? null : (0, exam_grading_1.formatHundredths)(question.awardedHundredths),
+                        question.isCorrect === null ? null : (question.isCorrect ? 1 : 0),
+                        question.autoGraded ? 0 : 1, attemptId, scope.tenantId, question.ref,
+                    ]);
+                }
+                await tx.execute(`INSERT IGNORE INTO exam_grading_runs
+                       (id,tenant_id,attempt_id,exam_version_id,idempotency_key,auto_score,manual_required,applied,created_by)
+                     VALUES (?,?,?,?,?,?,?,1,?)`, [
+                    (0, crypto_1.randomUUID)(), scope.tenantId, attemptId, attempt.exam_version_id, fingerprint,
+                    awarded, grade.manualRequired ? 1 : 0, scope.userId,
+                ]);
+                await (0, audit_1.recordAudit)(tx.execute, {
+                    actorUserId: scope.userId,
+                    tenantId: scope.tenantId,
+                    action: 'exam_attempt.regrade',
+                    resourceType: 'exam_attempt',
+                    resourceId: attemptId,
+                    oldValue: (0, audit_1.snapshotRow)({ fingerprint: attempt.grading_fingerprint, score: attempt.score }),
+                    newValue: (0, audit_1.snapshotRow)({ applied: true, fingerprint, auto_score: awarded, status }),
+                });
+                return true;
+            });
+            if (!appliedResult)
+                return res.status(409).json({ error: 'Attempt changed concurrently' });
+            res.json({ attempt_id: attemptId, applied: true, auto_score: Number(awarded), status });
+        }
+        catch (error) {
+            console.error('Regrade exam attempt error:', error);
+            res.status(500).json({ error: 'Failed to regrade attempt' });
+        }
+    });
+    return router;
+};
+exports.createExamVersionsRouter = createExamVersionsRouter;
+/* Production wiring: real pool, real auth, real tenant authority. */
+const TENANT_AUTHORITY_SQL = `
+    SELECT 'owner' AS authority
+    FROM tenants t
+    WHERE t.id = ? AND t.owner_user_id = ? AND t.status = 'active'
+    UNION ALL
+    SELECT m.role_key AS authority
+    FROM tenant_memberships m
+    INNER JOIN tenants t ON t.id = m.tenant_id
+    INNER JOIN users u ON u.id = m.user_id
+    WHERE m.user_id = ? AND m.tenant_id = ? AND m.status = 'active'
+      AND t.status = 'active' AND u.is_active = 1
+      AND m.role_key IN ('owner','instructor')
+    LIMIT 1
+`;
+let dbModule = null;
+const loadDb = async () => {
+    dbModule ?? (dbModule = await Promise.resolve().then(() => __importStar(require('../db'))));
+    return dbModule;
+};
+const productionDb = {
+    query: async (sql, params) => {
+        const { query } = await loadDb();
+        return query(sql, params);
+    },
+    queryOne: async (sql, params) => {
+        const { queryOne } = await loadDb();
+        return queryOne(sql, params);
+    },
+    execute: async (sql, params) => {
+        const { execute } = await loadDb();
+        return execute(sql, params);
+    },
+};
+const loadActiveTenantAuthority = async (userId, tenantId) => {
+    const { queryOne } = await loadDb();
+    return queryOne(TENANT_AUTHORITY_SQL, [tenantId, userId, userId, tenantId]);
+};
+const ATTEMPT_COLUMNS_QUALIFIED = 'a.id,a.tenant_id,a.exam_id,a.exam_version_id,a.student_enrollment_id,a.student_user_id,a.status,a.started_at,' +
+    'a.deadline_at,a.submitted_at,a.auto_submitted,a.auto_score,a.score,a.manual_required,a.grading_fingerprint,a.graded_at,a.passed,a.version';
+/** Attempts whose grace window closed and that are still stuck in_progress. */
+const OVERDUE_ATTEMPT_SQL = `
+    SELECT ${ATTEMPT_COLUMNS_QUALIFIED}
+    FROM exam_versioned_attempts a
+    INNER JOIN exam_versions v ON v.id = a.exam_version_id AND v.tenant_id = a.tenant_id
+    WHERE a.status = 'in_progress'
+      AND DATE_ADD(a.deadline_at, INTERVAL v.grace_seconds SECOND) <= UTC_TIMESTAMP()
+    ORDER BY a.deadline_at ASC
+    LIMIT 200
+`;
+/**
+ * Server-side auto-submit sweep. Expires every overdue in-progress attempt,
+ * grading the answers saved so far. Errors are contained per attempt so one bad
+ * row never stops the pass; the periodic job caller passes the real pool.
+ */
+const runExamAttemptExpiryPass = async () => {
+    const db = productionDb;
+    const clock = () => new Date();
+    const rows = await db.query(OVERDUE_ATTEMPT_SQL);
+    let expired = 0;
+    for (const attempt of rows) {
+        try {
+            if (await expireDueAttempt(db, clock, attempt, work => productionTransaction(async (tx) => {
+                if (!await (0, catalog_exam_access_1.createCatalogExamAuthority)().checkFrozen(tx, attempt))
+                    throw new catalog_exam_access_1.CatalogExamDenied();
+                return work(tx);
+            })))
+                expired += 1;
+        }
+        catch (error) {
+            console.error('Exam attempt expiry failed:', error);
+        }
+    }
+    return expired;
+};
+exports.runExamAttemptExpiryPass = runExamAttemptExpiryPass;
+/**
+ * Production atomic seam. A grading pass writes the attempt row, the
+ * per-question award ledger, the idempotency run row and the audit event as one
+ * unit; the `status='in_progress'` guard is only meaningful when that block
+ * holds a real transaction, so a concurrent submit/expiry cannot double-apply.
+ */
+const productionTransaction = async (fn) => {
+    const { withTransaction } = await loadDb();
+    return withTransaction((connection) => fn({
+        query: async (sql, params) => {
+            const [rows] = await connection.query(sql, params);
+            return rows;
+        },
+        queryOne: async (sql, params) => {
+            const [rows] = await connection.query(sql, params);
+            return rows[0] ?? null;
+        },
+        execute: async (sql, params) => {
+            const [result] = await connection.execute(sql, params);
+            const header = result;
+            const affectedRows = header.affectedRows;
+            if (typeof affectedRows !== 'number' || !Number.isSafeInteger(affectedRows)) {
+                throw new Error('exam-versions transaction execute did not report a usable affected-row count');
+            }
+            return { insertId: typeof header.insertId === 'number' && Number.isSafeInteger(header.insertId) ? header.insertId : 0, affectedRows };
+        },
+    }));
+};
+exports.default = (0, exports.createExamVersionsRouter)({
+    db: productionDb,
+    authenticate: async (req, res, next) => {
+        const { authenticateToken } = await Promise.resolve().then(() => __importStar(require('../middleware/auth')));
+        return authenticateToken(req, res, next);
+    },
+    loadActiveTenantAuthority,
+    catalog: (0, catalog_exam_access_1.createCatalogExamAuthority)(),
+    transaction: productionTransaction,
+});

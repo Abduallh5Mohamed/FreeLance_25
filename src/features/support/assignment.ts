@@ -38,6 +38,18 @@ export interface AssignmentState {
   busyRead:boolean;readError:string|null;notice:string|null;canRetry:boolean;decisionBlocked:boolean;write:SupportAttemptState;
 }
 export const initialAssignmentState=():AssignmentState=>({phase:'idle',snapshot:null,candidates:[],nextCursor:null,busyRead:false,readError:null,notice:null,canRetry:false,decisionBlocked:false,write:{busy:false,uncertain:false,locked:false,error:null,blocked:false}});
+/** One deadline for a read batch; abort/disposal also retires adapters that ignore signals. */
+async function boundedAssignmentRead<T>(controller:AbortController,work:()=>Promise<T>):Promise<T>{
+  if(controller.signal.aborted)throw Error('Support assignment read interrupted');
+  let timer:ReturnType<typeof setTimeout>|undefined,interrupted:()=>void=()=>{};
+  const deadline=new Promise<never>((_resolve,reject)=>{
+    interrupted=()=>reject(Error('Support assignment read interrupted'));
+    controller.signal.addEventListener('abort',interrupted,{once:true});
+    timer=setTimeout(()=>controller.abort(),25000);
+  });
+  try{return await Promise.race([work(),deadline]);}
+  finally{if(timer!==undefined)clearTimeout(timer);controller.signal.removeEventListener('abort',interrupted);}
+}
 export function createAssignmentController(ticketId:string,accountId:string,deps:{
   read(signal:AbortSignal):Promise<unknown>;candidates(after:string|null,signal:AbortSignal):Promise<unknown>;
   send(input:AssignmentInput,key:string,signal:AbortSignal):Promise<unknown>;reconcile(key:string,signal:AbortSignal):Promise<unknown>;
@@ -64,8 +76,12 @@ export function createAssignmentController(ticketId:string,accountId:string,deps
     const epoch=++generation;abort?.abort();abort=new AbortController();
     set({phase:'loading',snapshot:null,candidates:[],nextCursor:null,busyRead:true,readError:null});
     try{
-      const snapshot=parseAssignmentSnapshot(await deps.read(abort.signal),ticketId);if(!current(epoch))return;
-      const page=parseCandidatePage(await deps.candidates(null,abort.signal));if(!current(epoch))return;
+      const controller=abort;
+      const result=await boundedAssignmentRead(controller,async()=>{
+        const snapshot=parseAssignmentSnapshot(await deps.read(controller.signal),ticketId);if(controller.signal.aborted||!current(epoch))return null;
+        const page=parseCandidatePage(await deps.candidates(null,controller.signal));return{snapshot,page};
+      });
+      if(!result||!current(epoch))return;const {snapshot,page}=result;
       set({phase:'ready',snapshot,candidates:page.candidates,nextCursor:page.next_cursor,notice:confirmed?'تم تأكيد قرار التكليف وعرض الحالة الحالية من الخادم.':state.notice});
     }catch(error){if(current(epoch)){
       if(denied(error))retire('denied');
@@ -83,7 +99,7 @@ export function createAssignmentController(ticketId:string,accountId:string,deps
     async loadMore(){
       if(!alive()||state.phase!=='ready'||state.busyRead||attempt.getState().busy||!state.nextCursor)return;
       const after=state.nextCursor,epoch=generation;abort?.abort();abort=new AbortController();set({busyRead:true,readError:null});
-      try{const page=parseCandidatePage(await deps.candidates(after,abort.signal));if(!current(epoch))return;
+      try{const controller=abort;const page=await boundedAssignmentRead(controller,async()=>parseCandidatePage(await deps.candidates(after,controller.signal)));if(!current(epoch))return;
         if(page.next_cursor===after||page.candidates.some(row=>state.candidates.some(old=>old.id.toLowerCase()===row.id.toLowerCase())))throw Error('Overlapping recipient page');
         set({candidates:[...state.candidates,...page.candidates],nextCursor:page.next_cursor});
       }catch(error){if(current(epoch)){if(denied(error))retire('denied');else set({readError:'تعذّر تحميل مسؤولين إضافيين. يمكنك إعادة المحاولة.'});}}

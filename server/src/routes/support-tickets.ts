@@ -63,6 +63,12 @@ async function replyPage(ticketId: string, before?: string) {
 
 router.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 router.use(authenticateToken);
+router.get('/follow-up',async(req:AuthRequest,res:Response)=>{
+  if(!req.user)return res.status(401).json({error:'Unauthorized'});
+  if(req.user.billingOnly||req.impersonation||req.headers['x-impersonation']!==undefined)return res.status(403).json({code:'SUPPORT_FOLLOWUP_DIRECT_SESSION_REQUIRED'});
+  if(req.body!=null&&(typeof req.body!=='object'||Array.isArray(req.body)||Object.keys(req.body).length)||['x-tenant-id','x-assignee-id','x-user-id'].some(k=>req.headers[k]!==undefined))return res.status(400).json({code:'SUPPORT_FOLLOWUP_INPUT'});
+  const result=await writes.followup(req.user,req.query);return res.status(result.status).json(result.body);
+});
 router.get('/assigned',async(req:AuthRequest,res:Response)=>{
   if(!req.user)return res.status(401).json({error:'Unauthorized'});
   if(Object.keys(req.query).some(key=>key!=='after'))return res.status(400).json({error:'Unexpected assigned queue selector'});

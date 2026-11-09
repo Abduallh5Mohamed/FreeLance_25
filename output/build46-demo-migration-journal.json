@@ -1,0 +1,24 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build46-return-plan.json",
+  "sections": [
+    {
+      "file": "20261018_11_schedules_attendance_records.sql",
+      "start": "SET @has_sessions =",
+      "end": "-- -----------------------------------------------------------------------------\n-- Foreign keys",
+      "hash": "e46b7125cad4051e3a4a2a6a544f6b4b0b20b2ec1e6cddd4959204b0219816c4",
+      "completed": 11,
+      "total": 11
+    },
+    {
+      "file": "20261107_01_course_return_plans.sql",
+      "start": null,
+      "end": null,
+      "hash": "5a71c68f81c03b75205292038cafcb3c27a8e474bdcce2844e072598cdd5ac29",
+      "completed": 3,
+      "total": 3
+    }
+  ],
+  "finished_at": "2026-11-07T22:03:07.587Z",
+  "return_storage_ready": true
+}

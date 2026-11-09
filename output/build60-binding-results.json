@@ -1,0 +1,9 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "passed": 2,
+  "checks": [
+    "New nullable responsibility column grants nothing; existing synthetic assignment is hidden before explicit teacher renewal",
+    "Actual responsible teacher confirms assignment version and binder; correct assignee regains only explicit scope"
+  ],
+  "limits": "Demo-only additive column, no inferred/backfilled grants. Rerun verifies retained final binding instead of repeating renewal."
+}

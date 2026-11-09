@@ -1,0 +1,21 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "browser": "157.0.8103.38",
+  "checks": [
+    {
+      "check": "actual owner screen loads eligible record and paired group/course, requires explicit fresh preview and confirmation",
+      "pass": true
+    },
+    {
+      "check": "real MySQL commit followed by browser lost ACK and reload recovers with GET only, one POST and cleared opaque marker",
+      "pass": true
+    },
+    {
+      "check": "explicit list refresh excludes the completed original row; native DB has one offline configuration and no login account",
+      "pass": true
+    }
+  ],
+  "posts": 1,
+  "authentication": "Existing real API-login session reused; no new browser login or rate-limit bypass.",
+  "limits": "Synthetic desktop Chrome, not independent human, mobile, load, branch or provider acceptance."
+}

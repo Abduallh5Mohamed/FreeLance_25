@@ -1,0 +1,31 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build53-account-link.json",
+  "sections": [
+    {
+      "file": "20261017_07_identity_otp.sql",
+      "start": null,
+      "end": null,
+      "hash": "66554fc9a6974204f2e1f27147436cddfadac080671bbba1b4eb6f1451776afd",
+      "completed": 5,
+      "total": 5
+    },
+    {
+      "file": "20261018_02_otp_challenge_submission.sql",
+      "start": null,
+      "end": null,
+      "hash": "d56f9c66deccd86070b24521783efa54924b0e19556e142f7d365756737ddea6",
+      "completed": 10,
+      "total": 10
+    },
+    {
+      "file": "20261108_02_student_account_link.sql",
+      "start": null,
+      "end": null,
+      "hash": "6b9aa957666ae0230dc4988db50a69ee7af8e9ead22f09a996f622d1a4dd7aac",
+      "completed": 2,
+      "total": 2
+    }
+  ],
+  "finished_at": "2026-11-08T13:20:34.960Z"
+}

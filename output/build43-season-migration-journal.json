@@ -1,0 +1,25 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build43-season.json",
+  "sections": [
+    {
+      "file": "20261021_03_academic_periods.sql",
+      "hash": "aafe81608a4560cf5a2f99866346d1737827396d637a13178765ac8d6e958bb3",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261023_03_course_publication.sql",
+      "hash": "4d8e000cc5ab73587d9d0e30b024c0f84759a649c157e6b7da53e72162d80d2a",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261107_04_season_course_reuse.sql",
+      "hash": "a982cefd281b42037c058a7f639dff9f305971a7159f41e96bce1a709b0eaaed",
+      "completed": 1,
+      "total": 1
+    }
+  ],
+  "finished_at": "2026-11-07T18:36:08.586Z"
+}

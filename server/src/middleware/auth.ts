@@ -153,6 +153,14 @@ async function resolvePrincipal(claims: TokenClaims, req: Request, repository: P
             return { ok: false, failure: revoked('Session revoked') };
         }
         liveRole = identity.role ?? claims.role;
+        if (identity.center_account !== undefined && ![0,1,false,true].includes(identity.center_account)) return { ok: false, failure: revoked('Invalid account boundary') };
+        if (identity.center_account === true || identity.center_account === 1) {
+            const path = (req.originalUrl || req.url || '').split('?')[0];
+            const allowed = path === '/api/auth/me' || path === '/api/auth/logout'
+                || /^\/api\/tenants\/me\/catalog\/team\//.test(path)
+                || /^\/api\/support-tickets(?:\/|$)/.test(path);
+            if (liveRole !== 'staff' || !allowed) return { ok: false, failure: { status: 403, body: { code: 'CENTER_ACCOUNT_ONLY', error: 'Use the scoped center work portal' } } };
+        }
     } else if (claims.role === 'staff') {
         const staffIdentity = await repository.findStaffIdentity(claims.id);
         if (!isStaffIdentityLive(staffIdentity, Number(claims.tv || 0))) {
@@ -316,6 +324,7 @@ export const createAuthenticateToken = (repository: PrincipalRepository = defaul
             const decoded = validateClaims(jwt.verify(token, getJwtSecret(), verifyOptions)) as TokenClaims;
             const outcome = await resolvePrincipal(decoded, req, repository);
             if (!outcome.ok) {
+                if (outcome.failure.body.code === 'CENTER_ACCOUNT_ONLY') res.set('Cache-Control', 'no-store');
                 return res.status(outcome.failure.status).json(outcome.failure.body);
             }
             req.user = outcome.user;
@@ -353,6 +362,7 @@ export const createOptionalAuth = (repository: PrincipalRepository = defaultPrin
                 const decoded = validateClaims(jwt.verify(token, getJwtSecret(), verifyOptions)) as TokenClaims;
                 const outcome = await resolvePrincipal(decoded, req, repository);
                 if (!outcome.ok) {
+                    if (outcome.failure.body.code === 'CENTER_ACCOUNT_ONLY') res.set('Cache-Control', 'no-store');
                     return res.status(outcome.failure.status).json(outcome.failure.body);
                 }
                 req.user = outcome.user;

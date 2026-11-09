@@ -1,0 +1,43 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "browser": "157.0.8103.38",
+  "checks": [
+    {
+      "check": "create actual Chrome UI commit, lost ACK, reload GET receipt and explicit fresh list without duplicate write",
+      "pass": true
+    },
+    {
+      "check": "revise actual Chrome UI commit, lost ACK, reload GET receipt and explicit fresh list without duplicate write",
+      "pass": true
+    },
+    {
+      "check": "archive actual Chrome UI commit, lost ACK, reload GET receipt and explicit fresh list without duplicate write",
+      "pass": true
+    }
+  ],
+  "operations": [
+    {
+      "kind": "create",
+      "operation_id": "121c6751-6039-4717-8aaf-a2f71bce889f",
+      "template_id": "b91d7843-8249-4c4f-b2a1-20a8a83b4680",
+      "revision": 1
+    },
+    {
+      "kind": "revise",
+      "operation_id": "4566b4ec-526d-4c1a-a456-2d435328bfa0",
+      "template_id": "b91d7843-8249-4c4f-b2a1-20a8a83b4680",
+      "revision": 2
+    },
+    {
+      "kind": "archive",
+      "operation_id": "0ea777de-9d6d-4a2a-b53a-c3a6b82eb79b",
+      "template_id": "b91d7843-8249-4c4f-b2a1-20a8a83b4680",
+      "revision": 2
+    }
+  ],
+  "final": {
+    "status": "archived",
+    "revisions": 2
+  },
+  "limits": "Synthetic desktop Chrome/material metadata only. Original audit is unsealed; no source DB/provider/device/load acceptance."
+}

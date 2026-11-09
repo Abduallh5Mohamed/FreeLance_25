@@ -1025,3 +1025,15 @@ test('support ticket handlers surface a storage failure as 500', async () => {
     assert.equal((await api(h, 'GET', '/api/support-tickets/mine', sign(userA))).status, 500);
   });
 });
+
+test('follow-up HTTP mount rechecks real JWT/grants, rejects selectors and fails closed without its schema', async () => {
+  await withState(seedTickets, async h => {
+    const path='/api/support-tickets/follow-up';
+    assert.equal((await api(h,'GET',path,null)).status,401);
+    const denied=await api(h,'GET',path,sign(userA));assert.equal(denied.status,404);assert.equal(denied.body.code,'SUPPORT_FOLLOWUP_NOT_FOUND');
+    assert.equal((await api(h,'GET',path+'?assigned_to=foreign',sign(supportAdmin))).status,400);
+    assert.equal((await api(h,'GET',path,sign(supportAdmin),undefined,{'x-assignee-id':'foreign'})).status,400);
+    const missing=await api(h,'GET',path,sign(supportAdmin));assert.equal(missing.status,503);assert.equal(missing.body.code,'SUPPORT_FOLLOWUP_UNAVAILABLE');
+    const response=await fetch(h.base+path,{headers:{Authorization:'Bearer '+sign(supportAdmin)}});assert.equal(response.headers.get('cache-control'),'no-store');await response.arrayBuffer();
+  });
+});

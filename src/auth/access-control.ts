@@ -106,12 +106,12 @@ const ROUTE_CAPABILITY: Array<{ matches: (path: string) => boolean; capability: 
   { matches: (path) => path === "/student", capability: "dashboard.student.view" },
   { matches: (path) => path === "/registration-requests", capability: "registration.manage" },
   { matches: (path) => ["/students", "/offline-students", "/student-barcodes", "/student-reports", "/instructor-students"].includes(path), capability: "student.read" },
-  { matches: (path) => ["/courses", "/subscriptions", "/course-content", "/teacher-content-manager"].includes(path), capability: "course.manage" },
+  { matches: (path) => ["/courses", "/subscriptions", "/course-content", "/teacher-content-manager", "/teacher-workspace"].includes(path), capability: "course.manage" },
   { matches: (path) => ["/grades", "/groups"].includes(path), capability: "group.manage" },
   { matches: (path) => ["/attendance", "/barcode-attendance", "/attendance-log", "/online-meeting"].includes(path), capability: "attendance.manage" },
   { matches: (path) => ["/fees", "/student-payments"].includes(path), capability: "billing.manage" },
   { matches: (path) => ["/messages", "/chat-assistant", "/student-chat", "/student-messages", "/student-ai-chat"].includes(path), capability: "message.use" },
-  { matches: (path) => path === "/support", capability: "support.use" },
+  { matches: (path) => path === "/support" || path === "/center-work", capability: "support.use" },
   { matches: (path) => path === "/reports", capability: "report.view" },
   { matches: (path) => ["/expenses", "/imports", "/account-statement", "/profits"].includes(path), capability: "expense.manage" },
   { matches: (path) => path === "/staff", capability: "staff.manage" },
@@ -180,6 +180,10 @@ export function capabilityForPath(path: string): Capability | undefined {
 }
 
 export function canAccessRoute(profile: AccessProfile | null | undefined, path: string): boolean {
+  // Family authority is an owned verified link, not a teaching/admin capability.
+  // The page still requires an authenticated session; each child needs its own
+  // short-lived scoped token and live server proof.
+  if (path === "/family") return isLegacyRole(profile?.role) && !profile?.billing_only;
   if (profile?.role === "instructor" && profile.billing_only) {
     return ["/instructor-subscription", "/instructor-wallet", "/support"].includes(path);
   }

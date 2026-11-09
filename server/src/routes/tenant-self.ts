@@ -7,6 +7,20 @@ import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { createCourseUnitsRouter } from './course-units';
 import { createCourseLessonsRouter } from './course-lessons';
 import { createLessonPackageTemplatesRouter } from './lesson-package-templates';
+import { createLessonPreparationRouter } from './lesson-preparation';
+import { createTeachingWorkspaceRouter } from './teaching-workspace';
+import { createGroupSetupRouter } from './group-setup';
+import { createCenterOperationsRouter } from './center-operations';
+import { createCenterTeamRouter } from './center-team';
+import { createStudentOfflineSetupRouter } from './student-offline-setup';
+import { createStudentAccountLinkOwnerRouter } from './student-account-link';
+import { createQuestionGradingRouter } from './question-grading';
+import { createGradingRubricsRouter } from './grading-rubrics';
+import { createGradingControlRouter } from './grading-control';
+import { createSeasonCourseReuseRouter } from './season-course-reuse';
+import { createSeasonTemplateImportRouter } from './season-template-import';
+import { createCourseReturnPlanRouter } from './course-return-plan';
+import { createStudentReturnPlansRouter } from './student-return-plans';
 import type { MaterialFileIngestionConfig } from '../services/material-file-ingestion';
 import { createLocalizedTenantBrandingRouter as createTenantBrandingRouter } from './tenant-branding';
 import { createAcademicPeriodsRouter } from './academic-periods';
@@ -301,6 +315,20 @@ export const createTenantSelfRouter = (deps: TenantSelfDeps): Router => {
   // untouched.
   // -------------------------------------------------------------------------
   router.use('/catalog', createLessonPackageTemplatesRouter({ getConnection }));
+  router.use('/catalog', createLessonPreparationRouter({ getConnection }));
+  router.use('/catalog', createTeachingWorkspaceRouter({ getConnection }));
+  router.use('/catalog', createGroupSetupRouter({ getConnection }));
+  router.use('/catalog', createCenterOperationsRouter({ getConnection }));
+  router.use('/catalog', createCenterTeamRouter({ getConnection }));
+  router.use('/catalog', createStudentOfflineSetupRouter({ getConnection }));
+  router.use('/catalog', createStudentAccountLinkOwnerRouter({ getConnection, otpKey: () => process.env.OTP_HMAC_SECRET }));
+  router.use('/catalog', createQuestionGradingRouter({ getConnection }));
+  router.use('/catalog', createGradingRubricsRouter({ getConnection }));
+  router.use('/catalog', createGradingControlRouter({ getConnection }));
+  router.use('/catalog', createSeasonCourseReuseRouter({ getConnection }));
+  router.use('/catalog', createSeasonTemplateImportRouter({ getConnection }));
+  router.use('/catalog', createCourseReturnPlanRouter({ getConnection }));
+  router.use('/catalog', createStudentReturnPlansRouter({ getConnection }));
 
   // -------------------------------------------------------------------------
   // M2-B06 — private localized branding metadata (owner-only, additive)

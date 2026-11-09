@@ -1,0 +1,35 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "native group creation and scoped owner setup prove actual teacher, empty roster and separate concrete schedule source",
+      "pass": true
+    },
+    {
+      "check": "native offline create and explicit course selection yield no account deficit or login; next-session fixture is read as concrete evidence only",
+      "pass": true
+    },
+    {
+      "check": "actual resolution/atomic commit/replay writes one row only; no account/group/course assignment; changed-payload key conflicts",
+      "pass": true
+    },
+    {
+      "check": "existing-value import collision rejects entire batch and leaves selected group unchanged",
+      "pass": true
+    },
+    {
+      "check": "native online account creation is separate from import and does not silently grant a course; review reports that remaining action",
+      "pass": true
+    },
+    {
+      "check": "new account can login and select its actual space while assigned-course list remains empty without explicit enrollment policy",
+      "pass": true
+    },
+    {
+      "check": "foreign owner and learner cannot read owner setup or import; group selector cannot expand import contract",
+      "pass": true
+    }
+  ],
+  "group": "ee6d5629-26ff-4773-ae77-f7b207026740",
+  "limits": "Synthetic schedule fixture, real group/student/import/login engines. No OTP/provider, account-import merge, automatic online assignment, independent human handover or production acceptance."
+}

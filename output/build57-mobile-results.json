@@ -1,0 +1,11 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "passed": 2,
+  "viewport": "390x844",
+  "catalog_writes": 0,
+  "checks": [
+    "Actual review readable within mobile panel without horizontal overflow; no catalog writes",
+    "Collapsing review unmounts and removes private evidence"
+  ],
+  "limits": "Headless Chrome viewport smoke, not real mobile-device or complete-page accessibility/load acceptance"
+}

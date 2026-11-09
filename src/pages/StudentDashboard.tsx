@@ -16,6 +16,7 @@ import { AnimatedSection } from "@/components/AnimatedSection";
 import { GlassmorphicCard } from "@/components/GlassmorphicCard";
 import { FloatingParticles } from "@/components/FloatingParticles";
 import { AnimatedCounter } from "@/components/AnimatedCounter";
+import { StudentReturnPlans } from "@/features/catalog/StudentReturnPlans";
 
 const StudentDashboard = () => {
   useScreenRecordingPrevention(); // Prevent screen recording
@@ -224,6 +225,7 @@ const StudentDashboard = () => {
       <StudentHeader />
 
       <div className="w-full px-3 xs:px-4 sm:px-6 md:px-8 lg:px-12 xl:px-16 py-3 xs:py-4 sm:py-5 md:py-6 lg:py-8 relative z-10 max-w-[100vw]">
+        <StudentReturnPlans />
         {/* Student Profile Section */}
         <AnimatedSection>
           <GlassmorphicCard className="mb-4 md:mb-6 lg:mb-8">

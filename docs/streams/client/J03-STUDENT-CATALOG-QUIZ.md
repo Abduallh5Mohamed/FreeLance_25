@@ -1,5 +1,7 @@
 # J02/J03 — student catalog quiz UI (BUILD-26)
 
+BUILD-55 continuation (2026-11-08): actual isolated-demo MySQL/HTTP/Chrome journey and lost-ACK/reload recovery now verified; older schema/browser-pending statements below are historical for this demo only. UTC DATETIME values are selected as text before ISO conversion; catalog start uses whole seconds to match persistence. Quiz operation deadline releases stalled transports even when they ignore AbortSignal, with no automatic write replay and confirmed submit preserved on failed refresh. Question answer keys/private binding stay hidden; essay remains pending and no lesson completion is inferred. Publication usage schema applied to demo after snapshot; activation also created assignment_submissions, disclosed in [report](../../agent-context/BUSINESS-IMPLEMENTATION-2026-11-08-BUILD-55.md). Backend157/frontend2271/types/build pass; providers, production/load/mobile/real expiry/two-commit races are not accepted.
+
 Local implementation; real schema/database/browser/load acceptance remains open.
 Backend authority: [durable attempts](../server/J03-CATALOG-EXAM-ATTEMPTS.md).
 

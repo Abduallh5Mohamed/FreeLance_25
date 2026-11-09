@@ -1,0 +1,30 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "native owner creates two independent users-table center-only accounts; exact-key replay cannot change password; zero tenant teaching/platform/resource-membership grants; generic finance/group/staff APIs denied by durable account boundary",
+      "pass": true
+    },
+    {
+      "check": "fresh member/branch proofs reject another member selector, another branch/group, owner surface, legacy staff namespace and forbidden financial permission",
+      "pass": true
+    },
+    {
+      "check": "native delegated attendance reuses original canonical engine and atomic audit; one keyed mark/replay, foreign branch and missing mark permission refused",
+      "pass": true
+    },
+    {
+      "check": "owner-defined overdue task, branch-checked assignment/transfer, old assignee loses task, stale version409, new assignee start/replay/resolve with revocation of old token after scope edit",
+      "pass": true
+    },
+    {
+      "check": "explicit retirement serializes with the original actor authority and fences late keyed writes without deleting/undoing an already committed operation",
+      "pass": true
+    },
+    {
+      "check": "permission removal, suspension, password reset and reactivation use fresh versions and invalidate old sessions; final A restored explicitly with independent private password",
+      "pass": true
+    }
+  ],
+  "limits": "Actual native users/login/routers/MySQL; synthetic accounts and schedule fixtures. No global teaching/platform/finance grants, providers or original credential changes. Not human handover/load/two-commit race/production acceptance."
+}

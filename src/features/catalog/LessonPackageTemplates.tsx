@@ -3,12 +3,14 @@ import { Button } from '@/components/ui/button';
 import { subscribeSessionChange } from '@/lib/session-events';
 import { readCourseSessionPrincipal } from './course-management';
 import { LessonPackageSources } from './LessonPackageSources';
+import { LessonPublicationReview } from './LessonPublicationReview';
 import { lessonPackageReader, type PackageSnapshot } from './lesson-package-preview';
 import { LessonTemplateTiming } from './LessonTemplateTiming';
 import { type TimingChoice } from './lesson-template-timing';
 import {
   createTemplateApplication, createTemplateLibrary, initialTemplateApplication, initialTemplateLibrary,
   templateApplicationTransport, templateLibraryTransport, type ApplicationReview, type TemplateRevisionSummary,
+  templateApplicationIntentStore, templateLibraryIntentStore,
   type TemplateSummary,
 } from './lesson-package-templates';
 import type { PackageKind } from './lesson-package-preview';
@@ -24,6 +26,10 @@ function subscribePrivateSession(listener: () => void) {
   return () => { unsubscribe(); window.removeEventListener('storage', storage); };
 }
 const rowKey = (row: Selection) => row.kind + '/' + row.source_id;
+function applicationIntent(courseId:string){
+  const account=JSON.parse(localStorage.getItem('currentUser')??'null')?.id;
+  return templateApplicationIntentStore(sessionStorage,account,courseId);
+}
 
 function selectionRows(snapshot: PackageSnapshot) {
   return [
@@ -43,6 +49,7 @@ export function LessonPackageTemplates({ courseId, onLockChange = ignoreLock }: 
   const [panel, setPanel] = useState<'create' | 'revise' | 'apply' | null>(null);
   const [revising, setRevising] = useState<TemplateSummary | null>(null);
   const [destination, setDestination] = useState<Chosen | null>(null);
+  const [recoveryError,setRecoveryError]=useState(false);
   const libraryRef = useRef<ReturnType<typeof createTemplateLibrary> | null>(null);
   const lockedRef = useRef(false);
   const identityRef = useRef(principal());
@@ -54,7 +61,10 @@ export function LessonPackageTemplates({ courseId, onLockChange = ignoreLock }: 
   const canNavigate = () => { if (!identityRef.current || principal() !== identityRef.current) { onInvalidSession(); return false; } return !lockedRef.current; };
 
   useEffect(() => {
-    const controller = createTemplateLibrary({ ...templateLibraryTransport(courseId), readPrincipal: principal, subscribeSession: subscribePrivateSession });
+    let intent:ReturnType<typeof templateLibraryIntentStore>;
+    try{intent=templateLibraryIntentStore(sessionStorage,JSON.parse(localStorage.getItem('currentUser')??'null')?.id,courseId);}
+    catch{const unavailable=()=>{throw Error('Library recovery storage unavailable');};intent={read:unavailable,write:unavailable,clear:unavailable};}
+    const controller = createTemplateLibrary({ ...templateLibraryTransport(courseId), intent, readPrincipal: principal, subscribeSession: subscribePrivateSession });
     libraryRef.current = controller;
     const unsubscribe = controller.subscribe(next => {
       lockedRef.current = next.saving || next.uncertain || next.locked || next.phase === 'loading' || next.phase === 'session-ended';
@@ -63,7 +73,11 @@ export function LessonPackageTemplates({ courseId, onLockChange = ignoreLock }: 
       if (next.saved && next.phase === 'idle') { setPanel(null); setRevising(null); setDestination(null); }
       if (next.phase === 'session-ended') { setPanel(null); setRevising(null); setDestination(null); }
     });
-    void controller.refresh();
+    try{
+      const pending=applicationIntent(courseId).read();
+      if(pending){setDestination({unitId:pending.unit_id,lessonId:pending.lesson_id,title:'حصة عملية تطبيق محفوظة'});setPanel('apply');controller.setLocked(true);}
+      else void controller.refresh();
+    }catch{setRecoveryError(true);controller.setLocked(true);}
     return () => { unsubscribe(); controller.dispose(); libraryRef.current = null; onLockChange(false); };
   }, [courseId, onLockChange]);
 
@@ -77,15 +91,17 @@ export function LessonPackageTemplates({ courseId, onLockChange = ignoreLock }: 
   const frozen = library.saving || library.uncertain || library.locked || library.phase === 'loading' || library.phase === 'session-ended';
   if (library.phase === 'session-ended') return <p role="alert">تغيرت الجلسة وأُخفيت بيانات القوالب. افتح الدورة من جديد.</p>;
 
-  return <section dir="rtl" className="space-y-3 rounded border p-3 text-sm">
+  return <section dir="rtl" aria-label="مكتبة قوالب الحصص" className="space-y-3 rounded border p-3 text-sm">
+    <LessonPublicationReview courseId={courseId} />
     <div className="flex items-center justify-between gap-2">
       <h4 className="font-semibold">قوالب الحصص المحفوظة</h4>
       <Button type="button" variant="outline" disabled={library.phase === 'loading' || frozen} onClick={() => { void libraryRef.current?.refresh(); }}>تحديث القوالب</Button>
     </div>
     <p>القالب مرجع خاص بهذه الدورة فقط، ويتطلب مراجعة جديدة قبل كل تطبيق. لا ينسخ المحتوى ولا يغيّر الجمهور الأصلي.</p>
+    {recoveryError?<p role="alert">تعذر قراءة سياق عملية التطبيق المحفوظ؛ الكتابة متوقفة حتى يمكن التحقق من نتيجة العملية.</p>:null}
     {library.message ? <p role="alert">{library.message}</p> : null}
-    {library.uncertain ? <div role="alert"><p>نتيجة الحفظ غير محسومة. لا تعِد الكتابة ولا تغلق السياق قبل التحقق.</p><Button type="button" disabled={library.saving} onClick={() => { void libraryRef.current?.recover(); }}>التحقق من عملية الحفظ</Button><p>مغادرة الصفحة لا تلغي كتابة وصلت للخادم، وسياق الاستعلام الحالي محفوظ في الذاكرة فقط.</p></div> : null}
-    {library.saved ? <p role="status">حُفظ «{library.saved.name}» كمراجعة رقم {library.saved.head_revision}. راجع القائمة قبل التطبيق.</p> : null}
+    {library.uncertain ? <div role="alert"><p>{library.saved?'الحفظ مؤكد؛ تنظيف علامة الاسترجاع لم يكتمل.':'نتيجة الحفظ غير محسومة.'} لا تعِد الكتابة قبل التحقق.</p><Button type="button" disabled={library.saving} onClick={() => { void libraryRef.current?.recover(); }}>التحقق من عملية الحفظ</Button><p>معرف العملية ونوعها والعدادات فقط محفوظة في جلسة هذا المتصفح لاسترجاع الإيصال؛ لا أسماء أو محتوى أو رموز دخول.</p></div> : null}
+    {library.saved ? <p role="status">{library.saved.kind==='archive'?'تأكدت أرشفة':'تأكد حفظ'} «{library.saved.name}» — المراجعة {library.saved.head_revision}. هذه نتيجة تاريخية؛ حدّث القائمة لمعرفة الحالة الحالية.</p> : null}
     {library.phase === 'error' ? <p role="alert">تعذر تحميل القوالب. أعد المحاولة لاحقًا.</p> : null}
     {library.phase === 'ready' && !library.templates.length ? <p>لا توجد قوالب بعد.</p> : null}
     <ul className="space-y-2">
@@ -199,10 +215,13 @@ export function TemplateApplication({ courseId, destination, templates, onClose,
   const locked = useRef(false);
 
   useEffect(() => {
+    let intent:ReturnType<typeof templateApplicationIntentStore>;
+    try{intent=applicationIntent(courseId);}catch{intent={read:()=>{throw Error('Storage unavailable');},write:()=>{throw Error('Storage unavailable');},clear:()=>{throw Error('Storage unavailable');}};}
     const controller = createTemplateApplication({
       ...templateApplicationTransport(courseId, destination.unitId, destination.lessonId),
       readPrincipal: principal, subscribeSession: subscribePrivateSession,
       newOperationId: () => crypto.randomUUID(),
+      intent,destination:{course_id:courseId,unit_id:destination.unitId,lesson_id:destination.lessonId},
     });
     appRef.current = controller;
     const unsubscribe = controller.subscribe(next => {
@@ -240,7 +259,7 @@ export function TemplateApplication({ courseId, destination, templates, onClose,
   const canEdit = () => !locked.current && principal() !== null;
   if (state.phase === 'session-ended') return <p role="alert">تغيرت الجلسة وأُخفيت المراجعة والمصادر.</p>;
 
-  if (!templates.length) return <div className="rounded border p-2"><p>لا توجد قوالب نشطة للتطبيق.</p><Button type="button" variant="outline" disabled={frozen} onClick={() => { if (canEdit()) onClose(); }}>إغلاق</Button></div>;
+  if (!templates.length&&!state.operationId&&state.phase!=='uncertain') return <div className="rounded border p-2"><p>لا توجد قوالب نشطة للتطبيق.</p><Button type="button" variant="outline" disabled={frozen} onClick={() => { if (canEdit()) onClose(); }}>إغلاق</Button></div>;
 
   return <div className="space-y-2 rounded border p-2">
     <div className="flex items-center justify-between gap-2"><h5 className="font-semibold">تطبيق قالب على «{destination.title}»</h5>
@@ -259,7 +278,7 @@ export function TemplateApplication({ courseId, destination, templates, onClose,
       <Button type="button" variant="outline" disabled={frozen || revisionLoading} onClick={() => { if (!canEdit() || revisionLoading) return; reset(); setRevisionNumber(null); setCursor(null); setRevisionRequest(old => old + 1); }}>أول صفحة مراجعات وتحديث</Button>
       <Button type="button" variant="outline" disabled={frozen || revisionLoading || !nextCursor} onClick={() => { if (!canEdit() || revisionLoading || !nextCursor) return; reset(); setRevisionNumber(null); setCursor(nextCursor); }}>المراجعات التالية</Button>
     </div>
-    <p>اختيار المراجعة صريح من الصفحة الحالية. مغادرة الصفحة لا تلغي كتابة وصلت للخادم؛ سياق التحقق محفوظ في الذاكرة فقط.</p>
+    <p>اختيار المراجعة صريح من الصفحة الحالية. مغادرة الصفحة لا تلغي كتابة وصلت للخادم؛ معرّف الاسترجاع وسياقه المحدود محفوظان لهذه الدورة في جلسة المتصفح دون محتوى أو رمز دخول.</p>
     <LessonTemplateTiming value={timing} onChange={next => { if (!canEdit()) return; reset(); setTiming(next); }} review={review?.timing ?? null} disabled={frozen} />
     <Button type="button" disabled={!templateId || !revisionNumber || revisionLoading || revisionError || frozen} onClick={() => { if (!canEdit() || revisionLoading || revisionError || !revisionNumber || !revisions.some(row => row.revision_number === revisionNumber)) return; setConfirmed(false); void appRef.current?.review(templateId, revisionNumber, timing); }}>
       مراجعة التطبيق والتوقيت
@@ -281,13 +300,13 @@ export function TemplateApplication({ courseId, destination, templates, onClose,
         onClick={() => { if (!canEdit() || !confirmed) return; setConfirmed(false); void appRef.current?.apply(true); }}>تأكيد التطبيق والتوقيت</Button>
     </div> : null}
 
-    {state.phase === 'saved' && state.result ? <div role="status" className="rounded border p-2">
+    {state.result ? <div role="status" className="rounded border p-2">
       <p>تم حفظ العملية بأمان: أُضيف {state.result.created}، وموجود مسبقًا {state.result.existing}.</p>
-      <p>وقت الإتاحة الآن: {state.result.timing.release_at ?? 'بلا توقيت'} ({state.result.timing.mode}).</p>
+      <p>وقت الإتاحة المثبت في إيصال العملية: {state.result.timing.release_at ?? 'بلا توقيت'} ({state.result.timing.mode}).</p>
       <p>حدّث أقسام الحصة والمقارنة؛ هذه النتيجة لا تدّعي تحديث القوائم المحلية.</p>
     </div> : null}
     {state.phase === 'uncertain' ? <div className="rounded border p-2">
-      <p role="alert">انقطعت استجابة الحفظ. لا تعد المحاولة؛ تحقق من سجل العملية أولًا.</p>
+      <p role="alert">{state.result?'الحفظ مؤكد؛ تعذر تنظيف علامة العملية. تحقق من الإيصال قبل كتابة أخرى.':'نتيجة الحفظ تحتاج التحقق. لا تعد المحاولة؛ استعلم عن سجل العملية أولًا.'}</p>
       <Button type="button" disabled={busy} onClick={() => { void appRef.current?.recover(); }}>التحقق من نتيجة العملية دون إعادة الحفظ</Button>
     </div> : null}
     {state.message && !['saved', 'uncertain'].includes(state.phase) ? <p role="alert">{state.message}</p> : null}

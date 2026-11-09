@@ -1,0 +1,218 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "mysql": "8.0.44",
+  "final_demo_plan": {
+    "version": 5,
+    "status": "withdrawn",
+    "revisions": 5,
+    "receipts": 5,
+    "completions": 0
+  },
+  "plans": [
+    {
+      "name": "student active head page",
+      "steps": [
+        {
+          "table": "course_return_plans",
+          "type": "ref",
+          "key": "uq_return_plan_scope",
+          "possible_keys": "PRIMARY,uq_return_plan_scope,ix_return_plan_student",
+          "estimated_rows": 1,
+          "extra": "Using index condition; Using where; Using filesort"
+        }
+      ]
+    },
+    {
+      "name": "owner attendance evidence",
+      "steps": [
+        {
+          "table": "ss",
+          "type": "ref",
+          "key": "idx_schedule_sessions_tenant_branch",
+          "possible_keys": "idx_schedule_sessions_tenant_start,idx_schedule_sessions_tenant_group,idx_schedule_sessions_tenant_branch",
+          "estimated_rows": 6,
+          "extra": "Using index condition; Using where; Using filesort"
+        },
+        {
+          "table": "a",
+          "type": "eq_ref",
+          "key": "uq_attendance_student_session",
+          "possible_keys": "uq_attendance_student_session,idx_attendance_tenant_session,idx_attendance_tenant_student,idx_attendance_state",
+          "estimated_rows": 1,
+          "extra": "Using where"
+        }
+      ]
+    }
+  ],
+  "indexes": [
+    {
+      "table_name": "attendance_records",
+      "index_name": "idx_attendance_state",
+      "column_name": "session_id",
+      "position": 1
+    },
+    {
+      "table_name": "attendance_records",
+      "index_name": "idx_attendance_state",
+      "column_name": "state",
+      "position": 2
+    },
+    {
+      "table_name": "attendance_records",
+      "index_name": "idx_attendance_tenant_session",
+      "column_name": "tenant_id",
+      "position": 1
+    },
+    {
+      "table_name": "attendance_records",
+      "index_name": "idx_attendance_tenant_session",
+      "column_name": "session_id",
+      "position": 2
+    },
+    {
+      "table_name": "attendance_records",
+      "index_name": "idx_attendance_tenant_student",
+      "column_name": "tenant_id",
+      "position": 1
+    },
+    {
+      "table_name": "attendance_records",
+      "index_name": "idx_attendance_tenant_student",
+      "column_name": "student_id",
+      "position": 2
+    },
+    {
+      "table_name": "attendance_records",
+      "index_name": "PRIMARY",
+      "column_name": "id",
+      "position": 1
+    },
+    {
+      "table_name": "attendance_records",
+      "index_name": "uq_attendance_student_session",
+      "column_name": "session_id",
+      "position": 1
+    },
+    {
+      "table_name": "attendance_records",
+      "index_name": "uq_attendance_student_session",
+      "column_name": "student_id",
+      "position": 2
+    },
+    {
+      "table_name": "course_return_plans",
+      "index_name": "ix_return_plan_student",
+      "column_name": "tenant_id",
+      "position": 1
+    },
+    {
+      "table_name": "course_return_plans",
+      "index_name": "ix_return_plan_student",
+      "column_name": "enrollment_id",
+      "position": 2
+    },
+    {
+      "table_name": "course_return_plans",
+      "index_name": "ix_return_plan_student",
+      "column_name": "status",
+      "position": 3
+    },
+    {
+      "table_name": "course_return_plans",
+      "index_name": "ix_return_plan_student",
+      "column_name": "id",
+      "position": 4
+    },
+    {
+      "table_name": "course_return_plans",
+      "index_name": "PRIMARY",
+      "column_name": "id",
+      "position": 1
+    },
+    {
+      "table_name": "course_return_plans",
+      "index_name": "uq_return_plan_scope",
+      "column_name": "tenant_id",
+      "position": 1
+    },
+    {
+      "table_name": "course_return_plans",
+      "index_name": "uq_return_plan_scope",
+      "column_name": "course_id",
+      "position": 2
+    },
+    {
+      "table_name": "course_return_plans",
+      "index_name": "uq_return_plan_scope",
+      "column_name": "enrollment_id",
+      "position": 3
+    },
+    {
+      "table_name": "schedule_sessions",
+      "index_name": "idx_schedule_sessions_tenant_branch",
+      "column_name": "tenant_id",
+      "position": 1
+    },
+    {
+      "table_name": "schedule_sessions",
+      "index_name": "idx_schedule_sessions_tenant_branch",
+      "column_name": "branch_id",
+      "position": 2
+    },
+    {
+      "table_name": "schedule_sessions",
+      "index_name": "idx_schedule_sessions_tenant_branch",
+      "column_name": "starts_at",
+      "position": 3
+    },
+    {
+      "table_name": "schedule_sessions",
+      "index_name": "idx_schedule_sessions_tenant_group",
+      "column_name": "tenant_id",
+      "position": 1
+    },
+    {
+      "table_name": "schedule_sessions",
+      "index_name": "idx_schedule_sessions_tenant_group",
+      "column_name": "group_id",
+      "position": 2
+    },
+    {
+      "table_name": "schedule_sessions",
+      "index_name": "idx_schedule_sessions_tenant_group",
+      "column_name": "starts_at",
+      "position": 3
+    },
+    {
+      "table_name": "schedule_sessions",
+      "index_name": "idx_schedule_sessions_tenant_start",
+      "column_name": "tenant_id",
+      "position": 1
+    },
+    {
+      "table_name": "schedule_sessions",
+      "index_name": "idx_schedule_sessions_tenant_start",
+      "column_name": "starts_at",
+      "position": 2
+    },
+    {
+      "table_name": "schedule_sessions",
+      "index_name": "PRIMARY",
+      "column_name": "id",
+      "position": 1
+    },
+    {
+      "table_name": "schedule_sessions",
+      "index_name": "uq_schedule_session_series_start",
+      "column_name": "series_id",
+      "position": 1
+    },
+    {
+      "table_name": "schedule_sessions",
+      "index_name": "uq_schedule_session_series_start",
+      "column_name": "starts_at",
+      "position": 2
+    }
+  ],
+  "limits": "EXPLAIN on tiny synthetic fixture, not measured throughput/latency, production cardinality, concurrent revocation or isolation acceptance."
+}

@@ -1,0 +1,15 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "actual SQL audit_events failure rolls back users/member/branch grants/audit/receipt through original router transaction",
+      "pass": true
+    },
+    {
+      "check": "actual SQL center_team_operations failure rolls back users/member/branch grants/audit/receipt through original router transaction",
+      "pass": true
+    }
+  ],
+  "persisted_probe_changes": 0,
+  "limits": "Original router and real SQL with injected owner principal and exact SQL-error fault; proves atomic rollback, not native identity acceptance or commit uncertainty/racing commits/load."
+}

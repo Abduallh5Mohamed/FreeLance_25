@@ -1,0 +1,6 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "passed": 1,
+  "branch_rows": 0,
+  "check": "Actual native branch create returns error on missing audit table and new atomic writer rolls back its INSERT; no retry or synthetic audit"
+}

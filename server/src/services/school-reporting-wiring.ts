@@ -261,7 +261,7 @@ const EXAM_IDS_LIMIT = 500;
 /**
  * Production authority for the manual-grading router. It mirrors the explicit
  * server-derived teaching relations already used by `routes/exam-versions.ts`:
- * tenant owner, course instructor, and an instructor of a group of that course.
+ * the live responsible course instructor. Institution ownership is not a grant.
  * Branch membership is NEVER a grant (it is only a constraint elsewhere in the
  * product); role labels are never authority. Reads only.
  */
@@ -272,44 +272,23 @@ export const createSqlExamManualGradingAuthority = (
     const examCourse = (examId: string) => db.queryOne<{ id: string; tenant_id: string | null; instructor_id: string | null }>(
         `SELECT c.id, c.tenant_id, c.instructor_id
            FROM exams e INNER JOIN courses c ON c.id = e.course_id
-          WHERE e.id = ? LIMIT 1`,
+          WHERE e.id = ? AND c.is_active=1 AND NOT EXISTS (SELECT 1 FROM admin_user_roles platform_role WHERE platform_role.user_id=c.instructor_id) LIMIT 1`,
         [examId],
     );
-    const instructorTeachesCourse = async (tenantId: string, userId: string, courseId: string): Promise<boolean> => {
-        const row = await db.queryOne<{ id: string }>(
-            'SELECT g.id FROM `groups` g INNER JOIN courses c ON c.id = g.course_id WHERE g.course_id=? AND g.instructor_id=? AND c.tenant_id=? LIMIT 1',
-            [courseId, userId, tenantId],
-        );
-        return Boolean(row);
-    };
     const authorizeExam = async (scope: ManualGradingScope, examId: string): Promise<ExamAuthorityDecision> => {
         const course = await examCourse(examId);
         if (!course || course.tenant_id !== scope.tenantId) return 'not_found';
         const authority = await loadAuthority(scope.userId, scope.tenantId);
         if (!authority || !STAFF_AUTHORITIES.has(authority.authority)) return 'forbidden';
-        if (authority.authority === 'owner') return 'ok';
         if (course.instructor_id === scope.userId) return 'ok';
-        if (await instructorTeachesCourse(scope.tenantId, scope.userId, course.id)) return 'ok';
         return 'forbidden';
     };
     const listAuthorizedExamIds = async (scope: ManualGradingScope): Promise<readonly string[]> => {
         const authority = await loadAuthority(scope.userId, scope.tenantId);
         if (!authority || !STAFF_AUTHORITIES.has(authority.authority)) return [];
-        if (authority.authority === 'owner') {
-            const rows = await db.query<{ id: string }>(
-                `SELECT e.id FROM exams e INNER JOIN courses c ON c.id = e.course_id
-                  WHERE c.tenant_id = ? ORDER BY e.id ASC LIMIT ?`,
-                [scope.tenantId, EXAM_IDS_LIMIT],
-            );
-            return rows.map((row) => String(row.id));
-        }
         const rows = await db.query<{ id: string }>(
-            `SELECT DISTINCT e.id FROM exams e
-               INNER JOIN courses c ON c.id = e.course_id
-               LEFT JOIN \`groups\` g ON g.course_id = c.id
-              WHERE c.tenant_id = ? AND (c.instructor_id = ? OR g.instructor_id = ?)
-              ORDER BY e.id ASC LIMIT ?`,
-            [scope.tenantId, scope.userId, scope.userId, EXAM_IDS_LIMIT],
+            'SELECT e.id FROM exams e INNER JOIN courses c ON c.id=e.course_id WHERE c.tenant_id=? AND c.instructor_id=? AND c.is_active=1 AND NOT EXISTS (SELECT 1 FROM admin_user_roles platform_role WHERE platform_role.user_id=c.instructor_id) ORDER BY e.id ASC LIMIT ?',
+            [scope.tenantId,scope.userId,EXAM_IDS_LIMIT],
         );
         return rows.map((row) => String(row.id));
     };
@@ -491,6 +470,9 @@ const withSchemaErrorResponses = (router: Router): Router => {
 const composeAuthenticate = (authenticate: RequestHandler, probe: SchemaReadinessProbe): RequestHandler => {
     const guard = readinessGuard(probe);
     return (req, res, next) => {
+        // Includes authentication/readiness failures before an inner route can
+        // set its own private response policy. No schema/provider bypass.
+        res.set('Cache-Control', 'no-store');
         authenticate(req, res, (error?: unknown) => {
             if (error) {
                 next(error);
@@ -544,6 +526,7 @@ export const createSchoolReportingRouters = (deps: SchoolReportingWiringDeps): S
         audit: examAuditSink,
     });
     const examManualGrading = createExamManualGradingRouter({
+        readOnly: true,
         store: examStore,
         authenticate,
         authority: createSqlExamManualGradingAuthority(db),

@@ -1,0 +1,15 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build59-rubrics.json",
+  "sections": [
+    {
+      "file": "20261108_02_grading_rubrics.sql",
+      "start": null,
+      "end": null,
+      "hash": "6a35ac195559d46bbda6acd093dfd1fe162d09b319580e07add416952668e17c",
+      "completed": 2,
+      "total": 2
+    }
+  ],
+  "finished_at": "2026-11-08T21:42:51.087Z"
+}

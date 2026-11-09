@@ -1,0 +1,36 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "context": {
+    "tenant_id": "fc7f5900-0fe4-41c9-94c0-a73bdd9355c0",
+    "source_course_id": "83489965-f884-4da1-86f6-44a9b47591f9",
+    "target_course_id": "400acaba-d271-4b23-99ba-4ca0434daa9a"
+  },
+  "unit": "43c6967c-8710-4be2-b1a0-7b9c9bae1115",
+  "lesson": "14a41e67-c8a0-4227-b1ec-fcdce458f9da",
+  "sourceMaterial": "18a082b9-ef50-4401-a0a1-a272f58a16eb",
+  "targetMaterial": "c2483170-37d3-47cf-a9c5-86cafb80eaf9",
+  "http": {
+    "template": "0c1df7cb-e31b-425b-b41f-924567c09018",
+    "revision": "30499239-b8d8-4fd9-818e-7668885ff4ad",
+    "operations": [
+      "a354bddb-08c2-47c8-bc3d-c14f316eb77a",
+      "2332d7ed-5abb-4c8e-a848-2da9f6d75372"
+    ]
+  },
+  "browser": {
+    "template": "80c52b2e-c936-4439-b30c-92736b24159c",
+    "revision": "7f9b3b61-7149-4f5b-9630-8570b8c50296"
+  },
+  "manual": {
+    "template": "ce796eb2-3279-4732-b849-d24fd776abcf",
+    "revision": "39f30e77-b317-47d2-8006-b4c23a7c005f"
+  },
+  "race": {
+    "template": "c70ec837-4882-4bf0-971e-355868b3a0a8",
+    "revision": "3b2c7e76-bb67-4c43-be8b-7815ebe9d20f",
+    "operations": [
+      "6055f40a-de45-44cc-b4fe-2c823615fdc9",
+      "d96940b5-4ca8-4d07-9fbc-2c31a9208c98"
+    ]
+  }
+}

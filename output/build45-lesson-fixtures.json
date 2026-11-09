@@ -1,0 +1,20 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "period": "713b5a5f-6bc7-4bf6-ab07-f6e8344287e9",
+  "course": "9bd1a6d8-3966-49cc-833f-3158fb907fad",
+  "unit": "6c1fdec2-8775-4eb5-aefc-18e9277b967c",
+  "httpLesson": "0232720e-90e1-4d08-9209-7fa78adb0436",
+  "browserLesson": "f905d3e1-51a8-4132-ad09-db2b1efc167e",
+  "prerequisite": "d0fda81d-3ce6-40f1-951b-7e3eb8fd63db",
+  "material": "bd6ed90b-ce53-43ce-89ff-b8312cbfea51",
+  "group": "74eb9a64-2f5f-4966-95a6-f132fe666961",
+  "enrollment": "85f87514-53b5-48d7-8e37-3ac316543109",
+  "courseOperation": "7e29f998-203a-4514-a557-a5450664a9bd",
+  "importOperation": "e34cc55a-4ef9-4cbb-a6f8-51774a79009c",
+  "applicationOperations": [
+    "a91474b1-41ab-411a-a0ed-542405014fa2",
+    "433cb8e8-59be-4c24-93a1-927372ce3d1d"
+  ],
+  "template": "384b07ee-827c-4854-85d4-2a2e7deb8ddd",
+  "studentPhone": "01000009006"
+}

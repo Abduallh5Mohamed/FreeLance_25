@@ -29,6 +29,7 @@ const navItems = [
   { label: 'طلبات الفيديو',     href: '/instructor-video-requests',   icon: GitPullRequest  },
   { label: 'تسجيل وطلبات الطلاب', href: '/instructor-students',       icon: Users           },
   { label: 'الدعم',             href: '/support',                     icon: Headphones      },
+  { label: 'متابعة الأسرة',     href: '/family',                      icon: Headphones      },
 ];
 
 export default function InstructorHeader({ instructorName = 'Instructor', walletBalance }: InstructorHeaderProps) {

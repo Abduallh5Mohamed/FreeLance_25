@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import Header from '@/components/Header';
+import { GroupSetup } from '@/features/groups/GroupSetup';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -340,6 +341,7 @@ const Groups = () => {
           </div>
         )}
 
+        <GroupSetup groups={state.rows.map(group => ({id:group.id,name:group.name}))} onEdit={id => controller.openEdit(id)} />
         <Card>
           <CardHeader>
             <CardTitle>قائمة المجموعات</CardTitle>

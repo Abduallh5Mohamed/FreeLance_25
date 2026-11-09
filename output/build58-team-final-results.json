@@ -1,0 +1,9 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "passed": 2,
+  "checks": [
+    "Final runtime passes actual attendance InnoDB/unique guards and canonical unchanged write; no duplicate record",
+    "Three native center users have durable boundary and zero teaching/platform/resource membership grants"
+  ],
+  "limits": "Synthetic final-state evidence, not a fresh replay of historical initial provisioning stages or production/load acceptance."
+}

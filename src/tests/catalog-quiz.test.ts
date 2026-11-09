@@ -225,6 +225,38 @@ test('aborted write acknowledgement is uncertain even when the transport resolve
         globalThis.clearTimeout = oldClear;
     }
 });
+for (const kind of ['recover', 'save', 'submit-refresh'] as const)
+test(`deadline retires stalled ${kind} transport even when it ignores cancellation`, async () => {
+    const h = fixture();
+    const oldSet = globalThis.setTimeout, oldClear = globalThis.clearTimeout;
+    let timeout = () => {};
+    try {
+        await h.controller.recover();
+        if (kind !== 'recover') await h.controller.start();
+        const wait = deferred();
+        if (kind === 'recover' || kind === 'submit-refresh') h.deps.recover = async () => wait.promise;
+        else { h.controller.edit(id(5), 'A'); h.deps.save = async () => wait.promise; }
+        (globalThis as any).setTimeout = (fn: () => void) => { timeout = fn; return 1; };
+        (globalThis as any).clearTimeout = () => {};
+        const pending = kind === 'save' ? h.controller.save() : kind === 'recover' ? h.controller.recover() : h.controller.submit();
+        // Let the confirmed submit enter its follow-up GET before its deadline.
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+        timeout();
+        for (let i = 0; i < 12; i++) await Promise.resolve();
+        assert.notEqual(h.controller.getState().phase, 'busy');
+        await pending;
+        assert.equal(h.controller.getState().phase, kind === 'save' ? 'uncertain' : 'error');
+        if (kind === 'submit-refresh') {
+            assert.equal(h.controller.getState().attempt?.status, 'graded');
+            assert.match(h.controller.getState().message!, /تم تأكيد التسليم/);
+        }
+        const state = h.controller.getState();
+        wait.resolve(kind === 'save' ? { ok: true, saved: 1 } : header());
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+        assert.deepEqual(h.controller.getState(), state);
+    } finally { h.controller.dispose(); globalThis.setTimeout = oldSet; globalThis.clearTimeout = oldClear; }
+});
+
 test('late save success after a session event cannot restore a private draft', async () => {
     const h = fixture();
     await h.controller.recover();

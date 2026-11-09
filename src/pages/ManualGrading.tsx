@@ -8,6 +8,8 @@ import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { CheckCircle2, Clock, Save, User, Image as ImageIcon } from "lucide-react";
 import Header from "@/components/Header";
+import { QuestionGrading } from '@/features/grading/QuestionGrading';
+import { AssignedGrading } from '@/features/grading/GradingAssignments';
 
 // Vite injects `import.meta.env` at build time; it is absent when this module
 // is imported outside Vite (isolated Node tests), so guard the read.
@@ -591,6 +593,8 @@ const ManualGrading = () => {
             <Header />
 
             <div className="container mx-auto p-6">
+                <QuestionGrading />
+                <AssignedGrading />
                 <Card className="mb-6">
                     <CardHeader>
                         <CardTitle className="text-2xl">تصحيح الأسئلة المقالية ورفع الدرجات</CardTitle>

@@ -1,0 +1,18 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "native owner creates/publishes four-kind frozen snapshot and pins it; actual selected student starts once and resumes same ID/deadline",
+      "pass": true
+    },
+    {
+      "check": "fixed student questions contain no answer keys/private binding; unrelated student and generic pinned start denied",
+      "pass": true
+    },
+    {
+      "check": "existing native grading engine awards three automatic points, leaves essay/final score pending and rejects duplicate terminal submit",
+      "pass": true
+    }
+  ],
+  "limits": "Synthetic native runtime, not production/load/deadline-expiry or two-commit race acceptance. No lesson completion inferred. Browser case reserved for actual UI."
+}

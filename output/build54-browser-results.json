@@ -1,0 +1,25 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "browser": "157.0.8103.38",
+  "checks": [
+    {
+      "check": "actual requester browser creates one committed ticket, loses ACK, reloads and recovers via GET without a second POST",
+      "pass": true
+    },
+    {
+      "check": "actual admin browser claims a ticket, loses ACK, reloads and reads immutable attempt/current assignment with one POST",
+      "pass": true
+    },
+    {
+      "check": "actual internal browser note is persisted privately and absent from the requester conversation and controls",
+      "pass": true
+    },
+    {
+      "check": "actual mine/needs-support follow-up with minimum zero hours opens current assigned ticket; source is last update, not SLA",
+      "pass": true
+    }
+  ],
+  "createPosts": 1,
+  "assignmentPosts": 1,
+  "limits": "Real cached HTTP-authenticated sessions reused; no new login form test. Actual local synthetic MySQL commits/GETs. No external notifications, second persistent operator, center staff, SLA/load/mobile or production acceptance."
+}

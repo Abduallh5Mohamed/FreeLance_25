@@ -1,6 +1,23 @@
 # J02 — private lesson-package templates and explicit destination timing (server)
 
-State: corrected locally in BUILD-34; independent/live acceptance remains separate. Migrations are FILE ONLY and were not applied.
+BUILD-44 update: selected library-storage prerequisites were applied only to the
+isolated synthetic demo. Library list/revision reads now validate exact library
+storage without unrelated reference-source gates; mutations/application keep
+their original full gates. Validated LIMIT lookahead is bound as a decimal
+string for actual MySQL/mysql2 compatibility. Separate season imports may retain
+an old-course source_lesson_id as historical provenance; it never grants access
+or names an application destination. Imported refs are re-proven target-course
+sources and use the existing content hash/shape. See
+[import contract](J10-SEASON-TEMPLATE-IMPORT.md) and
+[BUILD-44](../../agent-context/BUSINESS-IMPLEMENTATION-2026-11-07-BUILD-44.md).
+
+Historical BUILD-34 had file-only migrations; selected storage/package sections
+were later applied only to the isolated synthetic demo in BUILD-44/45. BUILD-47
+adds actual Chrome/MySQL create/revise/archive lost-ACK/reload/GET proof against
+the unchanged original library engine: three writes, two revisions and three
+receipts, no duplicate write. No new backend source or DDL in BUILD-47. Existing
+library audit remains unsealed; no provider/load/mobile/production acceptance.
+See [BUILD-47](../../agent-context/BUSINESS-IMPLEMENTATION-2026-11-08-BUILD-47.md).
 
 ## Ownership and authority
 
@@ -103,6 +120,17 @@ singletons, source/count/media bounds and content_hash are validated before plan
 Direct reuse and templates share planLessonPackageFinalState and reference writes.
 
 ## Verification and limits
+
+BUILD-45 adds actual MySQL/HTTP application proof on the isolated synthetic demo:
+target material refs, concurrent application, receipt and release/prerequisite/
+withdrawal denial. Exact schema sections/snapshots and Chrome evidence are in
+[BUILD-45](../../agent-context/BUSINESS-IMPLEMENTATION-2026-11-07-BUILD-45.md).
+Ready schema is not video/quiz/file delivery acceptance. Original application
+audit is not newly sealed. Native mysql2 pool/checked-out connections normalize
+only integer terminal SELECT LIMIT/OFFSET params to decimal strings. SQL stays
+parameterized; selectors/writes and injected-store contracts are unchanged.
+Reserved lesson/student routes were not edited. Native student course/path and
+owner unit/lesson reads were verified through actual mounts.
 
 See [BUILD-34](../../agent-context/BUSINESS-IMPLEMENTATION-2026-11-06-BUILD-34.md)
 for exact installed-Node commands, counts and logs. Synthetic transactions now

@@ -1,0 +1,633 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.createPlaybackSessions = exports.createPlaybackSessionRouter = void 0;
+exports.createPlaybackSessionsRouter = createPlaybackSessionsRouter;
+const express_1 = require("express");
+const playback_session_registry_1 = require("../services/playback-session-registry");
+const playback_progress_1 = require("../services/playback-progress");
+const playback_entitlement_1 = require("../services/playback-entitlement");
+const playback_watermark_1 = require("../services/playback-watermark");
+const audit_1 = require("../security/audit");
+const admin_permissions_1 = require("../security/admin-permissions");
+/**
+ * Bounded, fixed-label failure logging.
+ *
+ * A raw driver or provider error object carries `sql`, `sqlMessage`, bound
+ * parameters, request URLs and (for delivery paths) ticket or signature
+ * material, so printing it writes all of that into the server log. The label is
+ * the only thing emitted; the object's message, code and shape are never
+ * echoed. Callers keep their own fixed label so the log stays greppable.
+ */
+const logPlaybackFailure = (label, error) => {
+    void error;
+    console.error(`[Playback] ${label}`);
+};
+/**
+ * Roles that may act as support at all. The label alone is never authority:
+ * see `resolveSupportAuthority`.
+ */
+const SUPPORT_REVOKE_ROLES = new Set(['admin', 'super_admin', 'staff']);
+/**
+ * The existing platform capability that authorizes cross-tenant reach across
+ * the video surface (`secure-video.ts`, `videos.ts`). No new key is introduced.
+ */
+const PLATFORM_SECURITY_PERMISSION = 'security.manage';
+const defaultPlatformCapability = (userId) => (0, admin_permissions_1.hasVerifiedPlatformPermission)(PLATFORM_SECURITY_PERMISSION, userId);
+const defaultAuthenticate = (_req, res) => {
+    res.status(401).json({ error: 'Authentication required' });
+};
+function getUser(req) {
+    return req.user ?? {};
+}
+function str(value) {
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+function num(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+}
+function createPlaybackSessionsRouter(deps = {}) {
+    const router = (0, express_1.Router)();
+    const authenticate = deps.authenticate ?? defaultAuthenticate;
+    const now = deps.now ?? (() => new Date());
+    const registry = deps.registry ?? (0, playback_session_registry_1.asPlaybackSessionStore)((0, playback_session_registry_1.createPlaybackSessionRegistry)({ now, audit: deps.audit }));
+    const progress = deps.progress ?? (0, playback_progress_1.asPlaybackProgressStore)((0, playback_progress_1.createPlaybackProgressService)({ now }));
+    const hasPlatformCapability = deps.hasPlatformCapability ?? defaultPlatformCapability;
+    /**
+     * Resource-scoped authority for a support (non-owner) revoke.
+     *
+     * The tenant is the server-derived scope on the authenticated principal
+     * (`resolvePrincipal`), never a request field. Exact equality with the
+     * target's tenant is sufficient on its own; anything else — a missing
+     * tenant, a foreign tenant, a role label such as `admin`/`super_admin`
+     * without a tenant — needs a LIVE platform capability. A lookup that throws
+     * denies: an unverified actor is never treated as authorized.
+     */
+    const resolveSupportAuthority = async (actor, targetTenantId) => {
+        if (actor.tenantId && actor.tenantId === targetTenantId) {
+            return { allowed: true, platformAuthorized: false };
+        }
+        let platformAuthorized;
+        try {
+            platformAuthorized = await hasPlatformCapability(actor.id);
+        }
+        catch (error) {
+            logPlaybackFailure('Platform capability lookup failed', error);
+            return { allowed: false, status: 503, body: { error: 'authority_unavailable' } };
+        }
+        if (!platformAuthorized) {
+            return {
+                allowed: false,
+                status: 403,
+                body: { error: actor.tenantId ? 'tenant_mismatch' : 'tenant_required' },
+            };
+        }
+        return { allowed: true, platformAuthorized: true };
+    };
+    /**
+     * Commit one revocation and close the local delivery session afterwards.
+     *
+     * The durable part (slot status + session entitlements + audit) is a single
+     * store transaction; if it fails, nothing changed and the caller must not
+     * report success. The local kill is a second, best-effort effect: it can
+     * only ever remove an already-revoked session from this process, so its
+     * failure is logged and swallowed.
+     */
+    const commitRevocation = async (input) => {
+        let result;
+        try {
+            result = await registry.revokeSession(input);
+        }
+        catch (error) {
+            logPlaybackFailure('Durable session revocation failed', error);
+            return { status: 500, body: { error: 'revoke_failed' } };
+        }
+        if (!result.revoked) {
+            return { status: result.reason === 'session_not_found' ? 404 : 403, body: { ...result } };
+        }
+        if (deps.killDeliverySession) {
+            try {
+                await deps.killDeliverySession(input.sessionId, input.reason);
+            }
+            catch (error) {
+                logPlaybackFailure('Local delivery session close failed after a committed revoke', error);
+            }
+        }
+        return { status: 200, body: { ...result } };
+    };
+    // POST /sessions  (start a playback session)
+    const startHandler = async (req, res) => {
+        const user = getUser(req);
+        const body = (req.body ?? {});
+        // The tenant is SERVER-DERIVED and authoritative. It used to be read
+        // from the body first with the authenticated claim as a fallback, so a
+        // principal carrying no tenant claim could name any tenant at all. The
+        // body value is now only ever compared, never adopted.
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        if (!userTenantId) {
+            return res.status(403).json({ error: 'An active tenant workspace is required' });
+        }
+        const tenantId = userTenantId;
+        const requestedTenant = str(body.tenantId);
+        if (requestedTenant && requestedTenant !== tenantId) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
+        // The acting user is the authenticated principal. A body `userId` is
+        // honoured only for an explicitly privileged actor, and only as an
+        // audited act-on-behalf-of — never as a silent identity substitution.
+        const authenticatedUserId = str(user.id) ?? str(user.userId);
+        if (!authenticatedUserId) {
+            return res.status(401).json({ error: 'Authentication required' });
+        }
+        const requestedUserId = str(body.userId);
+        const userRole = str(user.role);
+        const privileged = userRole === 'admin' || userRole === 'super_admin' || userRole === 'instructor' || userRole === 'teacher' || userRole === 'staff';
+        let userId = authenticatedUserId;
+        if (requestedUserId && requestedUserId !== authenticatedUserId) {
+            if (!privileged) {
+                return res.status(403).json({ error: 'user_mismatch' });
+            }
+            userId = requestedUserId;
+        }
+        const assetId = str(body.assetId) ?? str(body.videoId) ?? str(body.lessonId);
+        const fingerprint = str(body.fingerprint) ?? str(body.deviceFingerprint) ?? 'unknown-device';
+        const deviceLabel = str(body.deviceLabel) ?? str(body.deviceName) ?? null;
+        // register device; the server (never the client) owns the policy
+        let device;
+        try {
+            device = await registry.registerDevice({ tenantId, userId, fingerprint, label: deviceLabel, now: now() });
+        }
+        catch (error) {
+            if (error instanceof playback_session_registry_1.PlaybackDeviceLimitError) {
+                return res.status(409).json({ acquired: false, reason: 'device_limit', limit: error.limit });
+            }
+            throw error;
+        }
+        const sessionId = str(body.sessionId) ?? `ps-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        // No client-supplied policy: the registry resolves and clamps the
+        // tenant policy server-side, so limits cannot be raised by the caller.
+        const acquisition = await registry.acquireSlot({
+            tenantId,
+            userId,
+            deviceId: device.id,
+            sessionId,
+        });
+        if (!acquisition.acquired) {
+            return res.status(409).json({
+                acquired: false,
+                reason: acquisition.reason,
+                activeSlots: acquisition.activeSlots,
+                deviceId: device.id,
+            });
+        }
+        // Watermark payload. The identity is SERVER-DERIVED ONLY.
+        //
+        // `name`/`phone`/`email` previously fell back to `body.studentName` /
+        // `body.studentPhone` / `body.studentEmail`, and `forensicCode` /
+        // `groupLabel` came straight from the body. A viewer could therefore
+        // embed another person's identity, phone suffix or email domain into
+        // their own watermark and misattribute any leak. The authenticated
+        // principal is now the only source; a field the server does not hold is
+        // simply absent from the watermark rather than caller-supplied.
+        const identityInput = {
+            studentId: userId,
+            name: str(user.name),
+            phone: str(user.phone),
+            email: str(user.email),
+            tenantId,
+            groupLabel: str(user.groupName) ?? str(user.groupLabel),
+            sessionId,
+            // Server-derived from the session it identifies, never from the
+            // request body.
+            forensicCode: `ps-${sessionId.slice(0, 8)}`,
+        };
+        const watermark = (0, playback_watermark_1.generateWatermarkPayload)(identityInput, { now });
+        // progress resume for this asset (if provided)
+        let resumePosition = null;
+        if (assetId) {
+            const resume = await progress.getResumePosition({
+                tenantId,
+                studentEnrollmentId: str(user.studentEnrollmentId) ?? str(user.student_enrollment_id) ?? userId,
+                assetId,
+                deviceId: device.id,
+                now: now(),
+            });
+            if (resume.allowed)
+                resumePosition = resume.position;
+        }
+        const policy = await registry.getPolicy(tenantId);
+        return res.status(201).json({
+            sessionId,
+            deviceId: device.id,
+            acquired: true,
+            warning: acquisition.warning,
+            activeSlots: acquisition.activeSlots,
+            limit: policy.maxConcurrentSessions,
+            watermark,
+            resumePosition,
+            policy,
+        });
+    };
+    router.post('/sessions', authenticate, startHandler);
+    router.post('/sessions/start', authenticate, startHandler);
+    router.post('/start', authenticate, startHandler);
+    // POST /sessions/:sessionId/heartbeat
+    const heartbeatHandler = async (req, res) => {
+        const user = getUser(req);
+        const sessionId = String(req.params.sessionId || req.body?.sessionId || '');
+        if (!sessionId)
+            return res.status(400).json({ error: 'sessionId required' });
+        if (!(await registry.isSessionActive(sessionId))) {
+            return res.status(404).json({ error: 'session_not_active' });
+        }
+        const slot = await registry.getSession(sessionId);
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        const userIdClaim = str(user.id);
+        if (slot && userTenantId && slot.tenantId !== userTenantId) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
+        if (slot && userIdClaim && slot.userId !== userIdClaim) {
+            return res.status(403).json({ error: 'user_mismatch' });
+        }
+        const hb = await progress.recordHeartbeat({ sessionId, now: now() });
+        if (!hb.accepted) {
+            return res.status(429).json({ error: 'rate_limited', reason: hb.reason });
+        }
+        return res.json({ ok: true, ts: now().getTime() });
+    };
+    router.post('/sessions/:sessionId/heartbeat', authenticate, heartbeatHandler);
+    router.post('/heartbeat', authenticate, heartbeatHandler);
+    // POST /sessions/:sessionId/progress
+    const progressHandler = async (req, res) => {
+        const user = getUser(req);
+        const body = (req.body ?? {});
+        const sessionId = String(req.params.sessionId || body.sessionId || '');
+        const tenantId = str(body.tenantId) ?? str(user.tenantId) ?? str(user.tenant_id);
+        const enrollmentId = str(body.studentEnrollmentId) ?? str(body.enrollmentId) ?? str(user.studentEnrollmentId) ?? str(user.student_enrollment_id) ?? str(user.id);
+        const assetId = str(body.assetId) ?? str(body.videoId) ?? str(body.lessonId);
+        const positionSeconds = num(body.positionSeconds) ?? num(body.position) ?? 0;
+        const durationSeconds = num(body.durationSeconds) ?? num(body.duration) ?? 0;
+        const deviceId = str(body.deviceId);
+        if (!tenantId || !enrollmentId || !assetId) {
+            return res.status(400).json({ error: 'tenantId, enrollmentId, assetId required' });
+        }
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        if (userTenantId && tenantId !== userTenantId) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
+        const userEnrollment = str(user.studentEnrollmentId) ?? str(user.student_enrollment_id) ?? str(user.id);
+        const userRole = str(user.role);
+        const privileged = userRole === 'admin' || userRole === 'super_admin' || userRole === 'instructor' || userRole === 'teacher' || userRole === 'staff';
+        if (userEnrollment && enrollmentId !== userEnrollment && !privileged) {
+            return res.status(403).json({ error: 'student_mismatch' });
+        }
+        const result = await progress.recordProgress({
+            tenantId,
+            studentEnrollmentId: enrollmentId,
+            assetId,
+            positionSeconds,
+            durationSeconds,
+            deviceId,
+            sessionId: sessionId || null,
+            now: now(),
+        });
+        if (!result.accepted) {
+            const status = result.reason === 'rate_limited' ? 429
+                : result.reason === 'device_not_permitted' ? 403
+                    : result.reason === 'tenant_mismatch' || result.reason === 'student_mismatch' ? 403
+                        : 400;
+            return res.status(status).json(result);
+        }
+        return res.json(result);
+    };
+    router.post('/sessions/:sessionId/progress', authenticate, progressHandler);
+    router.post('/progress', authenticate, progressHandler);
+    // GET /sessions/:sessionId/resume
+    const resumeHandler = async (req, res) => {
+        const user = getUser(req);
+        const query = req.query;
+        const body = (req.body ?? {});
+        const tenantId = str(query.tenantId) ?? str(body.tenantId) ?? str(user.tenantId) ?? str(user.tenant_id);
+        const enrollmentId = str(query.studentEnrollmentId) ?? str(body.studentEnrollmentId) ?? str(user.studentEnrollmentId) ?? str(user.student_enrollment_id) ?? str(user.id);
+        const assetId = str(query.assetId) ?? str(body.assetId) ?? str(query.videoId) ?? str(body.videoId);
+        const deviceId = str(query.deviceId) ?? str(body.deviceId);
+        if (!tenantId || !enrollmentId || !assetId) {
+            return res.status(400).json({ error: 'tenantId, enrollmentId, assetId required' });
+        }
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        if (userTenantId && tenantId !== userTenantId) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
+        const userEnrollment = str(user.studentEnrollmentId) ?? str(user.student_enrollment_id) ?? str(user.id);
+        const userRole = str(user.role);
+        const privileged = userRole === 'admin' || userRole === 'super_admin' || userRole === 'instructor' || userRole === 'teacher' || userRole === 'staff';
+        if (userEnrollment && enrollmentId !== userEnrollment && !privileged) {
+            return res.status(403).json({ error: 'student_mismatch' });
+        }
+        const result = await progress.getResumePosition({ tenantId, studentEnrollmentId: enrollmentId, assetId, deviceId, now: now() });
+        if (!result.allowed) {
+            const status = result.reason === 'device_not_permitted' ? 403 : 404;
+            return res.status(status).json(result);
+        }
+        return res.json(result);
+    };
+    router.get('/sessions/:sessionId/resume', authenticate, resumeHandler);
+    router.get('/resume', authenticate, resumeHandler);
+    router.post('/resume', authenticate, resumeHandler);
+    // POST /sessions/:sessionId/revoke  (self)
+    const selfRevokeHandler = async (req, res) => {
+        const user = getUser(req);
+        const body = (req.body ?? {});
+        const sessionId = String(req.params.sessionId || body.sessionId || '');
+        if (!sessionId)
+            return res.status(400).json({ error: 'sessionId required' });
+        const slot = await registry.getSession(sessionId);
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        const userIdClaim = str(user.id) ?? '';
+        if (slot && userTenantId && slot.tenantId !== userTenantId) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
+        if (slot && slot.userId !== userIdClaim) {
+            return res.status(403).json({ error: 'not_authorized' });
+        }
+        const result = await commitRevocation({
+            sessionId,
+            actorId: str(user.id) ?? '',
+            actorType: 'self',
+            reason: str(body.reason) ?? 'self_revoke',
+            support: false,
+        });
+        return res.status(result.status).json(result.body);
+    };
+    router.delete('/sessions/:sessionId', authenticate, selfRevokeHandler);
+    router.post('/sessions/:sessionId/revoke', authenticate, selfRevokeHandler);
+    router.post('/sessions/:sessionId/self-revoke', authenticate, selfRevokeHandler);
+    // POST /sessions/:sessionId/support-revoke
+    const supportRevokeHandler = async (req, res) => {
+        const user = getUser(req);
+        const body = (req.body ?? {});
+        const sessionId = String(req.params.sessionId || body.sessionId || '');
+        if (!sessionId)
+            return res.status(400).json({ error: 'sessionId required' });
+        const userRole = str(user.role);
+        if (!userRole || !SUPPORT_REVOKE_ROLES.has(userRole)) {
+            return res.status(403).json({ error: 'forbidden' });
+        }
+        const slot = await registry.getSession(sessionId);
+        if (!slot)
+            return res.status(404).json({ revoked: false, reason: 'session_not_found' });
+        const actorId = str(user.id) ?? '';
+        const actorTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        const authority = await resolveSupportAuthority({ id: actorId, tenantId: actorTenantId }, slot.tenantId);
+        if (!authority.allowed)
+            return res.status(authority.status).json(authority.body);
+        const result = await commitRevocation({
+            sessionId,
+            actorId,
+            actorType: 'support',
+            reason: str(body.reason) ?? 'support_revoke',
+            support: true,
+            actorTenantId,
+            platformAuthorized: authority.platformAuthorized,
+        });
+        // The durable store emits the single meaningful revoke event inside its
+        // transaction; no second event is appended here.
+        return res.status(result.status).json(result.body);
+    };
+    router.post('/sessions/:sessionId/support-revoke', authenticate, supportRevokeHandler);
+    // GET /devices
+    const listDevicesHandler = async (req, res) => {
+        const user = getUser(req);
+        const requestedTenantId = str(req.query.tenantId);
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        const tenantId = requestedTenantId ?? userTenantId;
+        const userRole = str(user.role);
+        const privileged = userRole === 'admin' || userRole === 'super_admin' || userRole === 'instructor' || userRole === 'teacher' || userRole === 'staff';
+        if (requestedTenantId && userTenantId && requestedTenantId !== userTenantId && !privileged) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
+        if (!tenantId)
+            return res.status(400).json({ error: 'tenantId required' });
+        // Non-privileged callers may only list their own devices; the query
+        // selector is ignored so a student cannot enumerate peers in-tenant.
+        const requestedUserId = str(req.query.userId);
+        const userId = privileged ? (requestedUserId ?? undefined) : (str(user.id) ?? undefined);
+        if (!privileged && !userId)
+            return res.status(403).json({ error: 'forbidden' });
+        return res.json(await registry.listDevices(tenantId, userId));
+    };
+    router.get('/devices', authenticate, listDevicesHandler);
+    // POST /devices/:deviceId/revoke
+    const revokeDeviceHandler = async (req, res) => {
+        const user = getUser(req);
+        const body = (req.body ?? {});
+        const deviceId = String(req.params.deviceId || body.deviceId || '');
+        const userRole = str(user.role);
+        const support = userRole !== null && SUPPORT_REVOKE_ROLES.has(userRole);
+        const actorId = str(user.id) ?? '';
+        const actorTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        const device = await registry.getDevice(deviceId);
+        let platformAuthorized = false;
+        if (device && support) {
+            // Same decision contract as the session support-revoke: the exact
+            // server-derived tenant, or a live verified platform capability.
+            const authority = await resolveSupportAuthority({ id: actorId, tenantId: actorTenantId }, device.tenantId);
+            if (!authority.allowed)
+                return res.status(authority.status).json(authority.body);
+            platformAuthorized = authority.platformAuthorized;
+        }
+        if (device && !support && device.userId !== actorId) {
+            return res.status(403).json({ error: 'not_owner' });
+        }
+        const result = await registry.revokeDevice({
+            deviceId,
+            actorId,
+            reason: str(body.reason) ?? (support ? 'support_revoke' : 'self_revoke'),
+            support,
+            actorTenantId,
+            platformAuthorized,
+        });
+        if (!result.revoked) {
+            const status = result.reason === 'device_not_found' ? 404 : 403;
+            return res.status(status).json(result);
+        }
+        return res.json(result);
+    };
+    router.post('/devices/:deviceId/revoke', authenticate, revokeDeviceHandler);
+    // GET /policy (or /policy/:tenantId)
+    const policyHandler = async (req, res) => {
+        const user = getUser(req);
+        const requestedTenantId = str(req.params.tenantId) ?? str(req.query.tenantId);
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        const tenantId = requestedTenantId ?? userTenantId;
+        const userRole = str(user.role);
+        const privileged = userRole === 'admin' || userRole === 'super_admin' || userRole === 'instructor' || userRole === 'teacher' || userRole === 'staff';
+        if (requestedTenantId && userTenantId && requestedTenantId !== userTenantId && !privileged) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
+        if (!tenantId)
+            return res.status(400).json({ error: 'tenantId required' });
+        return res.json(await registry.getPolicy(tenantId));
+    };
+    router.get('/policy', authenticate, policyHandler);
+    router.get('/policy/:tenantId', authenticate, policyHandler);
+    // GET /sessions
+    const listSessionsHandler = async (req, res) => {
+        const user = getUser(req);
+        const requestedTenantId = str(req.query.tenantId);
+        const userTenantId = str(user.tenantId) ?? str(user.tenant_id);
+        const tenantId = requestedTenantId ?? userTenantId;
+        const userRole = str(user.role);
+        const privileged = userRole === 'admin' || userRole === 'super_admin' || userRole === 'instructor' || userRole === 'teacher' || userRole === 'staff';
+        if (requestedTenantId && userTenantId && requestedTenantId !== userTenantId && !privileged) {
+            return res.status(403).json({ error: 'tenant_mismatch' });
+        }
+        if (!tenantId)
+            return res.status(400).json({ error: 'tenantId required' });
+        // Non-privileged callers may only list their own sessions; the query
+        // selector is ignored so a student cannot enumerate peers in-tenant.
+        const requestedUserId = str(req.query.userId);
+        const userId = privileged ? (requestedUserId ?? undefined) : (str(user.id) ?? undefined);
+        if (!privileged && !userId)
+            return res.status(403).json({ error: 'forbidden' });
+        const status = str(req.query.status) ?? undefined;
+        return res.json(await registry.listSessions(tenantId, userId, status));
+    };
+    router.get('/sessions', authenticate, listSessionsHandler);
+    return router;
+}
+exports.createPlaybackSessionRouter = createPlaybackSessionsRouter;
+exports.createPlaybackSessions = createPlaybackSessionsRouter;
+/* Production wiring: real pool, real auth, real audit sink. */
+let dbModule = null;
+const loadDb = async () => {
+    dbModule ?? (dbModule = await Promise.resolve().then(() => __importStar(require('../db'))));
+    return dbModule;
+};
+const productionDb = {
+    query: async (sql, params) => {
+        const { query } = await loadDb();
+        return query(sql, params);
+    },
+    queryOne: async (sql, params) => {
+        const { queryOne } = await loadDb();
+        return queryOne(sql, params);
+    },
+    execute: async (sql, params) => {
+        const { execute } = await loadDb();
+        return execute(sql, params);
+    },
+    // Slot acquisition and device registration run their check-and-insert
+    // critical section on one pooled connection inside a transaction, so the
+    // `FOR UPDATE` lock and the insert cannot drift onto different connections.
+    transaction: async (fn) => {
+        const { getPool } = await loadDb();
+        const connection = await getPool().getConnection();
+        const readRows = async (sql, params) => {
+            const [rows] = await connection.execute(sql, params);
+            return rows;
+        };
+        const tx = {
+            query: async (sql, params) => (await readRows(sql, params)),
+            queryOne: async (sql, params) => {
+                const rows = (await readRows(sql, params));
+                return rows.length > 0 ? rows[0] : null;
+            },
+            execute: async (sql, params) => {
+                const [result] = await connection.execute(sql, params);
+                return result;
+            },
+        };
+        try {
+            await connection.beginTransaction();
+            const result = await fn(tx);
+            await connection.commit();
+            return result;
+        }
+        catch (error) {
+            await connection.rollback();
+            throw error;
+        }
+        finally {
+            connection.release();
+        }
+    },
+};
+const productionAudit = async (event, tx) => {
+    // Inside a store transaction the audit row must use the transaction's own
+    // connection, so it commits (or rolls back) with the state change.
+    const run = tx ? tx.execute : (await loadDb()).execute;
+    const action = str(event.action) ?? 'playback.audit';
+    await (0, audit_1.recordAudit)(run, {
+        actorUserId: str(event.actorId) ?? str(event.userId),
+        tenantId: str(event.tenantId),
+        action,
+        resourceType: action.startsWith('playback.device') ? 'playback_device' : 'playback_session',
+        resourceId: str(event.sessionId) ?? str(event.deviceId) ?? 'unknown',
+        newValue: event,
+    });
+};
+const productionRegistry = (0, playback_session_registry_1.createSqlPlaybackSessionStore)(productionDb, {
+    audit: productionAudit,
+    // Session-wide entitlement revocation joins the revocation transaction, so
+    // a revoked slot never keeps a usable delivery record.
+    revokeEntitlements: (tx, input) => {
+        const store = (0, playback_entitlement_1.createSqlPlaybackEntitlementStore)(tx);
+        const revoke = store.revokeBySessionId;
+        if (!revoke)
+            throw new Error('entitlement store cannot revoke by session');
+        return revoke(input);
+    },
+});
+exports.default = createPlaybackSessionsRouter({
+    db: productionDb,
+    authenticate: async (req, res, next) => {
+        const { authenticateToken } = await Promise.resolve().then(() => __importStar(require('../middleware/auth')));
+        return authenticateToken(req, res, next);
+    },
+    audit: productionAudit,
+    // Production default: durable, cross-process state in the migration-07
+    // tables. Tests keep the in-memory stores.
+    registry: productionRegistry,
+    progress: (0, playback_progress_1.createSqlPlaybackProgressService)(productionDb),
+    // Local close of the media-delivery session after the durable commit.
+    // Loaded lazily like the pool and the auth middleware above, so importing
+    // this module never builds the delivery engine or its timer.
+    killDeliverySession: async (sessionId, reason) => {
+        const { killSession } = await Promise.resolve().then(() => __importStar(require('../services/video-security')));
+        await killSession(sessionId, reason);
+    },
+});

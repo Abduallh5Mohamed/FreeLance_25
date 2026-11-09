@@ -1,0 +1,259 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "tables": [
+    {
+      "name": "admin_role_permissions",
+      "engine": "InnoDB"
+    },
+    {
+      "name": "admin_user_roles",
+      "engine": "InnoDB"
+    },
+    {
+      "name": "support_ticket_replies",
+      "engine": "InnoDB"
+    },
+    {
+      "name": "support_tickets",
+      "engine": "InnoDB"
+    }
+  ],
+  "columns": [
+    {
+      "tbl": "admin_role_permissions",
+      "name": "role_code",
+      "type": "varchar(40)"
+    },
+    {
+      "tbl": "admin_role_permissions",
+      "name": "permission_key",
+      "type": "varchar(100)"
+    },
+    {
+      "tbl": "admin_user_roles",
+      "name": "user_id",
+      "type": "char(36)"
+    },
+    {
+      "tbl": "admin_user_roles",
+      "name": "role_code",
+      "type": "varchar(40)"
+    },
+    {
+      "tbl": "admin_user_roles",
+      "name": "assigned_by",
+      "type": "char(36)"
+    },
+    {
+      "tbl": "admin_user_roles",
+      "name": "assigned_at",
+      "type": "timestamp"
+    },
+    {
+      "tbl": "support_ticket_replies",
+      "name": "id",
+      "type": "char(36)"
+    },
+    {
+      "tbl": "support_ticket_replies",
+      "name": "ticket_id",
+      "type": "char(36)"
+    },
+    {
+      "tbl": "support_ticket_replies",
+      "name": "sender_id",
+      "type": "char(36)"
+    },
+    {
+      "tbl": "support_ticket_replies",
+      "name": "body",
+      "type": "text"
+    },
+    {
+      "tbl": "support_ticket_replies",
+      "name": "created_at",
+      "type": "timestamp"
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "id",
+      "type": "char(36)"
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "ticket_number",
+      "type": "varchar(32)"
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "user_id",
+      "type": "char(36)"
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "category",
+      "type": "enum('technical','account','billing','content','exam','video','other')"
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "subject",
+      "type": "varchar(200)"
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "description",
+      "type": "text"
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "status",
+      "type": "enum('open','waiting_on_support','waiting_on_user','resolved','closed')"
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "priority",
+      "type": "enum('low','normal','high','urgent')"
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "assigned_to",
+      "type": "char(36)"
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "resolved_at",
+      "type": "timestamp"
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "closed_at",
+      "type": "timestamp"
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "created_at",
+      "type": "timestamp"
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "updated_at",
+      "type": "timestamp"
+    }
+  ],
+  "indexes": [
+    {
+      "tbl": "admin_role_permissions",
+      "name": "PRIMARY",
+      "col": "role_code",
+      "seq": 1
+    },
+    {
+      "tbl": "admin_role_permissions",
+      "name": "PRIMARY",
+      "col": "permission_key",
+      "seq": 2
+    },
+    {
+      "tbl": "admin_user_roles",
+      "name": "assigned_by",
+      "col": "assigned_by",
+      "seq": 1
+    },
+    {
+      "tbl": "admin_user_roles",
+      "name": "PRIMARY",
+      "col": "user_id",
+      "seq": 1
+    },
+    {
+      "tbl": "admin_user_roles",
+      "name": "PRIMARY",
+      "col": "role_code",
+      "seq": 2
+    },
+    {
+      "tbl": "admin_user_roles",
+      "name": "role_code",
+      "col": "role_code",
+      "seq": 1
+    },
+    {
+      "tbl": "support_ticket_replies",
+      "name": "fk_support_reply_sender",
+      "col": "sender_id",
+      "seq": 1
+    },
+    {
+      "tbl": "support_ticket_replies",
+      "name": "idx_support_reply_ticket_created",
+      "col": "ticket_id",
+      "seq": 1
+    },
+    {
+      "tbl": "support_ticket_replies",
+      "name": "idx_support_reply_ticket_created",
+      "col": "created_at",
+      "seq": 2
+    },
+    {
+      "tbl": "support_ticket_replies",
+      "name": "PRIMARY",
+      "col": "id",
+      "seq": 1
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "idx_support_assignee_status",
+      "col": "assigned_to",
+      "seq": 1
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "idx_support_assignee_status",
+      "col": "status",
+      "seq": 2
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "idx_support_status_updated",
+      "col": "status",
+      "seq": 1
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "idx_support_status_updated",
+      "col": "updated_at",
+      "seq": 2
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "idx_support_user_updated",
+      "col": "user_id",
+      "seq": 1
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "idx_support_user_updated",
+      "col": "updated_at",
+      "seq": 2
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "PRIMARY",
+      "col": "id",
+      "seq": 1
+    },
+    {
+      "tbl": "support_tickets",
+      "name": "ticket_number",
+      "col": "ticket_number",
+      "seq": 1
+    }
+  ],
+  "roles": [
+    {
+      "role_code": "super_admin",
+      "n": 1
+    }
+  ]
+}

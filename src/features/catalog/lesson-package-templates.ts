@@ -1,7 +1,7 @@
 import { ApiRequestError, authenticatedApiFetch, readAuthenticatedApiJson } from '../../lib/api-http';
 import type { PackageKind } from './lesson-package-preview';
 import type { TimingChoice, TimingReview } from './lesson-template-timing';
-import { canonicalTiming } from './lesson-template-timing';
+import { canonicalTiming, parseTimingInstant } from './lesson-template-timing';
 
 export interface TemplateSummary {
   id: string;
@@ -128,6 +128,25 @@ async function requestJson(url: string, method: 'GET' | 'POST' | 'PATCH', signal
 }
 
 export type LibraryOperationKind = 'create' | 'revise' | 'archive';
+export interface LibraryIntent {
+  operation_id:string;operation_kind:LibraryOperationKind;template_id:string|null;
+  revision_number:number|null;reference_count:number|null;media_count:number|null;
+}
+export function templateLibraryIntentStore(storage:Pick<Storage,'getItem'|'setItem'|'removeItem'>,account:string,courseId:string){
+  if(!account||!uuid(courseId))throw bad();
+  const key='tabweb.template-library.v1.'+encodeURIComponent(account)+'.'+courseId.toLowerCase();
+  const parse=(x:any):LibraryIntent=>{
+    const bounded=(n:unknown,min:number,max:number)=>typeof n==='number'&&Number.isInteger(n)&&n>=min&&n<=max;
+    if(!exact(x,['operation_id','operation_kind','template_id','revision_number','reference_count','media_count'])||!uuid(x.operation_id)
+      ||!['create','revise','archive'].includes(x.operation_kind)
+      ||(x.operation_kind==='create'?x.template_id!==null:!uuid(x.template_id))
+      ||(x.operation_kind==='archive'?[x.revision_number,x.reference_count,x.media_count].some(n=>n!==null):
+        !bounded(x.revision_number,x.operation_kind==='create'?1:2,x.operation_kind==='create'?1:2147483647)||!bounded(x.reference_count,1,23)||!bounded(x.media_count,0,20)||x.media_count>x.reference_count))throw bad();
+    return x;
+  };
+  return{read():LibraryIntent|null{const raw=storage.getItem(key);return raw===null?null:parse(JSON.parse(raw));},
+    write(value:LibraryIntent){storage.setItem(key,JSON.stringify(parse(value)));},clear(){storage.removeItem(key);}};
+}
 export interface LibraryOutcome { template: TemplateSummary; revision?: { revision_number:number; reference_count:number; media_count:number }; unchanged?:boolean }
 export function parseLibraryOutcome(raw:any,kind:LibraryOperationKind):LibraryOutcome {
   const fields=kind==='create'?['template','revision']:kind==='revise'?['template_id','template','revision']:['template','unchanged'];
@@ -161,15 +180,18 @@ export function templateLibraryTransport(courseId:string) {
 export interface TemplateLibraryState {
   phase:'idle'|'loading'|'ready'|'error'|'session-ended'; templates:TemplateSummary[];nextCursor:string|null;
   saving:boolean;recovering:boolean;uncertain:boolean;locked:boolean;operationId:string|null;
-  saved:{name:string;head_revision:number}|null;message:string|null;
+  saved:{name:string;head_revision:number;kind:LibraryOperationKind}|null;message:string|null;
 }
 export const initialTemplateLibrary=():TemplateLibraryState=>({phase:'idle',templates:[],nextCursor:null,saving:false,recovering:false,uncertain:false,locked:false,operationId:null,saved:null,message:null});
 export function createTemplateLibrary(deps:ReturnType<typeof templateLibraryTransport>&{
   readPrincipal:()=>string|null;subscribeSession:(listener:()=>void)=>()=>void;newOperationId?:()=>string;
+  intent?:ReturnType<typeof templateLibraryIntentStore>;
 }) {
   let state=initialTemplateLibrary(),epoch=0,disposed=false,active:AbortController|null=null;
   let pending:{kind:LibraryOperationKind;id:string;templateId?:string;name?:string;revision?:number;count?:number;media?:number}|null=null;
   const principal=deps.readPrincipal(),listeners=new Set<(value:TemplateLibraryState)=>void>();
+  try{const old=deps.intent?.read();if(old){pending={kind:old.operation_kind,id:old.operation_id,...old.template_id?{templateId:old.template_id}:{},...old.revision_number!==null?{revision:old.revision_number,count:old.reference_count!,media:old.media_count!}:{}};state={...state,uncertain:true,operationId:old.operation_id,message:'توجد عملية مكتبة محفوظة تحتاج استعلامًا قبل أي كتابة.'};}}
+  catch{state={...state,uncertain:true,message:'تعذر إثبات علامة استرجاع المكتبة؛ الكتابة متوقفة.'};}
   const set=(value:TemplateLibraryState)=>{state=value;if(!disposed)listeners.forEach(fn=>fn(state));};
   const cancel=()=>{epoch++;active?.abort();active=null;};
   const invalidate=()=>{cancel();pending=null;set({...initialTemplateLibrary(),phase:'session-ended'});};
@@ -191,32 +213,52 @@ export function createTemplateLibrary(deps:ReturnType<typeof templateLibraryTran
     if(p.templateId&&value.template.id!==p.templateId||p.name&&value.template.name!==p.name||p.revision&&value.revision?.revision_number!==p.revision||p.count!==undefined&&value.revision?.reference_count!==p.count||p.media!==undefined&&value.revision?.media_count!==p.media)throw bad();
     return value;
   }
-  const saved=(value:LibraryOutcome)=>{pending=null;set({...initialTemplateLibrary(),saved:{name:value.template.name,head_revision:value.template.head_revision},message:'الحفظ مؤكد؛ حدّث القائمة لقراءة الحالة الحالية.'});};
+  const saved=(value:LibraryOutcome,p:NonNullable<typeof pending>)=>{
+    let cleaned=true;try{deps.intent?.clear();}catch{cleaned=false;}if(cleaned)pending=null;
+    set({...initialTemplateLibrary(),locked:state.locked,uncertain:!cleaned,operationId:cleaned?null:p.id,
+      saved:{name:value.template.name,head_revision:value.template.head_revision,kind:p.kind},
+      message:cleaned?'الحفظ مؤكد؛ حدّث القائمة لقراءة الحالة الحالية.':'الحفظ مؤكد، لكن تنظيف علامة الاسترجاع لم يكتمل. الكتابة متوقفة حتى تسوية نفس العملية.'});
+  };
   async function write(kind:LibraryOperationKind,details:Omit<NonNullable<typeof pending>,'kind'|'id'>,work:(id:string,signal:AbortSignal)=>Promise<LibraryOutcome>){
     if(!permitted())return;let id:string;try{id=(deps.newOperationId?.()??crypto.randomUUID()).toLowerCase();if(!uuid(id))throw bad();}catch{set({...state,message:'تعذر تجهيز معرّف العملية.'});return;}
-    cancel();pending={kind,id,...details};const p=pending,flight=epoch,c=new AbortController();active=c;
+    const p={kind,id,...details};
+    try{deps.intent?.write({operation_id:id,operation_kind:kind,template_id:details.templateId??null,revision_number:details.revision??null,reference_count:details.count??null,media_count:details.media??null});}
+    catch{set({...state,message:'تعذر حفظ علامة الاسترجاع؛ لم يُرسل طلب كتابة.'});return;}
+    if(!permitted())return;
+    cancel();pending=p;const flight=epoch,c=new AbortController();active=c;
     set({...state,saving:true,operationId:id,saved:null,message:null});
     const uncertain=()=>set({...state,saving:false,recovering:false,uncertain:true,message:'نتيجة الحفظ غير محسومة؛ تحقق من سجل نفس العملية دون إعادة الكتابة.'});
     const timer=setTimeout(()=>{if(valid(flight,c)){cancel();uncertain();}},25000);
-    try{const value=verifyOutcome(await work(id,c.signal),p);if(valid(flight,c))saved(value);}
-    catch(error){if(valid(flight,c)){if(error instanceof ApiRequestError&&error.status>=400&&error.status<500){pending=null;set({...state,saving:false,uncertain:false,operationId:null,message:'رُفضت العملية؛ حدّث البيانات قبل مراجعة جديدة.'});}else uncertain();}}
+    try{const outcome=await work(id,c.signal);if(!valid(flight,c))return;
+      const value=verifyOutcome(parseLibraryOutcome(kind==='revise'?{...outcome,template_id:outcome.template.id}:outcome,kind),p);saved(value,p);}
+    catch(error){if(valid(flight,c)){if(error instanceof ApiRequestError&&error.status>=400&&error.status<500){let cleaned=true;try{deps.intent?.clear();}catch{cleaned=false;}if(cleaned){pending=null;set({...state,saving:false,uncertain:false,operationId:null,message:'رُفضت العملية؛ حدّث البيانات قبل مراجعة جديدة.'});}else uncertain();}else uncertain();}}
     finally{clearTimeout(timer);if(active===c)active=null;}
   }
   return {
     subscribe(fn:(value:TemplateLibraryState)=>void){listeners.add(fn);fn(state);return()=>{listeners.delete(fn);};},
     refresh(){return load(null);},next(){return state.phase==='ready'&&state.nextCursor?load(state.nextCursor):Promise.resolve();},
-    create(name:string,sourceLessonId:string,selections:{kind:PackageKind;source_id:string}[]){return write('create',{name:name.trim(),revision:1,count:selections.length,media:selections.filter(row=>['material','video'].includes(row.kind)).length},(operation_id,signal)=>deps.create({name,source_lesson_id:sourceLessonId,selections,operation_id},signal));},
-    revise(templateId:string,expectedRevision:number,sourceLessonId:string,selections:{kind:PackageKind;source_id:string}[]){return write('revise',{templateId,revision:expectedRevision+1,count:selections.length,media:selections.filter(row=>['material','video'].includes(row.kind)).length},(operation_id,signal)=>deps.revise(templateId,{source_lesson_id:sourceLessonId,selections,expected_revision:expectedRevision,operation_id},signal));},
-    archive(templateId:string){return write('archive',{templateId},(operationId,signal)=>deps.archive(templateId,operationId,signal));},
+    create(name:string,sourceLessonId:string,selections:{kind:PackageKind;source_id:string}[]){
+      if(!permitted())return Promise.resolve();
+      try{if(typeof name!=='string'||!name.trim()||name.trim().length>120||!uuid(sourceLessonId))throw bad();selections=canonicalSelection(selections);}
+      catch{set({...state,message:'راجع اسم القالب والحصة والمراجع؛ لم يُرسل طلب كتابة.'});return Promise.resolve();}
+      return write('create',{name:name.trim(),revision:1,count:selections.length,media:selections.filter(row=>['material','video'].includes(row.kind)).length},(operation_id,signal)=>deps.create({name,source_lesson_id:sourceLessonId,selections,operation_id},signal));
+    },
+    revise(templateId:string,expectedRevision:number,sourceLessonId:string,selections:{kind:PackageKind;source_id:string}[]){
+      if(!permitted())return Promise.resolve();
+      try{if(!uuid(templateId)||!uuid(sourceLessonId)||!Number.isInteger(expectedRevision)||expectedRevision<1||expectedRevision>=2147483647)throw bad();selections=canonicalSelection(selections);}
+      catch{set({...state,message:'راجع القالب والمراجعة والحصة والمراجع؛ لم يُرسل طلب كتابة.'});return Promise.resolve();}
+      return write('revise',{templateId,revision:expectedRevision+1,count:selections.length,media:selections.filter(row=>['material','video'].includes(row.kind)).length},(operation_id,signal)=>deps.revise(templateId,{source_lesson_id:sourceLessonId,selections,expected_revision:expectedRevision,operation_id},signal));
+    },
+    archive(templateId:string){if(!permitted())return Promise.resolve();if(!uuid(templateId)){set({...state,message:'معرف القالب غير صالح؛ لم يُرسل طلب كتابة.'});return Promise.resolve();}return write('archive',{templateId},(operationId,signal)=>deps.archive(templateId,operationId,signal));},
     async recover(){
       if(disposed||!state.uncertain||state.saving||state.locked||!pending)return;
       if(!principal||deps.readPrincipal()!==principal){invalidate();return;}
       cancel();const p=pending,flight=epoch,c=new AbortController();active=c;set({...state,saving:true,recovering:true});
-      const fail=()=>set({...state,saving:false,recovering:false,uncertain:true,message:'لم يظهر حفظ مؤكد بعد؛ لا تُعد العملية.'});
+      const fail=()=>set({...state,saving:false,recovering:false,uncertain:true,message:state.saved?'الحفظ مؤكد؛ تعذر تسوية علامة الاسترجاع. لا تُعد الكتابة.':'لم يظهر حفظ مؤكد بعد؛ لا تُعد العملية.'});
       const timer=setTimeout(()=>{if(valid(flight,c)){cancel();fail();}},25000);
       try{const raw=await deps.status(p.id,c.signal);if(!valid(flight,c))return;if(raw===null){fail();return;}
         if(raw.operation_id!==p.id||raw.operation_kind!==p.kind)throw bad();
-        const {operation_id,operation_kind,...value}=raw;saved(verifyOutcome(parseLibraryOutcome(value,p.kind),p));
+        const {operation_id,operation_kind,...value}=raw;saved(verifyOutcome(parseLibraryOutcome(value,p.kind),p),p);
       }catch{if(valid(flight,c))fail();}finally{clearTimeout(timer);if(active===c)active=null;}
     },
     setLocked(locked:boolean){if(!disposed&&state.locked!==locked)set({...state,locked});},
@@ -270,18 +312,50 @@ export interface TemplateApplicationState {
 }
 export const initialTemplateApplication = (): TemplateApplicationState => ({ phase: 'idle', review: null, result: null, operationId: null, templateId: null, revisionNumber: null, itemCount: 0, message: null });
 
+export interface TemplateApplicationIntent {
+  operation_id:string;course_id:string;unit_id:string;lesson_id:string;template_id:string;
+  revision_number:number;item_count:number;mode:TimingChoice['mode'];release_at:string|null;
+}
+export function templateApplicationIntentStore(storage:Pick<Storage,'getItem'|'setItem'|'removeItem'>,account:string,courseId:string){
+  if(!account||!uuid(courseId))throw bad();
+  const key='tabweb.template-application.v1.'+encodeURIComponent(account)+'.'+courseId.toLowerCase();
+  const parse=(raw:unknown):TemplateApplicationIntent=>{
+    const x=raw as Record<string,unknown>;
+    if(!exact(x,['operation_id','course_id','unit_id','lesson_id','template_id','revision_number','item_count','mode','release_at'])
+      ||![x.operation_id,x.course_id,x.unit_id,x.lesson_id,x.template_id].every(uuid)||x.course_id!==courseId.toLowerCase()
+      ||!Number.isInteger(x.revision_number)||(x.revision_number as number)<1||(x.revision_number as number)>2147483647
+      ||!Number.isInteger(x.item_count)||(x.item_count as number)<1||(x.item_count as number)>23
+      ||!['keep','set','clear'].includes(x.mode as string)||x.release_at!==null&&(typeof x.release_at!=='string'||parseTimingInstant(x.release_at)!==x.release_at)
+      ||x.mode==='clear'&&x.release_at!==null||x.mode==='set'&&x.release_at===null)throw bad();
+    return x as unknown as TemplateApplicationIntent;
+  };
+  return{read():TemplateApplicationIntent|null{const raw=storage.getItem(key);return raw?parse(JSON.parse(raw)):null;},
+    write(value:TemplateApplicationIntent){storage.setItem(key,JSON.stringify(parse(value)));},clear(){storage.removeItem(key);}};
+}
+
 export function createTemplateApplication(deps: ReturnType<typeof templateApplicationTransport> & {
   readPrincipal: () => string | null;
   subscribeSession: (listener: () => void) => () => void;
   newOperationId: () => string;
+  intent?:ReturnType<typeof templateApplicationIntentStore>;
+  destination?:{course_id:string;unit_id:string;lesson_id:string};
 }) {
   let state = initialTemplateApplication(), epoch = 0, disposed = false, active: AbortController | null = null;
   const principal = deps.readPrincipal();
-  let pendingReview: ApplicationReview | null = null;
+
+  let expectation:{context:ApplicationReview['context'];mode:TimingChoice['mode'];release_at:string|null}|null=null;
+  try{
+    const pending=deps.intent?.read();
+    if(pending){
+      if(!deps.destination||pending.course_id!==deps.destination.course_id||pending.unit_id!==deps.destination.unit_id||pending.lesson_id!==deps.destination.lesson_id)throw bad();
+      expectation={context:{template_id:pending.template_id,revision_number:pending.revision_number,lesson_id:pending.lesson_id},mode:pending.mode,release_at:pending.release_at};
+      state={...state,phase:'uncertain',operationId:pending.operation_id,templateId:pending.template_id,revisionNumber:pending.revision_number,itemCount:pending.item_count,message:'توجد عملية تطبيق محفوظة للتحقق. الاستعلام فقط متاح حتى يثبت الإيصال.'};
+    }
+  }catch{state={...state,phase:'uncertain',message:'تعذر إثبات سياق الاسترجاع المحفوظ. الكتابة متوقفة.'};}
   const listeners = new Set<(value: TemplateApplicationState) => void>();
   const set = (next: TemplateApplicationState) => { state = next; if (!disposed) listeners.forEach(fn => fn(state)); };
   const cancel = () => { epoch++; active?.abort(); active = null; };
-  const invalidate = () => { cancel(); pendingReview = null; set({ ...initialTemplateApplication(), phase: 'session-ended' }); };
+  const invalidate = () => { cancel(); expectation = null; set({ ...initialTemplateApplication(), phase: 'session-ended' }); };
   const unsubscribe = deps.subscribeSession(invalidate);
   const busy = () => ['reviewing', 'applying', 'recovering'].includes(state.phase);
   async function run(kind: 'review' | 'apply' | 'recover', work: (signal: AbortSignal) => Promise<void>) {
@@ -296,12 +370,22 @@ export function createTemplateApplication(deps: ReturnType<typeof templateApplic
     catch (error) {
       if (current()) {
         if (deps.readPrincipal() !== principal) invalidate();
-        else set({ ...state, review: null, result: kind === 'recover' ? state.result : null, phase: kind === 'recover' || kind === 'apply' && !(error instanceof ApiRequestError && error.status >= 400 && error.status < 500) ? 'uncertain' : 'error', message: 'لم يتم تأكيد الطلب. راجع الحالة قبل أي إعادة.' });
+        else {
+          const rejected=kind==='apply'&&error instanceof ApiRequestError&&error.status>=400&&error.status<500;
+          let cleaned=true;if(rejected)try{deps.intent?.clear();}catch{cleaned=false;}
+          if(rejected&&cleaned){expectation=null;}
+          set({ ...state, review: null, result: kind === 'recover' ? state.result : null, phase: !cleaned||kind === 'recover' || kind === 'apply' && !rejected ? 'uncertain' : 'error', message: 'لم يتم تأكيد الطلب. راجع الحالة قبل أي إعادة.' });
+        }
       }
     }
     finally { clearTimeout(timer); if (active === controller) active = null; }
   }
   const guarded = (signal: AbortSignal) => !disposed && !signal.aborted && deps.readPrincipal() === principal;
+  const confirmResult=(result:ApplicationReceipt,operationId:string)=>{
+    let cleaned=true;try{deps.intent?.clear();}catch{cleaned=false;}
+    if(cleaned){expectation=null;}
+    set({...state,phase:cleaned?'saved':'uncertain',review:null,result,operationId,message:cleaned?'تم تأكيد التطبيق والجدولة معًا':'الحفظ مؤكد؛ تعذر تنظيف علامة الاسترجاع. تحقق من الإيصال قبل كتابة أخرى.'});
+  };
   return {
     subscribe(fn: (value: TemplateApplicationState) => void) { listeners.add(fn); fn(state); return () => { listeners.delete(fn); }; },
     clear() { if (!busy() && state.phase !== 'uncertain' && state.phase !== 'session-ended') { cancel(); set(initialTemplateApplication()); } },
@@ -312,12 +396,13 @@ export function createTemplateApplication(deps: ReturnType<typeof templateApplic
         if (!guarded(signal)) { if (!disposed && !signal.aborted) invalidate(); return; }
         const requested = canonicalTiming(timing.mode, timing.release_at);
         if (review.context.template_id !== templateId || review.context.revision_number !== revisionNumber || review.timing.mode !== requested.mode || requested.mode !== 'keep' && review.timing.proposed_release_at !== requested.release_at) throw bad();
-        pendingReview = review;
+
         set({ ...initialTemplateApplication(), phase: 'reviewed', review, templateId, revisionNumber, itemCount: review.items.length });
       });
     },
     async apply(confirmed: boolean) {
       if (!confirmed || state.phase !== 'reviewed' || !state.review?.can_apply) return;
+      if(!principal||deps.readPrincipal()!==principal)return invalidate();
       const review = state.review, templateId = state.templateId, revisionNumber = state.revisionNumber;
       if (!templateId || !revisionNumber) return;
       let operationId: string;
@@ -327,12 +412,17 @@ export function createTemplateApplication(deps: ReturnType<typeof templateApplic
         mode: review.timing.mode,
         release_at: review.timing.mode === 'set' ? review.timing.proposed_release_at : null,
       };
+      expectation={context:review.context,mode:review.timing.mode,release_at:review.timing.proposed_release_at};
+      if(deps.intent){
+        try{if(!deps.destination||deps.destination.lesson_id!==review.context.lesson_id)throw bad();deps.intent.write({operation_id:operationId,...deps.destination,template_id:templateId,revision_number:revisionNumber,item_count:review.items.length,mode:review.timing.mode,release_at:review.timing.proposed_release_at});}
+        catch{set({...state,message:'تعذر حفظ معرّف الاسترجاع؛ لم يُرسل طلب تطبيق.'});return;}
+      }
       set({ ...state, operationId });
       await run('apply', async signal => {
         const result = await deps.apply(templateId, revisionNumber, timing, review.review_token, operationId, state.itemCount, signal);
         if (!guarded(signal)) { if (!disposed && !signal.aborted) invalidate(); return; }
         if (!sameContext(result.context, review.context) || result.timing.mode !== review.timing.mode || result.timing.release_at !== review.timing.proposed_release_at || result.created + result.existing !== review.items.length) throw bad();
-        set({ ...state, phase: 'saved', review: null, result, operationId, message: 'تم تأكيد التطبيق والجدولة معًا' });
+        confirmResult(result,operationId);
       });
     },
     async recover() {
@@ -343,8 +433,9 @@ export function createTemplateApplication(deps: ReturnType<typeof templateApplic
         if (raw !== null && !exact(raw, ['context', 'operation_id', 'created', 'existing', 'timing'])) throw bad();
         if (!guarded(signal)) { if (!disposed && !signal.aborted) invalidate(); return; }
         const result = raw === null ? null : parseReceipt(raw, operationId, itemCount, false);
-        if (result && (!pendingReview || !sameContext(result.context, pendingReview.context) || result.timing.mode !== pendingReview.timing.mode || result.timing.release_at !== pendingReview.timing.proposed_release_at)) throw bad();
-        set({ ...state, phase: result ? 'saved' : 'uncertain', review: null, result, operationId, message: result ? 'تم العثور على سجل العملية' : 'لا يوجد سجل مؤكد بعد؛ لا تُعد المحاولة' });
+        if (result && (!expectation || !sameContext(result.context, expectation.context) || result.timing.mode !== expectation.mode || result.timing.release_at !== expectation.release_at)) throw bad();
+        if(result)confirmResult(result,operationId);
+        else set({ ...state, phase:'uncertain', review: null, result:state.result, operationId, message:'لا يوجد سجل مؤكد بعد؛ لا تُعد المحاولة' });
       });
     },
     invalidate,

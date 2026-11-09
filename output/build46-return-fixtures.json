@@ -1,0 +1,25 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "course": "9bd1a6d8-3966-49cc-833f-3158fb907fad",
+  "enrollment": "85f87514-53b5-48d7-8e37-3ac316543109",
+  "group": "74eb9a64-2f5f-4966-95a6-f132fe666961",
+  "sessions": [
+    "7be34c65-408d-47ea-bc3e-43ae4b889cca",
+    "95aed1b2-2410-472e-9b5f-15243d166eeb",
+    "8a87a42c-abc6-4fe6-893e-40dd4eb5abd1",
+    "75a778bf-e639-4b43-9eef-9fde1404caee",
+    "f16899e9-e171-484e-ad37-129c203116ae",
+    "8dc366d5-ce36-40aa-8fd9-0e2ca8ddfaf0"
+  ],
+  "attendance": [
+    "af510772-21d8-4bb4-b215-8e007d5dc7ba",
+    "2a75de89-79ac-4f01-bf0d-591f61a5e231",
+    "05d8dbe3-9885-4cb5-919c-a18f10a252c4"
+  ],
+  "plan": {
+    "operation_id": "395ce470-ea6d-413c-8088-9fb329319928",
+    "plan_id": "2c2e80b2-8816-492d-b46d-6b66b7e792fe",
+    "version": 3,
+    "status": "active"
+  }
+}

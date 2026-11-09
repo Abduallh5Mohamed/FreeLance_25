@@ -181,16 +181,16 @@ interface QuestionBankVersionRow {
 }
 
 const VERSION_COLUMNS =
-    'id,exam_id,tenant_id,version,status,duration_seconds,opens_at,closes_at,grace_seconds,' +
-    'total_points,passing_points,scoring_policy,published_at';
+    'id,exam_id,tenant_id,version,status,duration_seconds,CAST(opens_at AS CHAR) AS opens_at,CAST(closes_at AS CHAR) AS closes_at,grace_seconds,' +
+    'total_points,passing_points,scoring_policy,CAST(published_at AS CHAR) AS published_at';
 
 const QUESTION_COLUMNS =
     'id,exam_version_id,tenant_id,position,question_id,question_version,source_version_id,' +
     'question_type,question_text,options,correct_answers,points,explanation,content_hash';
 
 const ATTEMPT_COLUMNS =
-    'id,tenant_id,exam_id,exam_version_id,student_enrollment_id,student_user_id,status,started_at,' +
-    'deadline_at,submitted_at,auto_submitted,auto_score,score,manual_required,grading_fingerprint,graded_at,passed,version';
+    'id,tenant_id,exam_id,exam_version_id,student_enrollment_id,student_user_id,status,CAST(started_at AS CHAR) AS started_at,' +
+    'CAST(deadline_at AS CHAR) AS deadline_at,CAST(submitted_at AS CHAR) AS submitted_at,auto_submitted,auto_score,score,manual_required,grading_fingerprint,CAST(graded_at AS CHAR) AS graded_at,passed,version';
 
 function parseJson(value: unknown): unknown {
     if (value === null || value === undefined || value === '') return null;
@@ -471,6 +471,10 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
         const user = req.user;
         if (!user) {
             res.status(401).json({ error: 'Authentication required' });
+            return null;
+        }
+        if(user.role==='admin'||user.billingOnly||req.impersonation||req.headers['x-impersonation']!==undefined){
+            res.status(403).json({code:'GRADING_TEACHER_REQUIRED'});
             return null;
         }
         const tenantId = user.tenantId;
@@ -959,7 +963,9 @@ export const createExamVersionsRouter = (deps: ExamVersionsDeps): Router => {
                 if(method==='get')return {status:200,body:{attempt:null}};
                 const version=await loadVersionRow(tx,context.tenantId,context.examId,context.versionId,true);
                 if(!version)return {status:404,body:{error:'Published snapshot not found'}};
-                const timing=await validateCatalogExamSnapshot(tx,context,true),startedAt=now();
+                // DATETIME columns store absolute UTC seconds, not driver-local Dates.
+                // Match their precision in the first ACK and all later recoveries.
+                const timing=await validateCatalogExamSnapshot(tx,context,true),startedAt=new Date(Math.floor(now().getTime()/1000)*1000);
                 if(timing.fingerprint!==context.snapshotFingerprint)throw new CatalogExamDenied();
                 const decision=evaluateAttemptStart(timing,version.status,false,startedAt);
                 if(!decision.allowed)return {status:403,body:{error:'Attempt is not allowed',code:decision.reason}};
@@ -1407,8 +1413,8 @@ const loadActiveTenantAuthority = async (userId: string, tenantId: string) => {
 };
 
 const ATTEMPT_COLUMNS_QUALIFIED =
-    'a.id,a.tenant_id,a.exam_id,a.exam_version_id,a.student_enrollment_id,a.student_user_id,a.status,a.started_at,' +
-    'a.deadline_at,a.submitted_at,a.auto_submitted,a.auto_score,a.score,a.manual_required,a.grading_fingerprint,a.graded_at,a.passed,a.version';
+    'a.id,a.tenant_id,a.exam_id,a.exam_version_id,a.student_enrollment_id,a.student_user_id,a.status,CAST(a.started_at AS CHAR) AS started_at,' +
+    'CAST(a.deadline_at AS CHAR) AS deadline_at,CAST(a.submitted_at AS CHAR) AS submitted_at,a.auto_submitted,a.auto_score,a.score,a.manual_required,a.grading_fingerprint,CAST(a.graded_at AS CHAR) AS graded_at,a.passed,a.version';
 
 /** Attempts whose grace window closed and that are still stuck in_progress. */
 const OVERDUE_ATTEMPT_SQL = `

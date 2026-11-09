@@ -1,0 +1,15 @@
+{
+  "browser": "157.0.8103.38",
+  "viewport": "1440x1100",
+  "results": [
+    {
+      "check": "Chrome committed POST lost response, reload restored marker, GET receipt only, no duplicate POST",
+      "pass": true
+    },
+    {
+      "check": "Chrome new synthetic learner selects authorized space and opens actual lesson metadata; unavailable file has no PDF download action",
+      "pass": true
+    }
+  ],
+  "limits": "Synthetic localhost; metadata only, no provider/file delivery or mobile/load acceptance."
+}

@@ -13,12 +13,15 @@
  * contact details, addresses, notes, answer keys or any other student's data.
  * Every query is scoped by the token's tenant + enrollment.
  *
- * This module exports `createParentViewsRouter(deps)`; it is not mounted by
- * this task. No runtime DDL.
+ * Mounted under /api/parent in the existing composition root. BUILD-39 adds
+ * a separately guarded bounded family-summary read without using the legacy
+ * grades aggregate. No runtime DDL.
  */
 
 import { Router, RequestHandler, Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
+import { createFamilySummaryRouter } from './family-summary';
+import type { FamilyReadDb } from '../services/family-summary';
 import {
     createParentViewVerifier,
     createSqlParentLinksStore,
@@ -79,6 +82,8 @@ export interface ParentViewRequest extends AuthRequest {
 export interface ParentViewsRouteDeps {
     store: ParentViewsStore;
     verifier: ParentViewVerifier;
+    familyDb?: FamilyReadDb;
+    now?: () => Date;
 }
 
 const DEFAULT_ATTENDANCE_LIMIT = 100;
@@ -120,6 +125,8 @@ export const createParentViewAuth = (verifier: ParentViewVerifier): RequestHandl
 
 export const createParentViewsRouter = (deps: ParentViewsRouteDeps): Router => {
     const router = Router();
+    router.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+    if (deps.familyDb) router.use('/family-summary', createFamilySummaryRouter({ db: deps.familyDb, verifier: deps.verifier, now: deps.now }));
     router.use(createParentViewAuth(deps.verifier));
 
     const scope = (req: ParentViewRequest): ParentViewScope | null => req.parentView ?? null;
@@ -164,12 +171,10 @@ export const createParentViewsRouter = (deps: ParentViewsRouteDeps): Router => {
     router.get('/grades', async (req: ParentViewRequest, res: Response) => {
         const view = scope(req);
         if (!view) return res.status(401).json({ error: 'Authentication required' });
-        try {
-            res.json(await deps.store.gradeSummary(view.tenantId, view.studentEnrollmentId));
-        } catch (error) {
-            console.error('Parent grades view error:', error);
-            res.status(500).json({ error: 'Failed to load the grades summary' });
-        }
+        // The legacy aggregate has no family-publication decision per source.
+        // A recorded score is not permission to publish it to the family.
+        // Keep the authenticated URL, but do not query or expose its scores.
+        return res.status(503).json({ code: 'PARENT_GRADE_PUBLICATION_UNCONFIGURED', error: 'Published family grades are not configured' });
     });
 
     return router;
@@ -320,6 +325,7 @@ const productionDb: ParentViewsDataAccess = {
 };
 
 export default createParentViewsRouter({
+    familyDb: productionDb,
     store: createSqlParentViewsStore(productionDb),
     verifier: createParentViewVerifier({
         store: createSqlParentLinksStore(productionDb),

@@ -156,6 +156,7 @@ const Header = () => {
           { name: "فريق الإدارة", href: "/admin/team", icon: Users, color: "text-cyan-400" },
           { name: "الأمان والتدقيق", href: "/admin/security", icon: ShieldCheck, color: "text-slate-300" },
           { name: "الدعم", href: "/support", icon: Headphones, color: "text-rose-400" },
+          { name: "متابعة الأسرة", href: "/family", icon: Users, color: "text-rose-400" },
         ],
       },
       {
@@ -202,6 +203,7 @@ const Header = () => {
             icon: Headphones,
             color: "text-rose-400",
           },
+          { name: "متابعة الأسرة", href: "/family", icon: Users, color: "text-rose-400" },
         ],
       },
       {
@@ -237,6 +239,12 @@ const Header = () => {
             href: "/manual-grading",
             icon: ClipboardCheck,
             color: "text-orange-400",
+          },
+          {
+            name: "مساحة عمل المدرس",
+            href: "/teacher-workspace",
+            icon: ClipboardCheck,
+            color: "text-blue-400",
           },
         ],
       },
@@ -628,6 +636,7 @@ const Header = () => {
       {/* Collapse toggle */}
       <button
         onClick={() => setIsCollapsed(!isCollapsed)}
+        aria-label={isCollapsed ? "توسيع القائمة الجانبية" : "طي القائمة الجانبية"}
         className="absolute top-4 left-[-12px] w-6 h-6 bg-slate-700 border border-slate-600 rounded-full shadow-lg flex items-center justify-center hover:bg-slate-600 hover:border-slate-500 transition-all z-50"
       >
         <ChevronLeft

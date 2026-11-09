@@ -1,0 +1,47 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build54-support.json",
+  "sections": [
+    {
+      "file": "20261105_02_support_lesson_context.sql",
+      "start": null,
+      "end": null,
+      "hash": "519507cd61d4f2a0b3d145f200fcc6c259b0657800f815d171a11f94f7811ced",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261105_03_support_private_notes.sql",
+      "start": null,
+      "end": null,
+      "hash": "1400bb812337c82d3c8f381868c8186129de39f6a676e2c036c912fff8434278",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261105_04_support_assignment.sql",
+      "start": null,
+      "end": null,
+      "hash": "7455eff29d9f70fc416619e402ba9e5086edd36b7c1377eff6ca4fa28ae45b24",
+      "completed": 2,
+      "total": 2
+    },
+    {
+      "file": "20261105_05_support_assigned_queue.sql",
+      "start": null,
+      "end": null,
+      "hash": "214ea5dba2ea09d8aca4f0efd94f29b646a05258c4359bbffbdfe16650b25e43",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261107_02_support_followup.sql",
+      "start": null,
+      "end": null,
+      "hash": "01d259ef5a9f178ca7a84582598fdf2f3256c9c6b54225e6839accc69d51e231",
+      "completed": 1,
+      "total": 1
+    }
+  ],
+  "finished_at": "2026-11-08T15:38:43.725Z"
+}

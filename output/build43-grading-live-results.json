@@ -1,0 +1,43 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checked_at": "2026-11-07T18:29:59.038Z",
+  "results": [
+    {
+      "check": "discovery and tenant/student denial",
+      "pass": true,
+      "studentStatus": 409,
+      "foreignStatus": 404
+    },
+    {
+      "check": "interactive anonymous answer remains available",
+      "pass": true
+    },
+    {
+      "check": "real MySQL version CAS: one accepted, one conflict",
+      "pass": true
+    },
+    {
+      "check": "durable receipt, matching replay and changed-payload refusal",
+      "pass": true
+    },
+    {
+      "check": "final score 8.50, single revision/projection and two receipts persisted",
+      "pass": true
+    },
+    {
+      "check": "real sealed audit chain verifies",
+      "pass": true
+    },
+    {
+      "check": "queue index selected on small fixture (not load acceptance)",
+      "pass": true
+    }
+  ],
+  "interactive": {
+    "route": "/manual-grading",
+    "examTitle": "تجربة التصحيح بالسؤال — جاهز للتجربة",
+    "ownerRole": "instructor",
+    "anonymousAnswers": 1
+  },
+  "limits": "Synthetic local fixture only; no browser/load/provider acceptance"
+}

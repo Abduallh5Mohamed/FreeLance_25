@@ -1,0 +1,38 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "actual empty/no-pin evidence has null counts; existing native owner attach/pin establishes explicit published version",
+      "pass": true
+    },
+    {
+      "check": "actual preparation summary and course group list prove pinned reference and restricted audience without granting delivery",
+      "pass": true
+    },
+    {
+      "check": "five exact graded catalog attempts produce 80%/40% tag evidence; pending, other lesson and manual answers excluded; fixed bounded public projection",
+      "pass": true
+    },
+    {
+      "check": "mutable bank head changes cannot replace pinned immutable version tags",
+      "pass": true
+    },
+    {
+      "check": "invalid automatic-answer ledger rejects complete evidence rather than counting missing data as zero",
+      "pass": true
+    },
+    {
+      "check": "window excludes out-of-period submission; four attempts remain insufficient rather than generating suggestions",
+      "pass": true
+    },
+    {
+      "check": "foreign owner/student and client identity selectors cannot read owner evidence",
+      "pass": true
+    },
+    {
+      "check": "native version withdrawal invalidates old evidence; explicit native repin restores it",
+      "pass": true
+    }
+  ],
+  "limits": "Synthetic disabled-account cohort and stored snapshots/attempts, not student attempt/grading execution or media delivery. Future-release lesson remains inaccessible."
+}

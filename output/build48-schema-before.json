@@ -1,0 +1,740 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "columns": [
+    {
+      "table_name": "exam_version_questions",
+      "name": "id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_version_questions",
+      "name": "exam_version_id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_version_questions",
+      "name": "tenant_id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_version_questions",
+      "name": "position",
+      "type": "int",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_version_questions",
+      "name": "question_id",
+      "type": "char(36)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_version_questions",
+      "name": "question_version",
+      "type": "int",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_version_questions",
+      "name": "source_version_id",
+      "type": "char(36)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_version_questions",
+      "name": "question_type",
+      "type": "enum('single_choice','multiple_choice','true_false','essay')",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_version_questions",
+      "name": "question_text",
+      "type": "text",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_version_questions",
+      "name": "options",
+      "type": "json",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_version_questions",
+      "name": "correct_answers",
+      "type": "json",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_version_questions",
+      "name": "points",
+      "type": "decimal(6,2)",
+      "nullable": "NO",
+      "default_value": "1.00"
+    },
+    {
+      "table_name": "exam_version_questions",
+      "name": "explanation",
+      "type": "text",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_version_questions",
+      "name": "content_hash",
+      "type": "char(64)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_version_questions",
+      "name": "created_at",
+      "type": "timestamp",
+      "nullable": "NO",
+      "default_value": "CURRENT_TIMESTAMP"
+    },
+    {
+      "table_name": "exam_versioned_answers",
+      "name": "id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_answers",
+      "name": "tenant_id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_answers",
+      "name": "attempt_id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_answers",
+      "name": "exam_version_id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_answers",
+      "name": "question_ref",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_answers",
+      "name": "question_type",
+      "type": "enum('single_choice','multiple_choice','true_false','essay')",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_answers",
+      "name": "response",
+      "type": "json",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_answers",
+      "name": "awarded_points",
+      "type": "decimal(6,2)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_answers",
+      "name": "is_correct",
+      "type": "tinyint(1)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_answers",
+      "name": "manual_review",
+      "type": "tinyint(1)",
+      "nullable": "NO",
+      "default_value": "0"
+    },
+    {
+      "table_name": "exam_versioned_answers",
+      "name": "created_at",
+      "type": "timestamp",
+      "nullable": "NO",
+      "default_value": "CURRENT_TIMESTAMP"
+    },
+    {
+      "table_name": "exam_versioned_answers",
+      "name": "updated_at",
+      "type": "timestamp",
+      "nullable": "NO",
+      "default_value": "CURRENT_TIMESTAMP"
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "tenant_id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "exam_id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "exam_version_id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "student_enrollment_id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "student_user_id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "status",
+      "type": "enum('in_progress','pending_review','graded','expired')",
+      "nullable": "NO",
+      "default_value": "in_progress"
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "started_at",
+      "type": "datetime",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "deadline_at",
+      "type": "datetime",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "submitted_at",
+      "type": "datetime",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "auto_submitted",
+      "type": "tinyint(1)",
+      "nullable": "NO",
+      "default_value": "0"
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "auto_score",
+      "type": "decimal(10,2)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "score",
+      "type": "decimal(10,2)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "manual_required",
+      "type": "tinyint(1)",
+      "nullable": "NO",
+      "default_value": "0"
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "grading_fingerprint",
+      "type": "char(64)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "graded_at",
+      "type": "datetime",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "passed",
+      "type": "tinyint(1)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "reviewer_user_id",
+      "type": "char(36)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "created_at",
+      "type": "timestamp",
+      "nullable": "NO",
+      "default_value": "CURRENT_TIMESTAMP"
+    },
+    {
+      "table_name": "exam_versioned_attempts",
+      "name": "version",
+      "type": "int",
+      "nullable": "NO",
+      "default_value": "0"
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "exam_id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "tenant_id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "version",
+      "type": "int",
+      "nullable": "NO",
+      "default_value": "1"
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "status",
+      "type": "enum('draft','published','archived')",
+      "nullable": "NO",
+      "default_value": "draft"
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "duration_seconds",
+      "type": "int",
+      "nullable": "NO",
+      "default_value": "3600"
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "opens_at",
+      "type": "datetime",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "closes_at",
+      "type": "datetime",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "grace_seconds",
+      "type": "int",
+      "nullable": "NO",
+      "default_value": "0"
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "total_points",
+      "type": "decimal(10,2)",
+      "nullable": "NO",
+      "default_value": "0.00"
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "passing_points",
+      "type": "decimal(10,2)",
+      "nullable": "NO",
+      "default_value": "0.00"
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "scoring_policy",
+      "type": "json",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "published_at",
+      "type": "datetime",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "created_by",
+      "type": "char(36)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "created_at",
+      "type": "timestamp",
+      "nullable": "NO",
+      "default_value": "CURRENT_TIMESTAMP"
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "updated_at",
+      "type": "timestamp",
+      "nullable": "NO",
+      "default_value": "CURRENT_TIMESTAMP"
+    },
+    {
+      "table_name": "exam_versions",
+      "name": "version_lock",
+      "type": "int",
+      "nullable": "NO",
+      "default_value": "0"
+    },
+    {
+      "table_name": "students",
+      "name": "id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": "uuid()"
+    },
+    {
+      "table_name": "students",
+      "name": "user_id",
+      "type": "char(36)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "name",
+      "type": "varchar(255)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "email",
+      "type": "varchar(255)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "phone",
+      "type": "varchar(50)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "guardian_phone",
+      "type": "varchar(20)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "guardian_name",
+      "type": "varchar(255)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "grade",
+      "type": "varchar(100)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "grade_id",
+      "type": "char(36)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "group_id",
+      "type": "char(36)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "instructor_id",
+      "type": "char(36)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "tenant_id",
+      "type": "char(36)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "barcode",
+      "type": "varchar(50)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "is_offline",
+      "type": "tinyint(1)",
+      "nullable": "YES",
+      "default_value": "0"
+    },
+    {
+      "table_name": "students",
+      "name": "password_hash",
+      "type": "varchar(255)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "approval_status",
+      "type": "enum('pending','approved','rejected')",
+      "nullable": "YES",
+      "default_value": "approved"
+    },
+    {
+      "table_name": "students",
+      "name": "parent_phone",
+      "type": "varchar(50)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "address",
+      "type": "text",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "notes",
+      "type": "text",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "is_active",
+      "type": "tinyint(1)",
+      "nullable": "YES",
+      "default_value": "1"
+    },
+    {
+      "table_name": "students",
+      "name": "created_at",
+      "type": "timestamp",
+      "nullable": "YES",
+      "default_value": "CURRENT_TIMESTAMP"
+    },
+    {
+      "table_name": "students",
+      "name": "updated_at",
+      "type": "timestamp",
+      "nullable": "YES",
+      "default_value": "CURRENT_TIMESTAMP"
+    },
+    {
+      "table_name": "students",
+      "name": "enrollment_status",
+      "type": "varchar(20)",
+      "nullable": "YES",
+      "default_value": "active"
+    },
+    {
+      "table_name": "students",
+      "name": "enrollment_start_date",
+      "type": "datetime",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "enrollment_end_date",
+      "type": "datetime",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "students",
+      "name": "term",
+      "type": "varchar(50)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "users",
+      "name": "id",
+      "type": "char(36)",
+      "nullable": "NO",
+      "default_value": "uuid()"
+    },
+    {
+      "table_name": "users",
+      "name": "email",
+      "type": "varchar(255)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "users",
+      "name": "phone",
+      "type": "varchar(50)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "users",
+      "name": "password_hash",
+      "type": "varchar(255)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "users",
+      "name": "name",
+      "type": "varchar(255)",
+      "nullable": "NO",
+      "default_value": null
+    },
+    {
+      "table_name": "users",
+      "name": "role",
+      "type": "enum('admin','teacher','student','instructor','staff')",
+      "nullable": "NO",
+      "default_value": "student"
+    },
+    {
+      "table_name": "users",
+      "name": "student_id",
+      "type": "char(36)",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "users",
+      "name": "is_active",
+      "type": "tinyint(1)",
+      "nullable": "YES",
+      "default_value": "1"
+    },
+    {
+      "table_name": "users",
+      "name": "email_verified",
+      "type": "tinyint(1)",
+      "nullable": "YES",
+      "default_value": "0"
+    },
+    {
+      "table_name": "users",
+      "name": "phone_verified",
+      "type": "tinyint(1)",
+      "nullable": "YES",
+      "default_value": "0"
+    },
+    {
+      "table_name": "users",
+      "name": "created_at",
+      "type": "timestamp",
+      "nullable": "YES",
+      "default_value": "CURRENT_TIMESTAMP"
+    },
+    {
+      "table_name": "users",
+      "name": "updated_at",
+      "type": "timestamp",
+      "nullable": "YES",
+      "default_value": "CURRENT_TIMESTAMP"
+    },
+    {
+      "table_name": "users",
+      "name": "suspended_until",
+      "type": "datetime",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "users",
+      "name": "suspension_reason",
+      "type": "text",
+      "nullable": "YES",
+      "default_value": null
+    },
+    {
+      "table_name": "users",
+      "name": "token_version",
+      "type": "int",
+      "nullable": "NO",
+      "default_value": "0"
+    }
+  ]
+}

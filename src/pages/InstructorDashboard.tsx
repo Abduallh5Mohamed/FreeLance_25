@@ -41,6 +41,7 @@ import {
   type TenantProfileState,
 } from '@/features/tenant/profile';
 import BranchManager from '@/features/tenant/BranchManager';
+import CenterOperations from '@/features/tenant/CenterOperations';
 import TenantBrandingCard from '@/features/tenant/TenantBrandingCard';
 import AcademicPeriodsCard from '@/features/tenant/AcademicPeriodsCard';
 
@@ -425,6 +426,7 @@ export default function InstructorDashboard() {
 
         {/* Tenant branch metadata — dedicated component, opened explicitly (M2-07) */}
         <BranchManager />
+        <CenterOperations />
 
         {/* Private localized branding — dedicated card, opened explicitly (M2-12) */}
         <TenantBrandingCard />

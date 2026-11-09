@@ -98,6 +98,7 @@ export const createSqlOtpDeps = (db: ParentLinksDataAccess): IdentityOtpDeps => 
 
 export const createParentLinksRouter = (deps: ParentLinksRouteDeps): Router => {
     const router = Router();
+    router.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
     router.use(deps.authenticate);
 
     const buildService = (): ParentLinksService => createParentLinksService({
@@ -113,6 +114,12 @@ export const createParentLinksRouter = (deps: ParentLinksRouteDeps): Router => {
         const user = req.user;
         if (!user) {
             res.status(401).json({ error: 'Authentication required' });
+            return null;
+        }
+        // Family links belong to a real users-table principal. A tenant staff
+        // identity or support impersonation cannot become a parent by id collision.
+        if (user.identitySource === 'staff' || user.billingOnly || req.impersonation || req.headers['x-impersonation'] !== undefined) {
+            res.status(403).json({ error: 'A direct personal session is required' });
             return null;
         }
         return { id: user.id, role: user.role, studentEnrollmentId: user.studentEnrollmentId };
@@ -207,8 +214,9 @@ export const createParentLinksRouter = (deps: ParentLinksRouteDeps): Router => {
                 created_at: link.created_at ?? null,
             })));
         } catch (error) {
-            console.error('Parent link list error:', error);
-            res.status(500).json({ error: 'Failed to list parent links' });
+            // A missing schema/store is unavailable, never an empty family.
+            // Do not log driver details that can include private row parameters.
+            res.status(503).json({ code: 'PARENT_LINKS_UNAVAILABLE', error: 'Parent links are temporarily unavailable' });
         }
     });
 
@@ -257,10 +265,9 @@ export const createParentLinksRouter = (deps: ParentLinksRouteDeps): Router => {
             });
         } catch (error) {
             if (error instanceof ParentViewSecretUnavailableError) {
-                return res.status(503).json({ error: 'Parent views are not available' });
+                return res.status(503).json({ code: 'PARENT_SESSION_UNAVAILABLE', error: 'Parent views are not available' });
             }
-            console.error('Parent session token error:', error);
-            res.status(500).json({ error: 'Failed to issue a parent session token' });
+            res.status(503).json({ code: 'PARENT_SESSION_UNAVAILABLE', error: 'Parent session is temporarily unavailable' });
         }
     });
 

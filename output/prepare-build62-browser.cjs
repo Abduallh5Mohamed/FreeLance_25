@@ -1,0 +1,10 @@
+const fs=require('node:fs');
+const source=fs.readFileSync('output/verify-build61-browser.cjs','utf8');
+const sql=fs.readFileSync('output/verify-build61-sql.cjs','utf8');
+fs.writeFileSync('output/verify-build62-original-flow-sql.cjs','// Current-source real SQL regressions; separate evidence from historical BUILD-61.\n'+sql.replaceAll('build61-','build62-original-flow-'));
+if(!source.includes('build61-test-sessions.json')||!source.includes('build61-browser-results.json'))throw Error('BASELINE_BROWSER_RUNNER_MISMATCH');
+fs.writeFileSync('output/verify-build62-workspace-browser.cjs','// BUILD-61 native workspace cases rerun for BUILD-62; separate current evidence and private sessions.\n'+source.replaceAll('build61-','build62-'));
+const terminal=fs.readFileSync('output/verify-build55-quiz-terminal.cjs','utf8');
+if(!terminal.includes('build55-test-sessions.json'))throw Error('TERMINAL_BROWSER_RUNNER_MISMATCH');
+fs.writeFileSync('output/verify-build62-quiz-terminal.cjs','// Existing native terminal learner journey rerun for current BUILD-62.\n'+terminal.replaceAll('build55-test-sessions.json','build62-test-sessions.json').replaceAll('build55-quiz-submitted.png','build62-quiz-submitted.png').replaceAll('build55-terminal-browser-results.json','build62-terminal-browser-results.json').replace("await li.getByRole('button',{name:'عرض التعليمات والتفاصيل',exact:true}).click();","await li.getByRole('region',{name:'تقييمات الدرس المخصصة لي',exact:true}).locator('li').filter({hasText:/كويز:/}).getByRole('button',{name:'عرض التعليمات والتفاصيل',exact:true}).click();"));
+console.log('Prepared current native workspace browser regression with separate BUILD-62 artifacts.');

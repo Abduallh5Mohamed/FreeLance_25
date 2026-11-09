@@ -1,0 +1,47 @@
+{
+  "results": [
+    {
+      "route": "/auth",
+      "before": [
+        1116503,
+        1116503,
+        1116503
+      ],
+      "after": [
+        180575,
+        180575,
+        180575
+      ],
+      "reduction_percent": 83.83
+    },
+    {
+      "route": "/discover",
+      "before": [
+        1116503,
+        1116503,
+        1116503
+      ],
+      "after": [
+        187450,
+        187450,
+        187450
+      ],
+      "reduction_percent": 83.21
+    },
+    {
+      "route": "/courses",
+      "before": [
+        1116503,
+        1116503,
+        1116503
+      ],
+      "after": [
+        180575,
+        180575,
+        180575
+      ],
+      "reduction_percent": 83.83
+    }
+  ],
+  "limits": "Three cold desktop contexts per path, local gzip test server; not field/mobile/load latency acceptance."
+}

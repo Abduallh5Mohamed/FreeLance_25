@@ -1,0 +1,44 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "notCommittedOperation": "3619a8e7-818c-44f9-b8da-4c408216383b",
+  "committedOperation": "0b7a2932-1e45-43c5-8474-927ac3079f87",
+  "protectedBefore": {
+    "exam_version_questions": "52ed0d1c4edf1f156644eae811742289ef95e888efbe415b46acc46ea66c17c7",
+    "exam_versioned_attempts": "b26d503dff44642e2eda21e0bd8d592e1290bd88aea2b889a78fc9df22d8999b",
+    "exam_manual_answer_revisions": "00ce74728af25106683bf346cbf63b85d15dd51b46d6b716965266970c046ca9",
+    "gradebook_scores": "c32a901e78fd4296707c58d983b58771fe8d00ed3a236096e8d1d538d3ddbfeb",
+    "exam_rubric_awards": "15e71875a43445d65c0150108e28c38e037e895db67c7c6c336ac40945f32810",
+    "users_security": "dd1e5763d6c864f1151318fc967861e3245d37b94bb22925a0fc257281092836"
+  },
+  "notCommittedChecked": {
+    "counts": {
+      "commit_calls": 1,
+      "rollback_calls": 1,
+      "destroy_calls": 1,
+      "releases": 0
+    },
+    "receipt_absent": true,
+    "no_automatic_retry": true
+  },
+  "payload": {
+    "operation_id": "0b7a2932-1e45-43c5-8474-927ac3079f87",
+    "expected_version": 5,
+    "assignee_user_id": "a8b0e9d7-3466-43ed-a95d-0908a7e5fab0",
+    "rubric_id": "f9329f2c-ff29-4b6f-9cac-ac872d8bdb49"
+  },
+  "committedChecked": {
+    "counts": {
+      "commit_calls": 1,
+      "rollback_calls": 1,
+      "destroy_calls": 1,
+      "releases": 0
+    },
+    "receipt": {
+      "kind": "assignment.saved",
+      "version": 6,
+      "resource_id": "78f6155c-1298-4f59-b6fd-e46268f06adc",
+      "operation_id": "0b7a2932-1e45-43c5-8474-927ac3079f87",
+      "question_ref": "7e91b7ba-9a97-4874-92df-77da16783d5d"
+    }
+  }
+}

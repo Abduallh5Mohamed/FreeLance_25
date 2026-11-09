@@ -51,6 +51,11 @@ const API_STUB = [
 ].join("\n");
 
 const API_HTTP_STUB = [
+  // The page now imports the follow-up reader. These tests exercise exported
+  // page controllers only; actual follow-up transport behavior has its own suite.
+  "export class ApiRequestError extends Error { constructor(message,status,code) { super(message); this.status=status; this.code=code; } }",
+  "export const authenticatedApiFetch = async () => { throw new Error('Unexpected transport in page-controller suite'); };",
+  "export const readAuthenticatedApiJson = async () => { throw new Error('Unexpected transport in page-controller suite'); };",
   "export const getAssignedSupportTickets = async () => ({ tickets: [], next_cursor: null });",
   "export const getSupportAssignment = async () => ({});",
   "export const getSupportAssignmentCandidates = async () => ({ candidates: [], next_cursor: null });",

@@ -1,0 +1,1 @@
+const fs=require('node:fs'),p='output/verify-build57-task1.cjs';let s=fs.readFileSync(p,'utf8').replace('course_id,group_id,audience,title','course_id,group_id,title').replace("VALUES(?,?,?,?,'group','BUILD57", "VALUES(?,?,?,?,'BUILD57").replace("NULL,'allow','always',3", "NULL,'accept','allow',3");fs.writeFileSync(p,s);

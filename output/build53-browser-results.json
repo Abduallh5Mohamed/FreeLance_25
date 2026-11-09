@@ -1,0 +1,29 @@
+{
+  "browser": "157.0.8103.38",
+  "checks": [
+    {
+      "check": "actual owner capability is deferred, operational UI hidden and direct POST rejected409 by the server-owned flag",
+      "pass": true
+    },
+    {
+      "check": "explicitly mocked enablement/owner transport: preview/confirmation, unknown write, reload and GET-only receipt recovery; one POST",
+      "pass": true
+    },
+    {
+      "check": "actual public availability keeps student OTP controls hidden while deferred",
+      "pass": true
+    },
+    {
+      "check": "mocked student OTP and linking transports: consent, lost ACK/reload/GET recovery and explicit withdrawal; one request POST plus one withdrawal POST",
+      "pass": true
+    },
+    {
+      "check": "mocked historical request remains readable after the UI returns to deferred and the receipt marker is cleaned; no new write",
+      "pass": true
+    }
+  ],
+  "ownerPosts": 1,
+  "studentPosts": 1,
+  "withdrawals": 1,
+  "limits": "Only authentication, deferred capabilities and direct owner409 use actual runtime. Positive linking, OTP and receipt responses are explicitly mocked UI transports: no SQL, delivery or end-to-end identity acceptance."
+}

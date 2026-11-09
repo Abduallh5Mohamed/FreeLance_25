@@ -1,0 +1,25 @@
+{
+  "browser": "157.0.8103.38",
+  "checks": [
+    {
+      "check": "actual mounted owner route fails closed503 with unavailable schema; UI presents unavailable rather than empty readiness",
+      "pass": true
+    },
+    {
+      "check": "mocked owner transport: explicit preview/confirmation, unknown write, reload and GET-only receipt recovery; one POST",
+      "pass": true
+    },
+    {
+      "check": "mocked student OTP and linking transports: consent, lost ACK/reload/GET recovery and explicit withdrawal; one request POST plus one withdrawal POST",
+      "pass": true
+    },
+    {
+      "check": "mocked current-request GET finds historical request after receipt marker cleanup and later reload without a new write",
+      "pass": true
+    }
+  ],
+  "ownerPosts": 1,
+  "studentPosts": 1,
+  "withdrawals": 1,
+  "limits": "Only authentication and owner-unavailable503 use actual runtime. Positive linking, OTP and receipt responses are explicitly mocked UI transports: no SQL, delivery or end-to-end identity acceptance."
+}

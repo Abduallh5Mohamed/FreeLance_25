@@ -48,6 +48,8 @@ import {
   type StudentFormValues,
 } from '@/features/enrollment/instructor-students';
 import StudentImportPreview from '@/features/students/StudentImportPreview';
+import {OfflineStudentSetup} from '@/features/students/OfflineStudentSetup';
+import {AccountLinkOwnerPanel} from '@/features/enrollment/AccountLinkPanels';
 
 const EMPTY_FORM: StudentFormValues = {
   name: '',
@@ -559,6 +561,8 @@ export default function InstructorStudents() {
             it never calls an API, never creates a student and never touches
             the stored enrollment state. */}
         <StudentImportPreview />
+        <AccountLinkOwnerPanel />
+        <OfflineStudentSetup />
 
         {/* M2-18 — the bounded ACTIVE-branch catalog, read as its own section.
             Only active branches are selectable; the page never drains further

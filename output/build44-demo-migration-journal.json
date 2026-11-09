@@ -1,0 +1,43 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build44-template-import.json",
+  "sections": [
+    {
+      "file": "20261019_02_course_units.sql",
+      "hash": "6397004580b42a7f1dde61b8c8db0e102410259e0497bda3a44097e47760e208",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261021_01_course_lessons.sql",
+      "hash": "f789dbfba6416b6a608a24967bd88a1c5a1a326997948b580bda9517b629efab",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261023_04_lesson_release_progress.sql",
+      "hash": "512093451ff108e7542b4a6c000f9333f81d14c0bb79a7276d6f01c8641c1951",
+      "completed": 2,
+      "total": 2
+    },
+    {
+      "file": "20261106_10_lesson_package_templates.sql",
+      "hash": "1df49f94632f335cfda466754e1ab9d373c382718f1c7cbbfe5457eb1020e847",
+      "completed": 3,
+      "total": 3
+    },
+    {
+      "file": "20261106_11_lesson_template_operations.sql",
+      "hash": "5bfef96d4879fd65dcf0726ac85701c7ca87c8d7c14fb3bc9626ecd1cd7e7c84",
+      "completed": 2,
+      "total": 2
+    },
+    {
+      "file": "20261107_05_season_template_import.sql",
+      "hash": "8f4c4cbe5165b1a90f5c98384debd0eefea8c63cad1b0f9a776e0d4561906cf5",
+      "completed": 1,
+      "total": 1
+    }
+  ],
+  "finished_at": "2026-11-07T19:44:41.670Z"
+}

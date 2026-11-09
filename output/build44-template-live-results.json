@@ -1,0 +1,35 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checked_at": "2026-11-07T19:50:10.317Z",
+  "results": [
+    {
+      "check": "explicit source revision and target choices; foreign tenant denied; private projection",
+      "pass": true
+    },
+    {
+      "check": "old-course source ID cannot act as a target-course binding",
+      "pass": true
+    },
+    {
+      "check": "changed target metadata invalidates approval before any import",
+      "pass": true
+    },
+    {
+      "check": "independent real concurrent fresh approvals create one pinned import",
+      "pass": true
+    },
+    {
+      "check": "new revision references only mapped target material; origin unchanged and provenance retained",
+      "pass": true
+    },
+    {
+      "check": "original library metadata and revisions display the imported template",
+      "pass": true
+    },
+    {
+      "check": "real sealed audit chain verifies",
+      "pass": true
+    }
+  ],
+  "limits": "material metadata references only; no actual PDF delivery or unrelated-kind/live load acceptance"
+}

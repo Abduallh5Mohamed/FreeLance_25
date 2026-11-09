@@ -1,0 +1,87 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build45-lesson-package.json",
+  "sections": [
+    {
+      "file": "20261018_08_question_bank_assignments.sql",
+      "start": "SET @has_assignments =",
+      "end": "SET @has_submissions =",
+      "hash": "2b9d5fab1d8eb561187747cfcd0157fcd061199b83b48393ef5adf37748ece1d",
+      "completed": 6,
+      "total": 6
+    },
+    {
+      "file": "20261103_01_course_lesson_contents.sql",
+      "start": null,
+      "end": null,
+      "hash": "8c5611e7367471500606b1711f6ef1617abe76fffe061bf26169a12a98036c46",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261104_01_course_material_files.sql",
+      "start": null,
+      "end": null,
+      "hash": "f958ec6420f69abb19b4bb65ac68b314186531f575f1e8a4d488060026c6458d",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261105_01_material_file_ingestion.sql",
+      "start": null,
+      "end": null,
+      "hash": "eef6fdecf8f0c64050f5ba3bcf722502c09ca0d8b594d9acd856baa40c1ca652",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261106_01_course_lesson_videos.sql",
+      "start": null,
+      "end": null,
+      "hash": "1ce48424980b2b83740fe666f7b49ff5bd6673ccdd93f590bc6aafe2cbb1134a",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261106_03_course_lesson_activities.sql",
+      "start": null,
+      "end": null,
+      "hash": "ba304fa6a11ec98ac33ea12615a3060cc6a3d49f9e49cc466cb7b97602a534cf",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261023_02_group_announcements.sql",
+      "start": null,
+      "end": null,
+      "hash": "aef7949b97206dc4354b4a68767f640d2da748e7ba8df518788b754c09315bb6",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261106_07_course_lesson_announcements.sql",
+      "start": null,
+      "end": null,
+      "hash": "0ca1775b983e939737bedf6664b9b309be0666e86d330067a5376c27aba1d9af",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261106_09_course_lesson_package_operations.sql",
+      "start": null,
+      "end": null,
+      "hash": "9c5350e7b7865754be4c9d5958eafbbe0297d53e4d78f35ff49b5390b6bf1c78",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20260922_00_tenant_media_and_subscription_requests.sql",
+      "start": "ALTER TABLE videos ADD COLUMN tenant_id",
+      "end": "ALTER TABLE video_processing_queue",
+      "hash": "3d688cafb37a4205e607574ded11dc329556fb33f636575531f64f37ebbc19c1",
+      "completed": 3,
+      "total": 3
+    }
+  ],
+  "finished_at": "2026-11-07T21:28:23.674Z"
+}

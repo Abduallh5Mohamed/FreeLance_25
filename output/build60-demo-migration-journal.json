@@ -1,0 +1,15 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build60-grading.json",
+  "sections": [
+    {
+      "file": "20261109_01_grading_delegation.sql",
+      "start": null,
+      "end": null,
+      "hash": "625fd8ab6f056cf97c4fcbac4ac14a5aec48f61e0898abb9fead39be841ce6f6",
+      "completed": 3,
+      "total": 3
+    }
+  ],
+  "finished_at": "2026-11-08T23:40:48.815Z"
+}

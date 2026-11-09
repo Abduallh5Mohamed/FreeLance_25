@@ -1,0 +1,15 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build56-family.json",
+  "sections": [
+    {
+      "file": "20261018_13_parent_links.sql",
+      "start": null,
+      "end": null,
+      "hash": "bcd1a2f1b8c12f152e31f4f1a006f06dc1016683984003194066bce32adcb47b",
+      "completed": 31,
+      "total": 31
+    }
+  ],
+  "finished_at": "2026-11-08T19:01:34.315Z"
+}

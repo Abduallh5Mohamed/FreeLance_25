@@ -1,0 +1,11 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "present": [],
+  "missing": [
+    "student_account_link_requests",
+    "student_account_link_operations",
+    "identity_otp_challenges"
+  ],
+  "writes": 0,
+  "limits": "Read-only catalog check; no OTP contact verification, data mutation or provider call."
+}

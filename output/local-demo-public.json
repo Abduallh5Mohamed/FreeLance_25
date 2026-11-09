@@ -1,0 +1,43 @@
+{
+    "database":  "tabweb_demo_20261107162429",
+    "privateDir":  "C:\\Users\\BaraaWael\\AppData\\Local\\Tabweb\\LocalDemo\\20261107-182429",
+    "accounts":  [
+                     {
+                         "key":  "admin",
+                         "role":  "admin",
+                         "phone":  "01000009001",
+                         "route":  "/admin"
+                     },
+                     {
+                         "key":  "teacher",
+                         "role":  "teacher",
+                         "phone":  "01000009002",
+                         "route":  "/teacher"
+                     },
+                     {
+                         "key":  "instructor",
+                         "role":  "instructor",
+                         "phone":  "01000009003",
+                         "route":  "/teacher"
+                     },
+                     {
+                         "key":  "staff",
+                         "role":  "staff",
+                         "phone":  "01000009004",
+                         "route":  "/teacher"
+                     },
+                     {
+                         "key":  "student",
+                         "role":  "student",
+                         "phone":  "01000009005",
+                         "route":  "/student-spaces"
+                     },
+                     {
+                         "key":  "season-student",
+                         "role":  "student",
+                         "phone":  "01000009006",
+                         "route":  "/student-spaces"
+                     }
+                 ],
+    "tablesCloned":  84
+}

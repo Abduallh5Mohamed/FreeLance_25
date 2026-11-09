@@ -339,7 +339,7 @@ test('child: a missing row is 404 and never falls back to another child', async 
     });
 });
 
-test('progress, attendance and grades are scoped to the token tenant + enrollment', async () => {
+test('progress and attendance are scoped; legacy grade aggregate is unavailable without publication proof', async () => {
     await withViews({
         extra: (state) => {
             state.progress = { courses: [{ course_id: 'c1', course_name: 'Math', completed_lessons: 3, total_lessons: 5 }], totals: { completed_lessons: 3, total_lessons: 5 } };
@@ -357,8 +357,10 @@ test('progress, attendance and grades are scoped to the token tenant + enrollmen
         assert.equal(attendance.statusCode, 200);
         assert.equal((attendance.body as AttendanceRecordView[]).length, 1);
         const grades = await request(h, '/grades', token);
-        assert.equal(grades.statusCode, 200);
-        assert.equal((grades.body as GradeSummary).courses[0].total_score, 80);
+        assert.equal(grades.statusCode, 503);
+        assert.deepEqual(grades.body, { code: 'PARENT_GRADE_PUBLICATION_UNCONFIGURED', error: 'Published family grades are not configured' });
+        assert.equal(grades.headers?.['cache-control'], 'no-store');
+        assert.equal(h.state.calls.some(call => call.method === 'grades'), false);
         for (const call of h.state.calls) {
             assert.equal(call.tenantId, TENANT);
             assert.equal(call.enrollmentId, ENROLLMENT);

@@ -1,0 +1,30 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "actual owner-only bounded student/group pages with explicit DTOs and no-store",
+      "pass": true
+    },
+    {
+      "check": "existing linked account, foreign group/owner, learner and injected scope rejected before writing",
+      "pass": true
+    },
+    {
+      "check": "changed review evidence rejects apply with no student write; exact synthetic capacity restored",
+      "pass": true
+    },
+    {
+      "check": "concurrent distinct operations yield one commit and one conflict; exact replay is historical and changed-body replay rejected",
+      "pass": true
+    },
+    {
+      "check": "same student ID, one native active course assignment, one sealed audit, one receipt and no new login account; GET recovers durable result",
+      "pass": true
+    },
+    {
+      "check": "completed record leaves eligible page while separate browser fixture remains unlinked",
+      "pass": true
+    }
+  ],
+  "limits": "Synthetic local MySQL only. Live SQL capacity change is an isolated test fixture restored in finally. Browser fixture reserved for separate lost-ACK test. No providers, online account conversion, branch setup, production/load or independent human acceptance."
+}

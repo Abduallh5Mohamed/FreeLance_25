@@ -8,6 +8,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { getEnrollmentInviteInfo, requestStudentPasswordReset, submitEnrollmentRequest } from '@/lib/api';
 import { subscribeSessionChange } from '@/lib/session-events';
 import { createJoinInviteController, reconcileInviteSelection, type JoinInviteForm } from '@/features/enrollment/workflows';
+import {AccountLinkStudentPanel} from '@/features/enrollment/AccountLinkPanels';
 
 /** The canonical stored identity (api-http writes it under `currentUser`).
  *  Read on demand — never memoized once — so the page never keeps using a
@@ -65,6 +66,7 @@ export default function JoinInstructor() {
   if (state.submitted) return <main className="flex min-h-screen items-center justify-center bg-slate-50 p-4" dir="rtl"><Card className="w-full max-w-lg"><CardContent className="space-y-4 p-8 text-center"><h1 className="text-2xl font-bold">تم إرسال طلبك</h1><p>طلبك في انتظار مراجعة المدرس. بعد الموافقة سجّل الدخول برقمك وكلمة المرور من المنصة دون الحاجة للرابط.</p><Button asChild><Link to="/auth">الذهاب لتسجيل الدخول</Link></Button></CardContent></Card></main>;
 
   return <main className="min-h-screen bg-slate-50 p-4 py-10" dir="rtl"><Card className="mx-auto max-w-2xl"><CardHeader><CardTitle>الانضمام إلى {state.info?.business_name || 'مساحة المدرس'}</CardTitle>{state.info?.subject_type && <p className="font-medium text-indigo-600">المادة: {state.info.subject_type}</p>}<p className="text-sm text-slate-500">بياناتك لا تظهر إلا للمدرس صاحب الرابط وإدارة الدعم المخولة.</p></CardHeader><CardContent>
+    {state.phase==='ready'&&state.info?<AccountLinkStudentPanel key={token} invitation={token}/>:null}
     {state.actionError && <p role="alert" className="mb-4 rounded-md bg-red-50 p-3 text-red-700">{state.actionError}</p>}
     {state.phase === 'incomplete' ? <p role="alert" className="rounded-md bg-amber-50 p-3 text-amber-800">رابط الانضمام غير مكتمل. اطلب من المدرس رابط انضمام جديدًا.</p> : state.phase === 'loading' ? <p>جارٍ تحميل نموذج التسجيل…</p> : state.phase === 'expired' ? <div role="alert" className="space-y-3 rounded-md bg-amber-50 p-3 text-amber-800"><p>رابط التسجيل غير صالح أو منتهي الصلاحية. اطلب من المدرس رابط انضمام جديدًا.</p>{state.message && <p className="text-xs">{state.message}</p>}<Button type="button" variant="outline" onClick={() => controller.loadInvite(token)}>إعادة تحميل الرابط</Button></div> : state.phase === 'denied' ? <p role="alert" className="rounded-md bg-red-50 p-3 text-red-700">{state.message}</p> : state.phase === 'error' ? <div className="space-y-3"><p role="alert" className="rounded-md bg-red-50 p-3 text-red-700">{state.message}</p><Button type="button" variant="outline" onClick={() => controller.loadInvite(token)}>إعادة تحميل الرابط</Button></div> : state.phase === 'ready' && state.info && <form className="grid gap-4 md:grid-cols-2" onSubmit={submit}>
       <div><Label htmlFor="join-student-name">اسم الطالب</Label><Input id="join-student-name" required value={form.student_name} onChange={e => setForm({ ...form, student_name: e.target.value })} /></div>

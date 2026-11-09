@@ -1,5 +1,7 @@
 # J04 — platform-support assignment and transfer (BUILD-14)
 
+BUILD-54 continuation (2026-11-08): relevant schema/indexes applied only to the isolated synthetic demo after snapshot; older unapplied statements below describe earlier checkpoints. Native generic-ticket HTTP/browser verification and rollback-only SQL transfer/revocation/paging/failure evidence: [report](../../agent-context/BUSINESS-IMPLEMENTATION-2026-11-08-BUILD-54.md). Assignment snapshot/candidate reads share a bounded 25s deadline (including pagination); timeout releases busy state and fences late results. A confirmed write remains confirmed if its refresh times out. Existing audit is atomic but unsealed; no center-staff, lesson-context, SLA, production or load acceptance. Online linking remains deferred.
+
 Current follow-up: [BUILD-16 self-assigned queue](J04-SUPPORT-ASSIGNED-QUEUE.md) implements the private paged view and actual UI locally with an unapplied index. Historical assigned-queue pending statements below are superseded by that contract; staff mapping and response-time policy remain open.
 
 Local backend checkpoint, 2026-11-05. Continues [private notes](J04-SUPPORT-PRIVATE-NOTES.md). This slice implements the real mounted backend contract; the assignee picker and actual Support-page workflow are still pending. No tenant teacher/staff authority or automatic routing is introduced.

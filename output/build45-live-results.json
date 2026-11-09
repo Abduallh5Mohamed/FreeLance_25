@@ -1,0 +1,45 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checked_at": "2026-11-07T21:41:28.310Z",
+  "results": [
+    {
+      "check": "real owner creates and pages units/lessons via existing routes",
+      "pass": true
+    },
+    {
+      "check": "two reviewed application operations produce one reference and one receipt",
+      "pass": true
+    },
+    {
+      "check": "original application engine persisted target material and recoverable receipt",
+      "pass": true
+    },
+    {
+      "check": "authorized new enrollment sees private metadata only after explicit course publication; file stays unavailable",
+      "pass": true
+    },
+    {
+      "check": "old student identity cannot select an attempt as workspace or read newly enrolled course",
+      "pass": true
+    },
+    {
+      "check": "future release and incomplete prerequisite block content before returning metadata",
+      "pass": true
+    },
+    {
+      "check": "withdrawn material disappears on fresh read without cache leakage",
+      "pass": true
+    },
+    {
+      "check": "course withdrawal denies subsequent read and unconfigured PDF refuses binary delivery",
+      "pass": true
+    },
+    {
+      "check": "sealed audit history remains valid; legacy application audit is reported separately as unsealed",
+      "pass": true,
+      "unsealed": 16
+    }
+  ],
+  "courseName": "رحلة الموسم 2029 — تجربة الحصة",
+  "limits": "synthetic metadata and authorization only; no actual scanned PDF/provider/load acceptance"
+}

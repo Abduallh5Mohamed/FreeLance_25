@@ -1,0 +1,26 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "native authenticated non-owner course teacher discovers its own course and exact empty lesson list; no-store responses",
+      "pass": true
+    },
+    {
+      "check": "institution ownership and another teacher membership confer no course discovery; platform admin and legacy staff denied",
+      "pass": true
+    },
+    {
+      "check": "existing responsible instructor retains native current source/pinned quiz and automatic tag-evidence reads",
+      "pass": true
+    },
+    {
+      "check": "native teacher sees actual current return-plan state; unrelated teaching/platform/staff accounts cannot inspect saved progress",
+      "pass": true
+    },
+    {
+      "check": "actual native season configuration/template receipt reads remain institution-owner-only; non-owner course teachers and business/operational identities denied",
+      "pass": true
+    }
+  ],
+  "limits": "Actual native login/router/MySQL reads; no product data or provider writes. Existing synthetic cohorts; no new learner lifecycle, load, device or pedagogical acceptance."
+}

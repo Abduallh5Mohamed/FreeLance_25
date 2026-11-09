@@ -1,0 +1,30 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "question": "74962107-0d6c-4906-9f53-034196d138aa",
+  "exam": "1a552c6a-1705-4a83-bf78-8a5e44fce5e8",
+  "version": "2c80e811-170c-48f6-85b9-613c1ec53a97",
+  "operation": "a29acf0d-01d3-4222-abc9-6faa2c59d851",
+  "body": {
+    "operation_id": "a29acf0d-01d3-4222-abc9-6faa2c59d851",
+    "expected_revision": 0,
+    "criteria": [
+      {
+        "key": "solution",
+        "label": "BUILD59 خطوات الحل وفق المعيار المرجعي",
+        "max_points": "8.00"
+      }
+    ]
+  },
+  "receipt": {
+    "operation_id": "a29acf0d-01d3-4222-abc9-6faa2c59d851",
+    "rubric_id": "29902106-ffe2-46f4-943a-4f5bff428893",
+    "question_ref": "74962107-0d6c-4906-9f53-034196d138aa",
+    "revision": 1
+  },
+  "browserReceipt": {
+    "operation_id": "b56e0749-ddf3-459c-a105-65fc30c1a9cc",
+    "rubric_id": "1cb91543-534d-429c-afbf-93176860047a",
+    "question_ref": "74962107-0d6c-4906-9f53-034196d138aa",
+    "revision": 2
+  }
+}

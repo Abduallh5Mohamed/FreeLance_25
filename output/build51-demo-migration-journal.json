@@ -1,0 +1,15 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build51-offline-setup.json",
+  "sections": [
+    {
+      "file": "20261108_01_student_offline_setup.sql",
+      "start": null,
+      "end": null,
+      "hash": "3f62b16be1e8c3bb72eeaa2fe5ec230c7b4d848743a58c3ceed6e268635aff6e",
+      "completed": 1,
+      "total": 1
+    }
+  ],
+  "finished_at": "2026-11-08T02:31:13.521Z"
+}

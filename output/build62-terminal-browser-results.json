@@ -1,0 +1,6 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "passed": 1,
+  "exam_posts": 0,
+  "check": "Final frontend after deadline fix reads real terminal attempt, disables answers, never starts/saves/submits on mount"
+}

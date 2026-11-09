@@ -232,9 +232,9 @@ class FakeReportingDb implements ReportingDatabase {
             const course = exam ? s.courses.find((row) => row.id === exam.course_id) : null;
             return course ? rows([{ id: course.id, tenant_id: course.tenant_id, instructor_id: course.instructor_id }]) : [];
         }
-        if (sql.includes('SELECT e.id FROM exams e INNER JOIN courses c') && sql.includes('WHERE c.tenant_id = ?')) {
+        if (sql.includes('SELECT e.id FROM exams e INNER JOIN courses c') && /WHERE c\.tenant_id\s*=\s*\?/.test(sql)) {
             const ids = s.exams
-                .filter((exam) => s.courses.some((course) => course.id === exam.course_id && course.tenant_id === params[0]))
+                .filter((exam) => s.courses.some((course) => course.id === exam.course_id && course.tenant_id === params[0] && (!sql.includes('c.instructor_id=?') || course.instructor_id === params[1])))
                 .map((exam) => ({ id: exam.id }));
             return rows(ids);
         }
@@ -688,6 +688,7 @@ test('anonymous callers get 401 on every reporting surface with zero datastore a
     ] as const) {
         const response = await invoke(appFor(mountPath, router), { method: 'GET', url: mountPath });
         assert.equal(response.statusCode, 401, mountPath);
+        assert.equal(response.headers['cache-control'], 'no-store', mountPath);
         assert.equal(response.body && (response.body as { error?: string }).error, 'Authentication required');
     }
     assert.equal(db.statements.length, 0);
@@ -708,6 +709,7 @@ test('readiness: a missing required table answers 503 before any data read, writ
     });
     assert.equal(response.statusCode, 503);
     assert.deepEqual(response.body, { error: 'Reporting is temporarily unavailable' });
+    assert.equal(response.headers['cache-control'], 'no-store');
     assert.equal(db.writeStatements().length, 0);
     assert.equal(db.statements.filter((s) => !s.sql.includes('INFORMATION_SCHEMA')).length, 0);
     assert.equal(db.state.auditEvents.length, 0);
@@ -724,6 +726,7 @@ test('readiness: a probe failure answers 503 with no datastore access', async ()
     });
     assert.equal(response.statusCode, 503);
     assert.deepEqual(response.body, { error: 'Reporting is temporarily unavailable' });
+    assert.equal(response.headers['cache-control'], 'no-store');
     assert.equal(db.statements.length, 0);
 });
 
@@ -803,26 +806,17 @@ test('request-time schema errors: known codes become a generic 503, unknown code
     }
 });
 
-test('owner answer grade: real router + adapter writes exactly one sealed audit on the transaction connection', async () => {
-    const db = seedGradeFlow();
-    const routers = build(db);
-    const response = await invoke(appFor('/api/exam-manual-grading', routers.examManualGrading), {
-        method: 'POST',
-        url: '/api/exam-manual-grading/attempts/a1/answers/q1/grade',
-        body: { points: 5 },
-    });
-    assert.equal(response.statusCode, 200, JSON.stringify(response.body));
-    assert.equal(db.state.revisions.length, 1);
-    assert.equal(db.state.auditEvents.length, 1);
-    assert.equal(db.state.auditEvents[0].action, 'exam_manual_grade.answer');
-    assert.equal(Number(db.state.attempts[0].version), 4);
+test('healthy reporting composition denies business admin even when its selected identity owns and teaches the fixture course',async()=>{
+ const db=seedGradeFlow(),routers=build(db,{authenticate:authAs({id:'teacher1',role:'admin',tenantId:'t1'})}),app=appFor('/api/exam-manual-grading',routers.examManualGrading);
+ for(const request of [{method:'GET',url:'/api/exam-manual-grading/attempts/a1'},{method:'POST',url:'/api/exam-manual-grading/attempts/a1/finalize'}])assert.equal((await invoke(app,request)).statusCode,403);
+ assert.equal(db.state.revisions.length,0);assert.equal(db.state.auditEvents.length,0);
+});
 
-    const mutation = db.statementsFor('UPDATE exam_versioned_attempts SET version = version + 1');
-    const audit = db.auditInserts();
-    assert.equal(mutation.length, 1);
-    assert.equal(audit.length, 1);
-    assert.equal(mutation[0].connId, audit[0].connId);
-    assert.notEqual(mutation[0].connId, 0);
+test('production compatibility grading rejects mutation and points to the scoped question workbench', async () => {
+ const db=seedGradeFlow(),routers=build(db);
+ const response=await invoke(appFor('/api/exam-manual-grading',routers.examManualGrading),{method:'POST',url:'/api/exam-manual-grading/attempts/a1/answers/q1/grade',body:{points:5}});
+ assert.equal(response.statusCode,409);assert.equal((response.body as any).code,'GRADING_USE_QUESTION_WORKBENCH');
+ assert.equal(db.state.revisions.length,0);assert.equal(db.state.auditEvents.length,0);assert.equal(Number(db.state.attempts[0].version),3);
 });
 
 test('unrelated teacher is denied on manual grading and nothing is written', async () => {
@@ -926,38 +920,16 @@ const seedAuthorityState = (kind: 'owner' | 'course' | 'group'): FakeReportingDb
     return db;
 };
 
-test('manual grading authority: owner, course instructor and group instructor stay positive for read, grade and finalize', async () => {
-    for (const kind of ['owner', 'course', 'group'] as const) {
-        const db = seedAuthorityState(kind);
-        const routers = build(db, {
-            authenticate: authAs({ id: 'teacher1', role: 'teacher', tenantId: 't1' }),
-        });
-        const app = appFor('/api/exam-manual-grading', routers.examManualGrading);
-
-        const pending = await invoke(app, { method: 'GET', url: '/api/exam-manual-grading/pending' });
-        assert.equal(pending.statusCode, 200, kind);
-        assert.equal((pending.body as { count: number }).count, 1, `${kind}: pending queue`);
-
-        const detail = await invoke(app, { method: 'GET', url: '/api/exam-manual-grading/attempts/a1' });
-        assert.equal(detail.statusCode, 200, `${kind}: attempt detail`);
-
-        const grade = await invoke(app, {
-            method: 'POST',
-            url: '/api/exam-manual-grading/attempts/a1/answers/q1/grade',
-            body: { points: 5 },
-        });
-        assert.equal(grade.statusCode, 200, `${kind}: grade`);
-
-        const finalize = await invoke(app, {
-            method: 'POST',
-            url: '/api/exam-manual-grading/attempts/a1/finalize',
-        });
-        assert.equal(finalize.statusCode, 200, `${kind}: finalize`);
-        assert.equal(db.state.auditEvents.length, 2, `${kind}: one audit per mutation`);
-    }
+test('production compatibility reads require actual course responsibility; owner/group alone are not grading grants', async()=>{
+ for(const kind of ['owner','course','group'] as const){const db=seedAuthorityState(kind),routers=build(db,{authenticate:authAs({id:'teacher1',role:'teacher',tenantId:'t1'})}),app=appFor('/api/exam-manual-grading',routers.examManualGrading);
+ const pending=await invoke(app,{method:'GET',url:'/api/exam-manual-grading/pending'});assert.equal(pending.statusCode,200);assert.equal((pending.body as any).count,kind==='course'?1:0);
+ const detail=await invoke(app,{method:'GET',url:'/api/exam-manual-grading/attempts/a1'});assert.equal(detail.statusCode,kind==='course'?200:403);
+ for(const suffix of ['answers/q1/grade','finalize']){const r=await invoke(app,{method:'POST',url:'/api/exam-manual-grading/attempts/a1/'+suffix,body:{points:5}});assert.equal(r.statusCode,kind==='course'?409:403);}
+ assert.equal(db.state.auditEvents.length,0);
+ }
 });
 
-test('audit failure on finalize rolls the state change back and returns a generic error', async () => {
+test('production compatibility finalize cannot bypass the scoped workflow even with an audit writer', async () => {
     const db = seedGradeFlow();
     db.state.revisions = [{
         id: 'r1',
@@ -982,12 +954,12 @@ test('audit failure on finalize rolls the state change back and returns a generi
         method: 'POST',
         url: '/api/exam-manual-grading/attempts/a1/finalize',
     });
-    assert.equal(response.statusCode, 500);
-    assert.deepEqual(response.body, { error: 'Failed to finalize attempt' });
+    assert.equal(response.statusCode, 409);
+    assert.equal((response.body as any).code,'GRADING_USE_QUESTION_WORKBENCH');
     assert.equal(db.state.attempts[0].status, 'pending_review');
     assert.equal(Number(db.state.attempts[0].version), 3);
     assert.equal(db.state.auditEvents.length, 0);
-    assert.equal(db.rollbacks, 1);
+    assert.equal(db.rollbacks, 0);
 });
 
 test('publish and unpublish each write exactly one sealed audit on the same connection', async () => {

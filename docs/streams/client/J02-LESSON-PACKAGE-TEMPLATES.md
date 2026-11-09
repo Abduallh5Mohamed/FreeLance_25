@@ -77,10 +77,27 @@ so old callbacks cannot discard recovery. Callbacks are stable. Session/privacy
 invalidation always takes precedence and clears private metadata; storage/session
 listeners, abort cleanup and 25-second read/write deadlines fence late replies.
 
-Whole-page or route departure still loses the in-memory operation context; a
-beforeunload warning is best effort, not durable recovery or cancellation. No
-sensitive template data is persisted in browser storage. Other existing lesson
-panels require their own fresh reads after confirmed application.
+BUILD-45: application operations persist a strictly validated account/course
+scoped sessionStorage marker before POST: operation/destination/template/revision,
+count and canonical expected timing only. No content, credential or review token.
+Reopening the course restores destination and GET-only recovery without first
+loading the template list. Missing/mismatched receipts keep writing locked;
+storage refusal prevents POST. Confirmed receipt plus failed marker removal stays
+visibly confirmed and locked for cleanup. Receipt timing is historical.
+BUILD-47 also persists create/revise/archive context through a separate strict
+account/course-scoped library marker: operation ID/kind, optional target template,
+expected revision and counts only; no name, source selection, body or credential.
+Reload restores GET-only recovery before listing or writing. Bad storage blocks
+writes; failed cleanup after confirmation retains the receipt and locks new work.
+Failed status keeps confirmed evidence; fresh list reads remain explicit and
+separate. Archive receipts are labelled as archive, and all receipts historical.
+The production parent always supplies this store and preserves its navigation
+lock. Actual Chrome/MySQL create/revise/archive lost-ACK/reload tests each issued
+one write. See [BUILD-47](../../agent-context/BUSINESS-IMPLEMENTATION-2026-11-08-BUILD-47.md).
+sessionStorage is not cross-browser durability; other panels need fresh reads.
+Actual synthetic-demo Chrome lost-ACK/reload/GET and student metadata proof:
+[BUILD-45](../../agent-context/BUSINESS-IMPLEMENTATION-2026-11-07-BUILD-45.md).
+Other kinds/providers/devices/load/production remain unaccepted.
 
 ## Verification and limits
 

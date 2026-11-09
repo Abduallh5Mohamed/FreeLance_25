@@ -20,7 +20,16 @@ export default function StudentSpaces() {
   // token-swap guard that never leaves a previous identity beside a new token.
   const controller = useMemo(() => createStudentSpacesController({
     loadSpaces: getStudentSpaces,
-    selectSpace: selectStudentSpace,
+    selectSpace: async enrollmentId => {
+      // The canonical adapter verifies /students/me with the candidate bearer
+      // and commits the complete identity before publishing token rotation.
+      // That event can unmount this page through AuthGuard. Complete navigation
+      // at that verified transport boundary; a disposed controller must still
+      // refuse its later profile/state commits. Never navigate on a stale token.
+      const selected = await selectStudentSpace(enrollmentId);
+      if (selected.isCurrentSession()) navigate('/student');
+      return selected;
+    },
     loadProfile: getCurrentStudentEnrollment,
   }, {
     storage: enrollmentStorage,

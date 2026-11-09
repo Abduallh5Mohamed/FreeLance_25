@@ -781,12 +781,14 @@ test('audit: a failed audit write rolls back a parent-link revocation', async ()
     });
 });
 
-test('failure: a storage error surfaces as 500 and writes nothing unaudited', async () => {
+test('failure: a storage error reports link discovery unavailable and writes nothing unaudited', async () => {
     await withHarness(seedStudent, async (h) => {
         const token = h.tokenFor({ id: PARENT, role: 'student' });
         h.state.failWith = new Error('simulated outage');
         assert.equal((await request(h, 'POST', '/request', token, { student_enrollment_id: ENROLLMENT, contact: GUARDIAN_PHONE })).statusCode, 500);
-        assert.equal((await request(h, 'GET', '/', token)).statusCode, 500);
+        const links = await request(h, 'GET', '/', token);
+        assert.equal(links.statusCode, 503);
+        assert.equal((links.body as { code: string }).code, 'PARENT_LINKS_UNAVAILABLE');
         assert.equal((await request(h, 'POST', '/link-1/revoke', token)).statusCode, 500);
     });
 });

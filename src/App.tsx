@@ -3,87 +3,92 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { useEffect } from "react";
+import { useEffect, lazy, Suspense } from "react";
+import { RouteBoundary } from "./components/RouteBoundary";
 import { startVersionCheck, stopVersionCheck } from "./utils/versionChecker";
-import Index from "./pages/Index";
-import Auth from "./pages/Auth";
-import TeacherDashboard from "./pages/TeacherDashboard";
-import StudentDashboard from "./pages/StudentDashboard";
-import StudentChat from "./pages/StudentChat";
-import StudentContent from "./pages/StudentContent";
-import StudentExams from "./pages/StudentExams";
-import Courses from "./pages/Courses";
-import Students from "./pages/Students";
-import OfflineStudents from "./pages/OfflineStudents";
-import Subscriptions from "./pages/Subscriptions";
-import Attendance from "./pages/Attendance";
-import AttendanceLog from "./pages/AttendanceLog";
-import Fees from "./pages/Fees";
-import Messages from "./pages/Messages";
-import Reports from "./pages/Reports";
-import CourseContentManager from "./pages/CourseContentManager";
-import TakeExam from "./pages/TakeExam";
-import ExamAccess from "./pages/ExamAccess";
-import Groups from "./pages/Groups";
-import QRAttendance from "./pages/QRAttendance";
-import Expenses from "./pages/Expenses";
-import AccountStatement from "./pages/AccountStatement";
-import Imports from "./pages/Imports";
-import StudentBarcodes from "./pages/StudentBarcodes";
-import BarcodeAttendance from "./pages/BarcodeAttendance";
-import StudentPayments from "./pages/StudentPayments";
-import Profits from "./pages/Profits";
-import Staff from "./pages/Staff";
-import OnlineMeeting from "./pages/OnlineMeeting";
-import NotFound from "./pages/NotFound";
-import Forbidden from "./pages/Forbidden";
-import Support from "./pages/Support";
-import PromoVideo from "./pages/PromoVideo";
-import StudentLectures from "./pages/StudentLectures";
-import Grades from "./pages/Grades";
-import StudentRegistrationRequests from "./pages/StudentRegistrationRequests";
-import TeacherContentManager from "./pages/TeacherContentManager";
-import TeacherLectures from "./pages/TeacherLectures";
-import TeacherExams from "./pages/TeacherExams";
-import EditExam from "./pages/EditExam";
-import ExamReports from "./pages/ExamReports";
-import ExamResults from "./pages/ExamResults";
-import StudentExamResults from "./pages/StudentExamResults";
-import ExamReview from "./pages/ExamReview";
-import ManualGrading from "./pages/ManualGrading";
-import ChatAssistant from "./pages/ChatAssistant";
-import StudentReports from "./pages/StudentReports";
-import TestVideo from "./pages/TestVideo";
-import TeacherPremiumLectures from "./pages/TeacherPremiumLectures";
-import StudentPremiumLectures from "./pages/StudentPremiumLectures";
-import StudentMeetings from "./pages/StudentMeetings";
-import InstructorDashboard from "./pages/InstructorDashboard";
-import InstructorLectures from "./pages/InstructorLectures";
-import InstructorWallet from "./pages/InstructorWallet";
-import InstructorVideoRequests from "./pages/InstructorVideoRequests";
-import InstructorStudents from "./pages/InstructorStudents";
-import AdminInstructors from "./pages/AdminInstructors";
-import AdminDashboard from "./pages/AdminDashboard";
-import AdminInstructorOverview from "./pages/AdminInstructorOverview";
-import AdminOperations from "./pages/AdminOperations";
-import AdminPlatform from "./pages/AdminPlatform";
-import TenantInvitation from "./pages/TenantInvitation";
-import InstructorSubscription from "./pages/InstructorSubscription";
-import AdminApprovals from "./pages/AdminApprovals";
-import AdminTeam from "./pages/AdminTeam";
-import AdminFinance from "./pages/AdminFinance";
-import AdminSecurity from "./pages/AdminSecurity";
-import AuthGuard from "./components/AuthGuard";
+import AuthGuard, { RouteLoading } from "./components/AuthGuard";
 import { UploadProvider } from "./contexts/UploadContext";
 import { UploadNotification } from "./components/UploadNotification";
-import JoinInstructor from "./pages/JoinInstructor";
-import StudentSpaces from "./pages/StudentSpaces";
-import StudentPasswordReset from "./pages/StudentPasswordReset";
 // M2-22 — the anonymous published-course discovery page. It is mounted WITHOUT
 // AuthGuard on purpose: discovery is public and read only, and it consults no
 // principal. It never enrolls, grants access, delivers a lesson or a file, or
 // takes payment.
-import PublicCourseDiscovery from "./pages/PublicCourseDiscovery";
+
+const Index = lazy(() => import("./pages/Index"));
+const Auth = lazy(() => import("./pages/Auth"));
+const TeacherDashboard = lazy(() => import("./pages/TeacherDashboard"));
+const StudentDashboard = lazy(() => import("./pages/StudentDashboard"));
+const StudentChat = lazy(() => import("./pages/StudentChat"));
+const StudentContent = lazy(() => import("./pages/StudentContent"));
+const StudentExams = lazy(() => import("./pages/StudentExams"));
+const Courses = lazy(() => import("./pages/Courses"));
+const Students = lazy(() => import("./pages/Students"));
+const OfflineStudents = lazy(() => import("./pages/OfflineStudents"));
+const Subscriptions = lazy(() => import("./pages/Subscriptions"));
+const Attendance = lazy(() => import("./pages/Attendance"));
+const AttendanceLog = lazy(() => import("./pages/AttendanceLog"));
+const Fees = lazy(() => import("./pages/Fees"));
+const Messages = lazy(() => import("./pages/Messages"));
+const Reports = lazy(() => import("./pages/Reports"));
+const CourseContentManager = lazy(() => import("./pages/CourseContentManager"));
+const TakeExam = lazy(() => import("./pages/TakeExam"));
+const ExamAccess = lazy(() => import("./pages/ExamAccess"));
+const Groups = lazy(() => import("./pages/Groups"));
+const QRAttendance = lazy(() => import("./pages/QRAttendance"));
+const Expenses = lazy(() => import("./pages/Expenses"));
+const AccountStatement = lazy(() => import("./pages/AccountStatement"));
+const Imports = lazy(() => import("./pages/Imports"));
+const StudentBarcodes = lazy(() => import("./pages/StudentBarcodes"));
+const BarcodeAttendance = lazy(() => import("./pages/BarcodeAttendance"));
+const StudentPayments = lazy(() => import("./pages/StudentPayments"));
+const Profits = lazy(() => import("./pages/Profits"));
+const Staff = lazy(() => import("./pages/Staff"));
+const OnlineMeeting = lazy(() => import("./pages/OnlineMeeting"));
+const NotFound = lazy(() => import("./pages/NotFound"));
+const Forbidden = lazy(() => import("./pages/Forbidden"));
+const Support = lazy(() => import("./pages/Support"));
+const Family = lazy(() => import("./pages/Family"));
+const PromoVideo = lazy(() => import("./pages/PromoVideo"));
+const StudentLectures = lazy(() => import("./pages/StudentLectures"));
+const Grades = lazy(() => import("./pages/Grades"));
+const StudentRegistrationRequests = lazy(() => import("./pages/StudentRegistrationRequests"));
+const TeacherContentManager = lazy(() => import("./pages/TeacherContentManager"));
+const TeacherLectures = lazy(() => import("./pages/TeacherLectures"));
+const TeacherExams = lazy(() => import("./pages/TeacherExams"));
+const EditExam = lazy(() => import("./pages/EditExam"));
+const ExamReports = lazy(() => import("./pages/ExamReports"));
+const ExamResults = lazy(() => import("./pages/ExamResults"));
+const StudentExamResults = lazy(() => import("./pages/StudentExamResults"));
+const ExamReview = lazy(() => import("./pages/ExamReview"));
+const ManualGrading = lazy(() => import("./pages/ManualGrading"));
+const TeachingWorkspace = lazy(() => import("./pages/TeachingWorkspace"));
+const ChatAssistant = lazy(() => import("./pages/ChatAssistant"));
+const StudentReports = lazy(() => import("./pages/StudentReports"));
+const TestVideo = lazy(() => import("./pages/TestVideo"));
+const TeacherPremiumLectures = lazy(() => import("./pages/TeacherPremiumLectures"));
+const StudentPremiumLectures = lazy(() => import("./pages/StudentPremiumLectures"));
+const StudentMeetings = lazy(() => import("./pages/StudentMeetings"));
+const InstructorDashboard = lazy(() => import("./pages/InstructorDashboard"));
+const InstructorLectures = lazy(() => import("./pages/InstructorLectures"));
+const InstructorWallet = lazy(() => import("./pages/InstructorWallet"));
+const InstructorVideoRequests = lazy(() => import("./pages/InstructorVideoRequests"));
+const InstructorStudents = lazy(() => import("./pages/InstructorStudents"));
+const AdminInstructors = lazy(() => import("./pages/AdminInstructors"));
+const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
+const AdminInstructorOverview = lazy(() => import("./pages/AdminInstructorOverview"));
+const AdminOperations = lazy(() => import("./pages/AdminOperations"));
+const AdminPlatform = lazy(() => import("./pages/AdminPlatform"));
+const TenantInvitation = lazy(() => import("./pages/TenantInvitation"));
+const InstructorSubscription = lazy(() => import("./pages/InstructorSubscription"));
+const AdminApprovals = lazy(() => import("./pages/AdminApprovals"));
+const AdminTeam = lazy(() => import("./pages/AdminTeam"));
+const AdminFinance = lazy(() => import("./pages/AdminFinance"));
+const AdminSecurity = lazy(() => import("./pages/AdminSecurity"));
+const JoinInstructor = lazy(() => import("./pages/JoinInstructor"));
+const StudentSpaces = lazy(() => import("./pages/StudentSpaces"));
+const CenterWork = lazy(() => import("./pages/CenterWork"));
+const StudentPasswordReset = lazy(() => import("./pages/StudentPasswordReset"));
+const PublicCourseDiscovery = lazy(() => import("./pages/PublicCourseDiscovery"));
 
 const queryClient = new QueryClient();
 
@@ -121,7 +126,7 @@ const App = () => {
           <Sonner />
           <UploadNotification />
           <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-            <Routes>
+            <RouteBoundary><Suspense fallback={<RouteLoading />}><Routes>
               <Route path="/" element={<Index />} />
               <Route path="/promo" element={<PromoVideo />} />
               <Route path="/auth" element={<Auth />} />
@@ -129,10 +134,12 @@ const App = () => {
               <Route path="/join/:token" element={<JoinInstructor />} />
               <Route path="/student-password-reset" element={<StudentPasswordReset />} />
               <Route path="/student-spaces" element={<AuthGuard requiredRole="student"><StudentSpaces /></AuthGuard>} />
+              <Route path="/center-work" element={<AuthGuard><CenterWork /></AuthGuard>} />
               {import.meta.env.DEV && <Route path="/test-video" element={<TestVideo />} />}
               <Route path="/forbidden" element={<Forbidden />} />
               <Route path="/invite" element={<TenantInvitation />} />
               <Route path="/support" element={<AuthGuard><Support /></AuthGuard>} />
+              <Route path="/family" element={<AuthGuard><Family /></AuthGuard>} />
               {/* Public: no AuthGuard, no session, no principal. */}
               <Route path="/discover" element={<PublicCourseDiscovery />} />
 
@@ -168,6 +175,7 @@ const App = () => {
               <Route path="/exam-manager" element={<Navigate to="/teacher-exams" replace />} />
               <Route path="/exam-results" element={<AuthGuard requiredRole="teacher"><ExamResults /></AuthGuard>} />
               <Route path="/manual-grading" element={<AuthGuard requiredRole="teacher"><ManualGrading /></AuthGuard>} />
+              <Route path="/teacher-workspace" element={<AuthGuard requiredRole="teacher"><TeachingWorkspace /></AuthGuard>} />
               <Route path="/student-reports" element={<AuthGuard requiredRole="teacher"><StudentReports /></AuthGuard>} />
               <Route path="/chat-assistant" element={<AuthGuard requiredRole="teacher"><ChatAssistant /></AuthGuard>} />
               <Route path="/teacher-premium-lectures" element={<AuthGuard requiredRole="teacher"><TeacherPremiumLectures /></AuthGuard>} />
@@ -213,7 +221,7 @@ const App = () => {
 
               {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
               <Route path="*" element={<NotFound />} />
-            </Routes>
+            </Routes></Suspense></RouteBoundary>
           </BrowserRouter>
         </TooltipProvider>
       </UploadProvider>

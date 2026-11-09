@@ -40,6 +40,9 @@ import {
 // tenant authority.
 import CourseUnitManager from "@/features/catalog/CourseUnitManager";
 import { LessonPackageTemplates } from "@/features/catalog/LessonPackageTemplates";
+import { LessonPreparation } from "@/features/catalog/LessonPreparation";
+import { CourseReturnPlan } from "@/features/catalog/CourseReturnPlan";
+import { SeasonCourseReuse } from "@/features/catalog/SeasonCourseReuse";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -89,8 +92,10 @@ const Courses = () => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [detailsDialogOpen, setDetailsDialogOpen] = useState(false);
   const templateLock = useRef(false);
+  const detailLocks = useRef({template:false,returnPlan:false});
   const [templateBusy, setTemplateBusy] = useState(false);
-  const onTemplateLock = useCallback((locked: boolean) => { templateLock.current = locked; setTemplateBusy(locked); }, []);
+  const onTemplateLock = useCallback((locked: boolean) => { detailLocks.current.template=locked;templateLock.current=locked||detailLocks.current.returnPlan;setTemplateBusy(templateLock.current); }, []);
+  const onReturnLock = useCallback((locked: boolean) => { detailLocks.current.returnPlan=locked;templateLock.current=locked||detailLocks.current.template;setTemplateBusy(templateLock.current); }, []);
   const changeDetailsOpen = (open: boolean) => { if (!open && templateLock.current) return; setDetailsDialogOpen(open); };
   const [selectedCourse, setSelectedCourse] = useState<Course | null>(null);
   const [controller, setController] = useState<CourseManagementController | null>(null);
@@ -364,6 +369,7 @@ const Courses = () => {
       <Header />
 
       <div className="container mx-auto px-4 py-8">
+        <SeasonCourseReuse />
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
@@ -710,6 +716,9 @@ const Courses = () => {
                 {detailsDialogOpen && selectedCourse ? (
                   <LessonPackageTemplates key={'templates-' + selectedCourse.id} courseId={selectedCourse.id} onLockChange={onTemplateLock} />
                 ) : null}
+
+                {detailsDialogOpen && selectedCourse ? <LessonPreparation key={'preparation-' + selectedCourse.id} courseId={selectedCourse.id} /> : null}
+                {detailsDialogOpen && selectedCourse ? <CourseReturnPlan key={'return-' + selectedCourse.id} courseId={selectedCourse.id} onLockChange={onReturnLock} /> : null}
 
                 <Button
                   variant="outline"

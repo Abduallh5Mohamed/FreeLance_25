@@ -9,7 +9,8 @@
  */
 import { Router, Response } from 'express';
 import { randomUUID } from 'crypto';
-import { query, queryOne, execute } from '../db';
+import { query, queryOne, withTransaction } from '../db';
+import { createAuditedBranchWriter } from '../services/audited-branch-write';
 import { AuthRequest, authenticateToken } from '../middleware/auth';
 import { isSuperAdmin, getAdminPermissions } from '../security/admin-permissions';
 
@@ -70,31 +71,9 @@ const authorizeTenantAdmin = async (
     return { tenantId, platform };
 };
 
-const audit = async (input: {
-    tenantId: string | null;
-    branchId: string | null;
-    actorUserId: string;
-    action: string;
-    resourceType?: string | null;
-    resourceId?: string | null;
-    detail?: unknown;
-}): Promise<void> => {
-    await execute(
-        `INSERT INTO branch_audit_log
-           (id, tenant_id, branch_id, actor_user_id, action, resource_type, resource_id, detail)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-            randomUUID(),
-            input.tenantId,
-            input.branchId,
-            input.actorUserId,
-            input.action,
-            input.resourceType ?? null,
-            input.resourceId ?? null,
-            input.detail === undefined ? null : JSON.stringify(input.detail),
-        ],
-    );
-};
+const auditedWrite = createAuditedBranchWriter({ transaction: work => withTransaction(async c => work({
+    execute: async (sql, params) => { const [result] = await c.execute(sql, params as never); return result as { affectedRows: number; insertId: number }; },
+})) });
 
 const readBranch = async (branchId: string): Promise<BranchRow | null> =>
     queryOne<BranchRow>(
@@ -213,27 +192,28 @@ router.post('/quarantine/groups/:groupId/classify', async (req: AuthRequest, res
             return res.status(404).json({ error: 'Group not found' });
         }
 
-        const result = await execute(
+        const result = await auditedWrite(
             `UPDATE \`groups\` SET branch_scope = ?, branch_id = ?
              WHERE id = ? AND branch_scope = ? AND branch_id <=> ?`,
             [targetScope, targetBranchId, groupId, current.branch_scope, current.branch_id],
+            {
+                tenantId: scope.tenantId,
+                branchId: targetBranchId,
+                actorUserId: req.user!.id,
+                action: 'group.branch.classified',
+                resourceType: 'group',
+                resourceId: groupId,
+                detail: {
+                    from: { scope: current.branch_scope, branch_id: current.branch_id },
+                    to: { scope: targetScope, branch_id: targetBranchId },
+                },
+            },
         );
         if (result.affectedRows === 0) {
             return res.status(409).json({ error: 'Group classification changed concurrently' });
         }
 
-        await audit({
-            tenantId: scope.tenantId,
-            branchId: targetBranchId,
-            actorUserId: req.user!.id,
-            action: 'group.branch.classified',
-            resourceType: 'group',
-            resourceId: groupId,
-            detail: {
-                from: { scope: current.branch_scope, branch_id: current.branch_id },
-                to: { scope: targetScope, branch_id: targetBranchId },
-            },
-        });
+
         res.json({ group_id: groupId, branch_scope: targetScope, branch_id: targetBranchId });
     } catch (error) {
         console.error('Branch classify error:', error);
@@ -268,19 +248,20 @@ router.post('/', async (req: AuthRequest, res: Response) => {
             return res.status(400).json({ error: 'A branch name is required' });
         }
         const id = randomUUID();
-        await execute(
+        await auditedWrite(
             "INSERT INTO branches (id, tenant_id, name, status, version) VALUES (?, ?, ?, 'active', 0)",
             [id, scope.tenantId, name],
+            {
+                tenantId: scope.tenantId,
+                branchId: id,
+                actorUserId: req.user!.id,
+                action: 'branch.created',
+                resourceType: 'branch',
+                resourceId: id,
+                detail: { name },
+            },
         );
-        await audit({
-            tenantId: scope.tenantId,
-            branchId: id,
-            actorUserId: req.user!.id,
-            action: 'branch.created',
-            resourceType: 'branch',
-            resourceId: id,
-            detail: { name },
-        });
+
         res.status(201).json(await readBranch(id));
     } catch (error) {
         console.error('Create branch error:', error);
@@ -308,25 +289,26 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
         // Version bump is the revocation signal: branch-scoped sessions are
         // re-read on every request and a suspension/version change denies the
         // next request.
-        const result = await execute(
+        const result = await auditedWrite(
             `UPDATE branches
              SET name = COALESCE(?, name), status = COALESCE(?, status),
                  version = version + 1, updated_at = CURRENT_TIMESTAMP
              WHERE id = ? AND tenant_id = ? AND version = ?`,
             [name, status, branch.id, branch.tenant_id, branch.version],
+            {
+                tenantId: branch.tenant_id,
+                branchId: branch.id,
+                actorUserId: req.user!.id,
+                action: 'branch.updated',
+                resourceType: 'branch',
+                resourceId: branch.id,
+                detail: { name, status, from_version: branch.version },
+            },
         );
         if (result.affectedRows === 0) {
             return res.status(409).json({ error: 'Branch changed concurrently' });
         }
-        await audit({
-            tenantId: branch.tenant_id,
-            branchId: branch.id,
-            actorUserId: req.user!.id,
-            action: 'branch.updated',
-            resourceType: 'branch',
-            resourceId: branch.id,
-            detail: { name, status, from_version: branch.version },
-        });
+
         res.json(await readBranch(branch.id));
     } catch (error) {
         console.error('Update branch error:', error);
@@ -368,21 +350,22 @@ router.post('/:id/memberships', async (req: AuthRequest, res: Response) => {
         }
         const user = await queryOne<{ id: string }>('SELECT id FROM users WHERE id = ? LIMIT 1', [userId]);
         if (!user) return res.status(404).json({ error: 'User not found' });
-        await execute(
+        await auditedWrite(
             `INSERT INTO branch_memberships (id, branch_id, user_id, role, status, version)
              VALUES (?, ?, ?, ?, 'active', 0)
              ON DUPLICATE KEY UPDATE role = VALUES(role), status = 'active', version = version + 1`,
             [randomUUID(), branch.id, userId, role],
+            {
+                tenantId: branch.tenant_id,
+                branchId: branch.id,
+                actorUserId: req.user!.id,
+                action: 'branch.membership.upserted',
+                resourceType: 'branch_membership',
+                resourceId: userId,
+                detail: { role },
+            },
         );
-        await audit({
-            tenantId: branch.tenant_id,
-            branchId: branch.id,
-            actorUserId: req.user!.id,
-            action: 'branch.membership.upserted',
-            resourceType: 'branch_membership',
-            resourceId: userId,
-            detail: { role },
-        });
+
         res.status(201).json(await queryOne(
             'SELECT branch_id, user_id, role, status, version FROM branch_memberships WHERE branch_id = ? AND user_id = ?',
             [branch.id, userId],
@@ -401,23 +384,24 @@ router.delete('/:id/memberships/:userId', async (req: AuthRequest, res: Response
         if (!scope) return;
         // Revocation is a status/version change, never a row delete: the next
         // request re-reads the row and fails closed.
-        const result = await execute(
+        const result = await auditedWrite(
             `UPDATE branch_memberships
              SET status = 'revoked', version = version + 1, updated_at = CURRENT_TIMESTAMP
              WHERE branch_id = ? AND user_id = ?`,
             [branch.id, req.params.userId],
+            {
+                tenantId: branch.tenant_id,
+                branchId: branch.id,
+                actorUserId: req.user!.id,
+                action: 'branch.membership.revoked',
+                resourceType: 'branch_membership',
+                resourceId: req.params.userId,
+            },
         );
         if (result.affectedRows === 0) {
             return res.status(404).json({ error: 'Membership not found' });
         }
-        await audit({
-            tenantId: branch.tenant_id,
-            branchId: branch.id,
-            actorUserId: req.user!.id,
-            action: 'branch.membership.revoked',
-            resourceType: 'branch_membership',
-            resourceId: req.params.userId,
-        });
+
         res.json({ status: 'revoked' });
     } catch (error) {
         console.error('Revoke branch membership error:', error);

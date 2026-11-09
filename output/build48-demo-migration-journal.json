@@ -1,0 +1,31 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build48-preparation.json",
+  "sections": [
+    {
+      "file": "20261018_08_question_bank_assignments.sql",
+      "start": "SET @has_qb_questions =",
+      "end": "SET @has_qb_usages =",
+      "hash": "9c5b110de5533f648b68c5b451e3963c2986a49d1e1da23df8a516c548e1aef5",
+      "completed": 11,
+      "total": 11
+    },
+    {
+      "file": "20261106_04_course_lesson_quiz_versions.sql",
+      "start": null,
+      "end": null,
+      "hash": "075b086dfb5405de848af1f69bd9a1233b2837ab39d981f27e3b6126caf96c71",
+      "completed": 1,
+      "total": 1
+    },
+    {
+      "file": "20261106_05_catalog_exam_attempt_context.sql",
+      "start": null,
+      "end": null,
+      "hash": "a015abae817f2a3d5e747194f2b34661d85e25412979808101135178e353f6f3",
+      "completed": 1,
+      "total": 1
+    }
+  ],
+  "finished_at": "2026-11-07T23:40:16.802Z"
+}

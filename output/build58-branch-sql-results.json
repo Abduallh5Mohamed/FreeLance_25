@@ -1,0 +1,10 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "passed": 2,
+  "checks": [
+    "Real SQL audit failure rolls branch version back to savepoint",
+    "Original writer success stores mutation+audit, outer rollback restores version/count"
+  ],
+  "persisted_probe_changes": 0,
+  "limits": "Same original writer, real SQL with savepoint-only commit seam; not durable commit uncertainty, permission-race, load or production acceptance"
+}

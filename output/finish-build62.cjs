@@ -1,0 +1,8 @@
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),{connect}=require('./demo-db.cjs');
+(async()=>{const{c,pub,database}=await connect();try{
+ const file='output/dev-session-20261107-1815.json',state=JSON.parse(fs.readFileSync(file,'utf8'));assert.equal(state.backend.database,database);assert.equal(state.backend.pid,12444);assert.equal(state.frontend.pid,7000);
+ const phase=JSON.parse(fs.readFileSync('output/build62-http-after.json','utf8')),roles=JSON.parse(fs.readFileSync('output/build62-role-results.json','utf8'));assert.equal(phase.unexpected_responses,0);assert.equal(phase.missing_private_cache,0);assert.equal(roles.unexpected_responses,0);assert.equal(roles.missing_private_cache,0);
+ state.updated_at=new Date().toISOString();state.operating_review={checkpoint:'BUILD-62',backend_scoped_tests:918,backend_test_files:49,frontend_tests:2300,native_get_requests:116,maximum_native_concurrency:8,assignment_page_queries_before:180,assignment_page_queries_after:81,retained_synthetic_same_grant_renewals:1,production_accepted:false,remaining_acceptance:'docs/agent-context/OPERATING-ACCEPTANCE-CHECKLIST.md'};fs.writeFileSync(file,JSON.stringify(state,null,2));
+ const root=path.resolve(pub.privateDir),temporary=path.resolve(root,'build62-test-sessions.json');assert.equal(path.dirname(temporary),root);assert.equal(path.basename(temporary),'build62-test-sessions.json');if(fs.existsSync(temporary))fs.unlinkSync(temporary);
+ console.log(JSON.stringify({runtime_record_updated:true,temporary_sessions_removed:!fs.existsSync(temporary),credential_changes:0,retained_same_grant_renewals:1,production_accepted:false}));
+}finally{await c.end();}})().catch(e=>{console.error(e.message);process.exitCode=1;});

@@ -135,13 +135,13 @@ const Auth = () => {
               goToRoleHome(result.user.billing_only ? "/instructor-subscription" : "/teacher", result.token);
             }
           } else if (result.user.role === 'staff') {
-            // Staff login - redirect to teacher dashboard (with limited access based on permissions)
+            // Accounts without legacy page grants use the scoped center-work portal.
             toast({
               title: "تم تسجيل الدخول بنجاح",
               description: `مرحباً بك ${result.user.name}`,
             });
             {
-              goToRoleHome("/teacher", result.token);
+              goToRoleHome(result.user.accessible_pages?.length ? "/teacher" : "/center-work", result.token);
             }
           } else {
             localStorage.removeItem('currentStudent');

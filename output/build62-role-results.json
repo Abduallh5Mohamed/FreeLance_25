@@ -1,0 +1,406 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "requests": 44,
+  "maximum_concurrency": 8,
+  "samples": [
+    {
+      "name": "student-teaching-denial",
+      "concurrency": 4,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 227.1234
+    },
+    {
+      "name": "center-own-workspaces",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 240.0793
+    },
+    {
+      "name": "center-academic-denial",
+      "concurrency": 4,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 12.80989999999997
+    },
+    {
+      "name": "selected-student-return-plan",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 264.2473
+    },
+    {
+      "name": "center-live-groups",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 55.09620000000001
+    },
+    {
+      "name": "platform-support-assignment",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 51.080600000000004
+    },
+    {
+      "name": "customer-own-support-detail",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 64.94939999999997
+    },
+    {
+      "name": "teacher-student-follow-up",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 58.32249999999999
+    },
+    {
+      "name": "selected-student-terminal-quiz",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 387.4884
+    },
+    {
+      "name": "selected-student-return-plan",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 24.485700000000065
+    },
+    {
+      "name": "student-teaching-denial",
+      "concurrency": 4,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 7.3134000000000015
+    },
+    {
+      "name": "teacher-preparation",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 98.20510000000002
+    },
+    {
+      "name": "center-own-workspaces",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 22.403099999999995
+    },
+    {
+      "name": "center-academic-denial",
+      "concurrency": 4,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 7.16719999999998
+    },
+    {
+      "name": "selected-student-terminal-quiz",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 87.5616
+    },
+    {
+      "name": "center-live-groups",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 18.038400000000024
+    },
+    {
+      "name": "grader-current-assignments",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 123.68730000000005
+    },
+    {
+      "name": "customer-own-support-detail",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 26.99339999999995
+    },
+    {
+      "name": "teacher-student-follow-up",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 243.42100000000005
+    },
+    {
+      "name": "platform-support-assignment",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 248.6218
+    },
+    {
+      "name": "teacher-preparation",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 299.98609999999996
+    },
+    {
+      "name": "grader-current-assignments",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 303.05459999999994
+    },
+    {
+      "name": "student-teaching-denial",
+      "concurrency": 8,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 26.422500000000014
+    },
+    {
+      "name": "center-academic-denial",
+      "concurrency": 8,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 40.65899999999999
+    },
+    {
+      "name": "center-own-workspaces",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 63.10600000000011
+    },
+    {
+      "name": "center-live-groups",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 89.3119999999999
+    },
+    {
+      "name": "selected-student-return-plan",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 94.16409999999996
+    },
+    {
+      "name": "customer-own-support-detail",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 96.22289999999998
+    },
+    {
+      "name": "student-teaching-denial",
+      "concurrency": 8,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 19.156400000000076
+    },
+    {
+      "name": "teacher-student-follow-up",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 96.87610000000006
+    },
+    {
+      "name": "platform-support-assignment",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 134.30359999999996
+    },
+    {
+      "name": "selected-student-return-plan",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 49.6400000000001
+    },
+    {
+      "name": "center-academic-denial",
+      "concurrency": 8,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 39.001199999999926
+    },
+    {
+      "name": "center-live-groups",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 69.48049999999989
+    },
+    {
+      "name": "center-own-workspaces",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 84.4411
+    },
+    {
+      "name": "customer-own-support-detail",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 72.94550000000004
+    },
+    {
+      "name": "platform-support-assignment",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 46.3904
+    },
+    {
+      "name": "selected-student-terminal-quiz",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 248.6964999999999
+    },
+    {
+      "name": "teacher-preparation",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 222.86750000000006
+    },
+    {
+      "name": "grader-current-assignments",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 214.9598000000001
+    },
+    {
+      "name": "selected-student-terminal-quiz",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 193.74969999999985
+    },
+    {
+      "name": "teacher-preparation",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 139.91200000000003
+    },
+    {
+      "name": "teacher-student-follow-up",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 193.1271999999999
+    },
+    {
+      "name": "grader-current-assignments",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "cache_no_store": true,
+      "ms": 180.93229999999994
+    }
+  ],
+  "unexpected_responses": 0,
+  "missing_private_cache": 0,
+  "limits": "44 bounded native authenticated reads mixing actual selected learner, center employee, customer/platform support, teacher and grader. Positive quiz is existing terminal attempt, no start/save/submit or new enrollment/grants. Not representative field/load/device acceptance."
+}

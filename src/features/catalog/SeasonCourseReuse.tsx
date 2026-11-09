@@ -1,0 +1,36 @@
+import {useEffect,useRef,useState} from 'react';
+import {Button} from '@/components/ui/button';
+import {readCourseSessionPrincipal} from './course-management';
+import {subscribeSessionChange} from '@/lib/session-events';
+import {createSeasonReuse,seasonApi,seasonIntentStore,initialSeason} from './season-reuse';
+import {SeasonTemplateImport} from './SeasonTemplateImport';
+export function SeasonCourseReuse(){const [open,setOpen]=useState(false);return <section dir="rtl" className="mb-6 rounded-xl border bg-card p-4"><Button type="button" variant="outline" aria-expanded={open} onClick={()=>setOpen(v=>!v)}>تجهيز مقرر لموسم جديد</Button>{open?<SeasonCourseReusePanel/>:null}</section>;}
+export function SeasonCourseReusePanel(){
+ const [s,setState]=useState(initialSeason),ref=useRef<ReturnType<typeof createSeasonReuse>|null>(null);
+ const [importTarget,setImportTarget]=useState<string|null>(null),[importLocked,setImportLocked]=useState(false);
+ useEffect(()=>{let store:ReturnType<typeof seasonIntentStore>;try{const account=JSON.parse(localStorage.getItem('currentUser')??'null')?.id;store=seasonIntentStore(sessionStorage,account);}catch{store={read:()=>{throw Error('Storage unavailable');},write:()=>{throw Error('Storage unavailable');},clear:()=>{throw Error('Storage unavailable');}};}
+ const c=createSeasonReuse({api:seasonApi,store,newId:()=>crypto.randomUUID(),readPrincipal:()=>readCourseSessionPrincipal(localStorage),subscribeSession:subscribeSessionChange});ref.current=c;const unsub=c.subscribe(setState);const storage=(e:StorageEvent)=>{if(e.key===null||['authToken','currentUser','currentStudentSpace'].includes(e.key))c.invalidate();};const unload=(e:BeforeUnloadEvent)=>{if(c.locked()){e.preventDefault();e.returnValue='';}};window.addEventListener('storage',storage);window.addEventListener('beforeunload',unload);return()=>{unsub();c.dispose();ref.current=null;window.removeEventListener('storage',storage);window.removeEventListener('beforeunload',unload);};},[]);
+ const locked=['saving','uncertain','recovering'].includes(s.phase),busy=locked||s.phase==='loading'||importLocked;
+ if(s.phase==='session-ended')return <p role="alert">تغير الحساب أو الجلسة؛ أُخفيت المعاينة. أعد فتح اللوحة.</p>;
+ return <div className="mt-4 space-y-4 text-sm">
+  <p>الموسم فترة باسم وبداية ونهاية داخل المؤسسة. أنشئها من بطاقة الفترات الأكاديمية في لوحة المؤسسة. هذه الخطوة تعيد استخدام إعدادات مقرر تملكه لإنشاء مسودة مستقلة؛ لا تنقل طلابًا أو أسعارًا أو مدفوعات أو صلاحيات أو مواعيد. قوالب المحتوى ليست ضمن النسخ الحالي.</p>
+  {s.message?<p role="status">{s.message}</p>:null}
+  {s.receipt?<p role="status" className="rounded border border-green-300 p-3">إنشاء مسودة المقرر مؤكد. لم يُنشر ولم يُسجل فيه طلاب. الإيصال يثبت إنشاءً تاريخيًا؛ حدّث قائمة المقررات لقراءة حالته الحالية.</p>:null}
+  {s.receipt?<Button type="button" variant="outline" disabled={busy} onClick={()=>setImportTarget(s.receipt!.target_course_id)}>استيراد قوالب للمسودة المؤكدة</Button>:null}
+  {locked?<Button type="button" disabled={s.phase!=='uncertain'} onClick={()=>{void ref.current?.recover();}}>التحقق من إيصال الإنشاء دون تكراره</Button>:null}
+  <div className="flex flex-wrap gap-3"><Button type="button" variant="outline" disabled={busy} onClick={()=>{void ref.current?.list('periods');}}>قراءة المواسم المتاحة</Button><Button type="button" variant="outline" disabled={busy} onClick={()=>{void ref.current?.list('courses');}}>قراءة المقررات المخولة</Button></div>
+  <label className="block">الموسم <select aria-label="موسم إعادة الاستخدام" disabled={busy} value={s.periodId} onChange={e=>ref.current?.change({periodId:e.target.value})}><option value="" disabled>اختر فترة</option>{s.periods?.items.map(x=><option key={x.id} value={x.id}>{x.name} ({x.starts_on} — {x.ends_on})</option>)}</select></label>
+  {s.periods?.next_cursor?<Button type="button" variant="outline" disabled={busy} onClick={()=>{void ref.current?.list('periods',true);}}>مواسم تالية</Button>:null}
+  <label className="block">المقرر المصدر <select aria-label="مقرر المصدر للموسم" disabled={busy} value={s.courseId} onChange={e=>ref.current?.change({courseId:e.target.value})}><option value="" disabled>اختر مقررًا</option>{s.courses?.items.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
+  {s.courses?.next_cursor?<Button type="button" variant="outline" disabled={busy} onClick={()=>{void ref.current?.list('courses',true);}}>مقررات تالية</Button>:null}
+  <label className="block">اسم المسودة الجديدة <input aria-label="اسم مقرر الموسم الجديد" className="m-2 rounded border p-2" maxLength={255} value={s.name} disabled={busy} onChange={e=>ref.current?.change({name:e.target.value})}/></label>
+  <label className="block"><input type="checkbox" checked={s.rights} disabled={busy} onChange={e=>ref.current?.change({rights:e.target.checked})}/> أؤكد حق المؤسسة في إعادة استخدام هذه الإعدادات والوصف.</label>
+  <Button type="button" disabled={busy} onClick={()=>{void ref.current?.review();}}>معاينة ما سيُعاد استخدامه</Button>
+  {s.review?<div className="space-y-2 rounded border p-3"><p>الموسم: {s.review.period.name}، من {s.review.period.starts_on} إلى {s.review.period.ends_on}. هذه تواريخ تخطيط وليست حصصًا مولدة.</p><p>من: {s.review.source.name} ← المسودة: {s.review.target.name}</p><p>المادة: {s.review.target.subject??'غير محددة'}؛ الصف النصي: {s.review.target.grade??'غير محدد'}.</p><p className="whitespace-pre-wrap">الوصف: {s.review.target.description??'لا يوجد'}</p><p>الحالة: مسودة، السعر المبدئي صفر. قوالب الدروس والمواد والاختبارات والمجموعات والتسجيلات والتقييمات والأرصدة والصلاحيات لن تُنسخ في هذه الخطوة. المقرر السابق وتاريخه باقيان.</p><Button type="button" disabled={busy} onClick={()=>{if(window.confirm('إنشاء مسودة مستقلة بالإعدادات المعروضة؟ لن يُنشر المقرر أو تُنقل تسجيلات الطلاب.'))void ref.current?.apply();}}>تأكيد إنشاء مسودة الموسم</Button></div>:null}
+  <div className="space-y-3 border-t pt-4"><Button type="button" variant="outline" disabled={busy} onClick={()=>{void ref.current?.history();}}>قراءة سجل تجهيز المواسم</Button><p>سجل إنشاء تاريخي للمؤسسة؛ أسماء وتواريخ الفترة وقت الإنشاء. لا يثبت أن المقرر ما زال نشطًا أو مسودة الآن؛ اقرأ حالته من قائمة المقررات.</p>
+   {s.history?<>{!s.history.items.length?<p>لا توجد عمليات تجهيز في هذه الصفحة.</p>:<ul className="space-y-2">{s.history.items.map(x=><li key={x.operation_id} className="rounded border p-3"><strong>{x.target_name}</strong><p>{x.period_name} — {x.starts_on} إلى {x.ends_on}</p><p className="break-all">معرّف المقرر الناتج: <bdi>{x.target_course_id}</bdi></p></li>)}</ul>}{s.history.next_cursor?<Button type="button" variant="outline" disabled={busy} onClick={()=>{void ref.current?.history(true);}}>سجل تالي</Button>:null}</>:null}
+  </div>
+  {s.history?.items.map(x=><Button key={x.operation_id} type="button" variant="outline" disabled={busy} aria-label={'استيراد قوالب: '+x.target_name} onClick={()=>setImportTarget(x.target_course_id)}>استيراد قوالب: {x.target_name}</Button>)}
+  {importTarget?<><Button type="button" variant="outline" disabled={importLocked} onClick={()=>setImportTarget(null)}>إغلاق استيراد القوالب</Button><SeasonTemplateImport key={importTarget} targetCourseId={importTarget} onLocked={setImportLocked}/></>:null}
+ </div>;
+}

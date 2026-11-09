@@ -1,0 +1,15 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build50-group-setup.json",
+  "sections": [
+    {
+      "file": "20261021_04_student_import_batches.sql",
+      "start": null,
+      "end": null,
+      "hash": "ccd1952c0425492f05294dd8e024848a42e7aec7c360b022f4397850b7905ec4",
+      "completed": 1,
+      "total": 1
+    }
+  ],
+  "finished_at": "2026-11-08T02:16:37.234Z"
+}

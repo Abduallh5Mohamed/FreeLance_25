@@ -1,0 +1,38 @@
+{
+  "checkedAt": "2026-11-07T18:54:49.528Z",
+  "results": [
+    {
+      "role": "admin",
+      "login": 200,
+      "matchedRole": true,
+      "session": 200
+    },
+    {
+      "role": "teacher",
+      "login": 200,
+      "matchedRole": true,
+      "session": 200
+    },
+    {
+      "role": "instructor",
+      "login": 200,
+      "matchedRole": true,
+      "session": 200
+    },
+    {
+      "role": "staff",
+      "login": 200,
+      "matchedRole": true,
+      "session": 200
+    },
+    {
+      "role": "student",
+      "login": 200,
+      "matchedRole": true,
+      "session": 200,
+      "spaces": 200,
+      "selectSpace": 200
+    }
+  ],
+  "rateLimitBlockedUntil": null
+}

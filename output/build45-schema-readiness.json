@@ -1,0 +1,9 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "ready": {
+    "templates": true,
+    "videos": "ready",
+    "activities": true,
+    "announcements": true
+  }
+}

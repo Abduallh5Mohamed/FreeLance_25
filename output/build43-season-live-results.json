@@ -1,0 +1,37 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checked_at": "2026-11-07T18:39:04.910Z",
+  "results": [
+    {
+      "check": "original academic-period API and bounded season/course pickers operate",
+      "pass": true
+    },
+    {
+      "check": "explicit rights required and changed review refused before clone",
+      "pass": true
+    },
+    {
+      "check": "real concurrent copy keys create a single draft",
+      "pass": true
+    },
+    {
+      "check": "matching replay and GET receipt recover the same draft",
+      "pass": true
+    },
+    {
+      "check": "new course is private draft; original unchanged; no enrollment/group/grade copied",
+      "pass": true
+    },
+    {
+      "check": "shared sealed audit chain remains valid after copy",
+      "pass": true
+    }
+  ],
+  "interactive": {
+    "route": "/courses",
+    "ownerRole": "instructor",
+    "period": "موسم تجريبي 2027",
+    "draft": "رياضيات — مسودة موسم 2027"
+  },
+  "limits": "settings-only reuse; no template/content copy, browser or load acceptance"
+}

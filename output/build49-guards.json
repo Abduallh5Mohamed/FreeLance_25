@@ -1,0 +1,26 @@
+{
+  "browser": "157.0.8103.38",
+  "checks": [
+    {
+      "check": "anonymous direct private route verifies identity and redirects to login without loading Courses page module",
+      "pass": true
+    },
+    {
+      "check": "real owner Courses module remains unloaded while canonical server session verification is pending, then mounts once",
+      "pass": true
+    },
+    {
+      "check": "real student role is denied owner route without loading its private page module",
+      "pass": true
+    },
+    {
+      "check": "session loss during delayed lazy module prevents late private rendering and returns to login",
+      "pass": true
+    },
+    {
+      "check": "failed lazy chunk shows explicit RTL recovery boundary without page fallback or automatic reload",
+      "pass": true
+    }
+  ],
+  "limits": "Built localhost app, synthetic demo accounts; no server authority changes, provider/mobile/load acceptance."
+}

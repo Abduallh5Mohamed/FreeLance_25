@@ -1,0 +1,30 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "actual responsible teacher transfers explicit question/rubric assignment, committed POST/lost ACK/reload/GET recovery without duplicate assignment write",
+      "pass": true
+    },
+    {
+      "check": "actual teacher preview/reason/confirmation, real atomic reopen then lost ACK/reload/GET recovery with one POST; prior final receipt retained",
+      "pass": true
+    },
+    {
+      "check": "native grader sees only assigned question/pinned criteria, submits criterion marks through original engine, recovers committed lost ACK after reload with one POST and no answers/feedback/marks in marker; no finalization UI",
+      "pass": true
+    },
+    {
+      "check": "actual responsible teacher re-reads all latest revisions and finalizes8.00; real attempt and one deterministic gradebook projection agree",
+      "pass": true
+    },
+    {
+      "check": "session replacement clears assigned answer/rubric display and stops writes",
+      "pass": true
+    },
+    {
+      "check": "native platform admin navigation cannot mount grading workbench or issue its private academic reads",
+      "pass": true
+    }
+  ],
+  "limits": "Chrome/native auth/API/SQL with synthetic accounts and preseeded learner responses. No provider, actual learner attempt creation, human grading consistency, real devices/load or production acceptance. Completed fixture stages are reused on rerun."
+}

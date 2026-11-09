@@ -6,6 +6,25 @@ const key='a1000000-0000-4000-8000-000000000001';
 const snapshot=(target:string|null=null,version=0)=>({assignment:{ticket_id:'ticket',assigned_to:target,version},assignee:target?{id:target,name:`Name ${target}`}:null});
 const ack=(target:string|null='admin',version=1)=>({assignment:snapshot(target,version).assignment,changed:true,unchanged:false});
 const deferred=()=>{let resolve!:(value:any)=>void;const promise=new Promise<any>(r=>{resolve=r;});return {promise,resolve};};
+test('assignment read deadline releases the panel and fences an ignored-abort late response',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});const h=fixture(),waiting=deferred();h.deps.read=()=>waiting.promise;
+  const work=h.controller.load();t.mock.timers.tick(25000);await new Promise<void>(resolve=>queueMicrotask(resolve));await new Promise<void>(resolve=>queueMicrotask(resolve));
+  try{assert.equal(h.controller.getState().phase,'error');assert.equal(h.controller.getState().busyRead,false);}
+  finally{waiting.resolve(snapshot('other',5));await work;assert.equal(h.controller.getState().phase,'error');assert.equal(h.calls.some(row=>row?.candidates!==undefined),false);h.controller.dispose();}
+});
+test('candidate-page deadline releases busy state and ignores a late page',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});const h=fixture();
+  h.deps.candidates=async()=>({candidates:Array.from({length:25},(_,n)=>({id:'candidate-'+n,name:'Candidate '+n})),next_cursor:'candidate-24'});
+  await h.controller.load();const waiting=deferred();h.deps.candidates=()=>waiting.promise;
+  const work=h.controller.loadMore();t.mock.timers.tick(25000);await work;assert.equal(h.controller.getState().busyRead,false);assert.ok(h.controller.getState().readError);
+  waiting.resolve({candidates:[{id:'late',name:'Late'}],next_cursor:null});await Promise.resolve();assert.equal(h.controller.getState().candidates.some(x=>x.id==='late'),false);h.controller.dispose();
+});
+test('confirmed assignment remains confirmed when its fresh read reaches the deadline',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});const h=fixture();await h.controller.load();const waiting=deferred();h.deps.read=()=>waiting.promise;
+  const work=h.controller.save('admin');for(let n=0;n<25&&!h.controller.getState().busyRead;n++)await Promise.resolve();assert.equal(h.controller.getState().busyRead,true);
+  t.mock.timers.tick(25000);assert.ok(await work);assert.equal(h.controller.getState().phase,'error');assert.match(h.controller.getState().notice!,/قرار التكليف مؤكد/);assert.equal(h.controller.getState().write.uncertain,false);assert.equal(h.stored(),null);
+  waiting.resolve(snapshot('other',7));await Promise.resolve();assert.equal(h.controller.getState().snapshot,null);h.controller.dispose();
+});
 function fixture(saved:string|null=null){
   let stored=saved,identity='admin',state=snapshot();const calls:any[]=[],receipts=new Map<string,any>();
   const deps={readIdentity:()=>identity,readKey:()=>stored,saveKey:(key:string)=>{stored=key;},clearKey:()=>{stored=null;},makeKey:()=>key,

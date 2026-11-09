@@ -1,0 +1,1 @@
+const {connect}=require('./demo-db.cjs');(async()=>{const {c}=await connect();try{const [r]=await c.execute("SELECT COLUMN_TYPE AS type FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='student_courses' AND COLUMN_NAME='status'");console.log(r);}finally{await c.end();}})();

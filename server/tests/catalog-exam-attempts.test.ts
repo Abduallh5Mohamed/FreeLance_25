@@ -6,7 +6,7 @@ import { createExamVersionsRouter, type ExamVersionsDataAccess } from '../src/ro
 import { createExamRouter } from '../src/routes/exams';
 import { buildSnapshotEntries } from '../src/services/exam-snapshots';
 import { makeReq, runChain, withSilencedErrors } from './helpers/m2-course-lessons-harness';
-function world() {
+function world(instant = '2026-11-06T12:00:00.000Z') {
     const base = fixture(), authority = createCatalogExamAuthority();
     const frozen = buildSnapshotEntries([{ source: { questionId: id(31), version: 1, questionType: 'single_choice', questionText: 'Synthetic question', options: ['A', 'B'], correctAnswers: ['A'], points: 1, explanation: null }, position: 1 }]);
     assert.ok(frozen.ok);
@@ -125,7 +125,7 @@ function world() {
             unlock();
         }
     };
-    const now = () => new Date('2026-11-06T12:00:00.000Z');
+    const now = () => new Date(instant);
     const router = createExamVersionsRouter({ db, authenticate: (_req, _res, next) => next(), loadActiveTenantAuthority: async () => null, now, transaction, catalog: authority });
     const selectors = { courseId: id(1), lessonId: id(2), contentId: id(5) };
     const call = (method: string, pathName: string, body: any = {}, actor: any = principal) => { const req: any = makeReq({ method, pathName, body }); req.user = actor; return runChain([router], req); };
@@ -151,6 +151,17 @@ test('catalog start persists its context in the original engine insert; recovery
     assert.equal(h.s.attempts.length, 1);
     assert.equal(h.s.audits.length, 1);
 });
+test('fractional start clock returns the same stored UTC seconds and deadline on recovery', async () => {
+    const h = world('2026-11-06T12:00:00.987Z');
+    const created = await h.start();
+    assert.equal(created.status, 201);
+    assert.equal(created.body.attempt.started_at, '2026-11-06T12:00:00.000Z');
+    assert.equal(created.body.attempt.deadline_at, '2026-11-06T12:01:00.000Z');
+    assert.deepEqual((await h.recover()).body.attempt, created.body.attempt);
+    assert.deepEqual((await h.start()).body.attempt, created.body.attempt);
+    assert.equal(h.s.attempts.length, 1);
+});
+
 test('actual bound attempt read/autosave/submit reuse the existing frozen grading engine and never disclose the answer key', async () => {
     const h = world();
     await h.start();

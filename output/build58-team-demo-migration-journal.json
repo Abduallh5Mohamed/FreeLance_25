@@ -1,0 +1,15 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "backup": "private LocalDemo/before-build58-center-team.json",
+  "sections": [
+    {
+      "file": "20261108_01_center_team.sql",
+      "start": null,
+      "end": null,
+      "hash": "589661ff1c3684d4108184aef850ef6a33de6a5b1742c41378923b9b825e37ef",
+      "completed": 5,
+      "total": 5
+    }
+  ],
+  "finished_at": "2026-11-08T20:37:36.086Z"
+}

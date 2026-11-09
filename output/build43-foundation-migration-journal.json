@@ -1,0 +1,18 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "sections": [
+    {
+      "file": "20261017_01_grades_tenant_scope.sql",
+      "sha256": "15d995a58363c754265e3ee7b536435f6082b9ae77fa74c2d7bdda712278e9b3",
+      "statements": 15,
+      "complete": true
+    },
+    {
+      "file": "20261017_06_branch_membership.sql",
+      "sha256": "9dcc079a56712a2b6f93254634c2335d0b9fb2852eec63ec63be451a20e557fc",
+      "statements": 10,
+      "complete": true
+    }
+  ],
+  "finished_at": "2026-11-07T18:42:25.050Z"
+}

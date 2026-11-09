@@ -1,0 +1,41 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "fresh native responsible teacher sees its final-result identity; assigned grader, unrelated institution owner, platform admin and legacy staff cannot read wider student marking",
+      "pass": true
+    },
+    {
+      "check": "native unversioned marking denies platform admin403; versioned compatibility route remains fail-closed behind reporting readiness503 on this demo, with scoped-workbench redirect gate independently verified in production composition tests",
+      "pass": true,
+      "compatibility": [
+        {
+          "actor": "admin",
+          "status": 503
+        },
+        {
+          "actor": "instructor",
+          "status": 503
+        },
+        {
+          "actor": "T",
+          "status": 503
+        }
+      ],
+      "limits": "No positive legacy reporting readiness or native409 redirect acceptance is claimed."
+    },
+    {
+      "check": "final attempt8.00 and exactly one deterministic gradebook row agree; criterion provenance and prior revisions retained",
+      "pass": true
+    },
+    {
+      "check": "replacement formerly assigned grader, another question, and finalization remain denied under current live assignment",
+      "pass": true
+    },
+    {
+      "check": "no platform roles retained for the three new teaching identities; real sealed audit chain verifies after correction/reopen/re-finalization",
+      "pass": true
+    }
+  ],
+  "limits": "Actual final native runtime APIs/MySQL. Synthetic teaching accounts/learner-answer fixtures; not production, real learner lifecycle, load/device/human consistency or uncertain-commit acceptance."
+}

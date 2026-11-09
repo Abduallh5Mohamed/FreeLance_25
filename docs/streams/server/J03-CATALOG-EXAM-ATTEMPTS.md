@@ -1,5 +1,7 @@
 # J02/J03 — durable catalog exam attempts (BUILD-25)
 
+BUILD-55 continuation (2026-11-08): actual isolated-demo MySQL/HTTP/Chrome journey and lost-ACK/reload recovery now verified; older schema/browser-pending statements below are historical for this demo only. UTC DATETIME values are selected as text before ISO conversion; catalog start uses whole seconds to match persistence. Quiz operation deadline releases stalled transports even when they ignore AbortSignal, with no automatic write replay and confirmed submit preserved on failed refresh. Question answer keys/private binding stay hidden; essay remains pending and no lesson completion is inferred. Publication usage schema applied to demo after snapshot; activation also created assignment_submissions, disclosed in [report](../../agent-context/BUSINESS-IMPLEMENTATION-2026-11-08-BUILD-55.md). Backend157/frontend2271/types/build pass; providers, production/load/mobile/real expiry/two-commit races are not accepted.
+
 BUILD-25 implements the backend boundary. [BUILD-26 student UI](../client/J03-STUDENT-CATALOG-QUIZ.md)
 now mounts explicit start/resume/save/submit and changes quiz candidate metadata
 to `launch_status: attempt_required`; homework stays unconfigured. This is not

@@ -1,0 +1,56 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "created_at": "2026-11-07T18:27:57.659Z",
+  "backup": "private LocalDemo/before-build43-grading.json",
+  "sections": [
+    {
+      "file": "20261018_09_exam_snapshots_grading.sql",
+      "start": null,
+      "end": null,
+      "hash": "405ab326729782a465fd7c395c0a9ec3ad38d72d39159dfa2ba755d2d6a1f208",
+      "completed": 26,
+      "total": 26
+    },
+    {
+      "file": "20261018_17_feature_flags_audit_chain.sql",
+      "start": "SET @m7_has_audit_events =",
+      "end": null,
+      "hash": "bae8ea89df7ceee9b6bb3e54f18a00dd47cbc1919ccf5e2e9652a720e3d32680",
+      "completed": 11,
+      "total": 11
+    },
+    {
+      "file": "20261018_22_audit_chain_sequence.sql",
+      "start": null,
+      "end": null,
+      "hash": "bf1b6af67843c2f114faafe59c9d7563dbf7b23572015a65cf1d8ae390f3465f",
+      "completed": 24,
+      "total": 24
+    },
+    {
+      "file": "20261021_01_exam_manual_publication.sql",
+      "start": null,
+      "end": "SET @b2c_has_publications =",
+      "hash": "5266b10eda6e6f4db431b1e4467e8e5806fe18913b1965b9768404e4a88d141c",
+      "completed": 18,
+      "total": 18
+    },
+    {
+      "file": "20261018_10_gradebook_certificates.sql",
+      "start": null,
+      "end": "SET @has_cert =",
+      "hash": "42581adf4a1528fbb01e706f357c5c14528e29772df393e9ae916795bf41e7fd",
+      "completed": 11,
+      "total": 11
+    },
+    {
+      "file": "20261107_03_exam_manual_operations.sql",
+      "start": null,
+      "end": null,
+      "hash": "316e65d11b5b4f89e6a1da2ffca1cd8660923edcc435b339db12e533b6bb4766",
+      "completed": 2,
+      "total": 2
+    }
+  ],
+  "finished_at": "2026-11-07T18:27:59.442Z"
+}

@@ -1,0 +1,14 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "added_tables": [
+    "assignment_submissions",
+    "question_bank_version_usages"
+  ],
+  "reviewed_section": "SET @has_qb_usages through EOF (includes assignments and assignment_submissions definitions)",
+  "existing_tables_unchanged": [
+    {
+      "name": "assignments",
+      "ddl_equal": true
+    }
+  ]
+}

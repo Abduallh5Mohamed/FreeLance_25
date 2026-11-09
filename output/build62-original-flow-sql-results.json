@@ -1,0 +1,35 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "rollback-only real course responsibility handover admits non-owner teacher; previous instructor/tenant owner immediately loses source evidence",
+      "pass": true
+    },
+    {
+      "check": "non-owner teacher uses original review/save/CAS/audit/receipt engine and fresh saved follow-up; savepoint commit only inside declared outer rollback",
+      "pass": true
+    },
+    {
+      "check": "real audit/receipt SQL failures through the teacher write path roll back head, revision, audit and receipt together",
+      "pass": true
+    },
+    {
+      "check": "actual catalog completion becomes visible without plan-status mutation; archived step loses its title/id/completion; outer rollback restores fixture",
+      "pass": true
+    },
+    {
+      "check": "handover fences historical receipt/follow-up, and mixed platform membership removes academic scope despite teacher-shaped principal",
+      "pass": true
+    },
+    {
+      "check": "real SQL schema faults at live identity/course/saved revision return unavailable, with no partial result; all protected hashes restored",
+      "pass": true
+    },
+    {
+      "check": "season/template recovery retains actual institution-owner scope; course-teacher membership alone has no reuse right, and rollback-only platform grant denies even the actual owner",
+      "pass": true
+    }
+  ],
+  "persisted_probe_changes": 0,
+  "limits": "Original mounted handlers with explicit injected fixture principal and real MySQL. Savepoint request commits inside outer rollback only; not native login or durable commit/production/load acceptance."
+}

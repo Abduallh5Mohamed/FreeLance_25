@@ -1,0 +1,74 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "real SQL original session issuer/verifier and summary expose one fixture-linked child, attendance distinctions and future agenda; foreign fixture principal and login bearer denied; no grades/private fields",
+      "pass": true
+    },
+    {
+      "check": "client scope selectors denied; lost course assignment yields unknown current group rather than invented zero attendance",
+      "pass": true
+    },
+    {
+      "check": "real link revocation during collection is caught by final stored-token/link proof before response; cannot mint a new session while revoked",
+      "pass": true
+    },
+    {
+      "check": "more than 100 actual future session rows refuses the entire summary rather than silently truncating counts/agenda",
+      "pass": true
+    }
+  ],
+  "browserChecks": [
+    {
+      "check": "actual Family page over original loopback routers/SQL, explicit child selection only, scoped token absent from browser storage, agenda/attendance render",
+      "pass": true
+    },
+    {
+      "check": "focus/background display invalidation hides private evidence; explicit refresh issues a new scoped session and rereads SQL",
+      "pass": true
+    },
+    {
+      "check": "withheld test secret makes original session route503; UI distinguishes unavailable from empty/revoked, hides old facts and recovers after readiness restored",
+      "pass": true
+    },
+    {
+      "check": "revoked fixture link returns real404, clears child evidence and stale selector rather than displaying a generic fresh/empty family",
+      "pass": true
+    }
+  ],
+  "plans": [
+    {
+      "table": "s",
+      "access": "const",
+      "key": "PRIMARY",
+      "estimated_rows": 1
+    },
+    {
+      "table": "ss",
+      "access": "ref",
+      "key": "idx_schedule_sessions_tenant_branch",
+      "estimated_rows": 9
+    },
+    {
+      "table": "a",
+      "access": "eq_ref",
+      "key": "uq_attendance_student_session",
+      "estimated_rows": 1
+    },
+    {
+      "table": "s",
+      "access": "const",
+      "key": "PRIMARY",
+      "estimated_rows": 1
+    },
+    {
+      "table": "ss",
+      "access": "range",
+      "key": "idx_schedule_sessions_tenant_group",
+      "estimated_rows": 1
+    }
+  ],
+  "persisted_fixture_rows": 0,
+  "counts_restored": true,
+  "limits": "Positive integration uses injected fixture login principal, explicitly seeded verified-link premise, ephemeral in-process HMAC and outer rollback. Original issuers/verifiers/routers/SQL/UI are real. NOT native production identity/OTP delivery, real parent onboarding, persistent link/token acceptance or load/mobile acceptance. Browser proxy forwards to original routers, never synthetic success bodies."
+}

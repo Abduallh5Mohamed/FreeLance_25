@@ -1,0 +1,14 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "period": "cf7dbccf-b0a1-44e8-9bb2-1a4a7e3352bb",
+  "source": "83489965-f884-4da1-86f6-44a9b47591f9",
+  "operation": "8fd56ff2-5b3f-4a1a-af6a-b137d7734310",
+  "target_name": "رياضيات — مسودة موسم 2027",
+  "original": {
+    "id": "83489965-f884-4da1-86f6-44a9b47591f9",
+    "name": "Demo Mathematics",
+    "subject": null,
+    "description": null,
+    "grade": null
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "checked_at": "2026-11-07T19:50:31.946Z",
+  "browser": "installed Chrome headless desktop",
+  "results": [
+    {
+      "check": "actual season history opens the import workflow",
+      "pass": true
+    },
+    {
+      "check": "explicit pinned revision and target source chosen; fresh preview confirmed",
+      "pass": true
+    },
+    {
+      "check": "one POST creates a target template visible in original library, marker cleared",
+      "pass": true
+    }
+  ],
+  "pageErrors": 0,
+  "limits": "synthetic material metadata only; no real PDF/video delivery, other-kind/browser/device/load acceptance"
+}

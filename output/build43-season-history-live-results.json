@@ -1,0 +1,18 @@
+{
+  "checked_at": "2026-11-07T18:56:20.129Z",
+  "results": [
+    {
+      "check": "private bounded history omits actor/hash/content",
+      "pass": true
+    },
+    {
+      "check": "later academic-period edit cannot rewrite historical dates (original restored)",
+      "pass": true
+    },
+    {
+      "check": "actual Courses history survives navigation/reopen",
+      "pass": true
+    }
+  ],
+  "limits": "small desktop synthetic demo only"
+}

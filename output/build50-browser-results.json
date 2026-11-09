@@ -1,0 +1,19 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "browser": "157.0.8103.38",
+  "checks": [
+    {
+      "check": "real group setup distinguishes offline versus account/course deficits and links to actual student import/account screen",
+      "pass": true
+    },
+    {
+      "check": "native browser CSV read/reconcile/explicit commit writes exactly one row with no account or selected-group assignment",
+      "pass": true
+    },
+    {
+      "check": "returning to group review rechecks current facts; unrelated imported record does not silently become a group member",
+      "pass": true
+    }
+  ],
+  "limits": "Scripted browser on synthetic demo, not independent human handover, OTP/provider or online course entitlement acceptance."
+}

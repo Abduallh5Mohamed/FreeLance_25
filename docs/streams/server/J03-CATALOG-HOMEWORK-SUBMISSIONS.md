@@ -1,5 +1,7 @@
 # J02/J03 — catalog homework submission backend (BUILD-27)
 
+BUILD-57 continuation: schema/scan-fencing/context migrations applied ONLY to isolated synthetic demo after snapshot. Native policy/history verified; mysql2 decoded allowed-file-type arrays now preserved. Runtime still returns upload_configured:false and valid keyed create503/no submission rows; no scanner/storage provider or delivery acceptance. Historical unapplied statements below are superseded for this demo only. [Evidence](../../agent-context/BUSINESS-IMPLEMENTATION-2026-11-08-BUILD-57.md).
+
 BUILD-27 backend boundary; [BUILD-28 student UI](../client/J03-STUDENT-CATALOG-HOMEWORK.md)
 now mounts explicit upload/resume/verify/cancel and changes homework candidate
 metadata to `submission_required`. Actual runtime remains unconfigured; there

@@ -1,0 +1,30 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "actual requester creates one native ticket, exact-key replay is stable, changed payload conflicts and created time matches SQL epoch",
+      "pass": true
+    },
+    {
+      "check": "foreign requester cannot read ticket; ordinary requester cannot access assignment/private notes/platform follow-up",
+      "pass": true
+    },
+    {
+      "check": "actual admin claims ticket, replay and immutable GET recover one versioned decision, stale version rejects, assigned queue works and assignment preserves last-update age",
+      "pass": true
+    },
+    {
+      "check": "actual internal note stored once, absent from requester detail/replies and does not reset follow-up age",
+      "pass": true
+    },
+    {
+      "check": "actual replies drive waiting-on-user/support statuses, replay once, UTC reply time and authorized privacy-limited follow-up filters",
+      "pass": true
+    },
+    {
+      "check": "requester closes only their own ticket; closed ticket rejects new reply/assignment and leaves follow-up view",
+      "pass": true
+    }
+  ],
+  "limits": "Actual native HTTP/MySQL over synthetic accounts; generic support ticket only. No second persistent operator, real center staff, SLA, external notification, load/mobile or production acceptance. Existing support audit is atomic but unsealed."
+}

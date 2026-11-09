@@ -1,0 +1,47 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "version": "8.0.44",
+  "checks": [
+    {
+      "check": "real SQL request/proof/sealed-audit path with in-memory test OTP delivery, same request replay and private receipt inside outer transaction",
+      "pass": true
+    },
+    {
+      "check": "database UTC controls one-hour invitation/deadline and expired/current projection without driver Date conversion; exact fixture expiry restored",
+      "pass": true
+    },
+    {
+      "check": "actual bounded owner request and eligible-student pages execute with canonical fixed projections and cursor support",
+      "pass": true
+    },
+    {
+      "check": "real current-row revalidation rejects changed reviewed identity before writes and restores the isolated fixture",
+      "pass": true
+    },
+    {
+      "check": "audit outage injection and actual MySQL strict-length receipt error roll back student/request/audit/chain reservation to the route savepoint",
+      "pass": true
+    },
+    {
+      "check": "real SQL same-ID identity-only link, unchanged history, zero course grants, canonical replay, historical receipt and verified staged sealed chain; SAVEPOINT release is not a durable COMMIT",
+      "pass": true
+    },
+    {
+      "check": "second real connection times out on the live owner lock and fails closed while the outer transaction is open; not a two-COMMIT race or throughput measurement",
+      "pass": true
+    },
+    {
+      "check": "outer ROLLBACK removes all fixture identities, invite, test proof, consent, link, receipt and audit; exact global counts and original sealed chain restored",
+      "pass": true
+    }
+  ],
+  "route_savepoint_releases": 2,
+  "route_discard_signals": 2,
+  "test_otp_deliveries": 1,
+  "persisted_fixture_rows": 0,
+  "expected_errors": [
+    "TEST_AUDIT_OUTAGE",
+    "ER_DATA_TOO_LONG"
+  ],
+  "limits": "Original Router factories over actual MySQL, with injected test principals, ephemeral test HMAC and in-memory delivery, all inside a rollback-only transaction. commit() RELEASES SAVEPOINT, never commits. No mounted runtime OTP/key/provider/identity activation, durable recovery acceptance or two-commit concurrency claim."
+}

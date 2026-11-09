@@ -331,6 +331,7 @@ const StudentHeader = () => {
     { name: "المحادثات", href: "/student-chat", icon: MessageCircle },
     { name: "المساعد الذكي", href: "/student-ai-chat", icon: Bot },
     { name: "التواصل مع الإدارة", href: "/support", icon: Headphones },
+    { name: "متابعة الأسرة", href: "/family", icon: User },
   ];
 
   // Learning menu items

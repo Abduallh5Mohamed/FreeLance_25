@@ -1,0 +1,52 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "version": "8.0.44",
+  "checks": [
+    {
+      "check": "real 27-row mixed-status keyset spans pages without duplicates using old synthetic timestamps; these are fixtures, not SLA evidence",
+      "pass": true
+    },
+    {
+      "check": "actual transfer requires a live support grant, moves self queues and rejects stale version; injected admin role label alone grants nothing",
+      "pass": true
+    },
+    {
+      "check": "revoking fixture recipient permission removes authority/eligibility while old receipt remains historical; authorized operator can clear orphaned responsibility",
+      "pass": true
+    },
+    {
+      "check": "injected audit outage and actual MySQL receipt CHECK failure roll back assignment/version/receipt/audit together",
+      "pass": true
+    },
+    {
+      "check": "EXPLAIN on tiny fixture selects follow-up index for bounded status ranges; estimates are not load/latency acceptance",
+      "pass": true
+    },
+    {
+      "check": "outer rollback removes all temporary tickets/operator/grants/transfers/audits and restores exact baseline counts",
+      "pass": true
+    }
+  ],
+  "explain": [
+    {
+      "table": "followup_page",
+      "access": "ALL",
+      "key": null,
+      "estimated_rows": 8
+    },
+    {
+      "table": "t",
+      "access": "ref",
+      "key": "idx_support_followup",
+      "estimated_rows": 15
+    },
+    {
+      "table": "t",
+      "access": "ref",
+      "key": "idx_support_followup",
+      "estimated_rows": 14
+    }
+  ],
+  "persisted_fixture_rows": 0,
+  "limits": "Original support service/real SQL with injected principals and savepoint-only commit seam. No persistent permission grant or second real operator, durable transfer acceptance, SLA, provider or production/load claim. Existing domain audit remains unsealed."
+}

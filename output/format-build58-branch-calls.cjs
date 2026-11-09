@@ -1,0 +1,1 @@
+const fs=require('node:fs'),p='server/src/routes/branches.ts';let s=fs.readFileSync(p,'utf8');let n=0;s=s.replace(/\n            \{\r?\n([\s\S]*?)\r?\n        \}\r?\n        \);/g,(_m,body)=>{n++;return '\n            {\n'+body.split(/\r?\n/).map(l=>'    '+l).join('\n')+'\n            },\n        );';});if(n!==5)throw Error('CALL_FORMAT_CHANGED_'+n);fs.writeFileSync(p,s);

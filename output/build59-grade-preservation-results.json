@@ -1,0 +1,11 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "passed": 4,
+  "checks": [
+    "exam_version_questions equals private pre-rubric snapshot; no old exam/attempt/revision/gradebook mutation",
+    "exam_versioned_attempts equals private pre-rubric snapshot; no old exam/attempt/revision/gradebook mutation",
+    "exam_manual_answer_revisions equals private pre-rubric snapshot; no old exam/attempt/revision/gradebook mutation",
+    "gradebook_scores equals private pre-rubric snapshot; no old exam/attempt/revision/gradebook mutation"
+  ],
+  "limits": "Whole-table bounded synthetic-demo digest comparison; no private row payload output and no production/other-environment acceptance."
+}

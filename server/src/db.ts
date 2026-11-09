@@ -1,5 +1,6 @@
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
+import { withMysqlReadLimitBindings } from './services/catalog-read-limit';
 
 dotenv.config();
 
@@ -30,7 +31,7 @@ let pool: mysql.Pool | null = null;
 
 export const getPool = (): mysql.Pool => {
     if (!pool) {
-        pool = mysql.createPool(dbConfig);
+        pool = withMysqlReadLimitBindings(mysql.createPool(dbConfig));
         console.log('✅ MySQL connection pool created');
     }
     return pool;

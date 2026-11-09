@@ -1,0 +1,13 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "passed": 6,
+  "checks": [
+    "Previously existing exam_version_questions rows unchanged against private pre-BUILD60 snapshot",
+    "Previously existing exam_versions rows unchanged against private pre-BUILD60 snapshot",
+    "Previously existing exam_versioned_attempts rows unchanged against private pre-BUILD60 snapshot",
+    "Previously existing exam_manual_answer_revisions rows unchanged against private pre-BUILD60 snapshot",
+    "Previously existing gradebook_scores rows unchanged against private pre-BUILD60 snapshot",
+    "Original demo identities retain passwords, roles, activity, token version and boundary marker; normal auth timestamps excluded"
+  ],
+  "limits": "Bounded synthetic-demo comparison only; newly declared fixtures and intended audit/receipt rows excluded, no private payload/hash values printed."
+}

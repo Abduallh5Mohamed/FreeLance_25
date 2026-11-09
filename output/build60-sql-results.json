@@ -1,0 +1,39 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "actual SQL delete error rolls back reopen, gradebook withdrawal, sealed audit/head and control receipt",
+      "pass": true
+    },
+    {
+      "check": "actual SQL audit_events error rolls back reopen, gradebook withdrawal, sealed audit/head and control receipt",
+      "pass": true
+    },
+    {
+      "check": "actual SQL exam_grading_control_operations error rolls back reopen, gradebook withdrawal, sealed audit/head and control receipt",
+      "pass": true
+    },
+    {
+      "check": "real SQL course responsibility handover denies prior teacher and old grader delegation, admits new live responsible teacher; outer rollback restores course",
+      "pass": true
+    },
+    {
+      "check": "real scale4 non-cent gradebook change is refused409 without rounding or result mutation; projection restored by rollback",
+      "pass": true
+    },
+    {
+      "check": "actual rubric provenance/audit/manual receipt SQL failures roll back canonical grade revision, attempt CAS, award, audit head and receipt; outer rollback restores prior final grade",
+      "pass": true
+    },
+    {
+      "check": "rollback-only platform membership on teaching account denies its marking and derived delegation; no platform grants retained",
+      "pass": true
+    },
+    {
+      "check": "custom gradebook weight is refused rather than deleted or silently lost on re-finalization; outer rollback retains original canonical projection",
+      "pass": true
+    }
+  ],
+  "persisted_probe_changes": 0,
+  "limits": "Original routers/real SQL with injected native-fixture principals. Savepoint-only commit adapters inside declared outer rollbacks for handover/non-cent/delegated tests; not native login acceptance or durable commit-uncertainty/production/load proof. Three failure reopens use actual transaction rollback."
+}

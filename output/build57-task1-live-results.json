@@ -1,0 +1,26 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "native catalog homework policy/history work after reviewed schema activation; valid keyed creation refuses unconfigured upload with no new submission rows",
+      "pass": true
+    },
+    {
+      "check": "native PDF metadata advertises unavailable; authorized download fails503 and foreign student cannot obtain file, no fallback download URL",
+      "pass": true
+    },
+    {
+      "check": "actual owner review is mounted in course details and reads quiz pin/homework/audience from native routes without publishing or granting access",
+      "pass": true
+    },
+    {
+      "check": "native withdrawal removes old quiz title/availability and marks known blocker on explicit owner refresh",
+      "pass": true
+    },
+    {
+      "check": "actual student homework UI displays unavailable rather than a usable upload picker when prerequisites are absent",
+      "pass": true
+    }
+  ],
+  "limits": "Native demo scope; no storage/scanner/video provider activation, file bytes transferred or production delivery claim. Homework fixture metadata only, no submissions. Owner review is reference review, not atomic publication or student simulation."
+}

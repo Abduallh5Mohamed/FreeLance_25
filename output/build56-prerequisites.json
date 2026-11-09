@@ -1,0 +1,10 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "secret_configured": false,
+  "tables": [
+    "attendance_records",
+    "schedule_sessions"
+  ],
+  "attendance_records_count": 3,
+  "schedule_sessions_count": 7
+}

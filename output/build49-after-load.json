@@ -1,0 +1,489 @@
+{
+  "browser": "157.0.8103.38",
+  "runs": [
+    {
+      "route": "/auth",
+      "url": "/auth",
+      "entries": [
+        {
+          "file": "/assets/index-1794096481340.js",
+          "encoded": 169020,
+          "decoded": 547774
+        },
+        {
+          "file": "/assets/Auth-1794096481340.js",
+          "encoded": 3986,
+          "decoded": 10969
+        },
+        {
+          "file": "/assets/api-1794096481340.js",
+          "encoded": 5654,
+          "decoded": 14886
+        },
+        {
+          "file": "/assets/arrow-left-1794096481340.js",
+          "encoded": 268,
+          "decoded": 338
+        },
+        {
+          "file": "/assets/user-round-1794096481340.js",
+          "encoded": 282,
+          "decoded": 350
+        },
+        {
+          "file": "/assets/users-1794096481340.js",
+          "encoded": 326,
+          "decoded": 478
+        },
+        {
+          "file": "/assets/eye-off-1794096481340.js",
+          "encoded": 378,
+          "decoded": 603
+        },
+        {
+          "file": "/assets/phone-1794096481340.js",
+          "encoded": 358,
+          "decoded": 568
+        },
+        {
+          "file": "/assets/eye-1794096481340.js",
+          "encoded": 303,
+          "decoded": 425
+        }
+      ],
+      "dom": 95.60000000149012
+    },
+    {
+      "route": "/auth",
+      "url": "/auth",
+      "entries": [
+        {
+          "file": "/assets/index-1794096481340.js",
+          "encoded": 169020,
+          "decoded": 547774
+        },
+        {
+          "file": "/assets/Auth-1794096481340.js",
+          "encoded": 3986,
+          "decoded": 10969
+        },
+        {
+          "file": "/assets/api-1794096481340.js",
+          "encoded": 5654,
+          "decoded": 14886
+        },
+        {
+          "file": "/assets/arrow-left-1794096481340.js",
+          "encoded": 268,
+          "decoded": 338
+        },
+        {
+          "file": "/assets/user-round-1794096481340.js",
+          "encoded": 282,
+          "decoded": 350
+        },
+        {
+          "file": "/assets/eye-off-1794096481340.js",
+          "encoded": 378,
+          "decoded": 603
+        },
+        {
+          "file": "/assets/users-1794096481340.js",
+          "encoded": 326,
+          "decoded": 478
+        },
+        {
+          "file": "/assets/phone-1794096481340.js",
+          "encoded": 358,
+          "decoded": 568
+        },
+        {
+          "file": "/assets/eye-1794096481340.js",
+          "encoded": 303,
+          "decoded": 425
+        }
+      ],
+      "dom": 81.10000000149012
+    },
+    {
+      "route": "/auth",
+      "url": "/auth",
+      "entries": [
+        {
+          "file": "/assets/index-1794096481340.js",
+          "encoded": 169020,
+          "decoded": 547774
+        },
+        {
+          "file": "/assets/Auth-1794096481340.js",
+          "encoded": 3986,
+          "decoded": 10969
+        },
+        {
+          "file": "/assets/api-1794096481340.js",
+          "encoded": 5654,
+          "decoded": 14886
+        },
+        {
+          "file": "/assets/arrow-left-1794096481340.js",
+          "encoded": 268,
+          "decoded": 338
+        },
+        {
+          "file": "/assets/user-round-1794096481340.js",
+          "encoded": 282,
+          "decoded": 350
+        },
+        {
+          "file": "/assets/users-1794096481340.js",
+          "encoded": 326,
+          "decoded": 478
+        },
+        {
+          "file": "/assets/phone-1794096481340.js",
+          "encoded": 358,
+          "decoded": 568
+        },
+        {
+          "file": "/assets/eye-off-1794096481340.js",
+          "encoded": 378,
+          "decoded": 603
+        },
+        {
+          "file": "/assets/eye-1794096481340.js",
+          "encoded": 303,
+          "decoded": 425
+        }
+      ],
+      "dom": 82.60000000149012
+    },
+    {
+      "route": "/discover",
+      "url": "/discover",
+      "entries": [
+        {
+          "file": "/assets/index-1794096481340.js",
+          "encoded": 169020,
+          "decoded": 547774
+        },
+        {
+          "file": "/assets/PublicCourseDiscovery-1794096481340.js",
+          "encoded": 4322,
+          "decoded": 13000
+        },
+        {
+          "file": "/assets/input-1794096481340.js",
+          "encoded": 359,
+          "decoded": 585
+        },
+        {
+          "file": "/assets/dialog-1794096481340.js",
+          "encoded": 2702,
+          "decoded": 7356
+        },
+        {
+          "file": "/assets/index-17940964813403.js",
+          "encoded": 206,
+          "decoded": 228
+        },
+        {
+          "file": "/assets/index-17940964813404.js",
+          "encoded": 6254,
+          "decoded": 16505
+        },
+        {
+          "file": "/assets/course-management-1794096481340.js",
+          "encoded": 3654,
+          "decoded": 9643
+        },
+        {
+          "file": "/assets/graduation-cap-1794096481340.js",
+          "encoded": 351,
+          "decoded": 505
+        },
+        {
+          "file": "/assets/search-1794096481340.js",
+          "encoded": 272,
+          "decoded": 341
+        },
+        {
+          "file": "/assets/book-open-1794096481340.js",
+          "encoded": 310,
+          "decoded": 452
+        }
+      ],
+      "dom": 78.10000000149012
+    },
+    {
+      "route": "/discover",
+      "url": "/discover",
+      "entries": [
+        {
+          "file": "/assets/index-1794096481340.js",
+          "encoded": 169020,
+          "decoded": 547774
+        },
+        {
+          "file": "/assets/PublicCourseDiscovery-1794096481340.js",
+          "encoded": 4322,
+          "decoded": 13000
+        },
+        {
+          "file": "/assets/input-1794096481340.js",
+          "encoded": 359,
+          "decoded": 585
+        },
+        {
+          "file": "/assets/dialog-1794096481340.js",
+          "encoded": 2702,
+          "decoded": 7356
+        },
+        {
+          "file": "/assets/index-17940964813403.js",
+          "encoded": 206,
+          "decoded": 228
+        },
+        {
+          "file": "/assets/index-17940964813404.js",
+          "encoded": 6254,
+          "decoded": 16505
+        },
+        {
+          "file": "/assets/graduation-cap-1794096481340.js",
+          "encoded": 351,
+          "decoded": 505
+        },
+        {
+          "file": "/assets/course-management-1794096481340.js",
+          "encoded": 3654,
+          "decoded": 9643
+        },
+        {
+          "file": "/assets/search-1794096481340.js",
+          "encoded": 272,
+          "decoded": 341
+        },
+        {
+          "file": "/assets/book-open-1794096481340.js",
+          "encoded": 310,
+          "decoded": 452
+        }
+      ],
+      "dom": 77.89999999850988
+    },
+    {
+      "route": "/discover",
+      "url": "/discover",
+      "entries": [
+        {
+          "file": "/assets/index-1794096481340.js",
+          "encoded": 169020,
+          "decoded": 547774
+        },
+        {
+          "file": "/assets/PublicCourseDiscovery-1794096481340.js",
+          "encoded": 4322,
+          "decoded": 13000
+        },
+        {
+          "file": "/assets/input-1794096481340.js",
+          "encoded": 359,
+          "decoded": 585
+        },
+        {
+          "file": "/assets/dialog-1794096481340.js",
+          "encoded": 2702,
+          "decoded": 7356
+        },
+        {
+          "file": "/assets/index-17940964813403.js",
+          "encoded": 206,
+          "decoded": 228
+        },
+        {
+          "file": "/assets/index-17940964813404.js",
+          "encoded": 6254,
+          "decoded": 16505
+        },
+        {
+          "file": "/assets/course-management-1794096481340.js",
+          "encoded": 3654,
+          "decoded": 9643
+        },
+        {
+          "file": "/assets/graduation-cap-1794096481340.js",
+          "encoded": 351,
+          "decoded": 505
+        },
+        {
+          "file": "/assets/search-1794096481340.js",
+          "encoded": 272,
+          "decoded": 341
+        },
+        {
+          "file": "/assets/book-open-1794096481340.js",
+          "encoded": 310,
+          "decoded": 452
+        }
+      ],
+      "dom": 75.79999999701977
+    },
+    {
+      "route": "/courses",
+      "url": "/auth",
+      "entries": [
+        {
+          "file": "/assets/index-1794096481340.js",
+          "encoded": 169020,
+          "decoded": 547774
+        },
+        {
+          "file": "/assets/Auth-1794096481340.js",
+          "encoded": 3986,
+          "decoded": 10969
+        },
+        {
+          "file": "/assets/api-1794096481340.js",
+          "encoded": 5654,
+          "decoded": 14886
+        },
+        {
+          "file": "/assets/arrow-left-1794096481340.js",
+          "encoded": 268,
+          "decoded": 338
+        },
+        {
+          "file": "/assets/user-round-1794096481340.js",
+          "encoded": 282,
+          "decoded": 350
+        },
+        {
+          "file": "/assets/users-1794096481340.js",
+          "encoded": 326,
+          "decoded": 478
+        },
+        {
+          "file": "/assets/phone-1794096481340.js",
+          "encoded": 358,
+          "decoded": 568
+        },
+        {
+          "file": "/assets/eye-off-1794096481340.js",
+          "encoded": 378,
+          "decoded": 603
+        },
+        {
+          "file": "/assets/eye-1794096481340.js",
+          "encoded": 303,
+          "decoded": 425
+        }
+      ],
+      "dom": 77.19999999552965
+    },
+    {
+      "route": "/courses",
+      "url": "/auth",
+      "entries": [
+        {
+          "file": "/assets/index-1794096481340.js",
+          "encoded": 169020,
+          "decoded": 547774
+        },
+        {
+          "file": "/assets/Auth-1794096481340.js",
+          "encoded": 3986,
+          "decoded": 10969
+        },
+        {
+          "file": "/assets/api-1794096481340.js",
+          "encoded": 5654,
+          "decoded": 14886
+        },
+        {
+          "file": "/assets/arrow-left-1794096481340.js",
+          "encoded": 268,
+          "decoded": 338
+        },
+        {
+          "file": "/assets/user-round-1794096481340.js",
+          "encoded": 282,
+          "decoded": 350
+        },
+        {
+          "file": "/assets/users-1794096481340.js",
+          "encoded": 326,
+          "decoded": 478
+        },
+        {
+          "file": "/assets/phone-1794096481340.js",
+          "encoded": 358,
+          "decoded": 568
+        },
+        {
+          "file": "/assets/eye-off-1794096481340.js",
+          "encoded": 378,
+          "decoded": 603
+        },
+        {
+          "file": "/assets/eye-1794096481340.js",
+          "encoded": 303,
+          "decoded": 425
+        }
+      ],
+      "dom": 83.20000000298023
+    },
+    {
+      "route": "/courses",
+      "url": "/auth",
+      "entries": [
+        {
+          "file": "/assets/index-1794096481340.js",
+          "encoded": 169020,
+          "decoded": 547774
+        },
+        {
+          "file": "/assets/Auth-1794096481340.js",
+          "encoded": 3986,
+          "decoded": 10969
+        },
+        {
+          "file": "/assets/api-1794096481340.js",
+          "encoded": 5654,
+          "decoded": 14886
+        },
+        {
+          "file": "/assets/user-round-1794096481340.js",
+          "encoded": 282,
+          "decoded": 350
+        },
+        {
+          "file": "/assets/arrow-left-1794096481340.js",
+          "encoded": 268,
+          "decoded": 338
+        },
+        {
+          "file": "/assets/users-1794096481340.js",
+          "encoded": 326,
+          "decoded": 478
+        },
+        {
+          "file": "/assets/phone-1794096481340.js",
+          "encoded": 358,
+          "decoded": 568
+        },
+        {
+          "file": "/assets/eye-off-1794096481340.js",
+          "encoded": 378,
+          "decoded": 603
+        },
+        {
+          "file": "/assets/eye-1794096481340.js",
+          "encoded": 303,
+          "decoded": 425
+        }
+      ],
+      "dom": 79.10000000149012
+    }
+  ],
+  "limits": "Three cold desktop contexts per path, local gzip test server; not field/mobile/load latency acceptance."
+}

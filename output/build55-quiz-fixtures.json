@@ -1,0 +1,75 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "course": "9bd1a6d8-3966-49cc-833f-3158fb907fad",
+  "unit": "6c1fdec2-8775-4eb5-aefc-18e9277b967c",
+  "group": "74eb9a64-2f5f-4966-95a6-f132fe666961",
+  "enrollment": "85f87514-53b5-48d7-8e37-3ac316543109",
+  "cases": [
+    {
+      "key": "http",
+      "exam": "7aed5e92-9759-4558-90d9-5a58501d4afe",
+      "bank": [
+        "46902413-8158-4c75-bc67-4eaefe1ee71b",
+        "22e6f1b1-7111-4370-9a4b-19cff43e0996",
+        "472a18f2-5e30-4bed-8a8b-0429b7717ec7",
+        "805ec0c2-22bd-46d1-b910-2622f48fa773"
+      ],
+      "bankVersions": [
+        "a428071d-8190-4c9a-b326-3623a8a45871",
+        "e51dc9f3-dd7a-43f3-8141-cb3567626690",
+        "09496d8a-a34e-49c5-a441-b55837a4497e",
+        "e3ee5370-d1ed-40fe-8625-ca912cde09ad"
+      ],
+      "version": "38b33ee5-f2cb-4f8e-9c3e-3ea4822d6b24",
+      "lesson": "2903acdb-a124-4ef1-bbbe-3b117fd0251f",
+      "content": "fe02f767-e4c5-4d48-9f90-8480e743140d",
+      "attempt": "e1f0b5d6-7d80-4444-af0b-b1455774ea1c",
+      "questions": [
+        "a8292bc9-132a-4b4d-a5fc-5612f13e7e9b",
+        "d5f74054-5b00-4aae-88b3-1937eb0d45ab",
+        "b672dcce-3caa-4d7e-811d-60e4123d17d0",
+        "034199ac-da7a-4275-be33-66bef9e2c0f3"
+      ]
+    },
+    {
+      "key": "browser",
+      "exam": "bb998b67-2cef-4370-ab04-2f1ad8ac5ca3",
+      "bank": [
+        "db5a5d0b-6dd4-4502-8daf-1fc8a942257f",
+        "adbfb759-fe2d-4151-8b02-292cf1316547",
+        "b2c88a8c-4395-4cf1-893d-9f88ad797918",
+        "79fe5755-8111-490d-87c4-d2fdac1ce558"
+      ],
+      "bankVersions": [
+        "585a4e70-78db-46e7-9f67-c9cedcf5c73a",
+        "23199897-0265-4d3f-b9a1-7e9f306af07a",
+        "b51e6282-fe5e-4bd4-bf10-7f0808f86694",
+        "39384890-23cb-4788-b48f-bbc5aba56558"
+      ],
+      "version": "781dd50a-cce8-4ef7-8585-885e759b6a0e",
+      "lesson": "3aaadd74-dbf0-4129-8b2e-464342dec4da",
+      "content": "00181759-9a3f-45cc-87bb-d76ce324f926",
+      "attempt": "3415f751-d0fb-4269-8ef9-235d844a8171"
+    },
+    {
+      "key": "browser-confirmed",
+      "exam": "bbd26d94-8fc9-4bc2-b2c0-e1d940404eda",
+      "bank": [
+        "46ce2eef-6f29-4bb0-8187-bb81ac051e16",
+        "e4c2345e-6eef-461d-bec8-7b532d324dc1",
+        "bbcce644-23d1-4a69-ac12-13c1c7bfe052",
+        "b7015984-836f-4904-b0eb-560749d3f35a"
+      ],
+      "bankVersions": [
+        "d2c14a3f-ed06-4924-a122-870624bb3c8a",
+        "eed070db-d405-48d8-931c-5e3e9954fe12",
+        "6c793e91-56c2-42d7-95a9-f1d68f5672ca",
+        "7d86cbf1-c7bc-49f1-9d57-9672c425350e"
+      ],
+      "version": "7ee573c2-e723-4456-a83b-3114bb6e8d29",
+      "lesson": "fba532a0-7956-48ae-b79d-d85ed30ad489",
+      "content": "53e1534b-a6f1-42f0-87bb-f50c77d15015",
+      "attempt": "b21e857e-20af-4d47-8e33-8024554bed3c"
+    }
+  ]
+}

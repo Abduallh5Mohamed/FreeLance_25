@@ -1,0 +1,56 @@
+{
+  "updated_at": "2026-11-09T16:43:33.614Z",
+  "frontend": {
+    "url": "http://localhost:8081",
+    "pid": 7000
+  },
+  "backend": {
+    "url": "http://localhost:3001",
+    "pid": 12444,
+    "storage": "unavailable",
+    "skip_db_on_start": true,
+    "database": "tabweb_demo_20261107162429"
+  },
+  "verified_logins": 5,
+  "student_workspace_selection": 200,
+  "credential_file": "C:\\Users\\BaraaWael\\AppData\\Local\\Tabweb\\LocalDemo\\20261107-182429\\LOGIN.txt",
+  "automatic_file_open": "rejected: blocked by policy",
+  "center_team": {
+    "owner": "http://localhost:8081/instructor",
+    "employee": "http://localhost:8081/center-work",
+    "independent_synthetic_accounts": 3,
+    "private_credential_filename": "CENTER-TEAM-LOGIN.txt",
+    "provider_activation": false
+  },
+  "grading_rubrics": {
+    "url": "http://localhost:8081/manual-grading",
+    "responsible_course_teacher": true,
+    "explicit_question_delegation": true,
+    "final_reopen": "proven_canonical_projection_only",
+    "business_admin_grading": false,
+    "private_credential_filename": "GRADING-LOGIN.txt",
+    "legacy_reporting_readiness": 503
+  },
+  "teacher_workspace": {
+    "url": "http://localhost:8081/teacher-workspace",
+    "authority": "live_responsible_course_teacher",
+    "institution_ownership_is_teaching_grant": false,
+    "read_only_saved_plan_follow_up": true,
+    "completion_source": "independent_catalog_record_only",
+    "season_reuse": "educational_institution_owner_only",
+    "production_accepted": false
+  },
+  "operating_review": {
+    "checkpoint": "BUILD-62",
+    "backend_scoped_tests": 918,
+    "backend_test_files": 49,
+    "frontend_tests": 2300,
+    "native_get_requests": 116,
+    "maximum_native_concurrency": 8,
+    "assignment_page_queries_before": 180,
+    "assignment_page_queries_after": 81,
+    "retained_synthetic_same_grant_renewals": 1,
+    "production_accepted": false,
+    "remaining_acceptance": "docs/agent-context/OPERATING-ACCEPTANCE-CHECKLIST.md"
+  }
+}

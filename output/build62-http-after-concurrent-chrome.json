@@ -1,0 +1,1006 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "phase": "after",
+  "native_backend_pid": 12444,
+  "requests": 72,
+  "maximum_concurrency": 8,
+  "unexpected_responses": 0,
+  "missing_private_cache": 0,
+  "samples": [
+    {
+      "name": "own-teaching-courses",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 161.2246,
+      "bytes": 122
+    },
+    {
+      "name": "assigned-grading-page",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 28.80529999999999,
+      "bytes": 403
+    },
+    {
+      "name": "preparation-sources",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 65.77299999999991,
+      "bytes": 725
+    },
+    {
+      "name": "return-follow-up",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 64.25900000000001,
+      "bytes": 256
+    },
+    {
+      "name": "season-periods",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 41.328700000000026,
+      "bytes": 444
+    },
+    {
+      "name": "business-admin-denial",
+      "concurrency": 1,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 13.306100000000015,
+      "bytes": 35
+    },
+    {
+      "name": "unrelated-teacher-denial",
+      "concurrency": 1,
+      "status": 404,
+      "expected_status": 404,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 143.41570000000002,
+      "bytes": 34
+    },
+    {
+      "name": "legacy-reporting-unavailable",
+      "concurrency": 1,
+      "status": 503,
+      "expected_status": 503,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 104.37960000000021,
+      "bytes": 48
+    },
+    {
+      "name": "own-teaching-courses",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 10.339300000000094,
+      "bytes": 122
+    },
+    {
+      "name": "assigned-grading-page",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 15.233699999999999,
+      "bytes": 403
+    },
+    {
+      "name": "preparation-sources",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 81.5197999999998,
+      "bytes": 725
+    },
+    {
+      "name": "return-follow-up",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 69.92110000000025,
+      "bytes": 256
+    },
+    {
+      "name": "season-periods",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 27.135800000000017,
+      "bytes": 444
+    },
+    {
+      "name": "business-admin-denial",
+      "concurrency": 1,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 8.172199999999975,
+      "bytes": 35
+    },
+    {
+      "name": "unrelated-teacher-denial",
+      "concurrency": 1,
+      "status": 404,
+      "expected_status": 404,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 31.296600000000126,
+      "bytes": 34
+    },
+    {
+      "name": "legacy-reporting-unavailable",
+      "concurrency": 1,
+      "status": 503,
+      "expected_status": 503,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 12.862900000000081,
+      "bytes": 48
+    },
+    {
+      "name": "own-teaching-courses",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 9.355799999999817,
+      "bytes": 122
+    },
+    {
+      "name": "assigned-grading-page",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 17.972800000000007,
+      "bytes": 403
+    },
+    {
+      "name": "preparation-sources",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 41.3454999999999,
+      "bytes": 725
+    },
+    {
+      "name": "return-follow-up",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 13.53879999999981,
+      "bytes": 256
+    },
+    {
+      "name": "season-periods",
+      "concurrency": 1,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 17.933399999999892,
+      "bytes": 444
+    },
+    {
+      "name": "business-admin-denial",
+      "concurrency": 1,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 8.391900000000078,
+      "bytes": 35
+    },
+    {
+      "name": "unrelated-teacher-denial",
+      "concurrency": 1,
+      "status": 404,
+      "expected_status": 404,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 8.769600000000082,
+      "bytes": 34
+    },
+    {
+      "name": "legacy-reporting-unavailable",
+      "concurrency": 1,
+      "status": 503,
+      "expected_status": 503,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 6.973100000000159,
+      "bytes": 48
+    },
+    {
+      "name": "own-teaching-courses",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 11.604299999999967,
+      "bytes": 122
+    },
+    {
+      "name": "assigned-grading-page",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 29.019600000000082,
+      "bytes": 403
+    },
+    {
+      "name": "business-admin-denial",
+      "concurrency": 4,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 7.326000000000022,
+      "bytes": 35
+    },
+    {
+      "name": "preparation-sources",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 60.56840000000011,
+      "bytes": 725
+    },
+    {
+      "name": "legacy-reporting-unavailable",
+      "concurrency": 4,
+      "status": 503,
+      "expected_status": 503,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 15.593000000000302,
+      "bytes": 48
+    },
+    {
+      "name": "return-follow-up",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 83.2772,
+      "bytes": 256
+    },
+    {
+      "name": "season-periods",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 76.50409999999965,
+      "bytes": 444
+    },
+    {
+      "name": "unrelated-teacher-denial",
+      "concurrency": 4,
+      "status": 404,
+      "expected_status": 404,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 55.954899999999725,
+      "bytes": 34
+    },
+    {
+      "name": "own-teaching-courses",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 24.500500000000102,
+      "bytes": 122
+    },
+    {
+      "name": "assigned-grading-page",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 29.70550000000003,
+      "bytes": 403
+    },
+    {
+      "name": "business-admin-denial",
+      "concurrency": 4,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 14.538800000000265,
+      "bytes": 35
+    },
+    {
+      "name": "preparation-sources",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 61.07709999999997,
+      "bytes": 725
+    },
+    {
+      "name": "legacy-reporting-unavailable",
+      "concurrency": 4,
+      "status": 503,
+      "expected_status": 503,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 20.427000000000135,
+      "bytes": 48
+    },
+    {
+      "name": "return-follow-up",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 84.25460000000021,
+      "bytes": 256
+    },
+    {
+      "name": "season-periods",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 100.0974000000001,
+      "bytes": 444
+    },
+    {
+      "name": "unrelated-teacher-denial",
+      "concurrency": 4,
+      "status": 404,
+      "expected_status": 404,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 82.89429999999993,
+      "bytes": 34
+    },
+    {
+      "name": "own-teaching-courses",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 70.19790000000012,
+      "bytes": 122
+    },
+    {
+      "name": "assigned-grading-page",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 82.95840000000044,
+      "bytes": 403
+    },
+    {
+      "name": "business-admin-denial",
+      "concurrency": 4,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 6.441699999999855,
+      "bytes": 35
+    },
+    {
+      "name": "return-follow-up",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 63.22510000000011,
+      "bytes": 256
+    },
+    {
+      "name": "legacy-reporting-unavailable",
+      "concurrency": 4,
+      "status": 503,
+      "expected_status": 503,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 6.499299999999948,
+      "bytes": 48
+    },
+    {
+      "name": "preparation-sources",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 153.35460000000012,
+      "bytes": 725
+    },
+    {
+      "name": "season-periods",
+      "concurrency": 4,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 122.85469999999987,
+      "bytes": 444
+    },
+    {
+      "name": "unrelated-teacher-denial",
+      "concurrency": 4,
+      "status": 404,
+      "expected_status": 404,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 98.79919999999993,
+      "bytes": 34
+    },
+    {
+      "name": "business-admin-denial",
+      "concurrency": 8,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 99.16249999999991,
+      "bytes": 35
+    },
+    {
+      "name": "legacy-reporting-unavailable",
+      "concurrency": 8,
+      "status": 503,
+      "expected_status": 503,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 101.79259999999977,
+      "bytes": 48
+    },
+    {
+      "name": "own-teaching-courses",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 105.79840000000013,
+      "bytes": 122
+    },
+    {
+      "name": "assigned-grading-page",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 109.48029999999972,
+      "bytes": 403
+    },
+    {
+      "name": "unrelated-teacher-denial",
+      "concurrency": 8,
+      "status": 404,
+      "expected_status": 404,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 114.17299999999977,
+      "bytes": 34
+    },
+    {
+      "name": "preparation-sources",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 143.8166000000001,
+      "bytes": 725
+    },
+    {
+      "name": "return-follow-up",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 200.0951,
+      "bytes": 256
+    },
+    {
+      "name": "season-periods",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 228.97220000000016,
+      "bytes": 444
+    },
+    {
+      "name": "own-teaching-courses",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 134.51040000000012,
+      "bytes": 122
+    },
+    {
+      "name": "business-admin-denial",
+      "concurrency": 8,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 113.42900000000009,
+      "bytes": 35
+    },
+    {
+      "name": "assigned-grading-page",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 160.03420000000006,
+      "bytes": 403
+    },
+    {
+      "name": "legacy-reporting-unavailable",
+      "concurrency": 8,
+      "status": 503,
+      "expected_status": 503,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 45.560399999999845,
+      "bytes": 48
+    },
+    {
+      "name": "preparation-sources",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 194.70700000000033,
+      "bytes": 725
+    },
+    {
+      "name": "return-follow-up",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 199.1875,
+      "bytes": 256
+    },
+    {
+      "name": "business-admin-denial",
+      "concurrency": 8,
+      "status": 403,
+      "expected_status": 403,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 4.913700000000063,
+      "bytes": 35
+    },
+    {
+      "name": "season-periods",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 202.7217999999998,
+      "bytes": 444
+    },
+    {
+      "name": "unrelated-teacher-denial",
+      "concurrency": 8,
+      "status": 404,
+      "expected_status": 404,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 119.96479999999974,
+      "bytes": 34
+    },
+    {
+      "name": "own-teaching-courses",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 101.51089999999976,
+      "bytes": 122
+    },
+    {
+      "name": "assigned-grading-page",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 115.29119999999966,
+      "bytes": 403
+    },
+    {
+      "name": "return-follow-up",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 112.51310000000012,
+      "bytes": 256
+    },
+    {
+      "name": "legacy-reporting-unavailable",
+      "concurrency": 8,
+      "status": 503,
+      "expected_status": 503,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 96.63989999999967,
+      "bytes": 48
+    },
+    {
+      "name": "preparation-sources",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 268.2539999999999,
+      "bytes": 725
+    },
+    {
+      "name": "season-periods",
+      "concurrency": 8,
+      "status": 200,
+      "expected_status": 200,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 231.70850000000019,
+      "bytes": 444
+    },
+    {
+      "name": "unrelated-teacher-denial",
+      "concurrency": 8,
+      "status": 404,
+      "expected_status": 404,
+      "semantic_ok": true,
+      "failure_code": null,
+      "cache_no_store": true,
+      "ms": 218.49339999999984,
+      "bytes": 34
+    }
+  ],
+  "summary": [
+    {
+      "concurrency": 1,
+      "name": "ALL",
+      "n": 24,
+      "p50_ms": 17.972800000000007,
+      "p95_ms": 143.41570000000002
+    },
+    {
+      "concurrency": 1,
+      "name": "own-teaching-courses",
+      "n": 3,
+      "p50_ms": 10.339300000000094,
+      "p95_ms": 161.2246
+    },
+    {
+      "concurrency": 1,
+      "name": "assigned-grading-page",
+      "n": 3,
+      "p50_ms": 17.972800000000007,
+      "p95_ms": 28.80529999999999
+    },
+    {
+      "concurrency": 1,
+      "name": "preparation-sources",
+      "n": 3,
+      "p50_ms": 65.77299999999991,
+      "p95_ms": 81.5197999999998
+    },
+    {
+      "concurrency": 1,
+      "name": "return-follow-up",
+      "n": 3,
+      "p50_ms": 64.25900000000001,
+      "p95_ms": 69.92110000000025
+    },
+    {
+      "concurrency": 1,
+      "name": "season-periods",
+      "n": 3,
+      "p50_ms": 27.135800000000017,
+      "p95_ms": 41.328700000000026
+    },
+    {
+      "concurrency": 1,
+      "name": "business-admin-denial",
+      "n": 3,
+      "p50_ms": 8.391900000000078,
+      "p95_ms": 13.306100000000015
+    },
+    {
+      "concurrency": 1,
+      "name": "unrelated-teacher-denial",
+      "n": 3,
+      "p50_ms": 31.296600000000126,
+      "p95_ms": 143.41570000000002
+    },
+    {
+      "concurrency": 1,
+      "name": "legacy-reporting-unavailable",
+      "n": 3,
+      "p50_ms": 12.862900000000081,
+      "p95_ms": 104.37960000000021
+    },
+    {
+      "concurrency": 4,
+      "name": "ALL",
+      "n": 24,
+      "p50_ms": 60.56840000000011,
+      "p95_ms": 122.85469999999987
+    },
+    {
+      "concurrency": 4,
+      "name": "own-teaching-courses",
+      "n": 3,
+      "p50_ms": 24.500500000000102,
+      "p95_ms": 70.19790000000012
+    },
+    {
+      "concurrency": 4,
+      "name": "assigned-grading-page",
+      "n": 3,
+      "p50_ms": 29.70550000000003,
+      "p95_ms": 82.95840000000044
+    },
+    {
+      "concurrency": 4,
+      "name": "preparation-sources",
+      "n": 3,
+      "p50_ms": 61.07709999999997,
+      "p95_ms": 153.35460000000012
+    },
+    {
+      "concurrency": 4,
+      "name": "return-follow-up",
+      "n": 3,
+      "p50_ms": 83.2772,
+      "p95_ms": 84.25460000000021
+    },
+    {
+      "concurrency": 4,
+      "name": "season-periods",
+      "n": 3,
+      "p50_ms": 100.0974000000001,
+      "p95_ms": 122.85469999999987
+    },
+    {
+      "concurrency": 4,
+      "name": "business-admin-denial",
+      "n": 3,
+      "p50_ms": 7.326000000000022,
+      "p95_ms": 14.538800000000265
+    },
+    {
+      "concurrency": 4,
+      "name": "unrelated-teacher-denial",
+      "n": 3,
+      "p50_ms": 82.89429999999993,
+      "p95_ms": 98.79919999999993
+    },
+    {
+      "concurrency": 4,
+      "name": "legacy-reporting-unavailable",
+      "n": 3,
+      "p50_ms": 15.593000000000302,
+      "p95_ms": 20.427000000000135
+    },
+    {
+      "concurrency": 8,
+      "name": "ALL",
+      "n": 24,
+      "p50_ms": 115.29119999999966,
+      "p95_ms": 231.70850000000019
+    },
+    {
+      "concurrency": 8,
+      "name": "own-teaching-courses",
+      "n": 3,
+      "p50_ms": 105.79840000000013,
+      "p95_ms": 134.51040000000012
+    },
+    {
+      "concurrency": 8,
+      "name": "assigned-grading-page",
+      "n": 3,
+      "p50_ms": 115.29119999999966,
+      "p95_ms": 160.03420000000006
+    },
+    {
+      "concurrency": 8,
+      "name": "preparation-sources",
+      "n": 3,
+      "p50_ms": 194.70700000000033,
+      "p95_ms": 268.2539999999999
+    },
+    {
+      "concurrency": 8,
+      "name": "return-follow-up",
+      "n": 3,
+      "p50_ms": 199.1875,
+      "p95_ms": 200.0951
+    },
+    {
+      "concurrency": 8,
+      "name": "season-periods",
+      "n": 3,
+      "p50_ms": 228.97220000000016,
+      "p95_ms": 231.70850000000019
+    },
+    {
+      "concurrency": 8,
+      "name": "business-admin-denial",
+      "n": 3,
+      "p50_ms": 99.16249999999991,
+      "p95_ms": 113.42900000000009
+    },
+    {
+      "concurrency": 8,
+      "name": "unrelated-teacher-denial",
+      "n": 3,
+      "p50_ms": 119.96479999999974,
+      "p95_ms": 218.49339999999984
+    },
+    {
+      "concurrency": 8,
+      "name": "legacy-reporting-unavailable",
+      "n": 3,
+      "p50_ms": 96.63989999999967,
+      "p95_ms": 101.79259999999977
+    }
+  ],
+  "resource_before": {
+    "working_set_bytes": 155082752,
+    "peak_working_set_bytes": 219193344,
+    "cpu_seconds": 4.71875
+  },
+  "resource_after": {
+    "working_set_bytes": 160649216,
+    "peak_working_set_bytes": 219193344,
+    "cpu_seconds": 5.59375
+  },
+  "cpu_seconds_delta": 0.875,
+  "limits": "72 mixed authenticated native HTTP GET requests, tiny retained synthetic fixtures, one local machine, fixed order1/4/8. Expected403/404/503 are explicitly separated from positive reads. No capacity or representative-user/load/device claim; CPU includes unrelated work in same process."
+}

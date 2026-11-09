@@ -1,0 +1,27 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "native owner UI creates separate account, real POST commits then ACK is lost, opaque intent survives reload, GET receipt recovers with one POST and no password/phone in intent",
+      "pass": true,
+      "reused": true
+    },
+    {
+      "check": "actual owner assigns center operational task to explicit member and branch; lost ACK/reload recovered without another POST",
+      "pass": true
+    },
+    {
+      "check": "actual independent employee login redirects to center-work; branch/group/session/eligible roster and canonical attendance correction survive lost ACK/reload and GET receipt with one POST",
+      "pass": true
+    },
+    {
+      "check": "actual employee starts and resolves only assigned internal request through versioned native writes; SQL confirms final status",
+      "pass": true
+    },
+    {
+      "check": "focus/display fence hides prior scoped roster/tasks and requires explicit live rediscovery; server still proves permission for every operation",
+      "pass": true
+    }
+  ],
+  "limits": "Actual Chrome/native APIs/MySQL, synthetic users/fixtures. No provider, field timing, mobile/device/load or production acceptance."
+}

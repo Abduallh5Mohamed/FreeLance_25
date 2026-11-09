@@ -1,0 +1,114 @@
+{
+  "browser": "157.0.8103.38",
+  "runs": [
+    {
+      "route": "/auth",
+      "url": "/auth",
+      "entries": [
+        {
+          "file": "/assets/index-1794095072600.js",
+          "encoded": 1116503,
+          "decoded": 4053406
+        }
+      ],
+      "dom": 389
+    },
+    {
+      "route": "/auth",
+      "url": "/auth",
+      "entries": [
+        {
+          "file": "/assets/index-1794095072600.js",
+          "encoded": 1116503,
+          "decoded": 4053406
+        }
+      ],
+      "dom": 319.90000000596046
+    },
+    {
+      "route": "/auth",
+      "url": "/auth",
+      "entries": [
+        {
+          "file": "/assets/index-1794095072600.js",
+          "encoded": 1116503,
+          "decoded": 4053406
+        }
+      ],
+      "dom": 403.19999999552965
+    },
+    {
+      "route": "/discover",
+      "url": "/discover",
+      "entries": [
+        {
+          "file": "/assets/index-1794095072600.js",
+          "encoded": 1116503,
+          "decoded": 4053406
+        }
+      ],
+      "dom": 364.69999999552965
+    },
+    {
+      "route": "/discover",
+      "url": "/discover",
+      "entries": [
+        {
+          "file": "/assets/index-1794095072600.js",
+          "encoded": 1116503,
+          "decoded": 4053406
+        }
+      ],
+      "dom": 322.3999999985099
+    },
+    {
+      "route": "/discover",
+      "url": "/discover",
+      "entries": [
+        {
+          "file": "/assets/index-1794095072600.js",
+          "encoded": 1116503,
+          "decoded": 4053406
+        }
+      ],
+      "dom": 322
+    },
+    {
+      "route": "/courses",
+      "url": "/auth",
+      "entries": [
+        {
+          "file": "/assets/index-1794095072600.js",
+          "encoded": 1116503,
+          "decoded": 4053406
+        }
+      ],
+      "dom": 337.6000000014901
+    },
+    {
+      "route": "/courses",
+      "url": "/auth",
+      "entries": [
+        {
+          "file": "/assets/index-1794095072600.js",
+          "encoded": 1116503,
+          "decoded": 4053406
+        }
+      ],
+      "dom": 328.19999999552965
+    },
+    {
+      "route": "/courses",
+      "url": "/auth",
+      "entries": [
+        {
+          "file": "/assets/index-1794095072600.js",
+          "encoded": 1116503,
+          "decoded": 4053406
+        }
+      ],
+      "dom": 322
+    }
+  ],
+  "limits": "Three cold desktop contexts per path, local gzip test server; not field/mobile/load latency acceptance."
+}

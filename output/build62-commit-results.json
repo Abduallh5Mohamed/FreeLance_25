@@ -1,0 +1,23 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "commit rejected before actual COMMIT:503/discard, real native GET absent receipt and unchanged assignment, no automatic retry",
+      "pass": true
+    },
+    {
+      "check": "actual MySQL COMMIT followed by injected acknowledgement error:503/discard, real native authenticated GET proves the retained receipt",
+      "pass": true
+    },
+    {
+      "check": "explicit canonical replay after confirmed receipt returns historical200 without another version/audit; no blind resend on missing receipt",
+      "pass": true
+    },
+    {
+      "check": "prior questions, attempts, manual revisions, grades, rubric awards and account security hashes unchanged; sealed audit chain verifies",
+      "pass": true
+    }
+  ],
+  "retained_synthetic_change": "One explicitly renewed existing assignment, same teacher/grader/rubric, version advanced once with sealed audit and immutable receipt; history retained, no new academic access or grade changes.",
+  "limits": "Real MySQL commit outcome plus injected transaction-adapter ACK errors and explicit fixture principal. Recovery/replay use native authenticated HTTP. This is not an actual TCP partition, production reconciliation or authority to retry a missing receipt. Reruns recover existing operation history rather than repeat a new commit."
+}

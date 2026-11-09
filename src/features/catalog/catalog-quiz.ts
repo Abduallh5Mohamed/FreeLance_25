@@ -141,6 +141,13 @@ export function createCatalogQuiz(deps: ReturnType<typeof catalogQuizTransport> 
             return;
         const previous = state, ticket = ++epoch, operation = new AbortController();
         abort = operation;
+        // Bound the whole operation even when a transport ignores AbortSignal.
+        let interrupt = () => {};
+        const interrupted = new Promise<never>((_resolve, reject) => {
+            interrupt = () => reject(new Error('Quiz request interrupted'));
+            operation.signal.addEventListener('abort', interrupt, { once: true });
+        });
+        const request = <T,>(work: () => Promise<T>): Promise<T> => Promise.race([work(), interrupted]);
         const timer = setTimeout(() => operation.abort(), 20000);
         const write = kind !== 'recover';
         let confirmedWrite: 'start' | 'submit' | null = null;
@@ -148,7 +155,7 @@ export function createCatalogQuiz(deps: ReturnType<typeof catalogQuizTransport> 
         try {
             if (kind === 'save' || kind === 'submit') {
                 const attempt = previous.attempt!, payload = quizAnswers(attempt.questions, previous.draft);
-                const raw = await deps[kind](attempt.id, payload, operation.signal);
+                const raw = await request(() => deps[kind](attempt.id, payload, operation.signal));
                 if (!current(ticket))
                     return;
                 if (operation.signal.aborted)
@@ -165,7 +172,7 @@ export function createCatalogQuiz(deps: ReturnType<typeof catalogQuizTransport> 
                 // A confirmed submit is retained even if the following read fails.
                 set({ ...previous, phase: 'busy', attempt: { ...attempt, status: raw.status, manual_required: raw.manual_required }, dirty: false, message: 'تم تأكيد التسليم. جارٍ قراءة الحالة الحالية…' });
             }
-            const header = parseQuizRecovery(await (kind === 'start' ? deps.start(operation.signal) : deps.recover(operation.signal)));
+            const header = parseQuizRecovery(await request(() => kind === 'start' ? deps.start(operation.signal) : deps.recover(operation.signal)));
             if (!current(ticket))
                 return;
             if (operation.signal.aborted)
@@ -181,7 +188,7 @@ export function createCatalogQuiz(deps: ReturnType<typeof catalogQuizTransport> 
             knownAttemptId = header.id;
             if (kind === 'start')
                 confirmedWrite = 'start';
-            const attempt = parseQuizAttempt(await deps.read(header.id, operation.signal), header.id);
+            const attempt = parseQuizAttempt(await request(() => deps.read(header.id, operation.signal)), header.id);
             if (!current(ticket))
                 return;
             if (operation.signal.aborted)
@@ -206,6 +213,7 @@ export function createCatalogQuiz(deps: ReturnType<typeof catalogQuizTransport> 
         }
         finally {
             clearTimeout(timer);
+            operation.signal.removeEventListener('abort', interrupt);
         }
     }
     return {

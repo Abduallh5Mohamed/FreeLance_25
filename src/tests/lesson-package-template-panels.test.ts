@@ -42,11 +42,12 @@ function mount(name:string,props:any,page=false) {
   return {render,settle,tree:()=>tree,unmount:()=>cleanups.forEach(fn=>fn?.()),React};
 }
 async function environment(work:(state:{identity:string;storage:Function[]})=>Promise<void>) {
-  const previous={fetch:globalThis.fetch,storage:globalThis.localStorage,window:globalThis.window,React:(globalThis as any).React};
+  const previous={fetch:globalThis.fetch,storage:globalThis.localStorage,session:globalThis.sessionStorage,window:globalThis.window,React:(globalThis as any).React};
   const state={identity:'owner-A',storage:[] as Function[]};
+  const markers=new Map<string,string>();(globalThis as any).sessionStorage={getItem:(k:string)=>markers.get(k)??null,setItem:(k:string,v:string)=>{markers.set(k,v);},removeItem:(k:string)=>{markers.delete(k);}};
   (globalThis as any).localStorage={getItem:(key:string)=>key==='authToken'?'synthetic':key==='currentUser'?JSON.stringify({id:state.identity,role:'instructor'}):null};
   (globalThis as any).window={addEventListener:(kind:string,fn:Function)=>{if(kind==='storage')state.storage.push(fn);},removeEventListener:(kind:string,fn:Function)=>{if(kind==='storage')state.storage=state.storage.filter(x=>x!==fn);},confirm:()=>true};
-  try{await work(state);}finally{globalThis.fetch=previous.fetch;(globalThis as any).localStorage=previous.storage;(globalThis as any).window=previous.window;(globalThis as any).React=previous.React;}
+  try{await work(state);}finally{globalThis.fetch=previous.fetch;(globalThis as any).localStorage=previous.storage;(globalThis as any).sessionStorage=previous.session;(globalThis as any).window=previous.window;(globalThis as any).React=previous.React;}
 }
 
 test('actual parent preserves uncertain child and guards create/revise/archive/refresh/page callbacks',async()=>environment(async()=>{
@@ -139,6 +140,7 @@ test('actual course details dialog refuses close while its template child is pen
     const details=find(tree,n=>n.props?.open===true&&n.props?.onOpenChange);assert.ok(details);
     details.props.onOpenChange(false);tree=await h.settle();assert.ok(find(tree,n=>n.type?.name==='LessonPackageTemplates'));
     const close=find(tree,n=>n.props?.children==='إغلاق'&&n.props?.className==='w-full');assert.ok(close);assert.equal(close.props.disabled,true);close.props.onClick();await h.settle();assert.ok(find(h.tree(),n=>n.type?.name==='LessonPackageTemplates'));
-    panel.props.onLockChange(false);await h.settle();details.props.onOpenChange(false);await h.settle();assert.equal(find(h.tree(),n=>n.type?.name==='LessonPackageTemplates'),null);
+    const returnPanel=find(tree,n=>n.type?.name==='CourseReturnPlan');assert.ok(returnPanel);returnPanel.props.onLockChange(true);panel.props.onLockChange(false);await h.settle();details.props.onOpenChange(false);await h.settle();assert.ok(find(h.tree(),n=>n.type?.name==='CourseReturnPlan'));
+    returnPanel.props.onLockChange(false);await h.settle();details.props.onOpenChange(false);await h.settle();assert.equal(find(h.tree(),n=>n.type?.name==='LessonPackageTemplates'),null);
   }finally{h.unmount();}
 }));

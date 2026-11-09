@@ -1,0 +1,38 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "checks": [
+    {
+      "check": "actual non-owner responsible teacher reaches marking; institution owner, platform admin and legacy staff cannot read its answers/rubric; platform admin legacy marking is denied",
+      "pass": true
+    },
+    {
+      "check": "teacher pins explicit immutable rubric to selected active in-tenant grader; another teacher and another question do not acquire delegation/finalization rights",
+      "pass": true
+    },
+    {
+      "check": "assigned grader uses canonical manual revision engine; criterion total is server computed6.00, provenance stored atomically, excessive mark400 and exact replay does not duplicate revision",
+      "pass": true
+    },
+    {
+      "check": "only responsible teacher reviews all questions and finalizes8.00 with original gradebook projection; assigned grader cannot finalize",
+      "pass": true
+    },
+    {
+      "check": "fresh teacher-only impact preview/CAS and recorded reason reopen final to pending and atomically withdraw exactly its proven projection, preserving old8.00 receipt/history",
+      "pass": true
+    },
+    {
+      "check": "two actual concurrent authenticated SQL-backed writes at one attempt version yield one201 and one409, without silent lost update",
+      "pass": true
+    },
+    {
+      "check": "teacher correction creates a later question revision then re-finalizes9.00 into one deterministic gradebook row, without altering pinned exam/questions",
+      "pass": true
+    },
+    {
+      "check": "explicit revoke and versioned transfer remove original grader scope including stored receipt recovery; replacement sees only current assignment",
+      "pass": true
+    }
+  ],
+  "limits": "Native users/login/tenant membership/course responsibility/routers/MySQL. Synthetic pre-seeded student answers, not native learner-attempt acceptance. No production/load/provider/commit-uncertainty acceptance. Rerun skips completed history and uses retained keys/fixtures."
+}

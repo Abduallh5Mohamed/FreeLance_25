@@ -1,0 +1,97 @@
+{
+  "database": "tabweb_demo_20261107162429",
+  "course": "9bd1a6d8-3966-49cc-833f-3158fb907fad",
+  "unit": "6c1fdec2-8775-4eb5-aefc-18e9277b967c",
+  "group": "74eb9a64-2f5f-4966-95a6-f132fe666961",
+  "lesson": "52e3a456-fa70-4c3e-afdf-786d2be710fd",
+  "exam": "1a60cbac-da78-4a34-bdab-2ef9a2b31c07",
+  "version": "07ab9656-5fa3-4b40-be49-cb29f19c1319",
+  "content": "c82c0549-785b-4f5c-8f37-09121e2eac65",
+  "questions": [
+    "dbe41ed1-2a02-4dbc-a44b-7103a6cc4e91",
+    "bc738d71-9185-414e-9880-99b9cea8f01e",
+    "98593f84-0667-455b-8035-76cf9e4bbb2d"
+  ],
+  "bank": [
+    "b28f4993-3a6f-48ec-95fc-c8b5364aa871",
+    "b482db20-e375-4ea4-ae9a-14d1225db446"
+  ],
+  "bankVersions": [
+    "a4eb763e-5186-4642-bd71-11c90c2fca2d",
+    "434e7e71-7e38-4763-93fd-015a4777312b"
+  ],
+  "learners": [
+    {
+      "user": "aa6ba689-742f-4caa-b048-36a2397b3b6b",
+      "enrollment": "fd20fb7d-2641-4efe-bf6f-b6876f20cd70",
+      "attempt": "e4b41053-c0cb-4440-bd47-66d53f60b17e",
+      "answers": [
+        "f7253a14-c445-4a6e-a2bb-c92b7f58cc38",
+        "b2b226f2-d32a-4ac1-b4c0-4ae404ccef68",
+        "e5b9ad29-4b17-4fcd-b702-fc01b1df3f3c"
+      ]
+    },
+    {
+      "user": "6659c592-e33b-433c-b897-06aef8564d59",
+      "enrollment": "d672d161-b3ff-40f5-8720-1b5d4844f729",
+      "attempt": "052e3369-b952-4de6-b97d-69e5f40495b0",
+      "answers": [
+        "6bdfd91a-6370-4992-b15f-5beef7b5bde7",
+        "58c02acf-6148-4ab1-9d77-8252236c805e",
+        "2c5f2174-776d-4997-b8e0-1e2287ed32a0"
+      ]
+    },
+    {
+      "user": "6f14da18-6a72-4cec-a641-4105b39fc260",
+      "enrollment": "680e34d1-ff35-431c-808e-33d3e187bc0c",
+      "attempt": "c3892c49-20dd-430b-b23d-7ab360e7ee7a",
+      "answers": [
+        "632486fc-07a2-47ed-981c-3d4af19eacc3",
+        "963d46b2-eb6f-4edb-9175-5828bc7143d7",
+        "b1085774-ac06-4030-b050-41c09d33799c"
+      ]
+    },
+    {
+      "user": "3420f865-5336-4f15-8163-083c8ae16fc2",
+      "enrollment": "3c9772fd-9925-4db9-bbf2-093b93752df0",
+      "attempt": "029f035a-ad14-4650-90c9-06293fbf539a",
+      "answers": [
+        "2b1b12b8-3665-43e3-8191-b9392247016a",
+        "4cd504ca-39c1-4e2e-af9c-b8dae10f33cc",
+        "763846cd-6bdd-4e48-bdfd-eae92d906948"
+      ]
+    },
+    {
+      "user": "70ee6f1e-e4f9-4b64-a7d3-bcfb878a7134",
+      "enrollment": "b52a1752-54eb-42e4-94a7-839a7d52d6f3",
+      "attempt": "708cda97-12b2-47d2-9c82-435797d49b29",
+      "answers": [
+        "848ef56e-6e3b-4bac-9dff-3afc3ede61cc",
+        "ed9b428e-8fb5-43f6-8e34-f0bcd37f933f",
+        "ce022632-ec69-4585-a5b6-2700cd830d49"
+      ]
+    }
+  ],
+  "excluded": [
+    {
+      "attempt": "2d65a88c-05bb-4823-8e31-fa72adb8ba22",
+      "answers": [
+        "1f653ddf-25ac-4357-89f1-01d94f0cebcf",
+        "0efe7903-ac0f-4013-8efd-70357ba31277",
+        "cca94293-baf0-44cd-9ddb-623f7d9b44ff"
+      ],
+      "user": "93732f5b-b8fe-4b05-adc3-2fced6e419d6",
+      "enrollment": "ce8f6174-7974-4a69-b751-7ce6960cf97c"
+    },
+    {
+      "attempt": "4ea2296e-6971-409c-baeb-930180e47a9a",
+      "answers": [
+        "f74672a1-da11-4642-8e44-2b2f2aaacbed",
+        "2888901a-099d-4524-9557-4fdd881e7a20",
+        "1af57623-7a55-4ed8-ac07-b0ba1606d1f6"
+      ],
+      "user": "2d399bdc-ca22-4e2a-9ed3-1fe01fd17987",
+      "enrollment": "ed2ee007-e320-49f9-9241-c9ab4d3c3a59"
+    }
+  ]
+}

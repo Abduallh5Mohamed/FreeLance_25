@@ -226,7 +226,7 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[]) => {
             return exam ? [{ ...exam }] : [];
         }
         // --- ownership / groups ---
-        if (sql.includes('FROM exam_groups eg') && sql.includes('g.instructor_id = ?')) {
+        if (sql.includes('FROM exam_groups eg') && (sql.includes('g.instructor_id = ?') || sql.includes('c.instructor_id = ?'))) {
             // isExamInScope
             const [examId, instructorId] = params as [string, string];
             return examOwnedBy(examId, instructorId) ? [{ exam_id: examId }] : [];
@@ -309,7 +309,7 @@ const makeDb = (f: Fixtures, executed: ExecutedStatement[]) => {
             // GET /manual-grading/pending
             const gradeId = String(params[0]);
             const hasGroup = sql.includes('AND s.group_id = ?');
-            const hasScope = sql.includes('g.instructor_id = ?');
+            const hasScope = sql.includes('c.instructor_id = ?');
             let cursor = 1;
             const groupFilter = hasGroup ? String(params[cursor++]) : undefined;
             const instructorScope = hasScope ? String(params[cursor++]) : undefined;
@@ -615,7 +615,7 @@ test('manual-grading pending list is scoped to the owning instructor (decision-b
     assert.equal(response.statusCode, 200);
     const scoped = executed.find((e) => e.sql.includes('ea.score as auto_score'));
     assert.ok(scoped, 'pending query was executed');
-    assert.ok(scoped!.sql.includes('g.instructor_id = ?'), 'pending query carries an instructor scope clause');
+    assert.ok(scoped!.sql.includes('c.instructor_id = ?'), 'pending query carries the responsible course instructor scope');
     assert.ok(scoped!.params.includes('instructor-b'), 'pending query binds the caller instructor id');
 });
 

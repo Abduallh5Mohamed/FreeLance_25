@@ -4,6 +4,7 @@ import { ACTIVE_SUSPENSION_PREDICATE_SQL } from '../security/suspension-predicat
 import {parseLessonContextInput,supportContextSchema,storedLessonContext,proveLessonSupportContext,type StoredLessonContext} from './support-lesson-context';
 import {verifyPrivateNotesSchema,findPrivateNote,listPrivateNotes,privateNoteDto} from './support-private-notes';
 import {supportAssignmentSchema,assignmentState,assignmentReceipt} from './support-assignment';
+import {parseFollowupInput,readSupportFollowup} from './support-followup';
 
 type Actor = { id: string; tokenVersion?: number; identitySource?: 'users' | 'staff'; role?:string;tenantId?:string;studentEnrollmentId?:string };
 type Result = { status: number; body: any };
@@ -100,6 +101,16 @@ export function createSupportWriteService(deps: { getConnection(): Promise<Cours
     return {id:user.id,name:user.name};
   };
   return {
+    async followup(actor:Actor,raw:unknown):Promise<Result>{
+      const input=parseFollowupInput(raw);
+      if(!input)return{status:400,body:{code:'SUPPORT_FOLLOWUP_INPUT',error:'Invalid follow-up filters or cursor'}};
+      return run(actor,async(connection,verified)=>{
+        if(!await platformSupport(connection,verified))stop(404,'Follow-up queue not found','SUPPORT_FOLLOWUP_NOT_FOUND');
+        if(!await supportAssignmentSchema(connection))stop(503,'Follow-up unavailable','SUPPORT_FOLLOWUP_UNAVAILABLE');
+        const result=await readSupportFollowup(connection,verified.id,input);
+        return{...result,write:false};
+      });
+    },
     async assigned(actor:Actor,after?:unknown):Promise<Result>{
       if(after!==undefined&&(typeof after!=='string'||!/^[a-zA-Z0-9-]{1,36}$/.test(after)))return {status:400,body:{error:'Invalid assigned queue cursor',code:'SUPPORT_ASSIGNED_INPUT'}};
       return run(actor,async(connection,actor)=>{
